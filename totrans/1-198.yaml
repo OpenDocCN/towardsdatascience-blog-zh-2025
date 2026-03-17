@@ -3,11 +3,13 @@
   prefs:
   - PREF_H1
   type: TYPE_NORMAL
+  zh: 逐核学习 Triton：矩阵乘法
 - en: 原文：[https://towardsdatascience.com/learning-triton-one-kernel-at-a-time-matrix-multiplication/](https://towardsdatascience.com/learning-triton-one-kernel-at-a-time-matrix-multiplication/)
   id: totrans-1
   prefs:
   - PREF_BQ
   type: TYPE_NORMAL
+  zh: 原文：[https://towardsdatascience.com/learning-triton-one-kernel-at-a-time-matrix-multiplication/](https://towardsdatascience.com/learning-triton-one-kernel-at-a-time-matrix-multiplication/)
 - en: <mdspan datatext="el1760116659048" class="mdspan-comment">Matrix</mdspan> multiplication
     is undoubtedly the most common operation performed by GPUs. It is the fundamental
     building block of linear algebra and shows up across a wide spectrum of different
@@ -16,61 +18,75 @@
   id: totrans-2
   prefs: []
   type: TYPE_NORMAL
+  zh: <mdspan datatext="el1760116659048" class="mdspan-comment">矩阵乘法无疑是 GPU 执行的最常见操作。它是线性代数的基本构建块，在图形、物理模拟和科学计算等多个不同领域都有出现，同时在机器学习中无处不在。</mdspan>
 - en: In today’s article, we’ll break down the conceptual implementation of general
     matrix-matrix multiplication (GEMM) while introducing several optimisation concepts
     such as tiling and memory coalescing. Finally, we’ll implement GEMM in Triton!
   id: totrans-3
   prefs: []
   type: TYPE_NORMAL
+  zh: 在今天的文章中，我们将分解通用矩阵-矩阵乘法（GEMM）的概念实现，同时介绍一些优化概念，如分块和内存归约。最后，我们将实现 Triton 中的 GEMM！
 - en: '*This article is the second of a series on Triton and GPU kernels, If you are
     not familiar with Triton or need a refresher on GPU basics, check out the previous
     article!* *All the code showcased in this article is available on [GitHub](https://github.com/RPegoud/Triton-Kernels).*'
   id: totrans-4
   prefs: []
   type: TYPE_NORMAL
+  zh: '*本文是关于 Triton 和 GPU 内核系列文章的第二篇。如果你不熟悉 Triton 或需要复习 GPU 基础知识，请查看上一篇文章！* *本文中展示的所有代码均可在
+    [GitHub](https://github.com/RPegoud/Triton-Kernels) 上找到。*'
 - en: '[Learning Triton One Kernel At a Time: Vector Addition](https://towardsdatascience.com/learning-triton-one-kernel-at-a-time-vector-addition/)'
   id: totrans-5
   prefs:
   - PREF_BQ
   type: TYPE_NORMAL
+  zh: '[逐核学习 Triton：向量加法](https://towardsdatascience.com/learning-triton-one-kernel-at-a-time-vector-addition/)'
 - en: '*Disclaimer: all the following figures and animations were made by the author
     unless stated otherwise.*'
   id: totrans-6
   prefs: []
   type: TYPE_NORMAL
+  zh: '*免责声明：以下所有图表和动画均由作者制作，除非另有说明。*'
 - en: Naive GEMM
   id: totrans-7
   prefs:
   - PREF_H2
   type: TYPE_NORMAL
+  zh: 天真 GEMM
 - en: 'Let’s start simple: we want to multiply two matrices `X` and `Y` with shapes
     `(M,N)` and `(N,K)` respectively. The output matrix `Z=X@Y` will therefore have
     shape `(M,K)`.'
   id: totrans-8
   prefs: []
   type: TYPE_NORMAL
+  zh: 让我们从简单开始：我们想要乘以两个矩阵 `X` 和 `Y`，它们的形状分别为 `(M,N)` 和 `(N,K)`。因此，输出矩阵 `Z=X@Y` 将具有形状
+    `(M,K)`。
 - en: 'This operation involves computing the dot products of all pairs of rows and
     columns in `X` and `Y` respectively. A straightforward NumPy implementation might
     look something like this:'
   id: totrans-9
   prefs: []
   type: TYPE_NORMAL
+  zh: 这个操作涉及计算 `X` 和 `Y` 中所有行和列对的点积。一个简单的 NumPy 实现可能看起来像这样：
 - en: While easy to write, read and understand, this implementation is highly inefficient
     in terms of memory access and caching. As mentioned in the first article of this
     series, a fundamental aspect of GPU optimisation is **minimising data transfers**.
   id: totrans-10
   prefs: []
   type: TYPE_NORMAL
+  zh: 虽然编写、阅读和理解都很简单，但这种实现从内存访问和缓存的角度来看效率非常低。正如本系列的第一篇文章中提到的，GPU 优化的一个基本方面是**最小化数据传输**。
 - en: However, our current implementation starts by loading a row from `X`, iteratively
     loads all `K` columns of `Y`, computes their dot product and repeats the process
     for every row in `X`. This results in a total of `M(K+1)` loading operations.
   id: totrans-11
   prefs: []
   type: TYPE_NORMAL
+  zh: 然而，我们当前的实现首先从 `X` 中加载一行，迭代地加载 `Y` 的所有 `K` 列，计算它们的点积，并重复此过程以处理 `X` 中的每一行。这导致总共
+    `M(K+1)` 次加载操作。
 - en: '![](../Images/da96daa411a1e452382d92725abe2fc9.png)'
   id: totrans-12
   prefs: []
   type: TYPE_IMG
+  zh: '![](../Images/da96daa411a1e452382d92725abe2fc9.png)'
 - en: 'As seen in the animation, the memory access pattern is wasteful, as every column
     of `Y` is loaded `M` times. As an analogy: this is like running to the grocery
     store (global memory) every time you need a new ingredient for a dish instead
@@ -80,21 +96,25 @@
   id: totrans-13
   prefs: []
   type: TYPE_NORMAL
+  zh: 如动画所示，内存访问模式是低效的，因为 `Y` 的每一列都被加载了 `M` 次。打个比方：这就像每次需要为菜肴添加新食材时都跑到杂货店（全局内存）去，而不是在厨房台面上（共享内存）准备所有食材。理想情况下，我们希望最小化每次加载数据块的数量，并最大化其加载后的重用性。这让我们有两个主要的优化轴：
 - en: How can we improve the access pattern to minimise redundant loads?
   id: totrans-14
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: 我们如何改进访问模式以最小化冗余加载？
 - en: How much data can we load at once, and where should it be stored on the GPU?
   id: totrans-15
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: 我们一次可以加载多少数据，并且应该在 GPU 的哪里存储它？
 - en: Tiled GEMM
   id: totrans-16
   prefs:
   - PREF_H2
   type: TYPE_NORMAL
+  zh: 分块 GEMM
 - en: As mentioned previously, the naive approach to GEMM results in many redundant
     loads, which induces unnecessary overhead. Ideally, we’d like to load each segment
     of data only once and perform all the operations in which they are used before
@@ -102,6 +122,7 @@
   id: totrans-17
   prefs: []
   type: TYPE_NORMAL
+  zh: 如前所述，GEMM的朴素方法会导致许多冗余加载，这会引发不必要的开销。理想情况下，我们希望只加载每个数据段一次，并在它们从内存中删除之前在它们被使用的所有操作中执行。
 - en: An elegant approach to this problem is **tiling**, which involves dividing large
     matrices in smaller *“tiles”* or sub-matrices. Consider two matrices `X` and `Y`
     with shapes `(4,6)` and `(6,4)` respectively, `X@Y` results in a matrix `Z` with
@@ -109,6 +130,7 @@
   id: totrans-18
   prefs: []
   type: TYPE_NORMAL
+  zh: 解决这个问题的优雅方法是**瓦片化**，它涉及将大矩阵分成更小的*“瓦片”*或子矩阵。考虑两个形状分别为`(4,6)`和`(6,4)`的矩阵`X`和`Y`，`X@Y`的结果是一个形状为`(4,4)`的矩阵`Z`。
 - en: 'In order to compute the first element of `Z`, `Z[0,0]`, we need to compute
     the dot product between the first row of `X` and the first column of `Y`: `Z[0,0]
     = dot(X[0, :], Y[:, 0])`. We can also break down the dot product into smaller
@@ -117,20 +139,26 @@
   id: totrans-19
   prefs: []
   type: TYPE_NORMAL
+  zh: 为了计算Z的第一个元素`Z[0,0]`，我们需要计算`X`的第一行和`Y`的第一列之间的点积：`Z[0,0] = dot(X[0, :], Y[:, 0])`。我们也可以将点积分解成更小的部分，例如每组3个元素：`Z[0,0]
+    = dot(X[0,0:3], Y[0:3, 0]) + dot(X[0,3:6], Y[3:6, 0])`。
 - en: 'Alternatively, we can expand this approach to two dimensions and compute an
     entire `(2,2)` block of Z at a time: `Z[0:2, 0:2] = dot(X[0:2, 0:2], Y[0:2, 0:2])
     + dot(X[0:2, 2:4], Y[2:4, 0:2]) + dot(X[0:2, 4:6], Y[4:6, 0:2])`.'
   id: totrans-20
   prefs: []
   type: TYPE_NORMAL
+  zh: 或者，我们可以将这种方法扩展到二维，一次计算Z的整个`(2,2)`块：`Z[0:2, 0:2] = dot(X[0:2, 0:2], Y[0:2, 0:2])
+    + dot(X[0:2, 2:4], Y[2:4, 0:2]) + dot(X[0:2, 4:6], Y[4:6, 0:2])`。
 - en: 'Here’s a visual representation of tiled matrix multiplication:'
   id: totrans-21
   prefs: []
   type: TYPE_NORMAL
+  zh: 下面是瓦片矩阵乘法的可视化表示：
 - en: '![](../Images/05c848f754139f912aa32238f9acf483.png)'
   id: totrans-22
   prefs: []
   type: TYPE_IMG
+  zh: '![GPU内存层次结构](../Images/05c848f754139f912aa32238f9acf483.png)'
 - en: Tiled Matrix Multiplication. The computation is split in several “tiles” of
     X and Y (highlighted in pale blue and purple), each containing several blocks
     (dark blue and purple). In each block, we compute dot products (green cells in
@@ -140,6 +168,7 @@
   id: totrans-23
   prefs: []
   type: TYPE_NORMAL
+  zh: 瓦片矩阵乘法。计算被分割成几个X和Y的“瓦片”（以浅蓝色和紫色突出显示），每个瓦片包含几个块（深蓝色和紫色）。在每个块中，我们计算点积（X和Y中的绿色单元格）。这些点积在瓦片的块之间累积，以计算Z中的输出值（累积用从橙色到绿色的颜色表示）。
 - en: The above animation illustrates how data is reused in tiled GEMM. For each 2×2
     block in `X` and `Y`, we compute 4 dot products, which results in a `(2,2)` output
     matrix in `Z`. Since each tile contains 3 blocks, we need to accumulate 3 of these
@@ -148,12 +177,14 @@
   id: totrans-24
   prefs: []
   type: TYPE_NORMAL
+  zh: 上述动画展示了瓦片GEMM中数据的重用方式。对于`X`和`Y`中的每个2×2块，我们计算4个点积，这导致在`Z`中产生一个`(2,2)`输出矩阵。由于每个瓦片包含3个块，我们需要累积3个这样的矩阵来计算`Z`中的最终`(2,2)`输出。这种累积在`Z`中用彩色单元格表示。
 - en: In the kitchen analogy, this is like fetching ingredients from the store and
     preparing them on the kitchen counter (i.e. small shared memory), reusing them
     several times before going back to the store.
   id: totrans-25
   prefs: []
   type: TYPE_NORMAL
+  zh: 在厨房的类比中，这就像是从商店取回食材并在厨房台面上（即小共享内存）准备它们，在返回商店之前重复使用它们几次。
 - en: Importantly, reusing loaded data over multiple steps allows this approach to
     drastically reduce the number of load operations. For `(2,2)` blocks, each `X`
     row and `Y` column is used in two dot products. Therefore, we’re performing **twice
@@ -163,21 +194,25 @@
   id: totrans-26
   prefs: []
   type: TYPE_NORMAL
+  zh: 重要的是，在多个步骤中重用加载的数据，这可以使这种方法显著减少加载操作的数量。对于`(2,2)`块，每个`X`行和`Y`列在两个点积中使用。因此，我们使用每个加载的数据块执行**两倍多的操作**，大约**减半**了加载操作的数量！请注意，这同样适用于更大的块，使用`(32,32)`块可以将加载次数减少约32倍。
 - en: Now you’re probably wondering “how large can these blocks be”? To answer this
     question, let’s recall how memory is managed in modern GPUs.
   id: totrans-27
   prefs: []
   type: TYPE_NORMAL
+  zh: 现在你可能想知道“这些块可以有多大”？为了回答这个问题，让我们回顾一下现代GPU中内存是如何管理的。
 - en: GPU Memory Hierarchy
   id: totrans-28
   prefs:
   - PREF_H2
   type: TYPE_NORMAL
+  zh: GPU内存层次结构
 - en: 'We distinguish four main types of memory in Nvidia GPUs. Here, we take the
     example of an A100:'
   id: totrans-29
   prefs: []
   type: TYPE_NORMAL
+  zh: 我们区分Nvidia GPU中的四种主要内存类型。这里，我们以A100为例：
 - en: '**Registers:** The fastest and smallest type of memory on the GPU, residing
     directly within each Streaming Multiprocessor (SM). On the A100, each SM provides
     **256 KB of register file** space (65,536 × 32-bit registers), distributed among
@@ -189,6 +224,7 @@
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: '**寄存器**：GPU上最快、最小的内存类型，位于每个流式多处理器（SM）内部。在A100上，每个SM提供**256 KB**的寄存器文件空间（65,536个32位寄存器），分布在它的线程之间。每个线程都有自己的私有32位寄存器，用于存储临时变量和中间结果，从而完全避免了内存流量。然而，每个线程的寄存器使用量直接影响占用率，因为每个线程使用过多的寄存器会限制可以同时运行的线程数量。'
 - en: '**L1/Shared Memory**: On an A100, each SM has 192KB of SRAM that can be [flexibly
     configured](https://docs.nvidia.com/cuda/ampere-tuning-guide/index.html?utm_source=chatgpt.com#unified-shared-memory-l1-texture-cache)
     as either a hardware-managed **L1 cache** or a programmer-managed **shared memory**.
@@ -199,6 +235,7 @@
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: '**L1/共享内存**：在A100上，每个SM有192KB的SRAM，可以[灵活配置](https://docs.nvidia.com/cuda/ampere-tuning-guide/index.html?utm_source=chatgpt.com#unified-shared-memory-l1-texture-cache)为硬件管理的**L1缓存**或程序员管理的**共享内存**。对于性能关键的核心，如矩阵乘法，我们明确使用这个空间作为共享内存，以便将数据块放置在计算单元附近，完全绕过L1缓存。这使我们能够对数据重用有精细的控制。'
 - en: '**L2 cache**: This cache is slower than L1 but much larger, with around **40
     MB shared across all SMs** on the A100\. It serves as a global cache for both
     data and instructions, reducing the number of accesses to high-latency HBM memory.
@@ -210,6 +247,7 @@
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: '**L2缓存**：这个缓存比L1慢，但大得多，在A100上大约有**40 MB**的共享空间分布在所有SM上。它作为数据和指令的全局缓存，减少了访问高延迟HBM内存的次数。L2缓存在整个SM之间是**一致的**，这意味着一个SM的更新对其他SM都是可见的，从而实现了线程块之间的同步。其带宽可以达到每秒数个太字节，作为快速片上SRAM和较慢HBM之间的缓冲区。'
 - en: '**High Bandwidth Memory (HBM)**: This is the device memory, it has a capacity
     of either 40GB or 80GB depending on the A100 model. It provides **extremely high
     bandwidth** (up to **2 TB/s on the 80 GB variant)** but with **much** **higher
@@ -221,20 +259,25 @@
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: '**高带宽内存（HBM）**：这是设备内存，根据A100型号的不同，容量为40GB或80GB。它提供**极高的带宽**（80 GB变体的最高可达**2
+    TB/s**），但与片上缓存相比，延迟要高得多。HBM是执行期间大型张量、模型权重和数据集所在的地方。由于访问HBM的成本很高，高效的内核旨在通过寄存器和共享内存**最小化数据移动**和**最大化片上数据重用**。'
 - en: As you can see, the memory hierarchy generally trades off capacity with latency.
     Therefore, maximising performance boils down to loading data from HBM into shared
     memory efficiently and reusing it as much as possible.
   id: totrans-34
   prefs: []
   type: TYPE_NORMAL
+  zh: 如您所见，存储层次结构通常在容量和延迟之间进行权衡。因此，最大化性能归结为高效地将数据从HBM加载到共享内存，并尽可能多地重用它。
 - en: '![](../Images/7925bcca2d2881c04a6d16e30e7ac312.png)'
   id: totrans-35
   prefs: []
   type: TYPE_IMG
+  zh: '![GPU内存层次结构](../Images/7925bcca2d2881c04a6d16e30e7ac312.png)'
 - en: GPU Memory Hierarchy, from fastest/smallest (top) to slowest/largest (bottom).
   id: totrans-36
   prefs: []
   type: TYPE_NORMAL
+  zh: GPU内存层次结构，从最快/最小（顶部）到最慢/最大（底部）。
 - en: Choosing our block size is critical. We want blocks to be large enough to create
     a lot of parallel work, but small enough that their data fits in the SM’s shared
     memory and registers. A `BLOCK_SIZE` of **64** is a common starting point because
@@ -242,31 +285,37 @@
   id: totrans-37
   prefs: []
   type: TYPE_NORMAL
+  zh: 选择我们的块大小至关重要。我们希望块足够大，以创建大量的并行工作，但又要足够小，以便其数据可以适应SM的共享内存和寄存器。一个**64**的`BLOCK_SIZE`是一个常见的起点，因为它是**warp大小**（32个线程）的倍数，确保了硬件的充分利用。
 - en: Parallel Tiled GEMM
   id: totrans-38
   prefs:
   - PREF_H2
   type: TYPE_NORMAL
+  zh: 并行分块GEMM
 - en: With these considerations in mind, a natural follow-up to our tiled GEMM is
     to parallelise the computation of each pairs of tiles over several thread blocks,
     as depicted on the following animation.
   id: totrans-39
   prefs: []
   type: TYPE_NORMAL
+  zh: 考虑到这些因素，我们分块GEMM的自然后续步骤是将每个分块对的计算并行化到多个线程块中，如下面的动画所示。
 - en: '![](../Images/8189a5adb11e097039cba9314e568665.png)'
   id: totrans-40
   prefs: []
   type: TYPE_IMG
+  zh: '![图片](../Images/8189a5adb11e097039cba9314e568665.png)'
 - en: Parallel Tiled Matrix Multiplication. The iteration over tiles is replaced by
     a parallel operation over multiple thread blocks.
   id: totrans-41
   prefs: []
   type: TYPE_NORMAL
+  zh: 并行分块矩阵乘法。将分块的迭代替换为多个线程块上的并行操作。
 - en: Memory Coalescing
   id: totrans-42
   prefs:
   - PREF_H3
   type: TYPE_NORMAL
+  zh: 内存归约
 - en: 'Before writing tiled GEMM in Triton, we need to consider one last detail: **memory
     coalescing**, a technique that allows optimal use of global memory bandwidth.
     Memory coalescing is achieved when **subsequent threads in a warp access subsequent
@@ -277,6 +326,8 @@
   id: totrans-43
   prefs: []
   type: TYPE_NORMAL
+  zh: 在 Triton 中编写分块 GEMM 之前，我们需要考虑最后一个细节：**内存归约**，这是一种允许最优使用全局内存带宽的技术。当 **同一 warp
+    中的后续线程访问后续内存地址** 时，就实现了内存归约。想象一个图书管理员需要为客户取书，如果所有书籍都并排放在书架上，他们可以一次拿走所有书籍。相比之下，如果所有书籍都躺在不同的书架上，他们将不得不逐个拿走，这会花费更长的时间。
 - en: 'To understand how this applies to our case, note that matrices are stored linearly
     in memory, in other words a `(2,2)` matrix is stored as a sequence of `4` consecutive
     elements. Frameworks like PyTorch adopt a **row-major** layout, meaning that elements
@@ -287,15 +338,20 @@
   id: totrans-44
   prefs: []
   type: TYPE_NORMAL
+  zh: 为了理解这如何适用于我们的情况，请注意，矩阵在内存中是线性存储的，换句话说，一个 `(2,2)` 的矩阵存储为一个连续的 `4` 个元素序列。像 PyTorch
+    这样的框架采用 **行主序** 布局，这意味着矩阵的元素在内存中是 **按行连续** 的。例如，我们的 `(2,2)` 矩阵将按以下方式存储：`[(0,0),
+    (0,1), (1,0), (1,1)]`，请注意，同一行的元素是 *连续的*（接触的），而同一列的元素有 *步长* 为 1（由一个元素分隔）。
 - en: '![](../Images/e897da52108bc6e066c290de9547e542.png)'
   id: totrans-45
   prefs: []
   type: TYPE_IMG
+  zh: '![图片](../Images/e897da52108bc6e066c290de9547e542.png)'
 - en: PyTorch stores matrices in row-major layout. Elements of a row contiguous in
     memory while elements of a column are strided.
   id: totrans-46
   prefs: []
   type: TYPE_NORMAL
+  zh: PyTorch 以行主序布局存储矩阵。一行的元素在内存中是连续的，而列的元素是步进的。
 - en: This implies that we can load rows using **coalesced loads**, but columns do
     **not** satisfy this condition. However, we need to access columns of `Y` to compute
     dot products. In order to maximise performance, a good practice is to transpose
@@ -303,6 +359,8 @@
   id: totrans-47
   prefs: []
   type: TYPE_NORMAL
+  zh: 这意味着我们可以使用 **归约加载** 来加载行，但列 **不** 满足这个条件。然而，我们需要访问 `Y` 的列来计算点积。为了最大化性能，一个良好的做法是将
+    `Y` 转置，以便我们迭代其行而不是其列。
 - en: However, transposing `Y` isn’t enough to modify its layout in memory. As mentioned
     previously, PyTorch stores matrices in a flat array. Each matrix dimension is
     associated with a `stride` attribute, denoting the jump necessary to go from one
@@ -312,22 +370,28 @@
   id: totrans-48
   prefs: []
   type: TYPE_NORMAL
+  zh: 然而，仅仅转置 `Y` 并不足以修改其在内存中的布局。如前所述，PyTorch 以扁平数组的形式存储矩阵。每个矩阵维度都关联一个 `stride` 属性，表示沿着该维度从一个元素跳到下一个元素所需的跳跃。例如，一个
+    `(10,10)` 的矩阵会有 `strides=(10,1)`。确实，从元素 `[0,0]` 开始，元素 `[1,0]` 距离 10 个内存槽（即一行）远，而元素
+    `[0,1]` 是相邻的。
 - en: When transposing a tensor, PyTorch doesn’t modify the layout in memory but simply
     recomputes the strides. In order to make the transpose effective from a memory
     standpoint we need to call `Y.T.contiguous()`.
   id: totrans-49
   prefs: []
   type: TYPE_NORMAL
+  zh: 当转置张量时，PyTorch 不会修改内存中的布局，而是简单地重新计算步长。为了从内存的角度使转置有效，我们需要调用 `Y.T.contiguous()`。
 - en: 'These are the required steps the load columns of `Y` efficiently, however we’ll
     need to transpose the loaded blocks within the kernel to perform the dot product
     properly: `z_block = tl.dot(X_block, Y_block.T)`.'
   id: totrans-50
   prefs: []
   type: TYPE_NORMAL
+  zh: 这些是高效加载 `Y` 的列所需的步骤，然而我们还需要在内核中转置加载的块以正确执行点积：`z_block = tl.dot(X_block, Y_block.T)`。
 - en: '![](../Images/4138d2ccc9106c3b087165df158ffa9d.png)'
   id: totrans-51
   prefs: []
   type: TYPE_IMG
+  zh: '![图片](../Images/4138d2ccc9106c3b087165df158ffa9d.png)'
 - en: Representation of Y, Y.T and Y.T.contiguous() in their block representation
     and memory layout. The transpose operation changes the behaviour of the matrix
     but doesn’t modify its memory layout. This is why we need to add .contiguous()
@@ -335,17 +399,21 @@
   id: totrans-52
   prefs: []
   type: TYPE_NORMAL
+  zh: Y、Y.T 和 Y.T.contiguous() 在其块表示和内存布局中的表示。转置操作改变了矩阵的行为，但没有修改其内存布局。这就是为什么我们需要添加
+    `.contiguous()` 来启用对行的归约读取。
 - en: Triton Implementation
   id: totrans-53
   prefs:
   - PREF_H3
   type: TYPE_NORMAL
+  zh: Triton 实现方法
 - en: From here on, we first describe the kernel without memory coalescing to simplify
     the logic and pointer arithmetic before summarising the changes required to make
     the load operations coalesced on `Y` columns.
   id: totrans-54
   prefs: []
   type: TYPE_NORMAL
+  zh: 从这里开始，我们首先描述没有内存合并的内核，以简化逻辑和指针运算，然后再总结在 `Y` 列上使加载操作合并所需的变化。
 - en: Let’s start by focusing on the PyTorch wrapper around the kernel. We need to
     read `M, N, K` from the input matrices and compute their strides since these constants
     will be useful later in the kernel. Then, we define the `BLOCK_SIZE` and declare
@@ -353,6 +421,8 @@
   id: totrans-55
   prefs: []
   type: TYPE_NORMAL
+  zh: 让我们从关注内核周围的 PyTorch 包装器开始。我们需要从输入矩阵中读取 `M, N, K` 并计算它们的步长，因为这些常数将在内核的后续部分很有用。然后，我们定义
+    `BLOCK_SIZE` 并声明 `grid`。
 - en: Now let’s dive into the actual kernel code. We’re going to make use of Triton’s
     `make_block_ptr` utility, which simplifies the pointer arithmetic. We create one
     block pointer per matrix and pass the matrix shape, its strides, and the size
@@ -363,6 +433,8 @@
   id: totrans-56
   prefs: []
   type: TYPE_NORMAL
+  zh: 现在让我们深入实际的内核代码。我们将使用 Triton 的 `make_block_ptr` 工具，它简化了指针运算。我们为每个矩阵创建一个块指针，并将矩阵形状、其步长和块的大小作为输入。此外，我们指定偏移量，即当前块中左上角元素的坐标。对于
+    `X`，这对应于 `(m_idx * BLOCK_SIZE, 0)`，其中 `m_idx` 是当前块在 `M` 维度上的索引。
 - en: From there, we define `z_acc`, a zero matrix that will receive the partial dot-products
     as we iterate through tiles. We now iterate through the shared dimension `N`,
     loading blocks of size `(BLOCK_SIZE, BLOCK_SIZE)`, and accumulate their dot products
@@ -370,6 +442,8 @@
   id: totrans-57
   prefs: []
   type: TYPE_NORMAL
+  zh: 从那里，我们定义了一个 `z_acc`，一个零矩阵，它将接收我们在遍历瓦片时计算的局部点积。我们现在遍历共享维度 `N`，加载大小为 `(BLOCK_SIZE,
+    BLOCK_SIZE)` 的块，并将它们的点积累加到 `z_acc` 中。然后，我们使用 `.advance` 沿着共享维度移动块指针。
 - en: You might have noticed that when loading data, we use `boundary_check` and `padding_option`
     instead of `mask` and `other` as in the previous article. These arguments are
     specific to the use of block pointers and specify which axes to check for out-of-bound
@@ -378,11 +452,14 @@
   id: totrans-58
   prefs: []
   type: TYPE_NORMAL
+  zh: 你可能已经注意到，在加载数据时，我们使用 `boundary_check` 和 `padding_option` 而不是像前一篇文章中那样使用 `mask`
+    和 `other`。这些参数特定于块指针的使用，并指定了哪些轴需要检查越界操作（这里为 x 和 y 的 `(0,1)`）以及如何处理这些无效值。在这里，我们将它们设置为零，以便在点积中忽略。
 - en: 'We can now take a look at the performance of this kernel by using the following
     function:'
   id: totrans-59
   prefs: []
   type: TYPE_NORMAL
+  zh: 我们现在可以使用以下函数查看这个内核的性能：
 - en: '[PRE0]'
   id: totrans-60
   prefs: []
@@ -392,6 +469,7 @@
   id: totrans-61
   prefs: []
   type: TYPE_NORMAL
+  zh: 我们得到了以下输出（使用 Colab 上的 T4 GPU）：
 - en: '[PRE1]'
   id: totrans-62
   prefs: []
@@ -405,6 +483,8 @@
   id: totrans-63
   prefs: []
   type: TYPE_NORMAL
+  zh: 现在，让我们回顾在 `Y` 上进行合并加载所需的变化：我们主要需要在定义 `Y` 的块指针时翻转形状、步长和偏移量。此外，我们更新块指针以沿列维度（之前是行维度）移动。此实现的完整代码可在
+    [GitHub](https://github.com/RPegoud/Triton-Kernels) 上找到。
 - en: '[PRE2]'
   id: totrans-64
   prefs: []
@@ -415,6 +495,7 @@
   id: totrans-65
   prefs: []
   type: TYPE_NORMAL
+  zh: 这里是我们对具有合并加载的 `Y` 的内核的基准测试结果：
 - en: '[PRE3]'
   id: totrans-66
   prefs: []
@@ -425,6 +506,7 @@
   id: totrans-67
   prefs: []
   type: TYPE_NORMAL
+  zh: 令人惊讶的是，这个第二个内核的吞吐量只有第一个的一半，尽管我们提高了加载操作的效率 🤔
 - en: 'A quick inspection using `nsight` (Nvidia’s kernel profiler, more on that in
     a future article) reveals that the transpose operation within the kernel creates
     a “traffic jam”. Specifically, the transpose creates **bank conflicts**, causing
@@ -434,22 +516,28 @@
   id: totrans-68
   prefs: []
   type: TYPE_NORMAL
+  zh: 使用 `nsight`（Nvidia 的内核分析器，更多内容将在未来的文章中介绍）快速检查显示，内核内的转置操作创建了一个“交通堵塞”。具体来说，转置操作产生了**银行冲突**，导致线程大部分时间处于空闲状态。值得注意的是，87.6%
+    的时间中，warp 调度器没有可调度的 warp，因为它们正在等待银行冲突解决。此外，报告还指出：
 - en: ———————– ———– ————–
   id: totrans-69
   prefs: []
   type: TYPE_NORMAL
+  zh: ———————– ———– ————–
 - en: Metric Name Metric Unit Metric Value
   id: totrans-70
   prefs: []
   type: TYPE_NORMAL
+  zh: 指标名称 指标单位 指标值
 - en: ———————– ———– ————–
   id: totrans-71
   prefs: []
   type: TYPE_NORMAL
+  zh: ———————– ———– ————–
 - en: …
   id: totrans-72
   prefs: []
   type: TYPE_NORMAL
+  zh: …
 - en: DRAM Throughput % 8.20
   id: totrans-73
   prefs: []
