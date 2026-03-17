@@ -1,11 +1,15 @@
 - en: 'Learning Triton One Kernel At a Time: Vector Addition'
+  id: totrans-0
   prefs:
   - PREF_H1
   type: TYPE_NORMAL
+  zh: 逐个学习 Triton One 内核：向量加法
 - en: 原文：[https://towardsdatascience.com/learning-triton-one-kernel-at-a-time-vector-addition/](https://towardsdatascience.com/learning-triton-one-kernel-at-a-time-vector-addition/)
+  id: totrans-1
   prefs:
   - PREF_BQ
   type: TYPE_NORMAL
+  zh: 原文：[https://towardsdatascience.com/learning-triton-one-kernel-at-a-time-vector-addition/](https://towardsdatascience.com/learning-triton-one-kernel-at-a-time-vector-addition/)
 - en: <mdspan datatext="el1758910484365" class="mdspan-comment">In the era of billion-parameter
     models</mdspan>, a little optimisation goes a long way. Models like **GPT4** cost
     **more than $100 millions to train**, which makes a **1% efficiency gain** **worth
@@ -13,44 +17,62 @@
     learning models is by writing some of their components **directly on the GPU**.
     Now if you’re anything like me, the simple mention of CUDA kernels is enough to
     send chills down your spine, as they are notoriously complex to write and debug.
+  id: totrans-2
   prefs: []
   type: TYPE_NORMAL
+  zh: <mdspan datatext="el1758910484365" class="mdspan-comment">在亿参数模型的时代，一点优化就能走得很远。像**GPT4**这样的模型**训练成本超过一亿美元**，这使得**1%的效率提升****价值超过一百万美元**。一种强大的优化机器学习模型效率的方法是将它们的一些组件**直接在
+    GPU 上编写**。如果你像我一样，简单的提及 CUDA 内核就足以让人脊背发凉，因为它们是出了名的难以编写和调试。
 - en: Fortunately, **OpenAI** released **Triton** in 2021, a new language and compiler
     abstracting away much of CUDA’s complexity and allowing less experienced practitioners
     to write performant kernels. A notable example is **Unsloth**, an LLM-training
     service that promises **30x faster training** with **60% less memory usage**,
     all thanks to **replacing layers written in PyTorch with Triton kernels**.
+  id: totrans-3
   prefs: []
   type: TYPE_NORMAL
+  zh: 幸运的是，**OpenAI**在 2021 年发布了**Triton**，这是一种新的语言和编译器，它抽象掉了 CUDA 的许多复杂性，并允许经验较少的从业者编写高性能的内核。一个显著的例子是**Unsloth**，一个
+    LLM 训练服务，承诺**30 倍的培训速度**和**60%的内存使用减少**，这一切都归功于**用 Triton 内核替换了用 PyTorch 编写的层**。
 - en: In this tutorial series, we’ll learn the basics of GPU architecture and how
     to implement high-performance Triton kernels! All the code presented in this series
     will be available at [https://github.com/RPegoud/Triton-Kernels](https://github.com/RPegoud/Triton-Kernels).
+  id: totrans-4
   prefs: []
   type: TYPE_NORMAL
+  zh: 在本教程系列中，我们将学习 GPU 架构的基础知识以及如何实现高性能的 Triton 内核！本系列中展示的所有代码都将可在[https://github.com/RPegoud/Triton-Kernels](https://github.com/RPegoud/Triton-Kernels)找到。
 - en: GPU Architecture Basics
+  id: totrans-5
   prefs:
   - PREF_H2
   type: TYPE_NORMAL
+  zh: GPU 架构基础
 - en: In this section, we’ll go through the very basics of (*Nvidia*) GPUs to get
     us started and write our first Triton kernel by the end of this article.
+  id: totrans-6
   prefs: []
   type: TYPE_NORMAL
+  zh: 在本节中，我们将介绍 (*Nvidia*) GPU 的基础知识，以便我们开始，并在本文末尾编写我们的第一个 Triton 内核。
 - en: 'Starting from the smallest software unit, we can describe the hierarchy of
     execution units as follows:'
+  id: totrans-7
   prefs: []
   type: TYPE_NORMAL
+  zh: 从最小的软件单元开始，我们可以描述执行单元的层次结构如下：
 - en: '**Threads**: The smallest **unit of work**, they run the user-defined kernel
     code.'
+  id: totrans-8
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: '**线程**：最小的**工作单元**，它们运行用户定义的内核代码。'
 - en: '**Warps**: The smallest **scheduling unit**, they are always composed of 32
     parallel threads, each with their own instruction address counter and register
     state. Threads in a warp **start together** but are **free to branch** and **execute
     independently**.'
+  id: totrans-9
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: '**Warps**：最小的**调度单元**，它们总是由 32 个并行线程组成，每个线程都有自己的指令地址计数器和寄存器状态。warp 中的线程**同时开始**，但**可以自由分支**和**独立执行**。'
 - en: '**Thread Blocks**: Group of warps, where all threads can **cooperate via shared
     memory** and sync barriers. It is required that thread blocks can execute **independently**
     and in any order, in parallel or sequentially. This independence allows thread
@@ -58,21 +80,29 @@
     programs scale efficiently with the number of cores. We can synchronise the threads
     within a block at specific points in the kernel if needed, for example to synchronise
     memory access.'
+  id: totrans-10
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: '**线程块**：warp 的组，其中所有线程都可以通过共享内存**协作**并同步屏障。要求线程块可以**独立**且按任意顺序执行，以并行或顺序方式。这种独立性允许线程块可以在任何数量的核心上**按任意顺序调度**，这样
+    GPU 程序就可以随着核心数量的增加而高效扩展。如果需要，我们可以在内核的特定点同步块内的线程，例如同步内存访问。'
 - en: '**Streaming Multiprocessor (SM)**: A unit in charge of **executing many warps
     in parallel**, it owns shared memory and an L1 cache (holds the most recent global-memory
     lines that the SM has accessed). An SM has a dedicated **warp scheduler** that
     pull warps from the thread blocks that are ready to run.'
+  id: totrans-11
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: '**流式多处理器 (SM)**：负责**并行执行多个 warps**的单元，它拥有共享内存和一个 L1 缓存（存储 SM 访问过的最新全局内存行）。一个
+    SM 拥有一个专门的**warp 调度器**，从准备运行的线程块中提取 warps。'
 - en: On the hardware side, the smallest unit of work is a **CUDA core**, the physical
     **Arithmetic Logic Uni**t (ALU) which performs **arithmetic operations for a thread**
     (or parts of it).
+  id: totrans-12
   prefs: []
   type: TYPE_NORMAL
+  zh: 在硬件方面，最小的作业单元是**CUDA核心**，物理的**算术逻辑单元（ALU**），它为**线程**（或其部分）执行算术运算。
 - en: To summarise this section with an analogy, we could see **CUDA cores** as **individual
     workers**, while a **warp** is a **squad of 32 workers** given the same instruction
     at once. They may or may not execute this task the same way (branching) and can
@@ -82,69 +112,97 @@
     to get lunch at the same time. A **streaming multiprocessor** is a **factory floor
     with many squads working together and sharing tools and storage**. Finally, the
     **GPU** is a **whole plant**, with many floors.
+  id: totrans-13
   prefs: []
   type: TYPE_NORMAL
+  zh: 用类比来总结本节，我们可以将**CUDA核心**看作**个体工人**，而**warp**是**32个工人组成的队伍**，他们同时接收到相同的指令。他们可能以相同或不同的方式执行这项任务（分支），并且可能在不同的时间点完成它（独立性）。**线程块**由**几个共享相同工作空间的队伍**组成（即有共享内存），工作空间中所有队伍的工人可以同时等待午餐。**流式多处理器**是一个**有许多队伍共同工作并共享工具和存储的工厂车间**。最后，**GPU**是一个**整个工厂**，有许多楼层。
 - en: '![](../Images/92baadcca56423737dd2f7a13cc7a7d6.png)'
+  id: totrans-14
   prefs: []
   type: TYPE_IMG
+  zh: '![图片](../Images/92baadcca56423737dd2f7a13cc7a7d6.png)'
 - en: Hierarchy of an Nvidia GPU architecture. Dotted rectangles represent memory
     blocks (made by author)
+  id: totrans-15
   prefs: []
   type: TYPE_NORMAL
+  zh: 英伟达GPU架构的层次结构。虚线矩形表示内存块（由作者绘制）
 - en: Optimisation Basics
+  id: totrans-16
   prefs:
   - PREF_H2
   type: TYPE_NORMAL
+  zh: 优化基础
 - en: 'When optimising deep learning models, we are juggling with three main components:'
+  id: totrans-17
   prefs: []
   type: TYPE_NORMAL
+  zh: 当优化深度学习模型时，我们正在处理三个主要组件：
 - en: '**Compute**: Time spent by the GPU computing floating point operations (FLOPS).'
+  id: totrans-18
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: '**计算**: GPU执行浮点运算（FLOPS）所花费的时间。'
 - en: '**Memory**: Time spent transferring tensors within a GPU.'
+  id: totrans-19
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: '**内存**: 在GPU内部传输张量所花费的时间。'
 - en: '**Overhead**: All other operations (Python interpreter, PyTorch dispatch, …).'
+  id: totrans-20
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: '**开销**: 所有其他操作（Python解释器、PyTorch调度等）。'
 - en: Keeping those components in mind helps figuring out the right way to resolve
     a bottleneck. For instance, increasing compute (e.g. using a more powerful GPU)
     doesn’t help if most of the time is spent doing memory transfers. Ideally though,
     most of the time should be spent on compute, more precisely on matrix multiplications,
     the precise operation GPUs are optimised for.
+  id: totrans-21
   prefs: []
   type: TYPE_NORMAL
+  zh: 考虑这些组件有助于找到解决瓶颈的正确方法。例如，如果大部分时间都花在内存传输上，那么增加计算（例如使用更强大的GPU）是没有帮助的。理想情况下，大部分时间应该花在计算上，更确切地说是在矩阵乘法上，这是GPU优化的精确操作。
 - en: 'This implies minimising the cost paid to move data around, either from the
     CPU to the GPU (”**data transfer cost**”), from one node to the other (”**network
     cost**”) or from CUDA global memory (**DRAM**, cheap but slow) to CUDA shared
     memory (**SRAM**, expensive but fastest on-device memory). The later is called
     **bandwidth costs** and is going to be our main focus for now. Common strategies
     to reduce bandwidth costs include:'
+  id: totrans-22
   prefs: []
   type: TYPE_NORMAL
+  zh: 这意味着最小化数据传输的成本，无论是从CPU到GPU（“**数据传输成本**”），从一个节点到另一个节点（“**网络成本**”），还是从CUDA全局内存（**DRAM**，便宜但速度慢）到CUDA共享内存（**SRAM**，昂贵但设备上最快的内存）。后者被称为**带宽成本**，目前将是我们的主要关注点。降低带宽成本的常见策略包括：
 - en: '**Reusing** data loaded in shared memory for multiple steps. A prime example
     of this is tiled matrix multiplication, which we’ll cover in a future post.'
+  id: totrans-23
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: '**重用**在共享内存中加载的数据以进行多个步骤。一个典型的例子是分块矩阵乘法，我们将在未来的文章中介绍。'
 - en: '**Fusing** multiple operations in a single kernel (since every kernel launch
     implies moving data from DRAM to SRAM), for instance we can fuse a matrix multiplication
     with an activation function. Generally, **operator fusion** can provide massive
     performance increase since it prevents a lot of global memory reads/writes and
     any two operators present an opportunity for fusion.'
+  id: totrans-24
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: '**融合**单个内核中的多个操作（因为每次内核启动都意味着将数据从DRAM移动到SRAM），例如我们可以将矩阵乘法与激活函数融合。通常，**算子融合**可以提供巨大的性能提升，因为它防止了大量的全局内存读写，并且任何两个操作都提供了一个融合的机会。'
 - en: '![](../Images/0b08ce14c44126525c935679abca1a79.png)'
+  id: totrans-25
   prefs: []
   type: TYPE_IMG
+  zh: '![图片](../Images/0b08ce14c44126525c935679abca1a79.png)'
 - en: Matrix multiplication followed by a ReLU activation without operator fusion.
     (made by author)
+  id: totrans-26
   prefs: []
   type: TYPE_NORMAL
+  zh: 在没有算子融合的情况下，矩阵乘法后跟ReLU激活。 （由作者绘制）
 - en: In this example, we perform a matrix multiplication `x@W` and store the result
     in an intermediate variable `a`. We then apply a `relu` to `a` and store the result
     in a variable `y`. This requires the GPU to read from `x` and `W` in global memory,
@@ -152,166 +210,251 @@
     operator fusion would allow us to halve the amount of reads and writes to global
     memory by performing the matrix multiplication and applying the ReLU in a single
     kernel.
+  id: totrans-27
   prefs: []
   type: TYPE_NORMAL
+  zh: 在这个例子中，我们执行矩阵乘法`x@W`并将结果存储在中间变量`a`中。然后我们对`a`应用`relu`并将结果存储在变量`y`中。这需要GPU从全局内存中的`x`和`W`读取，将结果写入`a`，再次从`a`读取，最后写入`y`。相反，操作融合允许我们在单个内核中执行矩阵乘法和应用ReLU，从而将全局内存的读写次数减半。
 - en: '![](../Images/7a259a5ea5e2b28d4008f20984d1c75a.png)'
+  id: totrans-28
   prefs: []
   type: TYPE_IMG
+  zh: '![](../Images/7a259a5ea5e2b28d4008f20984d1c75a.png)'
 - en: Fused matrix multiplication and ReLU activation. (made by author)
+  id: totrans-29
   prefs: []
   type: TYPE_NORMAL
+  zh: 融合矩阵乘法和ReLU激活。（作者制作）
 - en: Triton
+  id: totrans-30
   prefs:
   - PREF_H2
   type: TYPE_NORMAL
+  zh: Triton
 - en: We’ll now write our first Triton kernel, a simple vector addition. First, let’s
     walk through how this operation is broken down and executed on a GPU.
+  id: totrans-31
   prefs: []
   type: TYPE_NORMAL
+  zh: 现在，我们将编写我们的第一个Triton内核，一个简单的向量加法。首先，让我们了解一下这个操作是如何在GPU上分解和执行的。
 - en: Consider wanting to sum the entries of two vectors `X` and `Y`, each with 7
     elements (`n_elements=7`).
+  id: totrans-32
   prefs: []
   type: TYPE_NORMAL
+  zh: 考虑想要对两个向量`X`和`Y`的条目求和，每个向量有7个元素（`n_elements=7`）。
 - en: 'We’ll instruct the GPU to tackle this problem in chunks of 3 elements at a
     time (`BLOCK_SIZE=3`). Therefore, to cover all 7 elements of the input vectors,
     the GPU will launch 3 parallel “programs”, independent instance of our kernel,
     each with a unique program ID, `pid`:'
+  id: totrans-33
   prefs: []
   type: TYPE_NORMAL
+  zh: 我们将指示GPU以每次3个元素的分块处理这个问题（`BLOCK_SIZE=3`）。因此，为了覆盖输入向量的所有7个元素，GPU将启动3个并行的“程序”，即我们的内核的独立实例，每个实例都有一个唯一的程序ID，`pid`：
 - en: Program 0 is assigned elements `0, 1, 2`.
+  id: totrans-34
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: 程序0分配了元素`0, 1, 2`。
 - en: Program 1 is assigned elements `3, 4, 5`.
+  id: totrans-35
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: 程序1分配了元素`3, 4, 5`。
 - en: Program 2 is assigned element `6`.
+  id: totrans-36
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: 程序2分配了元素`6`。
 - en: Then, these programs will write back the results in a vector `Z` stored in global
     memory.
+  id: totrans-37
   prefs: []
   type: TYPE_NORMAL
+  zh: 然后，这些程序将结果写回到全局内存中存储的向量`Z`。
 - en: An important detail is that a kernel doesn’t receive an entire vector `X`, instead
     it receives a **pointer to the memory address of the first element**, `X[0]`.
     In order to access the actual values of `X`, we need to load them from global
     memory manually.
+  id: totrans-38
   prefs: []
   type: TYPE_NORMAL
+  zh: 一个重要的细节是，内核不会接收整个向量`X`，而是接收指向第一个元素内存地址的**指针**，`X[0]`。为了访问`X`的实际值，我们需要手动从全局内存中加载它们。
 - en: 'We can access the data for each block by using the program ID: `block_start
     = pid * BLOCK_SIZE`. From there, we can get the remaining element addresses for
     that block by computing `offsets = block_start + range(0, BLOCK_SIZE)` and load
     them into memory.'
+  id: totrans-39
   prefs: []
   type: TYPE_NORMAL
+  zh: 我们可以通过程序ID访问每个块的数据：`block_start = pid * BLOCK_SIZE`。从那里，我们可以通过计算`offsets = block_start
+    + range(0, BLOCK_SIZE)`来获取该块的剩余元素地址，并将它们加载到内存中。
 - en: However, remember that program 2 is only assigned element 6, but its offsets
     are `[6, 7, 8]`. To avoid any indexing error, Triton lets us define a **mask**
     to identify valid target elements, here `mask = offsets < n_elements`.
+  id: totrans-40
   prefs: []
   type: TYPE_NORMAL
+  zh: 然而，请记住，程序2只分配了元素6，但其偏移量是`[6, 7, 8]`。为了避免任何索引错误，Triton允许我们定义一个**掩码**来识别有效的目标元素，这里`mask
+    = offsets < n_elements`。
 - en: We can now safely load `X` and `Y` and add them together before writing the
     result back to an output variable `Z` in global memory in a similar way.
+  id: totrans-41
   prefs: []
   type: TYPE_NORMAL
+  zh: 我们现在可以安全地加载`X`和`Y`并将它们相加，然后将结果以类似的方式写回到全局内存中的输出变量`Z`。
 - en: '![](../Images/c892f93cfc84cdc4cbb2970236574764.png)'
+  id: totrans-42
   prefs: []
   type: TYPE_IMG
+  zh: '![](../Images/c892f93cfc84cdc4cbb2970236574764.png)'
 - en: Per-block vector indexing. Slices of X, Y and Z are sent to independent thread
     blocks, each indexed by a unique ID. (Image by author)
+  id: totrans-43
   prefs: []
   type: TYPE_NORMAL
+  zh: 每块向量索引。X、Y和Z的切片被发送到独立的线程块，每个块由一个唯一的ID索引。（图像由作者提供）
 - en: 'Let’s take a closer look at the code, here’s the Triton kernel:'
+  id: totrans-44
   prefs: []
   type: TYPE_NORMAL
+  zh: 让我们更仔细地看看代码，这里是Triton内核：
 - en: '[PRE0]'
+  id: totrans-45
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE0]'
 - en: 'Let’s break down some of the Triton-specific syntax:'
+  id: totrans-46
   prefs: []
   type: TYPE_NORMAL
+  zh: 让我们分解一些Triton特定的语法：
 - en: First, a Triton kernel is always decorated by `<a href="http://twitter.com/triton"
     target="_blank" rel="noreferrer noopener">@triton</a>.jit`.
+  id: totrans-47
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: 首先，一个Triton内核总是由`<a href="http://twitter.com/triton" target="_blank" rel="noreferrer
+    noopener">@triton</a>.jit`装饰。
 - en: Second, some arguments need to be declared as static, meaning that they are
     known at compute-time. This is required for `BLOCK_SIZE` and is achieved by add
     the `tl.constexpr` type annotation. Also note that we do not annotate other variables,
     since they are not proper Python variables.
+  id: totrans-48
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: 第二，一些参数需要声明为静态的，这意味着它们在计算时是已知的。这是对`BLOCK_SIZE`的要求，通过添加`tl.constexpr`类型注解来实现。此外，请注意，我们没有注解其他变量，因为它们不是合适的Python变量。
 - en: We use `tl.program_id` to access the ID of the current block, `tl.arange` behaves
     similarly to Numpy’s `np.arange`.
+  id: totrans-49
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: 我们使用 `tl.program_id` 来访问当前块的ID，`tl.arange` 的行为类似于 Numpy 的 `np.arange`。
 - en: Loading and storing variables is achieved by calling `tl.load` and `tl.store`
     with arrays of pointers. Notice that there is no `return` statement, this role
     is delegated to `tl.store`.
+  id: totrans-50
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: 通过调用 `tl.load` 和 `tl.store` 并传入指针数组来实现变量的加载和存储。请注意，这里没有 `return` 语句，这个角色被委托给了
+    `tl.store`。
 - en: 'To use our kernel, we now need to write a **PyTorch-level wrapper** that provides
     memory pointers and defines a **kernel grid**. Generally, the kernel grid is a
     1D, 2D or 3D tuple containing the **number of thread blocks allocated to the kernel
     along each axis**. In our previous example, we used a 1D grid of 3 thread blocks:
     `grid = (3, )`.'
+  id: totrans-51
   prefs: []
   type: TYPE_NORMAL
+  zh: 要使用我们的内核，我们现在需要编写一个 **PyTorch 级别的包装器**，它提供内存指针并定义一个 **内核网格**。通常，内核网格是一个包含沿着每个轴分配给内核的
+    **线程块数量的 1D、2D 或 3D 元组**。在我们之前的例子中，我们使用了一个包含 3 个线程块的 1D 网格：`grid = (3, )`。
 - en: To handle varying array sizes, we default to `grid = (ceil(n_elements / BLOCK_SIZE),
     )`.
+  id: totrans-52
   prefs: []
   type: TYPE_NORMAL
+  zh: 为了处理不同的数组大小，我们默认使用 `grid = (ceil(n_elements / BLOCK_SIZE), )`。
 - en: '[PRE1]'
+  id: totrans-53
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE1]'
 - en: 'Here are two final notes about the wrapper:'
+  id: totrans-54
   prefs: []
   type: TYPE_NORMAL
+  zh: 关于包装器的最后两点说明：
 - en: You might have noticed that `grid` is defined as a lambda function. This allows
     Triton to compute the number of thread blocks to launch **at launch time**. Therefore,
     we compute the grid size based on the block size which is stored in `meta`, a
     dictionary of compile-time constants that are exposed to the kernel.
+  id: totrans-55
   prefs: []
   type: TYPE_NORMAL
+  zh: 你可能已经注意到 `grid` 被定义为 lambda 函数。这允许 Triton 在启动时计算要启动的线程块数量。因此，我们根据存储在 `meta`
+    中的块大小来计算网格大小，`meta` 是一个包含编译时常数的字典，这些常数被暴露给内核。
 - en: When calling the kernel, the value of `output` will be modified in-place, so
     we don’t need to reassign `output = add_kernel[…]`.
+  id: totrans-56
   prefs: []
   type: TYPE_NORMAL
+  zh: 当调用内核时，`output` 的值将就地修改，因此我们不需要重新分配 `output = add_kernel[…]`。
 - en: 'We can conclude this tutorial by verifying that our kernel works properly:'
+  id: totrans-57
   prefs: []
   type: TYPE_NORMAL
+  zh: 我们可以通过验证内核是否正常工作来结束这个教程：
 - en: '[PRE2]'
+  id: totrans-58
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE2]'
 - en: That’s it for this introduction, in following posts we’ll learn to implement
     more interesting kernels such as tiled matrix multiplication and see how to integrate
     Triton kernels in PyTorch models using `autograd`.
+  id: totrans-59
   prefs: []
   type: TYPE_NORMAL
+  zh: 这就是本次介绍的结束，在接下来的文章中，我们将学习如何实现更有趣的内核，例如分块矩阵乘法，并了解如何使用 `autograd` 将 Triton 内核集成到
+    PyTorch 模型中。
 - en: Until next time! 👋
+  id: totrans-60
   prefs: []
   type: TYPE_NORMAL
+  zh: 下次见！👋
 - en: References and Useful Resources
+  id: totrans-61
   prefs:
   - PREF_H2
   type: TYPE_NORMAL
+  zh: 参考资料
 - en: '[Cost of training GPT4](https://en.wikipedia.org/wiki/GPT-4#:~:text=Sam%20Altman%20stated%20that%20the,51)'
+  id: totrans-62
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: '[训练 GPT4 的成本](https://en.wikipedia.org/wiki/GPT-4#:~:text=Sam%20Altman%20stated%20that%20the,51)'
 - en: '[Unsloth kernels](https://unsloth.ai/introducing)'
+  id: totrans-63
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: '[Unsloth 内核](https://unsloth.ai/introducing)'
 - en: '[Triton tutorial: Vector Addition](https://triton-lang.org/main/getting-started/tutorials/01-vector-add.html#sphx-glr-getting-started-tutorials-01-vector-add-py)'
+  id: totrans-64
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: '[Triton 教程：向量加法](https://triton-lang.org/main/getting-started/tutorials/01-vector-add.html#sphx-glr-getting-started-tutorials-01-vector-add-py)'
 - en: '[Making Deep Learning Go Brrrr From First Principles](https://horace.io/brrr_intro.html)'
+  id: totrans-65
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: '[从第一性原理开始构建深度学习](https://horace.io/brrr_intro.html)'
