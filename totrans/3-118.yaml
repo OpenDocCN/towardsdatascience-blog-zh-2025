@@ -1,11 +1,15 @@
 - en: 'Kernel Case Study: Flash Attention'
+  id: totrans-0
   prefs:
   - PREF_H1
   type: TYPE_NORMAL
+  zh: 内核案例研究：Flash Attention
 - en: 原文：[https://towardsdatascience.com/kernel-case-study-flash-attention/](https://towardsdatascience.com/kernel-case-study-flash-attention/)
+  id: totrans-1
   prefs:
   - PREF_BQ
   type: TYPE_NORMAL
+  zh: 原文：[https://towardsdatascience.com/kernel-case-study-flash-attention/](https://towardsdatascience.com/kernel-case-study-flash-attention/)
 - en: <mdspan datatext="el1743624162175" class="mdspan-comment">The attention</mdspan>
     mechanism is at the core of modern day transformers. But scaling the context window
     of these transformers was a major challenge, and it still is even though we are
@@ -15,64 +19,94 @@
     in both compute and memory requirements). Revisiting Flash Attention lets us understand
     the complexities of optimizing the underlying operations on GPUs and more importantly
     gives us a better grip on thinking what’s next.
+  id: totrans-2
   prefs: []
   type: TYPE_NORMAL
+  zh: <mdspan datatext="el1743624162175" class="mdspan-comment">注意力</mdspan>机制是现代变压器核心。但是，扩展这些变压器的上下文窗口是一个重大挑战，尽管我们现在处于百万个标记+上下文窗口（Qwen
+    2.5 [[1]](https://huggingface.co/Qwen/Qwen2.5-7B-Instruct-1M)）的时代，这仍然是一个挑战。当我们扩展上下文窗口时，这些模型在计算和内存方面都有相当大的复杂性和限制（一个简单的注意力机制在计算和内存需求方面都呈二次增长）。回顾
+    Flash Attention 让我们了解在 GPU 上优化底层操作的复杂性，更重要的是，它让我们更好地思考下一步是什么。
 - en: Let’s quickly revisit a naive attention algorithm to see what’s going on.
+  id: totrans-3
   prefs: []
   type: TYPE_NORMAL
+  zh: 让我们快速回顾一个简单的注意力算法，看看发生了什么。
 - en: '![](../Images/a72e5ef165c456d9115531c9095e3826.png)'
+  id: totrans-4
   prefs: []
   type: TYPE_IMG
+  zh: '![图片](../Images/a72e5ef165c456d9115531c9095e3826.png)'
 - en: Attention Algorithm. Image by Author
+  id: totrans-5
   prefs: []
   type: TYPE_NORMAL
+  zh: 注意力算法。图片由作者提供
 - en: As you can see if we are not being careful then we will end up materializing
     a full NxM attention matrix into the GPU HBM. Meaning the memory requirement will
     go up quadratically to increasing context length.
+  id: totrans-6
   prefs: []
   type: TYPE_NORMAL
+  zh: 如您所见，如果我们不小心，最终会将一个完整的 NxM 注意力矩阵实体化到 GPU HBM 中。这意味着内存需求将随着上下文长度的增加而呈平方增长。
 - en: If you wanna learn more about the GPU memory hierarchy and its differences,
     [my previous post on Triton](https://aarunjith.substack.com/p/simplifying-cuda-kernels-with-triton)
     is a good starting point. This would also be handy as we go along in this post
     when we get to implementing the flash attention kernel in triton. The [flash attention
     paper](https://arxiv.org/pdf/2205.14135) also has some really good introduction
     to this.
+  id: totrans-7
   prefs:
   - PREF_BQ
   type: TYPE_NORMAL
+  zh: 如果你想了解更多关于 GPU 内存层次结构和其差异的信息，[我关于 Triton 的前一篇帖子](https://aarunjith.substack.com/p/simplifying-cuda-kernels-with-triton)是一个很好的起点。这在我们继续本帖并实现
+    triton 中的 flash 注意力内核时也会很有用。[flash 注意力论文](https://arxiv.org/pdf/2205.14135)也对此有一些很好的介绍。
 - en: 'Additionally, when we look at the steps involved in executing this algorithm
     and its pattern of accessing the slow HBM, (which as explained later in the post
     could be a major bottleneck as well) we notice a few things:'
+  id: totrans-8
   prefs: []
   type: TYPE_NORMAL
+  zh: 此外，当我们查看执行此算法涉及的步骤及其访问慢速 HBM 的模式时（如后文所述，这可能是瓶颈之一），我们注意到一些事情：
 - en: We have Q, K and V in the HBM initially
+  id: totrans-9
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: 初始时，HBM 中有 Q、K 和 V
 - en: We need to access Q and K initially from the HBM to compute the dot product
+  id: totrans-10
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: 我们最初需要从 HBM 中访问 Q 和 K 来计算点积
 - en: We write the output scores back to the HBM
+  id: totrans-11
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: 我们将输出分数写回 HBM
 - en: We access it again to execute the softmax, and optionally for Causal attention,
     like in the case of LLMs, we will have to mask this output before the softmax.
     The resulting full attention matrix is written again into the HBM
+  id: totrans-12
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: 我们再次访问它来执行 softmax，并且对于因果注意力，例如在 LLM 的情况下，我们将在 softmax 之前对此输出进行掩码。结果的全注意力矩阵再次写入
+    HBM
 - en: We access the HBM again to execute the final dot product, to get both the attention
     weights and the Value matrix to write the output back to the slow GPU memory
+  id: totrans-13
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: 我们再次访问 HBM 来执行最终的点积，以获取注意力权重和值矩阵，并将输出写回慢速 GPU 内存
 - en: I think you get the point. We could smartly read and write from the HBM to avoid
     redundant operations, to make some potential gains. This is exactly the primary
     motivation for the original Flash Attention algorithm.
+  id: totrans-14
   prefs: []
   type: TYPE_NORMAL
+  zh: 我想你已经明白了。我们可以智能地从 HBM 中读取和写入，以避免冗余操作，从而获得一些潜在的好处。这正是原始 Flash Attention 算法的首要动机。
 - en: Flash Attention initially came out in 2022 [[2]](https://arxiv.org/pdf/2205.14135),
     and then a year later came out with some much needed improvements in 2023 as Flash
     Attention v2 [[3]](https://arxiv.org/pdf/2307.08691) and again in 2024 with additional
@@ -82,8 +116,12 @@
     rather than compute. (In the past, there have been attempts to reduce the computation
     complexity of Attention from [O(N**2) to O(NlogN)](https://arxiv.org/pdf/2001.04451)
     and lower through approximate algorithms)
+  id: totrans-15
   prefs: []
   type: TYPE_NORMAL
+  zh: Flash Attention最初在2022年[[2]](https://arxiv.org/pdf/2205.14135)出现，然后在一年后的2023年发布了Flash
+    Attention v2 [[3]](https://arxiv.org/pdf/2307.08691)，这是急需的改进，然后在2024年又针对Nvidia
+    Hopper和Blackwell GPU进行了额外的改进，作为Flash Attention v3 [[4](https://www.nvidia.com/en-us/data-center/technologies/hopper-architecture/)]。原始的注意力论文指出，注意力操作仍然受限于内存带宽而不是计算能力。（在过去，已经尝试将注意力计算的复杂度从[O(N**2)降低到O(NlogN)](https://arxiv.org/pdf/2001.04451)并通过近似算法进一步降低）
 - en: Flash attention proposed a fused kernel which does all of the above attention
     operations in one go, block-wise, to get the final attention output without ever
     having to realize the full N**2 attention matrix in memory, making the algorithm
@@ -91,23 +129,32 @@
     in the GPU SRAM before invoking the much slower journey across the slower GPU
     memory, making the algorithm performant. All the while providing the exact attention
     output without any approximations.
+  id: totrans-16
   prefs: []
   type: TYPE_NORMAL
+  zh: Flash attention提出了一种融合内核，它一次性、块状地执行所有上述注意力操作，以获得最终的注意力输出，而不需要在内存中实现完整的N**2注意力矩阵，这使得算法显著更快。术语“融合”简单意味着我们在GPU
+    SRAM中组合多个操作，然后再进行较慢的GPU内存之旅，这使得算法性能更佳。同时提供精确的注意力输出，没有任何近似。
 - en: This lecture, from Stanford CS139, demonstrates brilliantly how we can think
     of the impact of a well thought out memory access pattern can have on an algorithm.
     I highly recommend you check this one out if you haven’t already.
+  id: totrans-17
   prefs: []
   type: TYPE_NORMAL
+  zh: 这堂课来自斯坦福CS139，精彩地展示了我们如何思考精心设计的内存访问模式对算法的影响。如果你还没有看过，我强烈推荐你看看这个。
 - en: Before we start diving into flash attention <mdspan datatext="el1743623764484"
     class="mdspan-comment">(it’s getting tedious to type this over and over so let’s
     agree</mdspan> to call it FA, shall we?) in triton there is something else that
     I wanted to get out of the way.
+  id: totrans-18
   prefs: []
   type: TYPE_NORMAL
+  zh: 在triton中，在开始深入研究flash attention <mdspan datatext="el1743623764484" class="mdspan-comment">（反复输入这个名称变得越来越麻烦，所以我们同意</mdspan>称它为FA，怎么样？）之前，还有其他一些事情我想先解决。
 - en: '**Numerical Stability in exponents**'
+  id: totrans-19
   prefs:
   - PREF_H2
   type: TYPE_NORMAL
+  zh: '**指数中的数值稳定性**'
 - en: 'Let’s take the example of FP32 numbers. **float32** (standard 32-bit float)
     uses 1 sign bit, 8 exponent bits, and 23 mantissa bits [[6](https://en.wikipedia.org/wiki/Single-precision_floating-point_format)].
     The largest finite base for the exponent in float32 is 2^(127)≈1.7×10^(38). Which
@@ -118,299 +165,448 @@
     repo. This although is talking about stabilizing KL Divergence calculations in
     the setting of RLHF/RL, the ideas translate exactly to exponents as well. So to
     deal with the softmax situation in attention what we do is the following:'
+  id: totrans-20
   prefs: []
   type: TYPE_NORMAL
+  zh: 以FP32数字为例。**float32**（标准32位浮点数）使用1个符号位，8个指数位和23个尾数位 [[6](https://en.wikipedia.org/wiki/Single-precision_floating-point_format)]。float32中指数的最大有限基数是2^(127)≈1.7×10^(38)。这意味着当我们查看指数时，e^(88)
+    ≈ 1.65×10^(38)，任何接近88的值（尽管实际上会低得多以保持安全）都会使我们陷入麻烦，因为我们很容易溢出。这里有一个由[AllenAI](https://allenai.org/)在他们的[OpenInstruct](https://github.com/allenai/open-instruct)仓库分享的[非常有趣的与OpenAI
+    o1的对话](https://chatgpt.com/share/679d0ed9-8f48-8011-926e-e274b15ae8ae)。虽然这是在讨论RLHF/RL设置中的KL散度计算稳定化，但这些想法在指数方面也完全适用。因此，为了处理注意力中的softmax情况，我们采取以下措施：
 - en: '![](../Images/4d21bb37b95326a18f6e6f9334b525d5.png)'
+  id: totrans-21
   prefs: []
   type: TYPE_IMG
+  zh: '![](../Images/4d21bb37b95326a18f6e6f9334b525d5.png)'
 - en: Softmax with rescaling. Image by Author
+  id: totrans-22
   prefs: []
   type: TYPE_NORMAL
+  zh: 带缩放的Softmax。图片由作者提供
 - en: 'TRICK : Let’s also observe the following, if you do this:'
+  id: totrans-23
   prefs:
   - PREF_BQ
   type: TYPE_NORMAL
+  zh: TRICK：让我们也观察以下情况，如果你这样做：
 - en: '![](../Images/c87bae54cb9cb19202b0f36c7b59f6cf.png)'
+  id: totrans-24
   prefs: []
   type: TYPE_IMG
+  zh: '![](../Images/c87bae54cb9cb19202b0f36c7b59f6cf.png)'
 - en: Rescaling Trick. Image by Author
+  id: totrans-25
   prefs: []
   type: TYPE_NORMAL
+  zh: 缩放技巧。图片由作者提供
 - en: then you can rescale/readjust values without affecting the final softmax value.
     This is really useful when you have an initial estimate for the maximum value,
     but that might change when we encounter a new set of values. I know I know, stay
     with me and let me explain.
+  id: totrans-26
   prefs:
   - PREF_BQ
   type: TYPE_NORMAL
+  zh: 然后，你可以重新调整/读取值，而不会影响最终的 softmax 值。当你有一个最大值的初始估计，但这个值可能会在遇到新的一组值时改变时，这非常有用。我知道我知道，请继续听我解释。
 - en: '**Setting the scene**'
+  id: totrans-27
   prefs: []
   type: TYPE_NORMAL
+  zh: '**设置场景**'
 - en: Let’s take a small detour into matrix multiplication.
+  id: totrans-28
   prefs: []
   type: TYPE_NORMAL
+  zh: 让我们稍微偏离一下矩阵乘法。
 - en: '![](../Images/70f0ea807f836b8ae604e074edc73ab5.png)'
+  id: totrans-29
   prefs: []
   type: TYPE_IMG
+  zh: '![图片](../Images/70f0ea807f836b8ae604e074edc73ab5.png)'
 - en: Blocked Matrix Multiplication. Image by Author
+  id: totrans-30
   prefs: []
   type: TYPE_NORMAL
+  zh: 块矩阵乘法。图片由作者提供
 - en: 'This shows a toy example of a blocked matrix multiplication except we have
     blocks only on the rows of A (green) and columns of B (Orange? Beige?). As you
     can see above the output O1, O2, O3 and O4 are complete (those positions need
     no more calculations). We just need to fill in the remaining columns in the initial
     rows by using the remaining columns of B. Like below:'
+  id: totrans-31
   prefs: []
   type: TYPE_NORMAL
+  zh: 这显示了阻塞矩阵乘法的玩具示例，除了我们在 A（绿色）的行和B（橙色？米色？）的列上只有块。如上图所示，输出 O1、O2、O3 和 O4 是完整的（这些位置不需要更多的计算）。我们只需要使用
+    B 的剩余列填充初始行中的剩余列。如下所示：
 - en: '![](../Images/fb30c0c572a5d25b476a273bb047c380.png)'
+  id: totrans-32
   prefs: []
   type: TYPE_IMG
+  zh: '![图片](../Images/fb30c0c572a5d25b476a273bb047c380.png)'
 - en: Next set of block fill the remaining spaces up. Image by Author
+  id: totrans-33
   prefs: []
   type: TYPE_NORMAL
+  zh: 下一个块填充剩余的空间。图片由作者提供
 - en: So we can fill these places in the output with a block of columns from B and
     a block of rows from A at a time.
+  id: totrans-34
   prefs: []
   type: TYPE_NORMAL
+  zh: 因此，我们可以一次用 B 的一个块列和 A 的一个块行填充输出中的这些位置。
 - en: '**Connecting the dots**'
+  id: totrans-35
   prefs:
   - PREF_H2
   type: TYPE_NORMAL
+  zh: '**连接点**'
 - en: 'When I introduced FA, I said that we never have to compute the full attention
     matrix and store the whole thing. So here’s what we do:'
+  id: totrans-36
   prefs: []
   type: TYPE_NORMAL
+  zh: 当我介绍 FA 时，我说我们永远不需要计算完整的注意力矩阵并存储整个矩阵。所以，我们这样做：
 - en: Compute a block of the attention matrix using a block of rows from Q and a block
     of columns from K. Once you get the partial attention matrix compute a few statistics
     and keep it in the memory.
+  id: totrans-37
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: 使用 Q 的一个块行和 K 的一个块列计算注意力矩阵的一个块。一旦得到部分注意力矩阵，计算一些统计数据并将其保存在内存中。
 - en: '![](../Images/d899632f758102d697450c9bc5c63a3d.png)'
+  id: totrans-38
   prefs: []
   type: TYPE_IMG
+  zh: '![图片](../Images/d899632f758102d697450c9bc5c63a3d.png)'
 - en: Computing block attention scores S_b, and computing the row-wise maximums. Image
     by Author
+  id: totrans-39
   prefs: []
   type: TYPE_NORMAL
+  zh: 计算块注意力得分 S_b，并计算行最大值。图片由作者提供
 - en: 'I have greyed O5 to O12 because we don’t know those values yet, as they need
     to come from the subsequent blocks. We then transform Sb like below:'
+  id: totrans-40
   prefs: []
   type: TYPE_NORMAL
+  zh: 我将 O5 到 O12 变成了灰色，因为我们还不知道这些值，因为它们需要来自后续的块。然后我们像下面这样转换 Sb：
 - en: '![](../Images/b578eb39ae7faf1767757bc7071e79b5.png)'
+  id: totrans-41
   prefs: []
   type: TYPE_IMG
+  zh: '![图片](../Images/b578eb39ae7faf1767757bc7071e79b5.png)'
 - en: Keeping a track of the current row-sum and row-maxes. Image by Author
+  id: totrans-42
   prefs: []
   type: TYPE_NORMAL
+  zh: 跟踪当前行和行最大值。图片由作者提供
 - en: '![](../Images/98737884065e16b5b6a77799503bfebc.png)'
+  id: totrans-43
   prefs: []
   type: TYPE_IMG
+  zh: '![图片](../Images/98737884065e16b5b6a77799503bfebc.png)'
 - en: Exponents with the scaling trick. Image by Author
+  id: totrans-44
   prefs: []
   type: TYPE_NORMAL
+  zh: 使用缩放技巧的指数。图片由作者提供
 - en: Now you have <mdspan datatext="el1743623960664" class="mdspan-comment">the</mdspan>
     setup for a partial softmax
+  id: totrans-45
   prefs: []
   type: TYPE_NORMAL
+  zh: 现在你已经为部分 softmax 设置好了
 - en: '![](../Images/a037c10447f1fc6147cf6176a3fe4a0c.png)'
+  id: totrans-46
   prefs: []
   type: TYPE_IMG
+  zh: '![图片](../Images/a037c10447f1fc6147cf6176a3fe4a0c.png)'
 - en: Partial Softmax, as the denominator is still a partial sum. Image by Author
+  id: totrans-47
   prefs: []
   type: TYPE_NORMAL
+  zh: 部分softmax，因为分母仍然是一个部分总和。图片由作者提供
 - en: '**But:**'
+  id: totrans-48
   prefs: []
   type: TYPE_NORMAL
+  zh: '**但是：**'
 - en: What if the true maximum is in the Oi’s that are yet to come?
+  id: totrans-49
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: 如果真正的最大值在尚未到来的 Oi 中呢？
 - en: The sum is still local, so we need to update this every time we see new Pi’s.
     We know how to keep track of a sum, but what about rebasing it to the true maximum?
+  id: totrans-50
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: 总和仍然是局部的，所以每次我们看到新的 Pi 时，我们都需要更新这个总和。我们知道如何跟踪总和，但关于将其重新基准到真正的最大值怎么办？
 - en: Recall the trick above. All that we have to do is to keep a track of the maximum
     values we encounter for each row, and iteratively update as you see new maximums
     from the remaining blocks of columns from K for the same set of rows from Q.
+  id: totrans-51
   prefs: []
   type: TYPE_NORMAL
+  zh: 回想一下上面的技巧。我们必须要做的是跟踪每一行遇到的最大的值，并且随着从 Q 的同一组行中看到新的最大值，从 K 的剩余块中迭代更新。
 - en: '![](../Images/b96ddf9bd6e723060e3417b9a2906aae.png)'
+  id: totrans-52
   prefs: []
   type: TYPE_IMG
+  zh: '![图片](../Images/b96ddf9bd6e723060e3417b9a2906aae.png)'
 - en: Two consecutive blocks and its row max manipulations. Image by Author
+  id: totrans-53
   prefs: []
   type: TYPE_NORMAL
+  zh: 两个连续块及其行最大值操作。图片由作者提供
 - en: '![](../Images/9b5a9f523f6fb30bc3eabee16076fdc0.png)'
+  id: totrans-54
   prefs: []
   type: TYPE_IMG
+  zh: '![图片](../Images/9b5a9f523f6fb30bc3eabee16076fdc0.png)'
 - en: Updating the estimate of our current sum with rescaling
+  id: totrans-55
   prefs: []
   type: TYPE_NORMAL
+  zh: 使用缩放更新我们当前总和的估计
 - en: We still do not want to write our partial softmax matrix into HBM. We keep it
     for the next step.
+  id: totrans-56
   prefs: []
   type: TYPE_NORMAL
+  zh: 我们仍然不想将我们的部分 softmax 矩阵写入 HBM。我们将其保留到下一步。
 - en: '**The final dot product**'
+  id: totrans-57
   prefs:
   - PREF_H2
   type: TYPE_NORMAL
+  zh: '**最终的点积**'
 - en: The last step in our attention computation is our dot product with V. To start
     we would have initialized a matrix full of 0’s in our HBM as our output of shape
     NxD. Where N is the number of Queries as above. We use the same block size for
     V as we had for K except we can apply it row wise like below (The subscripts just
     denote that this is only a block and not the full matrix)
+  id: totrans-58
   prefs: []
   type: TYPE_NORMAL
+  zh: 我们注意力计算的最后一步是与V的点积。首先，我们会在HBM中初始化一个全0的矩阵作为我们的输出，其形状为NxD。其中N是查询的数量，如上所述。我们使用与K相同的块大小来初始化V，但我们可以像下面这样按行应用它（下标只是表示这只是一个块，而不是整个矩阵）
 - en: '![](../Images/8f179a470ac59bcd89e545008f3483bf.png)'
+  id: totrans-59
   prefs: []
   type: TYPE_IMG
+  zh: '![图片](../Images/8f179a470ac59bcd89e545008f3483bf.png)'
 - en: A single block of attention scores creating a partial output. Image by Author
+  id: totrans-60
   prefs: []
   type: TYPE_NORMAL
+  zh: 创建一个注意力得分块，生成部分输出。图源：作者
 - en: '![](../Images/6f32ec251f17f2a57d73c7ec967f1df0.png)'
+  id: totrans-61
   prefs: []
   type: TYPE_IMG
+  zh: '![图片](../Images/6f32ec251f17f2a57d73c7ec967f1df0.png)'
 - en: Whereas the full output would require the sum of all these dot products. Some
     of which will be filled in by the blocks to come. Image by Author
+  id: totrans-62
   prefs: []
   type: TYPE_NORMAL
+  zh: 而完整的输出将需要所有这些点积的总和。其中一些将由后续的块填充。图源：作者
 - en: Notice how we need the attention scores from all the blocks to get the final
     product. But if we calculate the local score and `accumulate` it like how we did
     to get the actual Ls we can form the full output at the end of processing all
     the blocks of columns (K[b]) for a given row block (Q[b]).
+  id: totrans-63
   prefs: []
   type: TYPE_NORMAL
+  zh: 注意我们如何需要所有块的关注度得分来获取最终产品。但如果我们像计算实际的Ls那样计算局部得分并`累积`它，我们可以在处理完给定行块（Q[b]）的所有列块（K[b]）后形成完整的输出。
 - en: '**Putting it all together**'
+  id: totrans-64
   prefs:
   - PREF_H2
   type: TYPE_NORMAL
+  zh: '**整合所有内容**'
 - en: Let’s put all these ideas together to form the final algorithm
+  id: totrans-65
   prefs: []
   type: TYPE_NORMAL
+  zh: 让我们把所有这些想法放在一起，形成最终的算法
 - en: '![](../Images/4dce451b6c0cceffa3c1ddad983a88e0.png)'
+  id: totrans-66
   prefs: []
   type: TYPE_IMG
+  zh: '![图片](../Images/4dce451b6c0cceffa3c1ddad983a88e0.png)'
 - en: 'Flash Attention V1 Algorithm. Source: *Tri Dao et.al [[2](https://arxiv.org/pdf/2211.17192)]*'
+  id: totrans-67
   prefs: []
   type: TYPE_NORMAL
+  zh: Flash Attention V1算法。来源：*Tri Dao等人 [[2](https://arxiv.org/pdf/2211.17192)]*
 - en: To understand the notation, _[ij] implies that it is the local values for a
     given block of columns and rows and _i implies it’s for the global output rows
     and Query blocks. The only part we haven’t explained so far is the final update
     to O[i]. That’s where we use all the ideas from above to get the right scaling.
+  id: totrans-68
   prefs: []
   type: TYPE_NORMAL
+  zh: 为了理解这个符号，_[ij]表示它是给定列和行块的局部值，而_i表示它是全局输出行和查询块。我们还没有解释的部分是O[i]的最终更新。这就是我们使用上面所有想法来获取正确缩放的地方。
 - en: The whole code is available [as a gist here](https://gist.github.com/aarunjith/adba4c4f67f9392d6e5789f7e92858b0).
+  id: totrans-69
   prefs:
   - PREF_BQ
   type: TYPE_NORMAL
+  zh: 整个代码可以在[这里](https://gist.github.com/aarunjith/adba4c4f67f9392d6e5789f7e92858b0)找到。
 - en: 'Let’s see what these initializations look like in torch:'
+  id: totrans-70
   prefs: []
   type: TYPE_NORMAL
+  zh: 让我们看看这些初始化在torch中是什么样的：
 - en: '[PRE0]'
+  id: totrans-71
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE0]'
 - en: If you are unsure about the launch grid, checkout [my introduction to Triton](https://substack.com/home/post/p-159116483)
+  id: totrans-72
   prefs:
   - PREF_BQ
   type: TYPE_NORMAL
+  zh: 如果你不确定启动网格，请查看[我的Triton介绍](https://substack.com/home/post/p-159116483)
 - en: Take a closer look at how we initialized our Ls and Ms. We are keeping one for
     each row block of Output/Query, each of size B[r]. There are N[r] such blocks
     in total.
+  id: totrans-73
   prefs: []
   type: TYPE_NORMAL
+  zh: 仔细看看我们如何初始化Ls和Ms。我们为每个输出/查询的行块保留一个，每个大小为B[r]。总共有N[r]个这样的块。
 - en: 'In the example above I was simply using B[r] = 2 and B[c] = 2\. But in the
     above code the initialization is based on the device capacity. I have included
     the calculation for a T4 GPU. For any other GPU, we need to get the SRAM capacity
     and adjust these numbers accordingly. Now for the actual kernel implementation:'
+  id: totrans-74
   prefs: []
   type: TYPE_NORMAL
+  zh: 在上面的例子中，我简单地使用了B[r] = 2和B[c] = 2。但在上面的代码中，初始化是基于设备容量的。我包括了针对T4 GPU的计算。对于任何其他GPU，我们需要获取SRAM容量并相应地调整这些数字。现在，对于实际的内核实现：
 - en: '[PRE1]'
+  id: totrans-75
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE1]'
 - en: 'Let’s understand whats happening here:'
+  id: totrans-76
   prefs: []
   type: TYPE_NORMAL
+  zh: 让我们理解这里发生了什么：
 - en: Create 1 kernel for each NxD matrix in the batch. In reality we would have one
     more dimension to parallelize across, the head dimension. But for understanding
     the implementation I think this would suffice.
+  id: totrans-77
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: 为批处理中的每个NxD矩阵创建一个内核。实际上，我们还会有一个额外的维度来并行化，即头维度。但为了理解实现，我认为这已经足够了。
 - en: 'In each kernel we do the following:'
+  id: totrans-78
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: 在每个内核中，我们执行以下操作：
 - en: For each block of columns in K and V we load up the relevant part of the matrix
     (B[c] x D) into the GPU SRAM (Current total SRAM usage = 2B[c]D). This stays in
     the SRAM till we are done with all the row blocks
+  id: totrans-79
   prefs:
   - PREF_IND
   - PREF_OL
   type: TYPE_NORMAL
+  zh: 对于K和V中的每一列块，我们将矩阵的相关部分（B[c] x D）加载到GPU SRAM中（当前总SRAM使用量 = 2B[c]D）。这部分将保留在SRAM中，直到我们处理完所有行块。
 - en: For each row block of Q, we load the block onto SRAM as well (Current total
     SRAM Usage = 2B[c]D + BrD)
+  id: totrans-80
   prefs:
   - PREF_IND
   - PREF_OL
   type: TYPE_NORMAL
+  zh: 对于Q的每一行块，我们也将该块加载到SRAM中（当前总SRAM使用量 = 2B[c]D + BrD）
 - en: On chip we compute the dot product (s[ij]), compute the local row-maxes (m[ij]),
     the exp (p[ij]), and the expsum (l[ij])
+  id: totrans-81
   prefs:
   - PREF_IND
   - PREF_OL
   type: TYPE_NORMAL
+  zh: 在芯片上，我们计算点积（s[ij]），计算局部行最大值（m[ij]），指数（p[ij]）和指数和（l[ij]）
 - en: 'We load up the running stats for the i^(th) row block. Two vectors of size
     B[r] x 1, which denotes the current global row-maxes (m[i]) and the expsum (l[i]).
     (Current SRAM usage: 2B[c]D + B[r]D + 2B[r])'
+  id: totrans-82
   prefs:
   - PREF_IND
   - PREF_OL
   type: TYPE_NORMAL
+  zh: 我们加载第 i 行块的运行统计。两个大小为 B[r] x 1 的向量，表示当前的全球行最大值（m[i]）和指数和（l[i]）。（当前 SRAM 使用：2B[c]D
+    + B[r]D + 2B[r]）
 - en: We get the new estimates for the global m[i] and l[i].
+  id: totrans-83
   prefs:
   - PREF_IND
   - PREF_OL
   type: TYPE_NORMAL
+  zh: 我们得到了全局 m[i] 和 l[i] 的新估计。
 - en: 'We load the part of the output for this block of Q and update it using the
     new running stats and the exponent trick, we then write this back into the HBM.
     (Current SRAM usage: 2B[c]D + 2B[r]D + 2B[r])'
+  id: totrans-84
   prefs:
   - PREF_IND
   - PREF_OL
   type: TYPE_NORMAL
+  zh: 我们加载这个 Q 块的输出部分，并使用新的运行统计和指数技巧进行更新，然后将它写回 HBM。（当前 SRAM 使用：2B[c]D + 2B[r]D +
+    2B[r]）
 - en: We write the updated running stats also into the HBM.
+  id: totrans-85
   prefs:
   - PREF_IND
   - PREF_OL
   type: TYPE_NORMAL
+  zh: 我们也将更新的运行统计写入 HBM。
 - en: For a matrix of any size, aka any context length, at a time we will never materialize
     the full attention matrix, only a part of it always.
+  id: totrans-86
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: 对于任何大小的矩阵，即任何上下文长度，我们一次永远不会实例化完整的注意力矩阵，而只是其中的一部分。
 - en: We managed to fuse together all the ops into a single kernel, reducing HBM access
     considerably.
+  id: totrans-87
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: 我们成功地将所有操作融合到一个单独的内核中，大大减少了 HBM 访问。
 - en: Final SRAM usage stands although at 4BD + 2B, where B was initially calculated
     as M/4d where M is the SRAM capacity. Not sure if am missing something here. Please
     comment if you know why this is the case!
+  id: totrans-88
   prefs: []
   type: TYPE_NORMAL
+  zh: 最终 SRAM 使用量仍然是 4BD + 2B，其中 B 初始计算为 M/4d，M 是 SRAM 容量。不确定是否遗漏了什么。如果您知道为什么是这样，请评论！
 - en: '**Block Sparse Attention and V2 and V3**'
+  id: totrans-89
   prefs:
   - PREF_H2
   type: TYPE_NORMAL
+  zh: '**块稀疏注意力 V2 和 V3**'
 - en: I will keep this short as these versions keep the core idea but figured out
     better and better ways to do the same.
+  id: totrans-90
   prefs: []
   type: TYPE_NORMAL
+  zh: 我会尽量简短，因为这些版本保持了核心思想，但找到了更好的方法来做同样的事情。
 - en: For Block Sparse Attention,
+  id: totrans-91
   prefs: []
   type: TYPE_NORMAL
+  zh: 对于块稀疏注意力，
 - en: Consider we had masks for each block like in the case of causal attention. If
     for a given block we have the masks all set to zero then we can simply skip the
     entire block without computing anything really. Saving FLOPs. This is where the
@@ -418,29 +614,43 @@
     the algorithm gets a 15% boost over the best performing training setup at the
     time, whereas for GPT-2 we get a 3x over huggingface training implementation and
     ~ 2x over a Megatron setup.
+  id: totrans-92
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: 考虑到我们为每个块有掩码，就像因果注意力的情况一样。如果对于给定的块，掩码全部设置为零，那么我们可以简单地跳过整个块，实际上什么都不计算。节省 FLOPs。这是主要收益的地方。为了将这一点放在正确的背景下，在
+    BERT 预训练的情况下，算法在当时表现最好的训练设置上提高了 15%，而对于 GPT-2，我们获得了 hugo face 训练实现的 3 倍，以及 Megatron
+    设置的 2 倍左右。
 - en: '![](../Images/0fc075a8241a05dce9513fe087a86d89.png)'
+  id: totrans-93
   prefs: []
   type: TYPE_IMG
+  zh: '![图片](../Images/0fc075a8241a05dce9513fe087a86d89.png)'
 - en: 'Performance gain for autoregressive models, where we have a sparse mask. Source:
     *Tri Dao et.al [[2](https://arxiv.org/pdf/2211.17192)]*'
+  id: totrans-94
   prefs: []
   type: TYPE_NORMAL
+  zh: 自回归模型的性能提升，其中我们有一个稀疏掩码。来源：*Tri Dao 等人 [[2](https://arxiv.org/pdf/2211.17192)]*
 - en: 2\. You can literally get the same performance in GPT2 in a fraction of the
     time, literally shaving off days from the training run, which is awesome!
+  id: totrans-95
   prefs: []
   type: TYPE_NORMAL
+  zh: 2. 您实际上可以在 GPT2 中以极短的时间获得相同的表现，实际上可以从训练运行中削减几天，这真是太棒了！
 - en: 'In V2:'
+  id: totrans-96
   prefs: []
   type: TYPE_NORMAL
+  zh: 在 V2 中：
 - en: 'Notice how currently we can only do parallelization at the batch and head dimension.
     But if you simply just flip the order to look at all the column blocks for a given
     row block then we get the following advantages:'
+  id: totrans-97
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: 注意，目前我们只能在批量和头维度上进行并行化。但如果你只是翻转顺序来查看给定行块的列块，那么我们会得到以下优势：
 - en: Each row block becomes embarrassingly parallel. How you know this is by looking
     at the illustrations above. You need all the column blocks for a given row block
     to fully form the attention output. If you were to run all the column blocks in
@@ -448,65 +658,90 @@
     rows of the output at the same time. But not if you do it the other way around.
     Although there are atomic add operators in triton which could help, they may potentially
     set us back.
+  id: totrans-98
   prefs:
   - PREF_IND
   - PREF_OL
   type: TYPE_NORMAL
+  zh: 每个行块都变得非常并行。您可以通过查看上面的插图来了解这一点。您需要所有列块来完全形成给定行块的注意力输出。如果您并行运行所有列块，您将遇到尝试同时更新输出相同行的竞争条件。但如果是反过来，就不会这样。尽管
+    triton 中有原子加法运算符可以帮助，但它们可能潜在地让我们退步。
 - en: We can avoid hitting the HBM to get the global Ms and Ls. We can initialize
     one on the chip for each kernel.
+  id: totrans-99
   prefs:
   - PREF_IND
   - PREF_OL
   type: TYPE_NORMAL
+  zh: 我们可以避免访问 HBM 来获取全局 Ms 和 Ls。我们可以为每个内核在芯片上初始化一个。
 - en: Also we do not have to scale all the output update terms with the new estimate
     of L. We can just compute stuff without dividing by L and at the end of all the
     column blocks, simply divide the output with the latest estimate of L, saving
     some FLOPS again!
+  id: totrans-100
   prefs:
   - PREF_IND
   - PREF_OL
   type: TYPE_NORMAL
+  zh: 此外，我们不必将所有输出更新项与新估计的 L 进行缩放。我们只需计算而不除以 L，在所有列块结束时，只需用最新的 L 估计值除以输出，再次节省一些 FLOPs！
 - en: Much of the improvement also comes in the form of the backward kernel. I am
     omitting all the backward kernels from this. But they are a fun exercise to try
     and implement, although they are significantly more complex.
+  id: totrans-101
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: 大部分改进也来自于反向内核。我在这里省略了所有的反向内核。但它们是尝试实现的一个有趣练习，尽管它们要复杂得多。
 - en: 'Here are some benchmarks:'
+  id: totrans-102
   prefs: []
   type: TYPE_NORMAL
+  zh: 这里有一些基准测试：
 - en: '[![](../Images/7aa6fa297ad74c00203922e08431dacd.png)](https://substackcdn.com/image/fetch/f_auto,q_auto:good,fl_progressive:steep/https%3A%2F%2Fsubstack-post-media.s3.amazonaws.com%2Fpublic%2Fimages%2Ff4fe5982-f319-4aaf-891f-da96490a1b8a_1788x1366.png)'
+  id: totrans-103
   prefs: []
   type: TYPE_NORMAL
+  zh: '![图片](../Images/7aa6fa297ad74c00203922e08431dacd.png)(https://substackcdn.com/image/fetch/f_auto,q_auto:good,fl_progressive:steep/https%3A%2F%2Fsubstack-post-media.s3.amazonaws.com%2Fpublic%2Fimages%2Ff4fe5982-f319-4aaf-891f-da96490a1b8a_1788x1366.png)'
 - en: 'Performance benchmark of FA v2 against existing attention algorithms. Source:
     **Tri Dao et.al [[3](https://arxiv.org/pdf/2307.08691)]**'
+  id: totrans-104
   prefs: []
   type: TYPE_NORMAL
+  zh: FA v2 与现有注意力算法的性能基准。来源：**Tri Dao 等人 [[3](https://arxiv.org/pdf/2307.08691)]**
 - en: The actual implementations of these kernels need to take into account various
     nuances that we encounter in the real world. I have tried to keep it simple. But
     do [check them out here](https://github.com/Dao-AILab/flash-attention/tree/main).
+  id: totrans-105
   prefs: []
   type: TYPE_NORMAL
+  zh: 这些内核的实际实现需要考虑我们在现实世界中遇到的种种细微差别。我尽量保持简单。但你可以在这里[查看它们](https://github.com/Dao-AILab/flash-attention/tree/main)。
 - en: 'More recently in V3:'
+  id: totrans-106
   prefs: []
   type: TYPE_NORMAL
+  zh: 最近在 V3 版本中：
 - en: Newer GPUs, especially the Hopper and Blackwell GPUs, have low precision modes
     (FP8 in Hopper and GP4 in Blackwell), which can double and quadruple the throughput
     for the same power and chip area and more specialized GEMM (General Matrix Multiply)
     kernels, which the previous version of the algorithm fails to capitalize on. This
     is because there are many operations which are non-GEMM, like softmax, which reduces
     the utilization of these specialized GPU kernels.
+  id: totrans-107
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: 新一代 GPU，特别是 Hopper 和 Blackwell GPU，具有低精度模式（Hopper 中的 FP8 和 Blackwell 中的 GP4），这可以在相同的功率和芯片面积下将吞吐量翻倍和四倍，以及更专业的
+    GEMM（通用矩阵乘法）内核，这是算法的前一个版本未能充分利用的。这是因为有许多非 GEMM 操作，如 softmax，这降低了这些专业 GPU 内核的利用率。
 - en: The FA v1 and v2 are essentially synchronous. Recall in the v2 description I
     mentioned that we are limited when column blocks try to write to the same output
     pointers, or when we have to go step by step using the output from the previous
     steps. Well these modern GPUs can make use special instructions to break this
     synchrony.
+  id: totrans-108
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: FA v1 和 v2 实质上是同步的。回想一下，在 v2 的描述中我提到，当列块尝试写入相同的输出指针时，或者当我们必须一步一步地使用前一步的输出时，我们会受到限制。然而，这些现代
+    GPU 可以利用特殊的指令来打破这种同步性。
 - en: We overlap the comparatively low-throughput non-GEMM operations involved in
     softmax, such as floating point multiply-add and exponential, with the asynchronous
     WGMMA instructions for GEMM. As part of this, we rework the FlashAttention-2 algorithm
@@ -514,65 +749,104 @@
     example, in the 2-stage version of our algorithm, while softmax executes on one
     block of the scores matrix, WGMMA executes in the asynchronous proxy to compute
     the next block.
+  id: totrans-109
   prefs:
   - PREF_BQ
   type: TYPE_NORMAL
+  zh: 我们将 softmax 中涉及的低吞吐量非 GEMM 操作，如浮点数乘加和指数运算，与 GEMM 的异步 WGMMA 指令重叠。作为这部分工作的一部分，我们重新设计了
+    FlashAttention-2 算法，以绕过 softmax 和 GEMM 之间的某些顺序依赖关系。例如，在我们的 2 阶段版本中，当 softmax 在分数矩阵的一块上执行时，WGMMA
+    在异步代理中执行，以计算下一块。
 - en: ''
+  id: totrans-110
   prefs:
   - PREF_BQ
   type: TYPE_NORMAL
 - en: Flash Attention v3, Shah et.al
+  id: totrans-111
   prefs:
   - PREF_BQ
   type: TYPE_NORMAL
+  zh: Flash Attention v3，Shah 等人
 - en: They also adapted the algorithm to target these specialized low precision Tensor
     cores on these new devices, significantly increasing the FLOPs.
+  id: totrans-112
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: 他们还调整了算法以针对这些新设备上的专用低精度 Tensor 核，显著提高了 FLOPs。
 - en: 'Some more benchmarks:'
+  id: totrans-113
   prefs: []
   type: TYPE_NORMAL
+  zh: 更多基准测试：
 - en: '[![](../Images/c575a3d7ee3cf067d0a3ca07a3f6f132.png)](https://substackcdn.com/image/fetch/f_auto,q_auto:good,fl_progressive:steep/https%3A%2F%2Fsubstack-post-media.s3.amazonaws.com%2Fpublic%2Fimages%2F12fc597c-0f7a-46c9-b4f3-19a125264caa_1844x760.png)'
+  id: totrans-114
   prefs: []
   type: TYPE_NORMAL
+  zh: '![图片](../Images/c575a3d7ee3cf067d0a3ca07a3f6f132.png)(https://substackcdn.com/image/fetch/f_auto,q_auto:good,fl_progressive:steep/https%3A%2F%2Fsubstack-post-media.s3.amazonaws.com%2Fpublic%2Fimages%2F12fc597c-0f7a-46c9-b4f3-19a125264caa_1844x760.png)'
 - en: 'FA v3 Performance gain over v2\. Source: *Shah et. al [[5](https://arxiv.org/abs/2407.08608)]*'
+  id: totrans-115
   prefs: []
   type: TYPE_NORMAL
+  zh: FA v3 相比 v2 的性能提升。来源：*Shah 等人 [[5](https://arxiv.org/abs/2407.08608)]*
 - en: '**Conclusion**'
+  id: totrans-116
   prefs:
   - PREF_H2
   type: TYPE_NORMAL
+  zh: '**结论**'
 - en: There is much to admire in their work here. The floor for this technical skill
     level often seemed high owing to the low level details. But hopefully tools like
     Triton could change the game and get more people into this! The future is bright.
+  id: totrans-117
   prefs: []
   type: TYPE_NORMAL
+  zh: 在他们的工作中有很多值得称赞的地方。由于细节的低水平，这个技术技能水平的门槛往往很高。但希望像Triton这样的工具能够改变游戏规则，让更多的人参与到这个领域！未来是光明的。
 - en: References
+  id: totrans-118
   prefs:
   - PREF_H2
   type: TYPE_NORMAL
+  zh: 参考文献
 - en: '[1] [Qwen 2.5-7B-Instruct-1M Huggingface Model Page](https://huggingface.co/Qwen/Qwen2.5-7B-Instruct-1M)'
+  id: totrans-119
   prefs: []
   type: TYPE_NORMAL
+  zh: '[1] [Qwen 2.5-7B-Instruct-1M Huggingface 模型页面](https://huggingface.co/Qwen/Qwen2.5-7B-Instruct-1M)'
 - en: '[2] *Tri Dao, Daniel Y. Fu, Stefano Ermon, Atri Rudra, and Christopher* Re,
     *[FlashAttention: Fast and Memory-Efficient Exact Attention with IO-Awareness](https://arxiv.org/pdf/2205.14135)*'
+  id: totrans-120
   prefs: []
   type: TYPE_NORMAL
+  zh: '[2] *Tri Dao, Daniel Y. Fu, Stefano Ermon, Atri Rudra, and Christopher Re,
+    *[FlashAttention: 带有IO感知的快速且内存高效的精确注意力机制](https://arxiv.org/pdf/2205.14135)*'
 - en: '[3] Tri Dao, [*FlashAttention-2:* *Faster Attention with Better Parallelism
     and Work Partitioning*](https://arxiv.org/pdf/2307.08691)'
+  id: totrans-121
   prefs: []
   type: TYPE_NORMAL
+  zh: '[3] Tri Dao, [*FlashAttention-2:* 更快的注意力机制，更好的并行性和工作分区*](https://arxiv.org/pdf/2307.08691)'
 - en: '[4] [NVIDIA Hopper Architecture Page](https://www.nvidia.com/en-us/data-center/technologies/hopper-architecture/)'
+  id: totrans-122
   prefs: []
   type: TYPE_NORMAL
+  zh: '[4] [NVIDIA Hopper 架构页面](https://www.nvidia.com/en-us/data-center/technologies/hopper-architecture/)'
 - en: '[5] [Jay Shah](https://arxiv.org/search/cs?searchtype=author&query=Shah,+J), [Ganesh
     Bikshandi](https://arxiv.org/search/cs?searchtype=author&query=Bikshandi,+G), [Ying
     Zhang](https://arxiv.org/search/cs?searchtype=author&query=Zhang,+Y), [Vijay Thakkar](https://arxiv.org/search/cs?searchtype=author&query=Thakkar,+V), [Pradeep
     Ramani](https://arxiv.org/search/cs?searchtype=author&query=Ramani,+P), [Tri Dao](https://arxiv.org/search/cs?searchtype=author&query=Dao,+T),
     [FlashAttention-3: Fast and Accurate Attention with Asynchrony and Low-precision](https://arxiv.org/abs/2407.08608)'
+  id: totrans-123
   prefs: []
   type: TYPE_NORMAL
+  zh: '[5] [Jay Shah](https://arxiv.org/search/cs?searchtype=author&query=Shah,+J),
+    [Ganesh Bikshandi](https://arxiv.org/search/cs?searchtype=author&query=Bikshandi,+G),
+    [Ying Zhang](https://arxiv.org/search/cs?searchtype=author&query=Zhang,+Y), [Vijay
+    Thakkar](https://arxiv.org/search/cs?searchtype=author&query=Thakkar,+V), [Pradeep
+    Ramani](https://arxiv.org/search/cs?searchtype=author&query=Ramani,+P), [Tri Dao](https://arxiv.org/search/cs?searchtype=author&query=Dao,+T),
+    [FlashAttention-3: 基于异步和低精度的高效且精确的注意力机制](https://arxiv.org/abs/2407.08608)'
 - en: '[6] [Single-precision floating-point format, Wikipedia](https://en.wikipedia.org/wiki/Single-precision_floating-point_format)'
+  id: totrans-124
   prefs: []
   type: TYPE_NORMAL
+  zh: '[6] [单精度浮点格式，维基百科](https://en.wikipedia.org/wiki/Single-precision_floating-point_format)'
