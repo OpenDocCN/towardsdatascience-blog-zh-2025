@@ -3,11 +3,13 @@
   prefs:
   - PREF_H1
   type: TYPE_NORMAL
+  zh: 一次学习 Triton One 内核：Softmax
 - en: 原文：[https://towardsdatascience.com/learning-triton-one-kernel-at-a-time-softmax/](https://towardsdatascience.com/learning-triton-one-kernel-at-a-time-softmax/)
   id: totrans-1
   prefs:
   - PREF_BQ
   type: TYPE_NORMAL
+  zh: 原文：[https://towardsdatascience.com/learning-triton-one-kernel-at-a-time-softmax/](https://towardsdatascience.com/learning-triton-one-kernel-at-a-time-softmax/)
 - en: 'In the [previous article](https://towardsdatascience.com/learning-triton-one-kernel-at-a-time-matrix-multiplication/)
     of this series, <mdspan datatext="el1763757173175" class="mdspan-comment">we covered
     a ubiquitous</mdspan> operation in all fields of computer science: matrix multiplication.
@@ -20,6 +22,8 @@
   id: totrans-2
   prefs: []
   type: TYPE_NORMAL
+  zh: 在本系列的[上一篇文章](https://towardsdatascience.com/learning-triton-one-kernel-at-a-time-matrix-multiplication/)中，我们介绍了计算机科学所有领域普遍存在的操作：矩阵乘法。它在神经网络中用于计算线性层的激活。然而，激活本身很难解释，因为它们的值和统计信息（均值、方差、最小-最大振幅）可以从一层到另一层有很大的变化。这就是我们使用激活函数的原因之一，例如逻辑函数（也称为
+    sigmoid），它将任何实数投影到 `[0; 1]` 范围内。
 - en: The softmax function, also known as the normalised exponential function, is
     a multi-dimensional generalisation of the sigmoid. It converts a vector of raw
     scores (logits) into a **probability distribution** over **M** classes. We can
@@ -29,62 +33,75 @@
   id: totrans-3
   prefs: []
   type: TYPE_NORMAL
+  zh: softmax 函数，也称为归一化指数函数，是 sigmoid 的多维推广。它将原始分数（logits）向量转换为 **M** 个类别的**概率分布**。我们可以将其解释为**加权平均**，它表现为**平滑函数**，并且可以方便地进行**微分**。它是点积注意力、语言建模和多项式逻辑回归的关键组成部分。
 - en: 'In this article, we’ll cover:'
   id: totrans-4
   prefs: []
   type: TYPE_NORMAL
+  zh: 在本文中，我们将涵盖：
 - en: Implementing an efficient softmax kernel in Triton.
   id: totrans-5
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: 在 Triton 中实现高效的 softmax 内核。
 - en: Implementing the backward pass (`autograd`).
   id: totrans-6
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: 实现反向传播（`autograd`）。
 - en: 'Optimisation: cache modifiers and auto-tuning.'
   id: totrans-7
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: 优化：缓存修改器和自动调整。
 - en: If you aren’t familiar with Triton yet, refer to the previous articles!
   id: totrans-8
   prefs: []
   type: TYPE_NORMAL
+  zh: 如果你对 Triton 还不熟悉，请参阅之前的文章！
 - en: '[Learning Triton One Kernel At a Time: Vector Addition](https://towardsdatascience.com/learning-triton-one-kernel-at-a-time-vector-addition/)'
   id: totrans-9
   prefs:
   - PREF_BQ
   type: TYPE_NORMAL
+  zh: '[一次学习 Triton One 内核：向量加法](https://towardsdatascience.com/learning-triton-one-kernel-at-a-time-vector-addition/)'
 - en: '[Learning Triton One Kernel at a Time: Matrix Multiplication](https://towardsdatascience.com/learning-triton-one-kernel-at-a-time-matrix-multiplication/)'
   id: totrans-10
   prefs:
   - PREF_BQ
   type: TYPE_NORMAL
+  zh: '[一次学习 Triton One 内核：矩阵乘法](https://towardsdatascience.com/learning-triton-one-kernel-at-a-time-matrix-multiplication/)'
 - en: '*Disclaimer: all the illustrations and animations are made by the author unless
     specified otherwise.*'
   id: totrans-11
   prefs: []
   type: TYPE_NORMAL
+  zh: '*免责声明：除非另有说明，所有插图和动画均由作者制作*。'
 - en: Definition
   id: totrans-12
   prefs:
   - PREF_H2
   type: TYPE_NORMAL
+  zh: 定义
 - en: 'The softmax is defined as follows:'
   id: totrans-13
   prefs: []
   type: TYPE_NORMAL
+  zh: softmax 的定义如下：
 - en: '![](../Images/e018bda521ca2374827f1e3c1411f5c4.png)'
   id: totrans-14
   prefs: []
   type: TYPE_IMG
+  zh: '![图片](../Images/e018bda521ca2374827f1e3c1411f5c4.png)'
 - en: The normalisation ensures that the vector sums to **1**, so that it can be interpreted
     as a valid probability distribution.
   id: totrans-15
   prefs: []
   type: TYPE_NORMAL
+  zh: 正则化确保向量总和为 **1**，因此它可以被解释为有效的概率分布。
 - en: Note that this formulation of the softmax is highly sensitive to **numerical
     overflow**. Recall that the maximum value a standard **float16** can represent
     is **65 504**, which is roughly **exp(11)**. This means that any input value greater
@@ -93,21 +110,26 @@
   id: totrans-16
   prefs: []
   type: TYPE_NORMAL
+  zh: 注意，这种 softmax 的公式对**数值溢出**非常敏感。回想一下，标准 **float16** 可以表示的最大值是 **65 504**，大约是
+    **exp(11**)。这意味着任何大于 ~11 的输入值都会导致 `exp(z_i)` 超出可表示的范围，从而导致**溢出**。
 - en: A common trick to mitigate this issue is to subtract the maximum value of the
     input vector from every element, such that the new maximum is **0** before exponentiation
     and **1** after.
   id: totrans-17
   prefs: []
   type: TYPE_NORMAL
+  zh: 减少这种问题的常见技巧是从输入向量的每个元素中减去最大值，这样在指数运算之前新最大值是 **0**，在指数运算之后是 **1**。
 - en: '![](../Images/79eeee461ec0386b8909e13335c9165c.png)'
   id: totrans-18
   prefs: []
   type: TYPE_IMG
+  zh: '![图片](../Images/79eeee461ec0386b8909e13335c9165c.png)'
 - en: Naive Implementation
   id: totrans-19
   prefs:
   - PREF_H2
   type: TYPE_NORMAL
+  zh: 天真实现
 - en: As you can see, computing the softmax involves **two reduction operations**,
     a **max** and a **sum**. A naive algorithm require three separate passes over
     the input vector. First to compute the maximum, then the sum, and finally the
@@ -115,35 +137,42 @@
   id: totrans-20
   prefs: []
   type: TYPE_NORMAL
+  zh: 如您所见，计算 softmax 涉及**两个缩减操作**，一个**最大值**和一个**求和**。一个原始算法需要输入向量的三个单独遍历。首先计算最大值，然后求和，最后计算归一化输出。
 - en: 'Here’s what a naive Numpy implementation looks like:'
   id: totrans-21
   prefs: []
   type: TYPE_NORMAL
+  zh: 这里是一个简单的 Numpy 实现示例：
 - en: A recurrent theme in this Triton series is minimising high-latency **global
     memory access**. Our current Numpy implementation requires three separate memory
     reads of the full input vector, which is highly inefficient.
   id: totrans-22
   prefs: []
   type: TYPE_NORMAL
+  zh: 在这个 Triton 系列中，一个反复出现的主题是**最小化高延迟的全局内存访问**。我们当前的 Numpy 实现需要读取完整的输入向量的三个单独的内存读取，这非常低效。
 - en: Online Softmax
   id: totrans-23
   prefs:
   - PREF_H3
   type: TYPE_NORMAL
+  zh: 在线 Softmax
 - en: Fortunately, we can use a clever trick, known as the **online softmax**, to
     fuse the `max` and `sum` steps, reducing the number of memory reads to **2**.
   id: totrans-24
   prefs: []
   type: TYPE_NORMAL
+  zh: 幸运的是，我们可以使用一个称为**在线 softmax**的巧妙技巧来融合 `max` 和 `sum` 步骤，将内存读取次数减少到 **2**。
 - en: First, we define the sum of exponentials recursively. In the following set of
     equalities, `m_i` refers to the maximum over `x` until the ***i***-th index.
   id: totrans-25
   prefs: []
   type: TYPE_NORMAL
+  zh: 首先，我们递归地定义指数的总和。在以下一系列等式中，`m_i` 指的是直到第 ***i*** 个索引的 `x` 的最大值。
 - en: '![](../Images/62ae8f4871407ddd1bffce74b9daf8f8.png)'
   id: totrans-26
   prefs: []
   type: TYPE_IMG
+  zh: '![](../Images/62ae8f4871407ddd1bffce74b9daf8f8.png)'
 - en: This equality allows us to compute the sum of exponentials **iteratively** using
     the maximum value **so far**. We can leverage it to fuse the first and second
     loop in the naive implementation and compute the maximum and sum of exponentials
@@ -151,18 +180,22 @@
   id: totrans-27
   prefs: []
   type: TYPE_NORMAL
+  zh: 这个等式允许我们通过使用到目前为止的最大值**迭代地**计算指数的总和。我们可以利用它来融合原始实现中的第一个和第二个循环，并迭代地计算指数的最大值和总和。
 - en: 'Our algorithm becomes:'
   id: totrans-28
   prefs: []
   type: TYPE_NORMAL
+  zh: 我们算法变为：
 - en: '![](../Images/f9d6f4e6d6aab49d5ec763dd23a1d053.png)'
   id: totrans-29
   prefs: []
   type: TYPE_IMG
+  zh: '![](../Images/f9d6f4e6d6aab49d5ec763dd23a1d053.png)'
 - en: 'This is easily translated to Numpy:'
   id: totrans-30
   prefs: []
   type: TYPE_NORMAL
+  zh: 这可以轻松地转换为 Numpy：
 - en: Now that we understand the main principles behind the softmax, we’ll implement
     it in Triton, starting by the simple, single-block version and building up to
     the online, multi-block formulation. In the end, we want our kernel to behave
@@ -170,6 +203,8 @@
   id: totrans-31
   prefs: []
   type: TYPE_NORMAL
+  zh: 现在我们已经理解了 softmax 的主要原理，我们将在 Triton 中实现它，从简单的单块版本开始，逐步构建到在线多块公式。最终，我们希望我们的内核表现得像
+    PyTorch 模块，并且与 `autograd` 兼容。
 - en: 'Unfortunately, from PyTorch’s point of view, Triton kernels behave like black
     boxes: the operations they perform are not traced by `autograd`. This requires
     us to implement the backward pass ourselves and explicitly specify how gradients
@@ -178,55 +213,67 @@
   id: totrans-32
   prefs: []
   type: TYPE_NORMAL
+  zh: 不幸的是，从 PyTorch 的角度来看，Triton 内核表现得像黑盒：它们执行的操作不会被 `autograd` 跟踪。这要求我们自行实现反向传播并明确指定如何计算梯度。让我们回顾一下我们喜爱的链式法则并推导
+    softmax 梯度。
 - en: Gradient
   id: totrans-33
   prefs:
   - PREF_H2
   type: TYPE_NORMAL
+  zh: 梯度
 - en: 'Since the outputs of the softmax are strictly positive, we can use the **logarithmic
     derivative** to make the derivation of the gradient easier. Here, we take the
     derivative of the **log** of the output and apply the chain rule:'
   id: totrans-34
   prefs: []
   type: TYPE_NORMAL
+  zh: 由于 softmax 的输出严格为正，我们可以使用**对数导数**来简化梯度的推导。在这里，我们对输出的**对数**求导并应用链式法则：
 - en: '![](../Images/aa67a76cb69563e51bbcdf82a5b152ae.png)'
   id: totrans-35
   prefs: []
   type: TYPE_IMG
+  zh: '![](../Images/aa67a76cb69563e51bbcdf82a5b152ae.png)'
 - en: 'From there, we rearrange the terms and follow these steps:'
   id: totrans-36
   prefs: []
   type: TYPE_NORMAL
+  zh: 从那里，我们重新排列项并遵循以下步骤：
 - en: '![](../Images/bf2d8c2c1e1be32884aa76bd40efd495.png)'
   id: totrans-37
   prefs: []
   type: TYPE_IMG
+  zh: '![](../Images/bf2d8c2c1e1be32884aa76bd40efd495.png)'
 - en: 'Now assume that we have some upstream gradient, for example generated by a
     loss function ***L*** (e.g. a cross-entropy loss). We get the following expression
     of the gradient:'
   id: totrans-38
   prefs: []
   type: TYPE_NORMAL
+  zh: 现在假设我们有一些上游梯度，例如由损失函数 ***L***（例如交叉熵损失）生成。我们得到以下梯度的表达式：
 - en: '![](../Images/2ef2ed8d3b2fd6653125065bb2041197.png)'
   id: totrans-39
   prefs: []
   type: TYPE_IMG
+  zh: '![](../Images/2ef2ed8d3b2fd6653125065bb2041197.png)'
 - en: The simplification of the left term in **(9)** is due to the fact that `δ_ij`
     will only be equal to **1** for the ***i***-th element, collapsing the sum over
     **j** to a single term.
   id: totrans-40
   prefs: []
   type: TYPE_NORMAL
+  zh: '**(9)** 中左端项的简化是由于 `δ_ij` 只会在**第 i 个**元素时等于 **1**，从而将 **j** 的求和简化为一个项。'
 - en: Triton Implementation
   id: totrans-41
   prefs:
   - PREF_H2
   type: TYPE_NORMAL
+  zh: Triton 实现
 - en: Single Block Softmax
   id: totrans-42
   prefs:
   - PREF_H3
   type: TYPE_NORMAL
+  zh: 单块 Softmax
 - en: Now that we worked through the derivation of the gradient, we can write the
     forward and backward softmax kernels. First, let’s focus on the PyTorch wrapper
     to understand how the single block implementation works at a high level. Given
@@ -235,17 +282,20 @@
   id: totrans-43
   prefs: []
   type: TYPE_NORMAL
+  zh: 现在我们已经完成了梯度的推导，我们可以编写正向和反向softmax内核。首先，让我们关注PyTorch包装器，以了解单块实现如何在高层上工作。给定一个二维输入张量，正向和反向内核将并行处理所有行。
 - en: For simplicity, we’ll define the `BLOCK_SIZE` to be large enough to handle all
     columns at once. Specifically, we’ll set it as the next power of 2 superior to
     the number of columns, as required by Triton.
   id: totrans-44
   prefs: []
   type: TYPE_NORMAL
+  zh: 为了简化，我们将定义`BLOCK_SIZE`足够大，以便一次处理所有列。具体来说，我们将将其设置为大于列数的下一个2的幂，这是Triton所要求的。
 - en: Then, we’ll define our `grid` to be the number of rows (it could potentially
     also handle a batch dimension).
   id: totrans-45
   prefs: []
   type: TYPE_NORMAL
+  zh: 然后，我们将定义我们的`grid`为行数（它可能还处理批量维度）。
 - en: The PyTorch wrapper for our `SoftmaxSingleBlock` is a class inheriting from
     `torch.autograd.Function` that implements `forward` and `backward`. Both methods
     take a `ctx` argument, which we’ll use to cache the softmax outputs during the
@@ -253,6 +303,7 @@
   id: totrans-46
   prefs: []
   type: TYPE_NORMAL
+  zh: 我们`SoftmaxSingleBlock`的PyTorch包装器是一个从`torch.autograd.Function`继承的类，它实现了`forward`和`backward`方法。这两个方法都接受一个`ctx`参数，我们将使用它来缓存正向传播期间的softmax输出并在反向传播期间重用它们。
 - en: 'Both kernels are pretty straightforward, we start by loading the row inputs
     using the same syntax as in my previous [**vector addition**](https://medium.com/data-science-collective/learning-triton-one-kernel-at-a-time-vector-addition-5f57e9d2f3e1)article.
     Notice that `BLOCK_SIZE` and `num_warps` are computed using a [`calculate_settings`](https://github.com/unslothai/unsloth/blob/fd753fed99ed5f10ef8a9b7139588d9de9ddecfb/unsloth/kernels/utils.py#L43)
@@ -263,6 +314,7 @@
   id: totrans-47
   prefs: []
   type: TYPE_NORMAL
+  zh: 这两个内核都很直接，我们首先使用与我之前文章中相同的语法加载行输入[**向量加法**](https://medium.com/data-science-collective/learning-triton-one-kernel-at-a-time-vector-addition-5f57e9d2f3e1)。注意，`BLOCK_SIZE`和`num_warps`是使用一个`calculate_settings`函数计算的。此函数来自[**Unsloth**](https://unsloth.ai/)库，并在其他内核库（如[**LigerKernel**](https://github.com/linkedin/Liger-Kernel)）中重用，这些内核库的内核与本文中的内核松散相关），它提供了调整这两个变量的启发式方法：
 - en: '[PRE0]'
   id: totrans-48
   prefs: []
@@ -275,6 +327,7 @@
   id: totrans-49
   prefs: []
   type: TYPE_NORMAL
+  zh: 然后，我们实现正向传播的常规softmax和反向传播的方程式**（10**）。与之前的文章相比，这里唯一的创新是使用了缓存修饰符，这些修饰符告诉编译器如何缓存和驱逐数据。目前，我们只关注三个缓存修饰符：
 - en: '**`.ca`** (**Cache at all levels**): Tells the compiler to load the data in
     both L1 and L2 cache, suggesting that it might be reused soon. This modifier should
     be used when the data is small enough to fit into L1 (~128–192KB per SM on an
@@ -283,18 +336,21 @@
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: '**`.ca`**（**所有级别缓存**）：告诉编译器在L1和L2缓存中加载数据，暗示它可能很快会被重用。当数据足够小，可以适合L1（例如，在A100上每个SM大约128-192KB）并且可能会被重复访问时，应使用此修饰符。'
 - en: '**`.cs`** (**Streaming**): Treat data as **streaming**, it will be used once
     and then discarded to free up space in L1.'
   id: totrans-51
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: '**`.cs`**（**流式处理**）：将数据视为**流式处理**，它将被使用一次然后丢弃以释放L1中的空间。'
 - en: '**`.wb`** (**Write-back**): Normal cached write, the data will remain in the
     cache hierarchy, good if the output may be reused.'
   id: totrans-52
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: '**`.wb`**（**写回**）：正常的缓存写入，数据将保留在缓存层次结构中，如果输出可能被重用则很好。'
 - en: In the following kernels, we’ll use the `.ca` modifier for loads since we perform
     multiple operations on the loaded data. For storing, we’ll use `.cs` in the forward
     pass, since the outputs won’t be immediately reused and `.wb` in the backward
@@ -303,11 +359,13 @@
   id: totrans-53
   prefs: []
   type: TYPE_NORMAL
+  zh: 在接下来的内核中，我们将使用`.ca`修饰符进行加载，因为我们将在加载的数据上执行多个操作。对于存储，我们在正向传播中使用`.cs`，因为输出不会立即重用，在反向传播中使用`.wb`，因为在`autograd`的上下文中（即链式法则），梯度输出将被下游内核消耗。
 - en: Multi-Block Softmax
   id: totrans-54
   prefs:
   - PREF_H3
   type: TYPE_NORMAL
+  zh: 多块Softmax
 - en: Now, let’s take a look at the online formulation of the softmax. In this section,
     we implement a multi-block variant of the previous kernel. This version will use
     `BLOCK_SIZE < n_cols`, in other words, we’ll only load a tile with `BLOCK_SIZE`
@@ -316,6 +374,7 @@
   id: totrans-55
   prefs: []
   type: TYPE_NORMAL
+  zh: 现在，让我们看看softmax的在线公式。在本节中，我们实现了之前内核的多块变体。这个版本将使用`BLOCK_SIZE < n_cols`，换句话说，我们每次只加载一个包含`BLOCK_SIZE`个元素的块，类似于我们在[上一教程](https://medium.com/data-science-collective/learning-triton-one-kernel-at-a-time-matrix-multiplication-44851b4146dd)中处理分块GEMM的方式。现在你可能想知道“我们如何选择块大小？”。
 - en: This is a great occasion to introduce Triton’s `autotune` utility. Provided
     with a list of configuration, `autotune` will perform a grid-search to determine
     and cache the best configuration for a specific input shape. This process is repeated
@@ -323,11 +382,13 @@
   id: totrans-56
   prefs: []
   type: TYPE_NORMAL
+  zh: 这是一个介绍Triton的`autotune`实用工具的好机会。提供一组配置列表，`autotune`将执行网格搜索以确定并缓存特定输入形状的最佳配置。每次向内核传递新的输入形状时，此过程都会重复。
 - en: 'Here, we perform a grid search over the block size and number of warps using
     the following utility function:'
   id: totrans-57
   prefs: []
   type: TYPE_NORMAL
+  zh: 在这里，我们使用以下实用函数在块大小和线程数上执行网格搜索：
 - en: '[PRE1]'
   id: totrans-58
   prefs: []
@@ -339,6 +400,7 @@
   id: totrans-59
   prefs: []
   type: TYPE_NORMAL
+  zh: 我们现在可以用`autotune`装饰我们的多块内核，并传递配置列表，`key="n_cols"`表示最佳配置取决于输入的列数。
 - en: The implementation of these kernels is conceptually very close to the online
     softmax we covered before, the main differences is that we iterate over tiles
     (not over single elements like in Numpy), which requires some adjustments. For
@@ -347,21 +409,25 @@
   id: totrans-60
   prefs: []
   type: TYPE_NORMAL
+  zh: 这些内核的实现从概念上非常接近我们之前覆盖的在线softmax，主要区别在于我们遍历块（而不是像Numpy中的单个元素），这需要一些调整。例如，我们在`d`更新中添加了对块的求和，反向内核现在也需要两次迭代。
 - en: '*Note: the PyTorch wrapper is exactly the same except we delete the line where*
     `BLOCK_SIZE` *and* `num_warps` *are declared (since they are picked by* `autotune`*).*'
   id: totrans-61
   prefs: []
   type: TYPE_NORMAL
+  zh: '*注意：PyTorch包装器完全相同，除了我们删除了声明`BLOCK_SIZE`和`num_warps`的行（因为它们由`autotune`选择）。*'
 - en: Testing and Benchmarking
   id: totrans-62
   prefs:
   - PREF_H2
   type: TYPE_NORMAL
+  zh: 测试和基准测试
 - en: 'We can now execute a forward and backward pass with both kernels and ensure
     they match the PyTorch baselines:'
   id: totrans-63
   prefs: []
   type: TYPE_NORMAL
+  zh: 我们现在可以使用以下实用函数执行前向和反向传递，并确保它们与PyTorch基线匹配：
 - en: '[PRE2]'
   id: totrans-64
   prefs: []
@@ -372,6 +438,7 @@
   id: totrans-65
   prefs: []
   type: TYPE_NORMAL
+  zh: 最后，我们使用以下代码片段将我们的实现与PyTorch基线进行基准测试：
 - en: '[PRE3]'
   id: totrans-66
   prefs: []
@@ -382,26 +449,31 @@
   id: totrans-67
   prefs: []
   type: TYPE_NORMAL
+  zh: 好消息！我们的单块内核始终优于PyTorch基线，而多块变体在输入超过6k列时下降：
 - en: '![](../Images/3cd63a97152c0277f299072c6b6dfc0a.png)'
   id: totrans-68
   prefs: []
   type: TYPE_IMG
+  zh: '![图片](../Images/3cd63a97152c0277f299072c6b6dfc0a.png)'
 - en: 'Considering larger inputs, we can make several observations:'
   id: totrans-69
   prefs: []
   type: TYPE_NORMAL
+  zh: 考虑到更大的输入，我们可以得出几个观察结果：
 - en: The multi-block kernel eventually stabilises around 900GB/s of throughput, surpassing
     the PyTorch baseline for inputs with more than 30k columns.
   id: totrans-70
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: 多块内核最终稳定在900GB/s的吞吐量，超过了具有30k列以上输入的PyTorch基线。
 - en: Interestingly, it seems like the multi-block variant will dominate for inputs
     with more than 60k columns.
   id: totrans-71
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: 有趣的是，对于具有60k列以上的输入，多块变体似乎将占主导地位。
 - en: Even though we exceed the maximum block size with the single-block variant,
     the kernel still runs smoothly for some reason. Indeed, Triton automatically manages
     the block size under the hood.
@@ -409,6 +481,7 @@
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: 尽管我们使用单块变体超过了最大块大小，但出于某种原因，内核仍然运行顺畅。确实，Triton在底层自动管理块大小。
 - en: When `n_cols` is larger than the hardware limit, Triton will break down the
     input and iterate over it. However, this seems to be slower than the multi-block
     approach.
@@ -416,6 +489,7 @@
   prefs:
   - PREF_IND
   type: TYPE_NORMAL
+  zh: 当`n_cols`大于硬件限制时，Triton将拆分输入并对其进行迭代。然而，这似乎比多块方法慢。
 - en: To go further, we could combine both approaches in a single kernel that explicitly
     selects the optimal kernel based on the input size. This way, we would benefit
     from the high performance of the single-block kernel for small inputs and the
