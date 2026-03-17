@@ -1,216 +1,324 @@
 - en: Linearizing Llama
+  id: totrans-0
   prefs:
   - PREF_H1
   type: TYPE_NORMAL
+  zh: 线性化Llama
 - en: 原文：[https://towardsdatascience.com/linearizing-llama-ef7266d03050/](https://towardsdatascience.com/linearizing-llama-ef7266d03050/)
+  id: totrans-1
   prefs:
   - PREF_BQ
   type: TYPE_NORMAL
+  zh: 原文：[https://towardsdatascience.com/linearizing-llama-ef7266d03050/](https://towardsdatascience.com/linearizing-llama-ef7266d03050/)
 - en: '![Source: Image by Author (Generated using Gemini 1.5 Flash)](../Images/5364775bfe8c4f74322dfe039d345582.png)'
+  id: totrans-2
   prefs: []
   type: TYPE_IMG
+  zh: '![来源：作者图片（使用Gemini 1.5 Flash生成）](../Images/5364775bfe8c4f74322dfe039d345582.png)'
 - en: 'Source: Image by Author (Generated using Gemini 1.5 Flash)'
+  id: totrans-3
   prefs: []
   type: TYPE_NORMAL
+  zh: 来源：作者图片（使用Gemini 1.5 Flash生成）
 - en: In this article, we will see how to replace softmax self-attention in Llama-3.2-1B
     with hybrid attention combining softmax sliding window and linear attention. This
     implementation will help us better understand the growing interest in linear attention
     research, while also examining its limitations and potential future directions.
+  id: totrans-4
   prefs: []
   type: TYPE_NORMAL
+  zh: 在本文中，我们将探讨如何在Llama-3.2-1B中将softmax自注意力替换为结合softmax滑动窗口和线性注意力的混合注意力。这种实现将帮助我们更好地理解线性注意力研究日益增长的兴趣，同时也会探讨其局限性和潜在的未来方向。
 - en: 'This walkthrough builds upon the following works:'
+  id: totrans-5
   prefs: []
   type: TYPE_NORMAL
+  zh: 本指南基于以下工作：
 - en: '[**LoLCATs: On Low-Rank Linearizing of Large Language Models**](https://arxiv.org/abs/2410.10254)'
+  id: totrans-6
   prefs:
   - PREF_BQ
   type: TYPE_NORMAL
+  zh: '[**LoLCATs：关于大型语言模型的低秩线性化**](https://arxiv.org/abs/2410.10254)'
 - en: ''
+  id: totrans-7
   prefs:
   - PREF_BQ
   type: TYPE_NORMAL
 - en: '[**An Empirical Study of Mamba-based Language Models**](https://arxiv.org/abs/2406.07887)'
+  id: totrans-8
   prefs:
   - PREF_BQ
   type: TYPE_NORMAL
+  zh: '[**基于Mamba的语言模型的实证研究**](https://arxiv.org/abs/2406.07887)'
 - en: ''
+  id: totrans-9
   prefs:
   - PREF_BQ
   type: TYPE_NORMAL
 - en: '[**Linearizing Attention**](https://towardsdatascience.com/linearizing-attention-204d3b86cc1e)'
+  id: totrans-10
   prefs:
   - PREF_BQ
   type: TYPE_NORMAL
+  zh: '[**线性化注意力**](https://towardsdatascience.com/linearizing-attention-204d3b86cc1e)'
 - en: 'This article will be mostly a recreation of the LoLCATs paper using Llama 3.2
     1B, where we will replace 50% of self-attention layers in a pretrained Llama model.
     The article consists of four main parts:'
+  id: totrans-11
   prefs: []
   type: TYPE_NORMAL
+  zh: 本文将主要是对LoLCATs论文的重建，使用Llama 3.2 1B，我们将替换预训练Llama模型中50%的自注意力层。文章由四个主要部分组成：
 - en: '**Hybrid Attention Block**'
+  id: totrans-12
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: '**混合注意力块**'
 - en: '**Attention Transfer**'
+  id: totrans-13
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: '**注意力转移**'
 - en: '**LoRA finetuning**'
+  id: totrans-14
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: '**LoRA微调**'
 - en: '**Evaluation**'
+  id: totrans-15
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: '**评估**'
 - en: The main goal of this article is that can we somehow replace softmax attention
     in already trained models so that we can speed up inference while not losing too
     much on accuracy. If we can achieve this then we can bring the cost of using LLMs
     down drastically!
+  id: totrans-16
   prefs: []
   type: TYPE_NORMAL
+  zh: 本文的主要目标是探讨我们是否可以以某种方式替换已经训练好的模型中的softmax注意力机制，以便在不过度损失精度的前提下加快推理速度。如果我们能够实现这一点，那么我们可以将使用LLMs的成本大幅降低！
 - en: LlamaSdpAttention
+  id: totrans-17
   prefs:
   - PREF_H2
   type: TYPE_NORMAL
+  zh: LlamaSdpAttention
 - en: 'Let’s see what the Llama-3.2-1B model looks like:'
+  id: totrans-18
   prefs: []
   type: TYPE_NORMAL
+  zh: 让我们看看Llama-3.2-1B模型的样子：
 - en: '![Source: Image by Author](../Images/15d049cbe784f5c470b982ba3397c21a.png)'
+  id: totrans-19
   prefs: []
   type: TYPE_IMG
+  zh: '![来源：作者图片](../Images/15d049cbe784f5c470b982ba3397c21a.png)'
 - en: 'Source: Image by Author'
+  id: totrans-20
   prefs: []
   type: TYPE_NORMAL
+  zh: 来源：作者图片
 - en: 'As we can see we have 16 repeating decoder blocks, our focus will be on the
     _self*attn* part so the goal of this section is to understand how the LlamaSdpAttention
     block works! Let’s see what the definition of LlamaSdpAttention is:'
+  id: totrans-21
   prefs: []
   type: TYPE_NORMAL
+  zh: 如我们所见，我们有16个重复的解码块，我们的重点将放在“self*attn”部分，因此本节的目标是理解LlamaSdpAttention块是如何工作的！让我们看看LlamaSdpAttention的定义：
 - en: '[PRE0]'
+  id: totrans-22
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE0]'
 - en: 'You can check what this function looks like using the following code:'
+  id: totrans-23
   prefs: []
   type: TYPE_NORMAL
+  zh: 您可以使用以下代码检查此函数的外观：
 - en: '[PRE1]'
+  id: totrans-24
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE1]'
 - en: Let’s go over the main parts of this code and understand what each part is doing
     and see where we need to make a change,
+  id: totrans-25
   prefs: []
   type: TYPE_NORMAL
+  zh: 让我们回顾一下这段代码的主要部分，了解每个部分的作用，并看看我们需要在哪里进行修改，
 - en: '![Source: Image by Author](../Images/fc6ba153731b88e26ec8e83db42a49ae.png)'
+  id: totrans-26
   prefs: []
   type: TYPE_IMG
+  zh: '![来源：作者图片](../Images/fc6ba153731b88e26ec8e83db42a49ae.png)'
 - en: 'Source: Image by Author'
+  id: totrans-27
   prefs: []
   type: TYPE_NORMAL
+  zh: 来源：作者图片
 - en: Let’s take a dummy input to be of the shape [2,4,2048] → [batch_size, seq_len,
     embedding dimension]. Llama uses multi-headed attn with 32 heads.
+  id: totrans-28
   prefs: []
   type: TYPE_NORMAL
+  zh: 让我们用一个形状为[2,4,2048]的虚拟输入为例 → [batch_size, seq_len, 嵌入维度]。Llama使用具有32个头的多头注意力。
 - en: '**Block 1:**'
+  id: totrans-29
   prefs:
   - PREF_H3
   type: TYPE_NORMAL
+  zh: '**块1：**'
 - en: After proj → query_states is a tensor of [2,4,2048], key_states is a tensor
     of [2,4,512] and value_states is a tensor of [2,4,512].
+  id: totrans-30
   prefs: []
   type: TYPE_NORMAL
+  zh: proj → query_states后是一个[2,4,2048]的张量，key_states是一个[2,4,512]的张量，value_states是一个[2,4,512]的张量。
 - en: 'After view and transpose it is: query_states → [2,32,4,64] key_states → [2,8,4,64]
     value_states → [2,8,4,64]'
+  id: totrans-31
   prefs: []
   type: TYPE_NORMAL
+  zh: 观察并转置后为：query_states → [2,32,4,64] key_states → [2,8,4,64] value_states → [2,8,4,64]
 - en: Here 64 is the embedding dimension, key and value have heads as 8 because llama
     uses key-value groups where basically out of the 32 total heads, groups of 4 heads
     share the same key_states and value_states among the 32 total heads.
+  id: totrans-32
   prefs: []
   type: TYPE_NORMAL
+  zh: 这里64是嵌入维度，key和value的头数为8，因为Llama使用键值组，基本上在32个总头数中，4个头的组共享相同的key_states和value_states。
 - en: '**Block 2:**'
+  id: totrans-33
   prefs:
   - PREF_H3
   type: TYPE_NORMAL
+  zh: '**块2：**'
 - en: 'In this block we just apply positional encoding in particular llama uses Rotary
     Position Embeddings (RoPE). I won’t go into detail why this is needed but you
     can read the following article to get a better idea:'
+  id: totrans-34
   prefs: []
   type: TYPE_NORMAL
+  zh: 在这个模块中，我们只是应用了位置编码，特别是Llama使用了旋转位置编码（RoPE）。我不会深入解释为什么需要这样做，但你可以阅读以下文章来获得更好的理解：
 - en: '[**Master Positional Encoding: Part I**](https://towardsdatascience.com/master-positional-encoding-part-i-63c05d90a0c3)'
+  id: totrans-35
   prefs:
   - PREF_BQ
   type: TYPE_NORMAL
+  zh: '[**掌握位置编码：第一部分**](https://towardsdatascience.com/master-positional-encoding-part-i-63c05d90a0c3)'
 - en: '**Block 3:**'
+  id: totrans-36
   prefs:
   - PREF_H3
   type: TYPE_NORMAL
+  zh: '**块3：**'
 - en: Here we just apply the repeat_kv function which just repeats the kv value in
     the groups of 4, also we use past_key_value so that we can use some precomputed
     kv values so that we don’t have to compute them again for computational efficiency.
+  id: totrans-37
   prefs: []
   type: TYPE_NORMAL
+  zh: 这里我们只是应用了repeat_kv函数，它只是重复4个组中的kv值，我们还使用了past_key_value，这样我们就可以使用一些预计算的kv值，从而提高计算效率。
 - en: 'Block 4:'
+  id: totrans-38
   prefs:
   - PREF_H3
   type: TYPE_NORMAL
+  zh: 块4：
 - en: 'Block 4 handles two main preparation steps for attention: setting up the causal
     mask to ensure tokens only attend to previous positions, and optimizing memory
     layout with contiguous tensors for efficient GPU operations.'
+  id: totrans-39
   prefs: []
   type: TYPE_NORMAL
+  zh: 块4处理了注意力准备的两个主要步骤：设置因果掩码以确保标记只关注前面的位置，以及通过连续张量优化内存布局以提高GPU操作的效率。
 - en: 'Block 5:'
+  id: totrans-40
   prefs:
   - PREF_H3
   type: TYPE_NORMAL
+  zh: 块5：
 - en: This is where we apply softmax attention – the component we’ll be replacing
     in our implementation.
+  id: totrans-41
   prefs: []
   type: TYPE_NORMAL
+  zh: 这是我们应用softmax注意力的地方——我们将在我们的实现中替换的组件。
 - en: 'Block 6:'
+  id: totrans-42
   prefs:
   - PREF_H3
   type: TYPE_NORMAL
+  zh: 块6：
 - en: The attention output will be a tensor of shape [2, 32, 4, 64]. We convert it
     back to [2, 4, 2048] and apply the final output projection.
+  id: totrans-43
   prefs: []
   type: TYPE_NORMAL
+  zh: 注意力输出将是一个形状为[2, 32, 4, 64]的张量。我们将其转换回[2, 4, 2048]，并应用最终的输出投影。
 - en: And that’s the journey of an input through Llama self-attention!
+  id: totrans-44
   prefs: []
   type: TYPE_NORMAL
+  zh: 这就是输入在Llama自注意力中的旅程！
 - en: Hybrid Attention Block
+  id: totrans-45
   prefs:
   - PREF_H2
   type: TYPE_NORMAL
+  zh: 混合注意力模块
 - en: 'So now let’s look at our HybridAttention block:'
+  id: totrans-46
   prefs: []
   type: TYPE_NORMAL
+  zh: 现在让我们看看我们的HybridAttention模块：
 - en: '[PRE2]'
+  id: totrans-47
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE2]'
 - en: 'We only made one change in forward(), we replaced block 5 with the following:'
+  id: totrans-48
   prefs: []
   type: TYPE_NORMAL
+  zh: 我们在forward()函数中只做了一处修改，我们将块5替换为以下内容：
 - en: '[PRE3]'
+  id: totrans-49
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE3]'
 - en: We basically partitioned the attention mechanism into **sliding window** and
     **linear attention** blocks.
+  id: totrans-50
   prefs: []
   type: TYPE_NORMAL
+  zh: 我们基本上将注意力机制分成了**滑动窗口**和**线性注意力**模块。
 - en: 'Sliding Window Attention:'
+  id: totrans-51
   prefs:
   - PREF_H3
   type: TYPE_NORMAL
+  zh: 滑动窗口注意力：
 - en: '[PRE4]'
+  id: totrans-52
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE4]'
 - en: 'For a deeper understanding of window attention concepts, I recommend referring
     to this paper:'
+  id: totrans-53
   prefs: []
   type: TYPE_NORMAL
+  zh: 对于更深入理解窗口注意力概念，我建议参考这篇论文：
 - en: '[**Efficient Streaming Language Models with Attention Sinks**](https://arxiv.org/abs/2309.17453)'
+  id: totrans-54
   prefs:
   - PREF_BQ
   type: TYPE_NORMAL
+  zh: '[**高效流式语言模型与注意力汇聚**](https://arxiv.org/abs/2309.17453)'
 - en: The idea I have implemented here is that instead of calculating the attention
     of all key-value pairs together(where each token attends to every other token),
     we break it into windows of ‘w’ size and then calculate the attention for each
@@ -218,47 +326,69 @@
     to O(n*w), since each token only needs to attend to w tokens instead of all n
     tokens. It can be made even better by using concepts such as sinks and only doing
     window for last w tokens which I might implement in future updates.
+  id: totrans-55
   prefs: []
   type: TYPE_NORMAL
+  zh: 我在这里实现的想法是，我们不是一起计算所有键值对的注意力（其中每个标记都会关注其他所有标记），而是将其分成大小为‘w’的窗口，然后计算每个窗口的注意力。使用上述代码，时间复杂度从O(n²)降低到O(n*w)，因为每个标记只需要关注w个标记而不是所有n个标记。通过使用诸如汇聚等概念，并且只对最后w个标记进行窗口操作，这可以进一步提高效率，我可能在未来的更新中实现这些。
 - en: 'Linear Attention:'
+  id: totrans-56
   prefs:
   - PREF_H3
   type: TYPE_NORMAL
+  zh: 线性注意力：
 - en: '[PRE5]'
+  id: totrans-57
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE5]'
 - en: For linear attention, I use a very simple feature map of elu(x) + 1 but the
     main part to note there is the initial padding being done. The idea here is that
     we can use linear attention only for the first [sequence length – window size]
     as we already have sliding window to keep track of recent context.
+  id: totrans-58
   prefs: []
   type: TYPE_NORMAL
+  zh: 对于线性注意力，我使用了一个非常简单的特征映射elu(x) + 1，但需要注意的是，这里进行的初始填充。这里的想法是，我们可以只使用线性注意力来处理[序列长度
+    - 窗口大小]，因为我们已经有滑动窗口来跟踪最近的环境。
 - en: The combination of these two types of attention becomes our new hybrid attention
     and we use _window*factor* and _linear*factor* as learnable parameters that control
     how much each type of attention contributes to the final output.
+  id: totrans-59
   prefs: []
   type: TYPE_NORMAL
+  zh: 这两种类型注意力的组合形成了我们新的混合注意力，我们使用_window*factor*和_linear*factor*作为可学习的参数，以控制每种类型注意力对最终输出的贡献程度。
 - en: '* * *'
+  id: totrans-60
   prefs: []
   type: TYPE_NORMAL
+  zh: '* * *'
 - en: 'Now that we have our hybrid block, taking inspiration from the "**[An Empirical
     Study of Mamba-based Language Models](https://arxiv.org/abs/2406.07887)**" paper,
     we will replace only half the softmax attention layers that too in an alternate
     order. Llama-3.2-1B has 16 softmax attention layers and we shall replace 8 of
     those in the order: [0,2,4,6,8,10,12,14].'
+  id: totrans-61
   prefs: []
   type: TYPE_NORMAL
+  zh: 现在我们有了混合块，受到 "**[基于 Mamba 的语言模型实证研究](https://arxiv.org/abs/2406.07887)**" 论文的启发，我们将只替换一半的
+    softmax 注意力层，而且是在交替的顺序中。Llama-3.2-1B 有 16 个 softmax 注意力层，我们将按照以下顺序替换其中的 8 个：[0,2,4,6,8,10,12,14]。
 - en: Attention Transfer
+  id: totrans-62
   prefs:
   - PREF_H2
   type: TYPE_NORMAL
+  zh: 注意力转移
 - en: 'The implementation follows the methodology described in "**[LoLCATs: On Low-Rank
     Linearizing of Large Language Models](https://arxiv.org/abs/2410.10254)**". The
     attention transfer step involves initializing 8 hybrid blocks with the weights
     from the original blocks and for training I used 1M tokens from the 10B version
     of [fineweb-edu](https://huggingface.co/datasets/HuggingFaceFW/fineweb-edu)[1].'
+  id: totrans-63
   prefs: []
   type: TYPE_NORMAL
+  zh: 实现遵循描述在 "**[LoLCATs：关于大型语言模型的低秩线性化](https://arxiv.org/abs/2410.10254)**" 的方法。注意力转移步骤涉及使用来自原始块的权重初始化
+    8 个混合块，在训练中我使用了来自 [fineweb-edu](https://huggingface.co/datasets/HuggingFaceFW/fineweb-edu)[1]
+    10B 版本的 1M 个标记。
 - en: The basic goal here is that, we will freeze all the parameters in llama-3.2–1B
     and then do a forward pass with one train input. Using this we can get the input
     and output of each of our self attention blocks. We can then pass this same input
@@ -268,33 +398,50 @@
     We do this separately for all the blocks and once trained we can replace the the
     self attention in llama-3.2–1B with our hybrid blocks now. Taking a sample output
     from this new model looks something like,
+  id: totrans-64
   prefs: []
   type: TYPE_NORMAL
+  zh: 这里的基本目标是，我们将冻结 llama-3.2–1B 中的所有参数，然后使用一个训练输入进行前向传递。通过这种方式，我们可以获取我们每个自注意力块输入和输出。然后，我们可以将相同的输入传递到相应的混合块中，并计算两个之间的均方误差损失，以训练混合块。这有助于我们明确地告诉混合块模仿
+    softmax 注意力的输出，这将有助于保持准确性。我们为所有块分别这样做，一旦训练完成，我们现在可以用我们的混合块替换 llama-3.2–1B 中的自注意力。从这个新模型中取一个样本输出看起来像这样，
 - en: '![Source: Image by Author](../Images/062b4e009dbdb19f127a083c81044e01.png)'
+  id: totrans-65
   prefs: []
   type: TYPE_IMG
+  zh: '![来源：作者图片](../Images/062b4e009dbdb19f127a083c81044e01.png)'
 - en: 'Source: Image by Author'
+  id: totrans-66
   prefs: []
   type: TYPE_NORMAL
+  zh: 来源：作者图片
 - en: The current model outputs lack coherence and meaning – an issue that our next
     implementation phase will specifically target and resolve.
+  id: totrans-67
   prefs: []
   type: TYPE_NORMAL
+  zh: 当前模型的输出缺乏连贯性和意义——这是我们下一个实现阶段将特别针对并解决的问题。
 - en: The code for this step – [Llama_attn_transfer.ipynb](https://github.com/shitanshubhushan/Linearizing-Llama-3.2-1B/blob/main/Llama_attn_transfer.ipynb)
+  id: totrans-68
   prefs: []
   type: TYPE_NORMAL
+  zh: 这一步的代码 – [Llama_attn_transfer.ipynb](https://github.com/shitanshubhushan/Linearizing-Llama-3.2-1B/blob/main/Llama_attn_transfer.ipynb)
 - en: LoRA Finetune
+  id: totrans-69
   prefs:
   - PREF_H2
   type: TYPE_NORMAL
+  zh: LoRA 微调
 - en: 'I won’t go into the details of LoRA, you could go through the following article
     if you want to understand LoRA better:'
+  id: totrans-70
   prefs: []
   type: TYPE_NORMAL
+  zh: 我不会深入讲解 LoRA，如果你想更好地理解 LoRA，可以阅读以下文章：
 - en: '[**LoRA – Intuitively and Exhaustively Explained**](https://towardsdatascience.com/lora-intuitively-and-exhaustively-explained-e944a6bff46b)'
+  id: totrans-71
   prefs:
   - PREF_BQ
   type: TYPE_NORMAL
+  zh: '[**LoRA – 直观且详尽地解释**](https://towardsdatascience.com/lora-intuitively-and-exhaustively-explained-e944a6bff46b)'
 - en: But the main goal with this step is that so far we trained each hybrid block
     separately to mimic softmax but we still haven’t trained/finetuned the entire
     model post adding these blocks to actually work together for text generation.
@@ -302,157 +449,231 @@
     which is an instruction tuning dataset to finetune our model for text generation
     using LoRA and we only finetune the parameters in the hybrid attention blocks
     while every other parameter is frozen.
+  id: totrans-72
   prefs: []
   type: TYPE_NORMAL
+  zh: 但这一步的主要目标是，到目前为止，我们已经单独训练了每个混合块来模仿 softmax，但我们还没有训练/微调整个模型，在添加这些块之后实际上使其协同工作以进行文本生成。因此，在这一步中，我们使用了
+    [Dolly-15K 数据集](https://huggingface.co/datasets/databricks/databricks-dolly-15k)[2]，这是一个指令微调数据集，我们使用
+    LoRA 微调我们的模型以进行文本生成，并且我们只微调混合注意力块中的参数，而其他所有参数都是冻结的。
 - en: '![Source: Image by Author](../Images/ba8aaee55404f97e4955d6e7df01f1ba.png)'
+  id: totrans-73
   prefs: []
   type: TYPE_IMG
+  zh: '![来源：作者图片](../Images/ba8aaee55404f97e4955d6e7df01f1ba.png)'
 - en: 'Source: Image by Author'
+  id: totrans-74
   prefs: []
   type: TYPE_NORMAL
+  zh: 来源：作者图片
 - en: We can clearly see the model is able to generate much better text post this
     finetuning. Now after attention transfer and finetuning, we have a model we can
     actually benchmark!
+  id: totrans-75
   prefs: []
   type: TYPE_NORMAL
+  zh: 我们可以清楚地看到，经过这次微调后，模型能够生成更好的文本。现在，在注意力转移和微调之后，我们有一个可以实际基准测试的模型！
 - en: The code for this step – [llama_lora_finetune.ipynb](https://github.com/shitanshubhushan/Linearizing-Llama-3.2-1B/blob/main/llama_lora_finetune.ipynb)
+  id: totrans-76
   prefs: []
   type: TYPE_NORMAL
+  zh: 此步骤的代码 – [llama_lora_finetune.ipynb](https://github.com/shitanshubhushan/Linearizing-Llama-3.2-1B/blob/main/llama_lora_finetune.ipynb)
 - en: Evaluation
+  id: totrans-77
   prefs:
   - PREF_H2
   type: TYPE_NORMAL
+  zh: 评估
 - en: We went through all these steps so now it’s time compare our hybrid model with
     the original Llama-3.2-1B. Our main expectations are that our model should be
     faster during inference while its accuracy should remain reasonably close to that
     of Llama-3.2-1B.
+  id: totrans-78
   prefs: []
   type: TYPE_NORMAL
+  zh: 我们经历了所有这些步骤，现在是时候比较我们的混合模型与原始的Llama-3.2-1B了。我们主要的预期是，在推理过程中，我们的模型应该更快，而其准确率应该与Llama-3.2-1B的保持合理接近。
 - en: '![Source: Image by Author](../Images/23c25ba61502fa1226f8691c0462b9a4.png)'
+  id: totrans-79
   prefs: []
   type: TYPE_IMG
+  zh: '![来源：作者图片](../Images/23c25ba61502fa1226f8691c0462b9a4.png)'
 - en: 'Source: Image by Author'
+  id: totrans-80
   prefs: []
   type: TYPE_NORMAL
+  zh: 来源：作者图片
 - en: Evaluating both models on throughput for sequence-lengths ranging from 2⁰ to
     2¹⁵, we can see that initially both models are pretty close in performance. However,
     as the sequence length increases, the hybrid model becomes notably faster than
     the base model – matching our expectations. It’s important to note that these
     tokens/sec measurements vary significantly depending on the GPU used.
+  id: totrans-81
   prefs: []
   type: TYPE_NORMAL
+  zh: 在序列长度从2⁰到2¹⁵的范围内评估这两个模型，我们可以看到，最初这两个模型在性能上非常接近。然而，随着序列长度的增加，混合模型明显比基础模型快——符合我们的预期。需要注意的是，这些tokens/sec的测量值会根据所使用的GPU而有很大差异。
 - en: '![Source: Image by Author](../Images/e7dc403f05adf5d8ff4ec7de2e782fd9.png)'
+  id: totrans-82
   prefs: []
   type: TYPE_IMG
+  zh: '![来源：作者图片](../Images/e7dc403f05adf5d8ff4ec7de2e782fd9.png)'
 - en: 'Source: Image by Author'
+  id: totrans-83
   prefs: []
   type: TYPE_NORMAL
+  zh: 来源：作者图片
 - en: 'Looking at seconds taken per token, we see a similar pattern: initially, both
     models have nearly the same speed, but as the sequence length increases, we observe
     the computational advantages that linear + sliding window attention brings.'
+  id: totrans-84
   prefs: []
   type: TYPE_NORMAL
+  zh: 从每个token所需的时间来看，我们看到了一个类似的模式：最初，两个模型的速度几乎相同，但随着序列长度的增加，我们观察到线性+滑动窗口注意力带来的计算优势。
 - en: ☑️ We meet our first expectation that our hybrid is faster than llama-3.2-1B.
+  id: totrans-85
   prefs: []
   type: TYPE_NORMAL
+  zh: ☑️ 我们达到了第一个预期，即我们的混合模型比Llama-3.2-1B快。
 - en: Now let’s look at accuracy, For this, I benchmarked the models on [MMLU](https://huggingface.co/datasets/cais/mmlu)[3]
     where each model had to answer multiple-choice questions with 4 options. The model’s
     prediction is determined by examining the logits it assigns to tokens [‘A’, ‘B’,
     ‘C’, ‘D’], with the highest logit indicating the predicted answer.
+  id: totrans-86
   prefs: []
   type: TYPE_NORMAL
+  zh: 现在，让我们来看看准确率。为此，我在[MMLU](https://huggingface.co/datasets/cais/mmlu)[3]上对这些模型进行了基准测试，其中每个模型都必须回答有4个选项的多项选择题。模型的预测是通过检查它分配给token
+    [‘A’，‘B’，‘C’，‘D’]的logits来确定的，最高的logit表示预测答案。
 - en: '[PRE6]'
+  id: totrans-87
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE6]'
 - en: The test results reveal an intriguing insight into model evaluation. While the
     Hybrid model slightly outperforms Llama-3.2-1B, this difference (approximately
     2%) should be considered insignificant, especially given that the Hybrid model
     underwent additional training, particularly with instruction tuning datasets.
+  id: totrans-88
   prefs: []
   type: TYPE_NORMAL
+  zh: 测试结果揭示了模型评估的有趣见解。虽然混合模型略优于Llama-3.2-1B，但这种差异（大约2%）应被视为微不足道，尤其是考虑到混合模型还进行了额外的训练，特别是与指令微调数据集。
 - en: The most fascinating observation is the substantial performance variance when
     running identical code on different GPUs. When Llama-3.2-1B was run on an L40S
     GPU versus an RTX A6000, the accuracy jumped from 25.38% to 32.13% – a significant
     difference considering all other variables remained constant. This difference
     comes down to how different GPUs handle floating-point operations, which shows
     just how much hardware choices can unexpectedly affect your model’s performance.
+  id: totrans-89
   prefs: []
   type: TYPE_NORMAL
+  zh: 最令人着迷的观察是，在运行相同代码的不同GPU上，性能差异很大。当Llama-3.2-1B在L40S GPU上运行与在RTX A6000上运行时，准确率从25.38%跃升至32.13%——考虑到所有其他变量都保持不变，这是一个显著的区别。这种差异归结于不同GPU处理浮点运算的方式，这表明硬件选择可以意外地影响你的模型性能。
 - en: Another striking finding is the lack of difference between 5-shot and 0-shot
     performance in these results, particularly on the RTX A6000\. This is unexpected,
     as 5-shot prompting typically improves performance, especially for base models
     like Llama-3.2-1B. In fact, when running the Llama-3.2-1B on the L40S GPU, I have
     observed a notable gap between 5-shot and 0-shot scores – again highlighting how
     GPU differences can affect benchmark scores.
+  id: totrans-90
   prefs: []
   type: TYPE_NORMAL
+  zh: 另一个引人注目的是，在这些结果中，5-shot和0-shot性能之间的差异很小，尤其是在RTX A6000上。这是出乎意料的，因为5-shot提示通常可以提高性能，特别是对于像Llama-3.2-1B这样的基础模型。实际上，当我在L40S
+    GPU上运行Llama-3.2-1B时，我观察到5-shot和0-shot分数之间存在明显的差距——再次突显出GPU差异如何影响基准分数。
 - en: It would be a fun future exercise to benchmark the same model with all the same
     variables but with different GPUs.
+  id: totrans-91
   prefs: []
   type: TYPE_NORMAL
+  zh: 将同一模型与所有相同的变量进行基准测试，但使用不同的GPU，这将是一个有趣的未来练习。
 - en: MMLU 0-shot evaluation code – [MMLU_eval-0shot.ipynb](https://github.com/shitanshubhushan/Linearizing-Llama-3.2-1B/blob/main/MMLU_eval-0shot.ipynb)
+  id: totrans-92
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: MMLU 0-shot评估代码 – [MMLU_eval-0shot.ipynb](https://github.com/shitanshubhushan/Linearizing-Llama-3.2-1B/blob/main/MMLU_eval-0shot.ipynb)
 - en: MMLU 5-shot evaluation code – [MMLU_eval-5shot.ipynb](https://github.com/shitanshubhushan/Linearizing-Llama-3.2-1B/blob/main/MMLU_eval-5shot.ipynb)
+  id: totrans-93
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: MMLU 5-shot评估代码 – [MMLU_eval-5shot.ipynb](https://github.com/shitanshubhushan/Linearizing-Llama-3.2-1B/blob/main/MMLU_eval-5shot.ipynb)
 - en: Inference speed evaluation code – [Linear_llama_eval_inference_speed.ipynb](https://github.com/shitanshubhushan/Linearizing-Llama-3.2-1B/blob/main/Linear_llama_eval_inference_speed.ipynb)
+  id: totrans-94
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: 推理速度评估代码 – [Linear_llama_eval_inference_speed.ipynb](https://github.com/shitanshubhushan/Linearizing-Llama-3.2-1B/blob/main/Linear_llama_eval_inference_speed.ipynb)
 - en: Conclusion
+  id: totrans-95
   prefs:
   - PREF_H2
   type: TYPE_NORMAL
+  zh: 结论
 - en: I hope this article has demonstrated both the potential of softmax attention
     alternatives and the inherent strengths of traditional softmax attention. Using
     relatively modest computational resources and a small dataset, we were able to
     achieve faster inference speeds while maintaining comparable accuracy levels with
     our hybrid approach.
+  id: totrans-96
   prefs: []
   type: TYPE_NORMAL
+  zh: 我希望这篇文章已经展示了softmax注意力替代品的潜力以及传统softmax注意力的固有优势。使用相对有限的计算资源和少量数据集，我们能够实现更快的推理速度，同时保持与混合方法相当的准确率水平。
 - en: Another point to understand is that softmax based attention transformers have
     gone through a lot of hardware optimizations which make them competitive with
     linear alternatives when it comes to computational complexity, if the same effort
     is put into architectures like mamba maybe they can be more competitive then.
+  id: totrans-97
   prefs: []
   type: TYPE_NORMAL
+  zh: 另一点需要理解的是，基于softmax的注意力转换器已经经历了大量的硬件优化，这使得它们在计算复杂度方面与线性替代品具有竞争力，如果对像mamba这样的架构投入同样的努力，也许它们可以更具竞争力。
 - en: A promising approach is using a hybrid of softmax attention and linear attention
     alternatives to try to get the best of both worlds. Nvidia did this in "**[An
     Empirical Study of Mamba-based Language Models](https://arxiv.org/abs/2406.07887)**"
     and showed how a hybrid approach is an effective alternative.
+  id: totrans-98
   prefs: []
   type: TYPE_NORMAL
+  zh: 一个有前景的方法是结合softmax注意力和线性注意力替代品，以尝试获得两者的最佳效果。Nvidia在“**[基于Mamba的语言模型的实证研究](https://arxiv.org/abs/2406.07887)**”中做到了这一点，并展示了混合方法是如何成为一种有效的替代方案。
 - en: Hopefully you all learnt something from this article!
+  id: totrans-99
   prefs: []
   type: TYPE_NORMAL
+  zh: 希望你们都能从这篇文章中学到些什么！
 - en: All the code for this can be found at – [Linearizing-Llama-3.2–1B](https://github.com/shitanshubhushan/Linearizing-Llama-3.2-1B/tree/main)
+  id: totrans-100
   prefs: []
   type: TYPE_NORMAL
+  zh: 所有这些代码都可以在以下链接找到 – [Linearizing-Llama-3.2–1B](https://github.com/shitanshubhushan/Linearizing-Llama-3.2-1B/tree/main)
 - en: Acknowledgment
+  id: totrans-101
   prefs:
   - PREF_H2
   type: TYPE_NORMAL
+  zh: 致谢
 - en: This blog post was inspired by coursework from my graduate studies during Fall
     2024 at University of Michigan. While the courses provided the foundational knowledge
     and motivation to explore these topics, any errors or misinterpretations in this
     article are entirely my own. This represents my personal understanding and exploration
     of the material.
+  id: totrans-102
   prefs: []
   type: TYPE_NORMAL
+  zh: 这篇博客文章受到了我在密歇根大学2024年秋季研究生课程作业的启发。虽然这些课程提供了探索这些主题的基础知识和动力，但本文中的任何错误或误解都是我个人的。这代表了我对材料的个人理解和探索。
 - en: License References
+  id: totrans-103
   prefs:
   - PREF_H2
   type: TYPE_NORMAL
+  zh: 许可协议引用
 - en: '[1] – fineweb-edu: The dataset is released under the Open Data Commons Attribution
     License (ODC-By) v1.0 [license](https://opendatacommons.org/licenses/by/1-0/).'
+  id: totrans-104
   prefs: []
   type: TYPE_NORMAL
+  zh: '[1] – fineweb-edu：数据集在Open Data Commons Attribution License (ODC-By) v1.0 [许可协议](https://opendatacommons.org/licenses/by/1-0/)下发布。'
 - en: '[2] – Dolly-15K: The dataset is subject to CC BY-SA 3.0 license.'
+  id: totrans-105
   prefs: []
   type: TYPE_NORMAL
+  zh: '[2] – Dolly-15K：数据集受CC BY-SA 3.0许可协议约束。'
 - en: '[3] – MMLU: MIT license'
+  id: totrans-106
   prefs: []
   type: TYPE_NORMAL
+  zh: '[3] – MMLU：MIT许可协议'
