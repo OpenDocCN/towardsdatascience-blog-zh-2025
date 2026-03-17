@@ -1,474 +1,686 @@
 - en: 'DeepSeek-V3 Explained 1: Multi-head Latent Attention'
+  id: totrans-0
   prefs:
   - PREF_H1
   type: TYPE_NORMAL
+  zh: 'DeepSeek-V3 Explained 1: Multi-head Latent Attention'
 - en: 原文：[https://towardsdatascience.com/deepseek-v3-explained-1-multi-head-latent-attention-ed6bee2a67c4/](https://towardsdatascience.com/deepseek-v3-explained-1-multi-head-latent-attention-ed6bee2a67c4/)
+  id: totrans-1
   prefs:
   - PREF_BQ
   type: TYPE_NORMAL
+  zh: 原文：[https://towardsdatascience.com/deepseek-v3-explained-1-multi-head-latent-attention-ed6bee2a67c4/](https://towardsdatascience.com/deepseek-v3-explained-1-multi-head-latent-attention-ed6bee2a67c4/)
 - en: '![Image created by author using ChatGPT.](../Images/ad2009e8d1ad71c5a9fa31cca69a689c.png)'
+  id: totrans-2
   prefs: []
   type: TYPE_IMG
+  zh: '![Image created by author using ChatGPT.](../Images/ad2009e8d1ad71c5a9fa31cca69a689c.png)'
 - en: Image created by author using ChatGPT.
+  id: totrans-3
   prefs: []
   type: TYPE_NORMAL
+  zh: Image created by author using ChatGPT.
 - en: This is the first article of our new series "DeepSeek-V3 Explained", where we
     will try to demystify DeepSeek-V3 [1, 2], the latest model open-sourced by DeepSeek.
+  id: totrans-4
   prefs: []
   type: TYPE_NORMAL
+  zh: 这是我们的新系列“DeepSeek-V3 Explained”的第一篇文章，我们将尝试揭开DeepSeek-V3 [1, 2]，DeepSeek最新开源模型的神秘面纱。
 - en: 'In this series, we aim to cover two major topics:'
+  id: totrans-5
   prefs: []
   type: TYPE_NORMAL
+  zh: 在这个系列中，我们旨在涵盖两个主要主题：
 - en: Major architecture innovations in DeepSeek-V3, including MLA (Multi-head Latent
     Attention) [3], DeepSeekMoE [4], auxiliary-loss-free load balancing [5], and multi-token
     prediction training.
+  id: totrans-6
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: DeepSeek-V3的主要架构创新，包括MLA（多头潜在注意力）[3]、DeepSeekMoE [4]、无辅助损失负载均衡[5]和多标记预测训练。
 - en: Training of DeepSeek-V3, including pre-training, finetuning and RL alignment
     phases.
+  id: totrans-7
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: DeepSeek-V3的训练，包括预训练、微调和RL对齐阶段。
 - en: This article mainly focuses on **Multi-head Latent Attention**, which was first
     proposed in the development of DeepSeek-V2 and then used in DeepSeek-V3 as well.
+  id: totrans-8
   prefs: []
   type: TYPE_NORMAL
+  zh: 本文主要关注**多头潜在注意力**（Multi-head Latent Attention），它最初在DeepSeek-V2的开发中被提出，后来也被用于DeepSeek-V3。
 - en: 'Table of contents:'
+  id: totrans-9
   prefs: []
   type: TYPE_NORMAL
+  zh: 目录：
 - en: '**Background**: we start from the standard MHA, explain why we need Key-Value
     cache at inference stage, how MQA and GQA try to optimize it, and how RoPE works,
     etc.'
+  id: totrans-10
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: '**背景**：我们从标准的MHA开始，解释为什么在推理阶段需要键值缓存，MQA和GQA如何尝试优化它，以及RoPE是如何工作的等。'
 - en: '**Multi-head Latent Attention**: An in-depth introduction to MLA, including
     its motivations, why decoupled RoPE is needed, and its performance.'
+  id: totrans-11
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: '**多头潜在注意力**：对MLA的深入介绍，包括其动机、为什么需要解耦RoPE，以及其性能。'
 - en: '**References.**'
+  id: totrans-12
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: '**参考文献**。'
 - en: '* * *'
+  id: totrans-13
   prefs: []
   type: TYPE_NORMAL
+  zh: '* * *'
 - en: Background
+  id: totrans-14
   prefs:
   - PREF_H2
   type: TYPE_NORMAL
+  zh: 背景
 - en: To better understand MLA and also make this article self-contained, we will
     revisit several related concepts in this section before diving into the details
     of MLA.
+  id: totrans-15
   prefs: []
   type: TYPE_NORMAL
+  zh: 为了更好地理解MLA（多头潜在注意力）并使本文内容自洽，在深入探讨MLA的细节之前，我们将回顾本节中的一些相关概念。
 - en: MHA in Decoder-only Transformers
+  id: totrans-16
   prefs:
   - PREF_H3
   type: TYPE_NORMAL
+  zh: 仅解码器Transformer中的MHA
 - en: Note that MLA is developed to speedup inference speed in autoregressive text
     generation, so the MHA we are talking about under this context is for decoder-only
     Transformer.
+  id: totrans-17
   prefs: []
   type: TYPE_NORMAL
+  zh: 注意，MLA是为了加速自回归文本生成的推理速度而开发的，因此在这个背景下我们讨论的MHA是针对仅解码器的Transformer。
 - en: The figure below compares three Transformer architectures used for decoding,
     where (a) shows both the encoder and decoder proposed in the original "Attention
     is All You Need" paper. Its decoder part is then simplified by [6], leading to
     a decoder-only Transformer model shown in (b), which is later used in many generation
     models like GPT [8].
+  id: totrans-18
   prefs: []
   type: TYPE_NORMAL
+  zh: 下图比较了用于解码的三个Transformer架构，其中（a）显示了在原始“Attention is All You Need”论文中提出的编码器和解码器。其解码部分随后被[6]简化，导致仅解码器Transformer模型在（b）中显示，该模型后来被用于许多生成模型，如GPT
+    [8]。
 - en: Nowadays, LLMs are more commonly to choose the structure shown in (c) for more
     stable training, with normalization applied on the input rather then output, and
     LayerNorm upgraded to RMS Norm. This will serve as the baseline architecture we
     will discuss in this article.
+  id: totrans-19
   prefs: []
   type: TYPE_NORMAL
+  zh: 现在，LLMs更倾向于选择（c）所示的架构进行更稳定的训练，在输入而不是输出上应用归一化，并将LayerNorm升级到RMS Norm。这将成为本文中我们将讨论的基线架构。
 - en: '![Figure 1\. Transformer architectures. (a) encoder-decoder proposed in [6].
     (b) Decoder-only Transformer proposed in [7] and used in GPT [8]. (c) An optimized
     version of (b) with RMS Norm before attention. [3]](../Images/f6fb7dfc3dcf057c9de8a6ebf1c838dd.png)'
+  id: totrans-20
   prefs: []
   type: TYPE_IMG
+  zh: '![Figure 1\. Transformer architectures. (a) encoder-decoder proposed in [6].
+    (b) Decoder-only Transformer proposed in [7] and used in GPT [8]. (c) An optimized
+    version of (b) with RMS Norm before attention. [3]](../Images/f6fb7dfc3dcf057c9de8a6ebf1c838dd.png)'
 - en: Figure 1\. Transformer architectures. (a) encoder-decoder proposed in [6]. (b)
     Decoder-only Transformer proposed in [7] and used in GPT [8]. (c) An optimized
     version of (b) with RMS Norm before attention. [3]
+  id: totrans-21
   prefs: []
   type: TYPE_NORMAL
+  zh: Figure 1\. Transformer architectures. (a) encoder-decoder proposed in [6]. (b)
+    Decoder-only Transformer proposed in [7] and used in GPT [8]. (c) An optimized
+    version of (b) with RMS Norm before attention. [3]
 - en: 'Within this context, MHA calculation largely follows the process in [6], as
     shown in the figure below:'
+  id: totrans-22
   prefs: []
   type: TYPE_NORMAL
+  zh: 在这个背景下，MHA的计算过程在很大程度上遵循[6]中的过程，如图下所示：
 - en: '![Figure 2\. Scaled dot-product attention vs. Multi-Head Attention. Image from
     [6].](../Images/d984c4fe15272c1101f53997d21b596a.png)'
+  id: totrans-23
   prefs: []
   type: TYPE_IMG
+  zh: '![图 2. 缩放点积注意力与多头注意力。图片来自 [6]。](../Images/d984c4fe15272c1101f53997d21b596a.png)'
 - en: Figure 2\. Scaled dot-product attention vs. Multi-Head Attention. Image from
     [6].
+  id: totrans-24
   prefs: []
   type: TYPE_NORMAL
+  zh: 图 2. 缩放点积注意力与多头注意力。图片来自 [6]。
 - en: Assume we have **n_h** attention heads, and the dimension for each attention
     head is represented as **d_h**, so that the concatenated dimension will be (**h_n**
     · **d_h**).
+  id: totrans-25
   prefs: []
   type: TYPE_NORMAL
+  zh: 假设我们有 **n_h** 个注意力头，每个注意力头的维度表示为 **d_h**，因此连接的维度将是（**h_n** · **d_h**）。
 - en: Given a model with **l** layers, if we denote the input for the t-th token in
     that layer as **h_t** with dimension **d**, we need to map the dimension of **h_t**
     from **d** to (**h_n** · **d_h**) using the linear mapping matrices.
+  id: totrans-26
   prefs: []
   type: TYPE_NORMAL
+  zh: 给定一个具有 **l** 层的模型，如果我们表示该层中第 t 个标记的输入为 **h_t**，其维度为 **d**，我们需要使用线性映射矩阵将 **h_t**
+    的维度从 **d** 映射到（**h_n** · **d_h**）。
 - en: 'More formally, we have (equations from [3]):'
+  id: totrans-27
   prefs: []
   type: TYPE_NORMAL
+  zh: 更正式地说，我们有（来自 [3] 的方程）：
 - en: '![](../Images/61d7ac07b4c9ca7baf56ddfa011f6190.png)'
+  id: totrans-28
   prefs: []
   type: TYPE_IMG
+  zh: '![图片](../Images/61d7ac07b4c9ca7baf56ddfa011f6190.png)'
 - en: 'where **W^Q**, **W^K** and **W^V** are the linear mapping matrices:'
+  id: totrans-29
   prefs: []
   type: TYPE_NORMAL
+  zh: 其中 **W^Q**、**W^K** 和 **W^V** 是线性映射矩阵：
 - en: '![](../Images/7db9e5492a6b3ff012a19e1769a6d1df.png)'
+  id: totrans-30
   prefs: []
   type: TYPE_IMG
+  zh: '![图片](../Images/7db9e5492a6b3ff012a19e1769a6d1df.png)'
 - en: 'After such mapping, **q_t**, **k_t** and **v_t** will be split into **n_h**
     heads to calculate the scaled dot-product attention:'
+  id: totrans-31
   prefs: []
   type: TYPE_NORMAL
+  zh: 在此映射之后，**q_t**、**k_t** 和 **v_t** 将被分成 **n_h** 个头以计算缩放点积注意力：
 - en: '![](../Images/389a41ecfda850dae6223c47b766203e.png)'
+  id: totrans-32
   prefs: []
   type: TYPE_IMG
+  zh: '![图片](../Images/389a41ecfda850dae6223c47b766203e.png)'
 - en: 'where **W^O** is another projection matrix to map the dimension inversely from
     (**h_n** · **d_h**) to **d**:'
+  id: totrans-33
   prefs: []
   type: TYPE_NORMAL
+  zh: 其中 **W^O** 是另一个投影矩阵，用于将维度从（**h_n** · **d_h**）逆映射到 **d**：
 - en: '![](../Images/567b8a0d5ea3ac3ed2d97f062159be75.png)'
+  id: totrans-34
   prefs: []
   type: TYPE_IMG
+  zh: '![图片](../Images/567b8a0d5ea3ac3ed2d97f062159be75.png)'
 - en: Note that the process described by Eqn.(1) to (8) above is just for a single
     token. During inference, we need to repeat this process for each newly generated
     token, which involves a lot of repeated calculation. This leads to a technique
     called Key-Value cache.
+  id: totrans-35
   prefs: []
   type: TYPE_NORMAL
+  zh: 注意，上述方程（1）至（8）描述的过程仅针对单个标记。在推理过程中，我们需要为每个新生成的标记重复此过程，这涉及到大量的重复计算。这导致了一种称为键值缓存的技术。
 - en: Key-Value Cache
+  id: totrans-36
   prefs:
   - PREF_H3
   type: TYPE_NORMAL
+  zh: 键值缓存
 - en: As suggested by its name, Key-Value cache is a technique designed to speedup
     the autoregressive process by caching and reusing the previous keys and values,
     rather than re-computing them at each decoding step.
+  id: totrans-37
   prefs: []
   type: TYPE_NORMAL
+  zh: 如其名所示，键值缓存是一种通过缓存和重用之前的键和值来加速自回归过程的技巧，而不是在每次解码步骤中重新计算它们。
 - en: Note that KV cache is typically used only during the inference stage, since
     in training we still need to process the entire input sequence in parallel.
+  id: totrans-38
   prefs: []
   type: TYPE_NORMAL
+  zh: 注意，KV 缓存通常仅在推理阶段使用，因为在训练过程中我们仍然需要并行处理整个输入序列。
 - en: KV cache is commonly implemented as a rolling buffer. At each decoding step,
     only the new query Q is computed, while the K and V stored in the cache will be
     reused, so that the attention will be computed using the new Q and reused K, V.
     Meanwhile, the new token’s K and V will also be appended to the cache for later
     use.
+  id: totrans-39
   prefs: []
   type: TYPE_NORMAL
+  zh: KV 缓存通常实现为滚动缓冲区。在每次解码步骤中，仅计算新的查询 Q，而存储在缓存中的 K 和 V 将被重用，以便使用新的 Q 和重用的 K、V 来计算注意力。同时，新标记的
+    K 和 V 也将附加到缓存中供以后使用。
 - en: However, the speedup achieved by KV cache comes at a cost of memory, since KV
     cache often scales with **batch size × sequence length × hidden size × number
     of heads**, leading to a memory bottleneck when we have larger batch size or longer
     sequences.
+  id: totrans-40
   prefs: []
   type: TYPE_NORMAL
+  zh: 然而，KV 缓存带来的加速是以内存为代价的，因为 KV 缓存通常与 **batch size × sequence length × hidden size
+    × number of heads** 成比例，当我们的批大小较大或序列较长时，这会导致内存瓶颈。
 - en: 'That further leads to two techniques aiming at addressing this limitation:
     Multi-Query Attention and Grouped-Query Attention.'
+  id: totrans-41
   prefs: []
   type: TYPE_NORMAL
+  zh: 这进一步导致两种旨在解决这一局限性的技术：多查询注意力与分组查询注意力。
 - en: Multi-Query Attention (MQA) vs Grouped-Query Attention (GQA)
+  id: totrans-42
   prefs:
   - PREF_H3
   type: TYPE_NORMAL
+  zh: 多查询注意力（MQA）与分组查询注意力（GQA）
 - en: The figure below shows the comparison between the original MHA, Grouped-Query
     Attention (GQA) [10] and Multi-Query Attention (MQA) [9].
+  id: totrans-43
   prefs: []
   type: TYPE_NORMAL
+  zh: 下面的图显示了原始 MHA、分组查询注意力（GQA）[10] 和多查询注意力（MQA）[9] 之间的比较。
 - en: '![Figure 3\. MHA [6], GQA [10] AND MQA [9]. Image from [10].](../Images/029cc14fb22ca90a88961eb7faa9c16b.png)'
+  id: totrans-44
   prefs: []
   type: TYPE_IMG
+  zh: '![图 3. MHA [6]，GQA [10] 和 MQA [9]。图片来自 [10]。](../Images/029cc14fb22ca90a88961eb7faa9c16b.png)'
 - en: Figure 3\. MHA [6], GQA [10] AND MQA [9]. Image from [10].
+  id: totrans-45
   prefs: []
   type: TYPE_NORMAL
+  zh: 图 3. MHA [6]，GQA [10] 和 MQA [9]。图片来自 [10]。
 - en: The basic idea of MQA is to share a single key and a single value head across
     all query heads, which can significantly reduce memory usage but will also impact
     the accuracy of attention.
+  id: totrans-46
   prefs: []
   type: TYPE_NORMAL
+  zh: MQA的基本思想是在所有查询头之间共享单个键和单个值头，这可以显著减少内存使用，但也会影响注意力的准确性。
 - en: GQA can be seen as an interpolating method between MHA and MQA, where a single
     pair of key and value heads will be shared only by a group of query heads, not
     all queries. But still this will lead to inferior results compared to MHA.
+  id: totrans-47
   prefs: []
   type: TYPE_NORMAL
+  zh: GQA可以看作是MHA和MQA之间的插值方法，其中单个键和值头只由一组查询头共享，而不是所有查询。但即便如此，与MHA相比，这仍会导致结果较差。
 - en: In the later sections, we will see how MLA manages to seek a balance between
     memory efficiency and modeling accuracy.
+  id: totrans-48
   prefs: []
   type: TYPE_NORMAL
+  zh: 在后面的章节中，我们将看到MLA如何在内存效率和建模精度之间寻求平衡。
 - en: RoPE (Rotary Positional Embeddings)
+  id: totrans-49
   prefs:
   - PREF_H3
   type: TYPE_NORMAL
+  zh: RoPE（旋转位置嵌入）
 - en: One last piece of background we need to mention is RoPE [11], which encodes
     positional information directly into the attention mechanism by rotating the query
     and key vectors in multi-head attention using sinusoidal functions.
+  id: totrans-50
   prefs: []
   type: TYPE_NORMAL
+  zh: 我们需要提到的最后一部分背景是RoPE [11]，它通过使用正弦函数旋转多头注意力中的查询和键向量，将位置信息直接编码到注意力机制中。
 - en: More specifically, RoPE applies a **position-dependent rotation matrix** to
     the query and key vectors at each token, and uses sine and cosine functions for
     its basis but applies them in a unique way to achieve rotation.
+  id: totrans-51
   prefs: []
   type: TYPE_NORMAL
+  zh: 更具体地说，RoPE在每一个标记处对查询和键向量应用**位置相关的旋转矩阵**，并使用正弦和余弦函数作为其基函数，但以独特的方式应用它们以实现旋转。
 - en: To see what makes it position-dependent, consider a toy embedding vector with
     only 4 elements, i.e., (x_1, x_2, x_3, x_4).
+  id: totrans-52
   prefs: []
   type: TYPE_NORMAL
+  zh: 要了解其位置依赖性，考虑一个只有4个元素的玩具嵌入向量，即(x_1, x_2, x_3, x_4)。
 - en: 'To apply RoPE, we firstly group consecutive dimensions into pairs:'
+  id: totrans-53
   prefs: []
   type: TYPE_NORMAL
+  zh: 要应用RoPE，我们首先将连续的维度分组为对：
 - en: (x_1, x_2) -> position 1
+  id: totrans-54
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: (x_1, x_2) -> 位置 1
 - en: (x_3, x_4) -> position 2
+  id: totrans-55
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: (x_3, x_4) -> 位置 2
 - en: 'Then, we apply a rotation matrix to rotate each pair:'
+  id: totrans-56
   prefs: []
   type: TYPE_NORMAL
+  zh: 然后，我们将旋转矩阵应用于每一对：
 - en: '![Figure 4\. Illustration of the rotation matrix applied to a pair of tokens.
     Image by author.](../Images/c4f08154371e28d0f377c7e0545604fb.png)'
+  id: totrans-57
   prefs: []
   type: TYPE_IMG
+  zh: '![图4.应用于一对标记的旋转矩阵的说明。图片由作者提供。](../Images/c4f08154371e28d0f377c7e0545604fb.png)'
 - en: Figure 4\. Illustration of the rotation matrix applied to a pair of tokens.
     Image by author.
+  id: totrans-58
   prefs: []
   type: TYPE_NORMAL
+  zh: 图4.应用于一对标记的旋转矩阵的说明。图片由作者提供。
 - en: where θ = θ(p) = p ⋅ θ_0​, and θ_0​ is a **base frequency**. In our 4-d toy
     example, this means that (x_1, x_2) will be rotated by θ_0​, and (x_3, x_4) will
     be rotated by 2 ⋅ θ_0.
+  id: totrans-59
   prefs: []
   type: TYPE_NORMAL
+  zh: 其中 θ = θ(p) = p ⋅ θ_0，θ_0 是**基本频率**。在我们的4维玩具示例中，这意味着(x_1, x_2)将旋转θ_0，而(x_3,
+    x_4)将旋转2 ⋅ θ_0。
 - en: This is why we call this rotation matrix as **position-dependent:** at each
     position (or each pair), we will apply a different rotation matrix where the rotation
     angle is determined by position.
+  id: totrans-60
   prefs: []
   type: TYPE_NORMAL
+  zh: 这就是为什么我们称这个旋转矩阵为**位置相关的**：在每一个位置（或每一对），我们将应用不同的旋转矩阵，其中旋转角度由位置决定。
 - en: RoPE is widely used in modern LLMs due to its efficiency in encoding long sequences,
     but as we can see from the above formula, it is position-sensitive to both Q and
     K, making it incompatible with MLA in some ways.
+  id: totrans-61
   prefs: []
   type: TYPE_NORMAL
+  zh: RoPE因其编码长序列的高效性而在现代LLMs中得到广泛应用，但正如我们从前面的公式中可以看到的，它对Q和K都敏感于位置，因此在某些方面与MLA不兼容。
 - en: '* * *'
+  id: totrans-62
   prefs: []
   type: TYPE_NORMAL
+  zh: '* * *'
 - en: Multi-head Latent Attention
+  id: totrans-63
   prefs:
   - PREF_H2
   type: TYPE_NORMAL
+  zh: 多头潜在注意力
 - en: Finally we can move on to the MLA part. In this section we will first layout
     the high-level idea of MLA, and then dive deeper into why it needs to modify RoPE.
     Finally, we present the detailed algorithm of MLA as well as it performance.
+  id: totrans-64
   prefs: []
   type: TYPE_NORMAL
+  zh: 最后，我们可以继续到MLA部分。在本节中，我们将首先介绍MLA的高级概念，然后深入探讨为什么它需要修改RoPE。最后，我们将详细介绍MLA的详细算法及其性能。
 - en: 'MLA: High-level Idea'
+  id: totrans-65
   prefs:
   - PREF_H3
   type: TYPE_NORMAL
+  zh: MLA：高级概念
 - en: The basic idea of MLA is to compress the attention input **h_t** into a low-dimensional
     latent vector with dimension **d_c**, where **d_c** is much lower than the original
     (**h_n** · **d_h**). Later when we need to calculate attention, we can map this
     latent vector back to the high-dimensional space to recover the keys and values.
     As a result, only the latent vector needs to be stored, leading to significant
     memory reduction.
+  id: totrans-66
   prefs: []
   type: TYPE_NORMAL
+  zh: MLA的基本思想是将注意力输入**h_t**压缩成一个低维潜在向量，其维度为**d_c**，其中**d_c**远低于原始的（**h_n** · **d_h**）。当我们需要计算注意力时，我们可以将这个潜在向量映射回高维空间以恢复键和值。因此，只需要存储潜在向量，从而实现显著的内存减少。
 - en: This process can be more formally described with the following equations, where
     **c^{KV}_t** is the latent vector, **W^{DKV}** is the compressing matrix that
     maps **h_t**‘s dimension from (**h_n** · **d_h**) to **d_c** (here D in the superscript
     stands for "down-projection", meaning compressing the dimension), while **W^{UK}**
     and **W^{UV}** are both up-projection matrices that map the shared latent vector
     back to the high-dimensional space.
+  id: totrans-67
   prefs: []
   type: TYPE_NORMAL
 - en: '![](../Images/360a4164ea1dcdebc4003211a40ccc01.png)'
+  id: totrans-68
   prefs: []
   type: TYPE_IMG
 - en: 'Similarly, we can also map the queries into a latent, low-dimensional vector
     and then map it back to the original, high-dimensional space:'
+  id: totrans-69
   prefs: []
   type: TYPE_NORMAL
 - en: '![](../Images/67b59b515d99b0ef9ddb0024fb0babaa.png)'
+  id: totrans-70
   prefs: []
   type: TYPE_IMG
 - en: Why Decoupled RoPE is Needed
+  id: totrans-71
   prefs:
   - PREF_H3
   type: TYPE_NORMAL
 - en: As we mentioned before, RoPE is a common choice for training generation models
     to handle long sequences. If we directly apply the above MLA strategy, that will
     be incompatible with RoPE.
+  id: totrans-72
   prefs: []
   type: TYPE_NORMAL
 - en: 'To see this more clearly, consider what happens when we calculate attention
     using Eqn. (7): when we multiply the transposed **q** with **k**, the matrices
     **W^Q** and **W^{UK}** will appear in the middle, and their combination equivalents
     to a single mapping dimension from **d_c** to **d**.'
+  id: totrans-73
   prefs: []
   type: TYPE_NORMAL
 - en: In the original paper [3], the authors describe this as **W^{UK}** can be "**absorbed"**
     into **W^Q**, as a result we do not need to store **W^{UK}** in the cache, further
     reducing memory usage.
+  id: totrans-74
   prefs: []
   type: TYPE_NORMAL
 - en: However, this will not be the case when we take the rotation matrix in Figure
     (4) into consideration, as RoPE will apply a rotation matrix on the left of **W^{UK}**,
     and this rotation matrix will end up in between the transposed **W^Q** and **W^{UK}.**
+  id: totrans-75
   prefs: []
   type: TYPE_NORMAL
 - en: As we have explained in the background part, this rotation matrix is position-dependent,
     meaning the rotation matrix for each position is different. As a result, **W^{UK}**
     **can no longer be** **absorbed by W^Q.**
+  id: totrans-76
   prefs: []
   type: TYPE_NORMAL
 - en: To address this conflict, the authors propose what they call "**a decoupled
     RoPE**", by introducing additional query vectors along with a shared key vector,
     and use these additional vectors in the RoPE process only, while keeping the original
     keys kind of **isolated with the rotation matrix**.
+  id: totrans-77
   prefs: []
   type: TYPE_NORMAL
 - en: 'The entire process of MLA can be summarized as below (equation numbers reused
     from Appendix C in [3]):'
+  id: totrans-78
   prefs: []
   type: TYPE_NORMAL
 - en: '![Figure 5\. MLA process. Image edited by author based on equations in [3].](../Images/5b3f39114c5faa19fbd84136686b7a4c.png)'
+  id: totrans-79
   prefs: []
   type: TYPE_IMG
 - en: Figure 5\. MLA process. Image edited by author based on equations in [3].
+  id: totrans-80
   prefs: []
   type: TYPE_NORMAL
 - en: where
+  id: totrans-81
   prefs: []
   type: TYPE_NORMAL
 - en: Eqn. (37) to (40) describe how to process query tokens.
+  id: totrans-82
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
 - en: Eqn. (41) and (42) describe how to process key tokens.
+  id: totrans-83
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
 - en: Eqn. (43) and (44) describe how to use the additional shared key for RoPE, be
     aware that the output of (42) is **not involved in RoPE**.
+  id: totrans-84
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
 - en: Eqn. (45) describes how to process value tokens.
+  id: totrans-85
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
 - en: 'During this process, only the blue variables with boxes need to be cached.
     This process can be illustrated more clearly with the flowchart blow:'
+  id: totrans-86
   prefs: []
   type: TYPE_NORMAL
 - en: '![Figure 6\. Flowchart of MLA. Image from [3].](../Images/c6813845b33e3950fe5b63261ef6432d.png)'
+  id: totrans-87
   prefs: []
   type: TYPE_IMG
 - en: Figure 6\. Flowchart of MLA. Image from [3].
+  id: totrans-88
   prefs: []
   type: TYPE_NORMAL
+  zh: 图 6. MLA 的流程图。图片来自 [3]。
 - en: Performance of MLA
+  id: totrans-89
   prefs:
   - PREF_H3
   type: TYPE_NORMAL
+  zh: MLA 的性能
 - en: The table below compares the number of elements needed for KV cache (per token)
     as well as the modeling capacity between MHA, GQA, MQA and MLA, demonstrating
     that MLA could indeed achieve a better balance between memory efficiency vs. modeling
     capacity.
+  id: totrans-90
   prefs: []
   type: TYPE_NORMAL
+  zh: 下表比较了 MHA、GQA、MQA 和 MLA 在 KV 缓存（每 token）所需元素数量以及建模能力之间的差异，表明 MLA 确实能够在内存效率与建模能力之间实现更好的平衡。
 - en: Interestingly, the modeling capacity for MLA even surpass that of the original
     MHA.
+  id: totrans-91
   prefs: []
   type: TYPE_NORMAL
+  zh: 有趣的是，MLA 的建模能力甚至超过了原始的 MHA。
 - en: '![Table 1 from [3].](../Images/fa326bda9d50a996f8c6dd9c278a9d7e.png)'
+  id: totrans-92
   prefs: []
   type: TYPE_IMG
+  zh: '![[3]中的表 1](../Images/fa326bda9d50a996f8c6dd9c278a9d7e.png)'
 - en: Table 1 from [3].
+  id: totrans-93
   prefs: []
   type: TYPE_NORMAL
+  zh: '[3] 中的表 1。'
 - en: More specifically, the table below shows the performance of MHA, GQA and MQA
     on 7B models, where MHA significantly outperforms both MQA and GQA.
+  id: totrans-94
   prefs: []
   type: TYPE_NORMAL
+  zh: 更具体地说，下表显示了 MHA、GQA 和 MQA 在 7B 模型上的性能，其中 MHA 显著优于 MQA 和 GQA。
 - en: '![Table 8 from [3].](../Images/1d57346522aa3a5f93de3b112a7362d9.png)'
+  id: totrans-95
   prefs: []
   type: TYPE_IMG
+  zh: '![[3]中的表 8](../Images/1d57346522aa3a5f93de3b112a7362d9.png)'
 - en: Table 8 from [3].
+  id: totrans-96
   prefs: []
   type: TYPE_NORMAL
+  zh: '[3] 中的表 8。'
 - en: The authors of [3] also conduct analysis between MHA vs. MLA, and results are
     summarized in the table below, where MLA achieves better results overall.
+  id: totrans-97
   prefs: []
   type: TYPE_NORMAL
+  zh: '[3] 的作者还进行了 MHA 与 MLA 之间的分析，结果总结在下表中，其中 MLA 在整体上取得了更好的结果。'
 - en: '![Table 9 in [3].](../Images/297634a9effb141fb064b058a03a1d9f.png)'
+  id: totrans-98
   prefs: []
   type: TYPE_IMG
+  zh: '![[3]中的表 9](../Images/297634a9effb141fb064b058a03a1d9f.png)'
 - en: Table 9 in [3].
+  id: totrans-99
   prefs: []
   type: TYPE_NORMAL
+  zh: '[3] 中的表 9。'
 - en: References
+  id: totrans-100
   prefs:
   - PREF_H2
   type: TYPE_NORMAL
+  zh: 参考文献
 - en: '[1] [DeepSeek](https://www.deepseek.com/)'
+  id: totrans-101
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: '[1] [DeepSeek](https://www.deepseek.com/)'
 - en: '[2] [DeepSeek-V3 Technical Report](https://github.com/deepseek-ai/DeepSeek-V3/blob/main/DeepSeek_V3.pdf)'
+  id: totrans-102
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: '[2] [DeepSeek-V3 技术报告](https://github.com/deepseek-ai/DeepSeek-V3/blob/main/DeepSeek_V3.pdf)'
 - en: '[3] [DeepSeek-V2: A Strong, Economical, and Efficient Mixture-of-Experts Language
     Model](https://arxiv.org/abs/2405.04434)'
+  id: totrans-103
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: '[3] [DeepSeek-V2：一个强大、经济、高效的混合专家语言模型](https://arxiv.org/abs/2405.04434)'
 - en: '[4] [DeepSeekMoE: Towards Ultimate Expert Specialization in Mixture-of-Experts
     Language Models](https://arxiv.org/abs/2401.06066)'
+  id: totrans-104
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: '[4] [DeepSeekMoE：混合专家语言模型中追求终极专家专业化的方法](https://arxiv.org/abs/2401.06066)'
 - en: '[5] [Auxiliary-Loss-Free Load Balancing Strategy for Mixture-of-Experts](https://arxiv.org/abs/2408.15664)'
+  id: totrans-105
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: '[5] [混合专家的辅助损失免费负载均衡策略](https://arxiv.org/abs/2408.15664)'
 - en: '[6] [Attention Is All You Need](https://arxiv.org/abs/1706.03762)'
+  id: totrans-106
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: '[6] [Attention Is All You Need](https://arxiv.org/abs/1706.03762)'
 - en: '[7] [Generating Wikipedia by Summarizing Long Sequences](https://arxiv.org/pdf/1801.10198)'
+  id: totrans-107
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: '[7] [通过总结长序列生成维基百科](https://arxiv.org/pdf/1801.10198)'
 - en: '[8] [Improving Language Understanding by Generative Pre-Training](https://cdn.openai.com/research-covers/language-unsupervised/language_understanding_paper.pdf)'
+  id: totrans-108
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: '[8] [通过生成预训练改进语言理解](https://cdn.openai.com/research-covers/language-unsupervised/language_understanding_paper.pdf)'
 - en: '[9] [Fast Transformer Decoding: One Write-Head is All You Need](https://arxiv.org/pdf/1911.02150)'
+  id: totrans-109
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: '[9] [快速 Transformer 解码：只需一个写入头](https://arxiv.org/pdf/1911.02150)'
 - en: '[10] [GQA: Training Generalized Multi-Query Transformer Models from Multi-Head
     Checkpoints](https://arxiv.org/abs/2305.13245)'
+  id: totrans-110
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: '[10] [GQA：从多头检查点训练通用多查询 Transformer 模型](https://arxiv.org/abs/2305.13245)'
 - en: '[11] [RoFormer: Enhanced Transformer with Rotary Position Embedding](https://arxiv.org/abs/2104.09864)'
+  id: totrans-111
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: '[11] [RoFormer：增强型 Transformer 带有旋转位置嵌入](https://arxiv.org/abs/2104.09864)'
