@@ -1,320 +1,476 @@
 - en: Speed Up PyTorch With Custom Kernels. But It Gets Progressively Darker
+  id: totrans-0
   prefs:
   - PREF_H1
   type: TYPE_NORMAL
+  zh: 使用自定义内核加速 PyTorch。但情况会逐渐变得复杂
 - en: 原文：[https://towardsdatascience.com/speed-up-pytorch-with-custom-kernels-but-it-gets-progressively-darker-e5a057796269/](https://towardsdatascience.com/speed-up-pytorch-with-custom-kernels-but-it-gets-progressively-darker-e5a057796269/)
+  id: totrans-1
   prefs:
   - PREF_BQ
   type: TYPE_NORMAL
+  zh: 原文：[https://towardsdatascience.com/speed-up-pytorch-with-custom-kernels-but-it-gets-progressively-darker-e5a057796269/](https://towardsdatascience.com/speed-up-pytorch-with-custom-kernels-but-it-gets-progressively-darker-e5a057796269/)
 - en: Speed Up PyTorch with Custom Kernels
+  id: totrans-2
   prefs:
   - PREF_H1
   type: TYPE_NORMAL
+  zh: Speed Up PyTorch with Custom Kernels
 - en: Read for free at [alexdremov.me](https://alexdremov.me/speed-up-pytorch-with-custom-kernels-but-it-gets-progressively-darker?utm_source=medium)
+  id: totrans-3
   prefs:
   - PREF_BQ
   type: TYPE_NORMAL
+  zh: 免费阅读于 [alexdremov.me](https://alexdremov.me/speed-up-pytorch-with-custom-kernels-but-it-gets-progressively-darker?utm_source=medium)
 - en: PyTorch offers remarkable flexibility, allowing you to code complex GPU-accelerated
     operations in a matter of seconds. However, this convenience comes at a cost.
     PyTorch executes your code sequentially, resulting in suboptimal performance.
     This translates into slower model training, which impacts the iteration cycle
     of your experiments, the robustness of your team, the financial implications,
     and so on.
+  id: totrans-4
   prefs: []
   type: TYPE_NORMAL
+  zh: PyTorch 提供了非凡的灵活性，允许你只需几秒钟就能编写复杂的 GPU 加速操作。然而，这种便利是有代价的。PyTorch 按顺序执行你的代码，导致性能不佳。这转化为模型训练速度变慢，影响实验的迭代周期、团队的稳健性、财务影响等等。
 - en: In this post, I’ll explore three strategies for accelerating your PyTorch operations.
     Each method uses **softmax** as our "Hello World" demonstration, but you can swap
     it with any function you like, and the discussed methods would still apply.
+  id: totrans-5
   prefs: []
   type: TYPE_NORMAL
+  zh: 在这篇帖子中，我将探讨加速你的 PyTorch 操作的三个策略。每种方法都以 **softmax** 作为我们的“Hello World”演示，但你也可以用你喜欢的任何函数替换它，讨论的方法仍然适用。
 - en: We’ll begin with **torch.compile**, move on to writing a custom Triton kernel,
     and finally dive into designing a CUDA kernel.
+  id: totrans-6
   prefs: []
   type: TYPE_NORMAL
+  zh: 我们将从 **torch.compile** 开始，然后继续编写自定义的 Triton 内核，最后深入设计 CUDA 内核。
 - en: So, this post may get complicated, but bear with me.
+  id: totrans-7
   prefs: []
   type: TYPE_NORMAL
+  zh: 因此，这篇帖子可能会变得复杂，但请耐心等待。
 - en: '`torch.compile` – A Quick Way to Boost Performance'
+  id: totrans-8
   prefs:
   - PREF_H2
   type: TYPE_NORMAL
+  zh: '`torch.compile` – 提升性能的快捷方式'
 - en: 💥 *"Wait, you just turn on a single function call and it speeds up your code?
     That’s it? Sounds too good to be true."*
+  id: totrans-9
   prefs:
   - PREF_BQ
   type: TYPE_NORMAL
+  zh: 💥 *"等等，你只是打开了一个函数调用，代码就变快了？就这样？听起来太好了，不太可能是真的。"*
 - en: Yes.
+  id: totrans-10
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: 是的。
 - en: The `torch.compile` is a relatively new API in PyTorch that uses runtime graph
     capture and kernel fusion under the hood . With one decorator, you can often see
     speed improvements without significant changes to your code.
+  id: totrans-11
   prefs: []
   type: TYPE_NORMAL
+  zh: '`torch.compile` 是 PyTorch 中一个相对较新的 API，它底层使用运行时图捕获和内核融合。通过一个装饰器，你通常可以在不显著更改代码的情况下看到速度提升。'
 - en: Speaking simply, for example, we can speed up calculations by merging operations
     into one GPU function, which removes overheads of separate GPU calls. Or even
     better, optimize a chain of operations by replacing them with one equivalent!
+  id: totrans-12
   prefs: []
   type: TYPE_NORMAL
+  zh: 简单来说，例如，我们可以通过将操作合并到一个 GPU 函数中来加速计算，从而消除单独 GPU 调用的开销。或者，甚至更好地，通过用等效的单个操作替换一系列操作来优化操作链。
 - en: Such optimizations are not possible in the regular PyTorch execution mode (eager)
     as it executes operations just as they are called in the code.
+  id: totrans-13
   prefs: []
   type: TYPE_NORMAL
+  zh: 在常规 PyTorch 执行模式（急切模式）中，这些优化是不可能的，因为它会按照代码中调用的顺序执行操作。
 - en: Softmax Implementation with `torch.compile`
+  id: totrans-14
   prefs:
   - PREF_H3
   type: TYPE_NORMAL
+  zh: 使用 `torch.compile` 实现Softmax
 - en: Below is a simple example showing how to implement and compile a softmax function
     using `torch.compile`. Replace it in your model’s forward pass, and your code
     (hopefully) runs faster.
+  id: totrans-15
   prefs: []
   type: TYPE_NORMAL
+  zh: 下面是一个简单的示例，展示了如何使用 `torch.compile` 实现和编译 softmax 函数。将其替换到你的模型的前向传递中，你的代码（希望）会运行得更快。
 - en: ❗ Note that you’ll have bigger speedups if you compile the whole model and not
     just one operation
+  id: totrans-16
   prefs:
   - PREF_BQ
   type: TYPE_NORMAL
+  zh: ❗ 注意，如果你编译整个模型而不是单个操作，你会获得更大的速度提升
 - en: '**Pros**:'
+  id: totrans-17
   prefs: []
   type: TYPE_NORMAL
+  zh: '**优点**：'
 - en: One line to enable the compiler.
+  id: totrans-18
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: 一行代码即可启用编译器。
 - en: No black magic rituals needed (except for the dynamic shapes maybe).
+  id: totrans-19
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: 不需要任何黑魔法仪式（也许除了动态形状）。
 - en: '**Cons**:'
+  id: totrans-20
   prefs: []
   type: TYPE_NORMAL
+  zh: '**缺点**：'
 - en: The first pass can be slower while it compiles; afterwards, it picks up speed.
+  id: totrans-21
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: 在编译过程中，第一次运行可能会较慢；之后，它会加快速度。
 - en: Doesn’t always produce dramatic speed-ups for *all* models and can occasionally
     break if your code is too creative.
+  id: totrans-22
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: 并非总是对所有模型都能产生显著的加速效果，如果你的代码过于创新，有时甚至可能出错。
 - en: Still has problems with handling dynamic shapes.
+  id: totrans-23
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: 仍然存在处理动态形状的问题。
 - en: 😡 Dynamic shapes compilation mode is needed when input shapes change and we
     don’t want to recompile the code for each specific size.
+  id: totrans-24
   prefs:
   - PREF_BQ
   type: TYPE_NORMAL
+  zh: 😡 当输入形状改变且我们不希望为每个特定大小重新编译代码时，需要动态形状编译模式。
 - en: The ways to debug this is a whole new article.
+  id: totrans-25
   prefs: []
   type: TYPE_NORMAL
+  zh: 调试这些方法需要一篇全新的文章。
 - en: Triton Code – Write GPU Kernels With Python Breeze
+  id: totrans-26
   prefs:
   - PREF_H2
   type: TYPE_NORMAL
+  zh: Triton代码 – 使用Python Breeze编写GPU内核
 - en: Why Use Triton?
+  id: totrans-27
   prefs:
   - PREF_H3
   type: TYPE_NORMAL
+  zh: 为什么使用Triton？
 - en: '**Triton** is a language that compiles to efficient GPU kernels while letting
     you write Pythonic code. It’s used under the hood of PyTorch’s dynamo/inductor
     stack, but you can also write your own custom ops! For many matrix/tensor operations
     – like softmax – you can get huge speed-ups. Because **why** wait for official
     PyTorch kernels when you can write your own?'
+  id: totrans-28
   prefs: []
   type: TYPE_NORMAL
+  zh: '**Triton**是一种编译成高效GPU内核的语言，同时让你编写Python风格的代码。它在PyTorch的dynamo/inductor堆栈下使用，但你也可以编写自己的自定义操作！对于许多矩阵/张量操作，如softmax，你可以获得巨大的速度提升。因为**为什么**要等待官方的PyTorch内核，当你可以编写自己的内核时？'
 - en: Softmax in Triton
+  id: totrans-29
   prefs:
   - PREF_H3
   type: TYPE_NORMAL
+  zh: Triton中的Softmax
 - en: Here’s a minimal snippet that shows how we might do a naive softmax forward
     in Triton. I’ll keep it short and sweet for demonstration. In a real project,
     you’d likely do more advanced tiling and block management.
+  id: totrans-30
   prefs: []
   type: TYPE_NORMAL
+  zh: 这里有一个最小示例，展示了我们如何在Triton中实现一个简单的softmax正向操作。我会为了演示而保持它简短而清晰。在实际项目中，你可能会进行更高级的tiling和block管理。
 - en: 💥 This may look complicated, but you just need to get familiar with Triton,
     and it will start making sense.
+  id: totrans-31
   prefs:
   - PREF_BQ
   type: TYPE_NORMAL
+  zh: 💥 这可能看起来很复杂，但只要你熟悉Triton，它就会开始变得有意义。
 - en: Check out [their guides](https://triton-lang.org/main/index.html?ref=alexdremov.me)
+  id: totrans-32
   prefs: []
   type: TYPE_NORMAL
+  zh: 查看他们的指南 [their guides](https://triton-lang.org/main/index.html?ref=alexdremov.me)
 - en: Indeed, it looks complicated. But the core of the algorithm is summarized in
     a few lines.
+  id: totrans-33
   prefs: []
   type: TYPE_NORMAL
+  zh: 的确，看起来很复杂。但算法的核心总结在几行之内。
 - en: Everything else is just data management and side-hustle.
+  id: totrans-34
   prefs: []
   type: TYPE_NORMAL
+  zh: 其他的一切都是数据管理和副业。
 - en: If we’ll conduct benchmarking for different data length, we’ll see that we match
     `torch.nn.functional.softmax` performance **(which is highly optimized kernel!)**
     and dramatically outperform naive torch implementation.
+  id: totrans-35
   prefs: []
   type: TYPE_NORMAL
+  zh: 如果我们对不同长度的数据进行基准测试，我们会看到我们的性能与`torch.nn.functional.softmax`相匹配（这是一个高度优化的内核！）并且显著优于原始的torch实现。
 - en: '![Benchmarking | Image by the author](../Images/d21e8537aa4213b643533e5b6277382c.png)'
+  id: totrans-36
   prefs: []
   type: TYPE_IMG
+  zh: '![基准测试 | 图片由作者提供](../Images/d21e8537aa4213b643533e5b6277382c.png)'
 - en: Benchmarking | Image by the author
+  id: totrans-37
   prefs: []
   type: TYPE_NORMAL
+  zh: 基准测试 | 图片由作者提供
 - en: You may find the full code for the kernel and benchmark in the following github
     file.
+  id: totrans-38
   prefs: []
   type: TYPE_NORMAL
+  zh: 你可以在以下github文件中找到内核和基准测试的完整代码。
 - en: '[**kernels/src/softmax/kernel.py at main · alexdremov/kernels**](https://github.com/alexdremov/kernels/blob/main/src/softmax/kernel.py?ref=medium.com)'
+  id: totrans-39
   prefs:
   - PREF_BQ
   type: TYPE_NORMAL
+  zh: '[**kernels/src/softmax/kernel.py at main · alexdremov/kernels**](https://github.com/alexdremov/kernels/blob/main/src/softmax/kernel.py?ref=medium.com)'
 - en: '**Pros**:'
+  id: totrans-40
   prefs: []
   type: TYPE_NORMAL
+  zh: '**优点**：'
 - en: Potentially huge speed-ups by fusing ops and optimizing memory access patterns.
+  id: totrans-41
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: 通过融合操作和优化内存访问模式，可能实现巨大的速度提升。
 - en: More control than `torch.compile`.
+  id: totrans-42
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: 比torch.compile有更多的控制。
 - en: Easy to write efficient code (we matched torch implementation!)
+  id: totrans-43
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: 容易编写高效的代码（我们匹配了torch实现！）
 - en: Easy to write inefficient code (if you don’t know what you’re doing).
+  id: totrans-44
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: 容易编写低效的代码（如果你不知道你在做什么）。
 - en: '**Cons**:'
+  id: totrans-45
   prefs: []
   type: TYPE_NORMAL
+  zh: '**缺点**：'
 - en: You’re now the *kernel developer*, which means debugging if something goes sideways.
     Which is tough. Really.
+  id: totrans-46
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: 你现在成为了**内核开发者**，这意味着如果出现问题需要调试。这真的很困难。
 - en: If you go further with custom backward passes, you might need a second coffee…
     or more. That’s because torch cannot use autograd for triton. So you will need
     to define backward yourself.
+  id: totrans-47
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: 如果你进一步使用自定义反向传播，你可能需要再来一杯咖啡……或者更多。这是因为torch不能为triton使用autograd。所以你需要自己定义反向操作。
 - en: Pure CUDA (a.k.a. Going Hardcore)
+  id: totrans-48
   prefs:
   - PREF_H2
   type: TYPE_NORMAL
+  zh: 纯CUDA（即全力以赴）
 - en: Sometimes even Triton won’t cut it, or you just enjoy living on the edge. In
     that case, you can write a custom CUDA kernel in C++, compile it, and tie it into
     PyTorch via a custom extension. Projects like [[this fused CUDA softmax reference]](https://github.com/fattorib/CudaSoftmax?ref=alexdremov.me)
     show how people build specialized kernels for maximum speed.
+  id: totrans-49
   prefs: []
   type: TYPE_NORMAL
+  zh: 有时候即使是Triton也无法满足需求，或者你只是喜欢活在边缘。在这种情况下，你可以用C++编写一个自定义CUDA内核，编译它，并通过自定义扩展将其绑定到PyTorch。像[[这个融合CUDA
+    softmax参考]](https://github.com/fattorib/CudaSoftmax?ref=alexdremov.me)这样的项目展示了人们如何为最大速度构建专门的内核。
 - en: Softmax in Custom CUDA
+  id: totrans-50
   prefs:
   - PREF_H3
   type: TYPE_NORMAL
+  zh: 自定义CUDA中的Softmax
 - en: You’ll typically have a `setup.py` that compiles a `.cu` or `.cpp` file and
     exposes a Python function as an extension.
+  id: totrans-51
   prefs: []
   type: TYPE_NORMAL
+  zh: 你通常会有一个`setup.py`，它编译一个`.cu`或`.cpp`文件，并将一个Python函数作为扩展公开。
 - en: '[**GitHub – fattorib/CudaSoftmax: Softmax CUDA kernel 🙂**](https://github.com/fattorib/CudaSoftmax?ref=alexdremov.me)'
+  id: totrans-52
   prefs:
   - PREF_BQ
   type: TYPE_NORMAL
+  zh: '[**GitHub – fattorib/CudaSoftmax: Softmax CUDA内核 :)**](https://github.com/fattorib/CudaSoftmax?ref=alexdremov.me)'
 - en: I will not provide the code for this method in this post, so this fact speaks
     for itself. This approach is quite complicated, requires good justification, and
     usually the last thing you should try doing.
+  id: totrans-53
   prefs: []
   type: TYPE_NORMAL
+  zh: 我不会在这篇文章中提供这种方法的相关代码，所以这个事实本身就说明了问题。这种方法相当复杂，需要合理的理由，通常是你应该最后尝试的方法。
 - en: It’s very easy to write inefficient, buggy, unsafe code.
+  id: totrans-54
   prefs: []
   type: TYPE_NORMAL
+  zh: 编写低效、有错误、不安全的代码非常容易。
 - en: '**Pros**:'
+  id: totrans-55
   prefs: []
   type: TYPE_NORMAL
+  zh: '**优点**：'
 - en: Maximum control. "If you want something done right, do it yourself."
+  id: totrans-56
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: 最大控制权。“如果你想做得正确，就自己来做。”
 - en: Potential for the fastest possible kernel if well-optimized.
+  id: totrans-57
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: 如果优化得当，这可能是最快的内核。
 - en: '**Cons**:'
+  id: totrans-58
   prefs: []
   type: TYPE_NORMAL
+  zh: '**缺点**：'
 - en: Requires deep CUDA understanding.
+  id: totrans-59
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: 需要深入理解 CUDA。
 - en: Memory management, block sizes, shared memory – those are hard!
+  id: totrans-60
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: 内存管理、块大小、共享内存——这些都是难点！
 - en: Maintenance overhead can be **extremely** high.
+  id: totrans-61
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: 维护开销可能**非常高**。
 - en: Conclusion
+  id: totrans-62
   prefs:
   - PREF_H2
   type: TYPE_NORMAL
+  zh: 结论
 - en: 'When it comes to speeding up PyTorch operations, you can choose from progressively
     more intricate methods:'
+  id: totrans-63
   prefs: []
   type: TYPE_NORMAL
+  zh: 当谈到加速 PyTorch 操作时，你可以选择从越来越复杂的方法中进行选择：
 - en: '**`torch.compile`**: Minimal code changes needed.'
+  id: totrans-64
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: '**`torch.compile`**：需要的代码更改最少。'
 - en: '**Triton Kernel**: More control over kernel behaviour, still quite easy coding.'
+  id: totrans-65
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: '**Triton 内核**：对内核行为的控制更多，但编码仍然相当简单。'
 - en: '**Pure CUDA**: Maximum optimisation potential, but **a lot higher** complexity.'
+  id: totrans-66
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: '**纯 CUDA**：最大优化潜力，但**复杂性更高**。'
 - en: If you’re looking for the simplest improvement, start with `torch.compile`.
     If that’s insufficient, explore Triton. For advanced users, writing a custom CUDA
     kernel can yield further gains, though it demands deep GPU programming skills.
+  id: totrans-67
   prefs: []
   type: TYPE_NORMAL
+  zh: 如果你正在寻找最简单的改进，从 `torch.compile` 开始。如果这还不够，探索 Triton。对于高级用户，编写自定义 CUDA 内核可以带来进一步的提升，尽管这需要深厚的
+    GPU 编程技能。
 - en: Subscribe to not miss posts about other optimisations and useful deep learning
     techniques!
+  id: totrans-68
   prefs: []
   type: TYPE_NORMAL
+  zh: 订阅以不错过关于其他优化和有用的深度学习技术的文章！
 - en: References
+  id: totrans-69
   prefs:
   - PREF_H2
   type: TYPE_NORMAL
+  zh: 参考文献
 - en: '[Compiling the optimizer with torch.compile (PyTorch Docs)](https://pytorch.org/tutorials/recipes/compiling_optimizer.html?ref=alexdremov.me)'
+  id: totrans-70
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: '[使用 torch.compile 编译优化器 (PyTorch 文档)](https://pytorch.org/tutorials/recipes/compiling_optimizer.html?ref=alexdremov.me)'
 - en: '[How should I use torch.compile properly? (PyTorch discussion)](https://discuss.pytorch.org/t/how-should-i-use-torch-compile-properly/144598?ref=alexdremov.me)'
+  id: totrans-71
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: '[如何正确使用 torch.compile？(PyTorch 讨论区)](https://discuss.pytorch.org/t/how-should-i-use-torch-compile-properly/144598?ref=alexdremov.me)'
 - en: '[Using User-Defined Triton Kernels with torch.compile (PyTorch Docs)](https://pytorch.org/tutorials/recipes/torch_compile_user_defined_triton_kernel_tutorial.html?ref=alexdremov.me)'
+  id: totrans-72
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: '[使用 torch.compile 与用户定义的 Triton 内核 (PyTorch 文档)](https://pytorch.org/tutorials/recipes/torch_compile_user_defined_triton_kernel_tutorial.html?ref=alexdremov.me)'
 - en: '[Torch.compile with custom Triton kernel (PyTorch discussion)](https://discuss.pytorch.org/t/torch-compile-with-custom-triton-kernel/192876?ref=alexdremov.me)'
+  id: totrans-73
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: '[使用 torch.compile 与自定义 Triton 内核 (PyTorch 讨论区)](https://discuss.pytorch.org/t/torch-compile-with-custom-triton-kernel/192876?ref=alexdremov.me)'
 - en: '[GitHub: fattorib/CudaSoftmax](https://github.com/fattorib/CudaSoftmax?ref=alexdremov.me)'
+  id: totrans-74
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: '[GitHub: fattorib/CudaSoftmax](https://github.com/fattorib/CudaSoftmax?ref=alexdremov.me)'
 - en: Choose the path that fits your project’s needs and your comfort level. Good
     luck optimizing!
+  id: totrans-75
   prefs: []
   type: TYPE_NORMAL
+  zh: 选择适合你项目需求和舒适度的路径。祝你好运，优化成功！
 - en: The story was originally published at [alexdremov.me](https://alexdremov.me/speed-up-pytorch-with-custom-kernels-but-it-gets-progressively-darker?utm_source=medium)
+  id: totrans-76
   prefs:
   - PREF_BQ
   type: TYPE_NORMAL
+  zh: 这个故事最初发表在 [alexdremov.me](https://alexdremov.me/speed-up-pytorch-with-custom-kernels-but-it-gets-progressively-darker?utm_source=medium)
