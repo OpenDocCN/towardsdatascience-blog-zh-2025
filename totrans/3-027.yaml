@@ -1,596 +1,922 @@
 - en: The Shape‑First Tune‑Up Provides Organizations with a Means to Reduce MongoDB
     Expenses by 79%
+  id: totrans-0
   prefs:
   - PREF_H1
   type: TYPE_NORMAL
+  zh: Shape-First Tune-Up 为组织提供了一种减少 MongoDB 成本 79% 的方法
 - en: 原文：[https://towardsdatascience.com/the-shape%e2%80%91first-tune%e2%80%91up-provides-organizations-with-a-means-to-reduce-mongodb-expenses-by-79/](https://towardsdatascience.com/the-shape%e2%80%91first-tune%e2%80%91up-provides-organizations-with-a-means-to-reduce-mongodb-expenses-by-79/)
+  id: totrans-1
   prefs:
   - PREF_BQ
   type: TYPE_NORMAL
+  zh: 原文：[https://towardsdatascience.com/the-shape%e2%80%91first-tune%e2%80%91up-provides-organizations-with-a-means-to-reduce-mongodb-expenses-by-79/](https://towardsdatascience.com/the-shape%e2%80%91first-tune%e2%80%91up-provides-organizations-with-a-means-to-reduce-mongodb-expenses-by-79/)
 - en: '**TL;DR**'
+  id: totrans-2
   prefs: []
   type: TYPE_NORMAL
+  zh: '**TL;DR**'
 - en: '<mdspan datatext="el1746054440266" class="mdspan-comment">A fast‑growing</mdspan>
     SaaS woke up to a silent auto‑scale from **M20 → M60**, adding 20 % to their cloud
     bill overnight. In a frantic 48‑hour sprint we:'
+  id: totrans-3
   prefs: []
   type: TYPE_NORMAL
+  zh: <mdspan datatext="el1746054440266" class="mdspan-comment">快速增长的</mdspan> SaaS
+    在一夜之间从 **M20 → M60** 的静默自动扩展中醒来，云费用一夜之间增加了 20%。在疯狂的 48 小时冲刺中我们：
 - en: flattened N + 1 waterfalls with **`$lookup`** ,
+  id: totrans-4
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: 使用 **`$lookup`** 平滑 N + 1 级联，
 - en: tamed unbounded cursors with projection, **`limit()`** and TTL,
+  id: totrans-5
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: 使用投影、**`limit()`** 和 TTL 来驯服无界游标，
 - en: split 16 MB “jumbo” docs into lean metadata + GridFS blobs,
+  id: totrans-6
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: 将 16 MB 的“巨型”文档拆分为精简的元数据 + GridFS 块，
 - en: reordered a handful of sleepy indexes
+  id: totrans-7
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: 重新排列了一些沉睡的索引
 - en: And watched **$15 284 → $3 210/mo (‑79 %)** while p95 latency toppled from **1.9
     s → 140 ms**.
+  id: totrans-8
   prefs: []
   type: TYPE_NORMAL
+  zh: 同时，$15 284 → $3 210/mo (‑79 %) 的账单被削减，而 p95 延迟从 **1.9 s → 140 ms**。
 - en: All on a plain replica set.
+  id: totrans-9
   prefs: []
   type: TYPE_NORMAL
+  zh: 所有这些都在一个普通的副本集中。
 - en: '* * *'
+  id: totrans-10
   prefs: []
   type: TYPE_NORMAL
+  zh: '* * *'
 - en: Step 1: The Day the Invoice Went Supernova
+  id: totrans-11
   prefs:
   - PREF_H2
   type: TYPE_NORMAL
+  zh: 第一步：发票爆炸的那一天
 - en: '**02:17 a.m.** — The on‑call phone lit up like a pinball machine. Atlas had
     quietly hot‑swapped our trusty **M20** for a maxed‑out M60\. Slack filled with
     🟥 **BILL SHOCK** alerts while Grafana’s red‑lined graphs painted a horror movie
     in real time.'
+  id: totrans-12
   prefs: []
   type: TYPE_NORMAL
+  zh: '**02:17 a.m.** — 值班电话像弹球机一样亮了起来。Atlas 静悄悄地将我们可靠的 **M20** 热插拔为满载的 M60。Slack
+    中充满了 🟥 **账单惊吓** 提醒，而 Grafana 的红线图表实时地描绘了一部恐怖电影。'
 - en: “Finance says the new spend wipes out nine months of runway. We need a fix before
     stand‑up.”
+  id: totrans-13
   prefs:
   - PREF_BQ
   type: TYPE_NORMAL
+  zh: “财务部门表示，新的支出耗尽了九个月的运营资金。我们需要在站立会议之前找到解决方案。”
 - en: — COO, 02:38
+  id: totrans-14
   prefs:
   - PREF_BQ
   type: TYPE_NORMAL
+  zh: — 首席运营官，02:38
 - en: 'Half‑awake, the engineer cracked open the profiler. Three culprits leapt off
     the screen:'
+  id: totrans-15
   prefs: []
   type: TYPE_NORMAL
+  zh: 半梦半醒之间，工程师打开了分析器。三个罪魁祸首从屏幕上跳了出来：
 - en: '**Query waterfall** — every order API call triggered an extra fetch for its
     lines. **1 000** orders? **1 001** round‑trips.'
+  id: totrans-16
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: '**查询级联** — 每个订单 API 调用都会触发对其行额外的一次获取。**1 000** 个订单？**1 001** 次往返。'
 - en: '**Fire‑hose cursor** — a click‑stream endpoint streamed **30 months** of events
     on every page load.'
+  id: totrans-17
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: '**数据洪流游标** — 一个点击流端点在每次页面加载时流式传输 **30 个月** 的事件。'
 - en: '**Jumbo docs** — 16 MB invoices (complete with PDFs) blew the cache to bits
     and back.'
+  id: totrans-18
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: '**大型文档** — 16 MB 的发票（附带 PDF）将缓存炸得粉碎。'
 - en: Atlas tried to help by throwing hardware at the fire—upgrading from 64 GB RAM
     to 320 GB, boosting IOPS, and, of course, boosting the bill.
+  id: totrans-19
   prefs: []
   type: TYPE_NORMAL
+  zh: Atlas 试图通过向火中投入硬件来帮助——从 64 GB RAM 升级到 320 GB，提高 IOPS，当然，也提高了账单。
 - en: 'By breakfast, the war‑room rules were clear: **cut 70 % of spend in 48 hours,
     zero downtime, no schema nukes**. The play‑by‑play starts below.'
+  id: totrans-20
   prefs: []
   type: TYPE_NORMAL
+  zh: 早餐时，战情室的规定已经明确：**在 48 小时内削减 70% 的支出，零停机时间，不破坏模式**。详细的行动开始如下。
 - en: '* * *'
+  id: totrans-21
   prefs: []
   type: TYPE_NORMAL
+  zh: '* * *'
 - en: Step 2: Three Shape Crimes & How to Fix Them
+  id: totrans-22
   prefs:
   - PREF_H2
   type: TYPE_NORMAL
+  zh: 第二步：三种 Shape 犯罪及其补救方法
 - en: 2.1 N + 1 Query Tsunami
+  id: totrans-23
   prefs:
   - PREF_H4
   type: TYPE_NORMAL
+  zh: 2.1 N + 1 查询海啸
 - en: '**Symptom**: For each order the API fired a second query for its line items.
     1 000 orders ⇒ 1 001 round‑trips.'
+  id: totrans-24
   prefs: []
   type: TYPE_NORMAL
+  zh: '**症状**：对于每个订单，API 都会为它的行项目发起第二个查询。1 000 个订单 ⇒ 1 001 次往返。'
 - en: '[PRE0]'
+  id: totrans-25
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE0]'
 - en: '**Hidden fees**: 1 000 index walks, 1 000 TLS handshakes, 1 000 context switches.'
+  id: totrans-26
   prefs: []
   type: TYPE_NORMAL
+  zh: '**隐藏费用**：1 000 次索引遍历，1 000 次TLS握手，1 000 次上下文切换。'
 - en: '**Remedy (4 lines):**'
+  id: totrans-27
   prefs: []
   type: TYPE_NORMAL
+  zh: '**补救措施 (4 行)：**'
 - en: '[PRE1]'
+  id: totrans-28
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE1]'
 - en: 'Latency p95: **2 300 ms → 160 ms.** Read ops: **101 → 1 (‑99 %).**'
+  id: totrans-29
   prefs: []
   type: TYPE_NORMAL
+  zh: 延迟 p95：**2 300 ms → 160 ms**。读操作：**101 → 1 (‑99 %)**。
 - en: '**2.2 Unbounded Query Fire‑Hose**'
+  id: totrans-30
   prefs: []
   type: TYPE_NORMAL
+  zh: '**2.2 无界查询数据洪流**'
 - en: '**Symptom**: One endpoint streamed 30 months of click history in a single cursor.'
+  id: totrans-31
   prefs: []
   type: TYPE_NORMAL
+  zh: '**症状**：一个端点在一个游标中流式传输了 30 个月的点击历史。'
 - en: '[PRE2]'
+  id: totrans-32
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE2]'
 - en: '**Fix**: Cap the window and project only rendered fields.'
+  id: totrans-33
   prefs: []
   type: TYPE_NORMAL
+  zh: '**解决方案**：限制窗口并仅投影渲染字段。'
 - en: '[PRE3]'
+  id: totrans-34
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE3]'
 - en: 'Then let Mongo prune for you:'
+  id: totrans-35
   prefs: []
   type: TYPE_NORMAL
+  zh: 然后让 Mongo 为您修剪：
 - en: '[PRE4]'
+  id: totrans-36
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE4]'
 - en: A fintech client clipped **72 %** off their storage overnight using nothing
     but TTL.
+  id: totrans-37
   prefs: []
   type: TYPE_NORMAL
+  zh: 一家金融科技客户仅使用 TTL 就在一夜之间将他们的存储成本削减了 **72 %**。
 - en: '**2.3 Jumbo Document Money Pit**'
+  id: totrans-38
   prefs: []
   type: TYPE_NORMAL
+  zh: '**2.3 巨型文档金钱陷阱**'
 - en: Anything above **256 KB** already strains cache lines; one collection stored
     multi‑MB invoices complete with PDFs and 1 200‑row histories.
+  id: totrans-39
   prefs: []
   type: TYPE_NORMAL
+  zh: 任何超过 **256 KB** 的内容都会使缓存行紧张；一个存储了多 MB 发票（附带 PDF）和 1 200 行历史的集合。
 - en: '**Solution**: split by access pattern—hot metadata in invoices , cold BLOBs
     in S3/GridFS.'
+  id: totrans-40
   prefs: []
   type: TYPE_NORMAL
+  zh: '**解决方案**：根据访问模式拆分—发票中的热元数据，S3/GridFS 中的冷 BLOB。'
 - en: '[PRE5]'
+  id: totrans-41
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE5]'
 - en: SSD spend snow‑dropped; cache hit ratio jumped 22 p.p.
+  id: totrans-42
   prefs: []
   type: TYPE_NORMAL
+  zh: SSD 支出像雪一样融化；缓存命中率提高了 22 p.p。
 - en: '* * *'
+  id: totrans-43
   prefs: []
   type: TYPE_NORMAL
+  zh: '* * *'
 - en: Step 3: Four Shape Sins Hiding in Plain Sight
+  id: totrans-44
   prefs:
   - PREF_H2
   type: TYPE_NORMAL
+  zh: 步骤 3：显而易见的四个形状罪过
 - en: Shape isn’t just about document size—it’s how queries, indexes and access patterns
     intertwine.
+  id: totrans-45
   prefs: []
   type: TYPE_NORMAL
+  zh: 形状不仅仅是关于文档大小——它是查询、索引和访问模式交织的方式。
 - en: These four anti‑patterns lurk in most production clusters and silently drain
     cash.
+  id: totrans-46
   prefs: []
   type: TYPE_NORMAL
+  zh: 这四种反模式潜伏在大多数生产集群中，并默默地消耗资金。
 - en: '**3.1 Low‑Cardinality Leading Index Key**'
+  id: totrans-47
   prefs: []
   type: TYPE_NORMAL
+  zh: '**3.1 低基数前导索引键**'
 - en: '**Symptom** The index starts with a field that has < 10 % distinct values,
     e.g. **{ type: 1, ts: -1 }** . The planner must traverse huge swaths before applying
     the selective part.'
+  id: totrans-48
   prefs: []
   type: TYPE_NORMAL
+  zh: '**症状** 索引以具有 < 10% 独特值的字段开始，例如 **`{ type: 1, ts: -1 }`**。计划者必须遍历大量数据，然后应用选择部分。'
 - en: '**Cost** High B‑tree fan‑out, poor cache locality, extra disk seeks.'
+  id: totrans-49
   prefs: []
   type: TYPE_NORMAL
+  zh: '**成本** 高 B 树分支因子，缓存局部性差，额外的磁盘查找。'
 - en: '**Fix** Move the selective key (**userId , orgId , tenantId**) first: **{ userId:
     1, ts: -1 }** . Rebuild online, then drop the old index.'
+  id: totrans-50
   prefs: []
   type: TYPE_NORMAL
+  zh: '**修复** 首先将选择键（**userId, orgId, tenantId**）移动：**{ userId: 1, ts: -1 }**。在线重建后，删除旧索引。'
 - en: '**3.2 Blind `$regex` Scan**'
+  id: totrans-51
   prefs: []
   type: TYPE_NORMAL
+  zh: '**3.2 盲 `$regex` 扫描**'
 - en: '**Symptom** **`$regex: /foo/i`** on a non‑indexed field forces a full collection
     scan; CPU spikes, cache churns.'
+  id: totrans-52
   prefs: []
   type: TYPE_NORMAL
+  zh: '**症状** **`$regex: /foo/i`** 在非索引字段上强制全集合扫描；CPU 激增，缓存翻滚。'
 - en: Cost Each pattern match walks every document and decodes BSON in the hot path.
+  id: totrans-53
   prefs: []
   type: TYPE_NORMAL
+  zh: 每个模式匹配都会遍历每个文档并解码热路径中的 BSON。
 - en: Fix Prefer anchored patterns ( **`/^foo/`** ) with a supporting index, or add
     a searchable slug field ( **`lower(name)`** ) and index that instead.
+  id: totrans-54
   prefs: []
   type: TYPE_NORMAL
+  zh: 修复优先使用锚定模式（**`/^foo/`**）并带有支持索引，或者添加可搜索的缩略字段（**`lower(name)`**）并对其索引。
 - en: '**3.3 findOneAndUpdate as a Message Queue**'
+  id: totrans-55
   prefs: []
   type: TYPE_NORMAL
+  zh: '**3.3 findOneAndUpdate 作为消息队列**'
 - en: '**Symptom** Workers poll with **`findOneAndUpdate({ status: ''new'' }, { $set:
     { status: ''taken'' } }).`**'
+  id: totrans-56
   prefs: []
   type: TYPE_NORMAL
+  zh: '**症状** 工作者使用 **`findOneAndUpdate({ status: ''new'' }, { $set: { status: ''taken''
+    } }).`** 进行轮询。'
 - en: '**Cost** Document‑level locks serialize writers; throughput collapses beyond
     a few thousand ops/s.'
+  id: totrans-57
   prefs: []
   type: TYPE_NORMAL
+  zh: '**成本** 文档级锁序列化写入者；吞吐量在几千 ops/s 以下崩溃。'
 - en: '**Fix** Use a purpose‑built queue (Redis Streams, Kafka, SQS) or MongoDB’s
     native change streams to push events, keeping writes append‑only.'
+  id: totrans-58
   prefs: []
   type: TYPE_NORMAL
+  zh: '**修复** 使用专用队列（Redis Streams、Kafka、SQS）或 MongoDB 的本地更改流来推送事件，保持写入为追加。'
 - en: '**3.4 Offset Pagination Trap**'
+  id: totrans-59
   prefs: []
   type: TYPE_NORMAL
+  zh: '**3.4 偏移分页陷阱**'
 - en: '**Symptom** **`find().skip(N).limit(20)`** where N can reach six‑figure offsets.'
+  id: totrans-60
   prefs: []
   type: TYPE_NORMAL
+  zh: '**症状** **`find().skip(N).limit(20)`** 其中 N 可以达到六位数的偏移量。'
 - en: '**Cost** Mongo still counts and discards all skipped docs—linear time. Latency
     balloons and billing counts each read.'
+  id: totrans-61
   prefs: []
   type: TYPE_NORMAL
+  zh: '**成本** Mongo 仍然会计算并丢弃所有跳过的文档——线性时间。延迟激增，计费统计每个读取。'
 - en: '**Fix** Switch to **range cursors** using compound index **`(ts, _id)`** :'
+  id: totrans-62
   prefs: []
   type: TYPE_NORMAL
+  zh: '**修复** 使用复合索引 **`(ts, _id)`** 切换到 **范围游标**：'
 - en: '[PRE6]'
+  id: totrans-63
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE6]'
 - en: Master these four and you’ll reclaim RAM, lower read units, and postpone sharding
     by quarters.
+  id: totrans-64
   prefs: []
   type: TYPE_NORMAL
+  zh: 掌握这四个，你将回收 RAM，降低读取单元，并推迟分片数个季度。
 - en: '* * *'
+  id: totrans-65
   prefs: []
   type: TYPE_NORMAL
+  zh: '* * *'
 - en: Step 4: Cost Anatomy 101
+  id: totrans-66
   prefs:
   - PREF_H2
   type: TYPE_NORMAL
+  zh: 步骤 4：成本解剖 101
 - en: '| Metric | Before | Unit $ | Cost | After | Δ % |'
+  id: totrans-67
   prefs: []
   type: TYPE_TB
+  zh: '| 度量 | 前 | 单位 $ | 成本 | 后 | Δ % |'
 - en: '| --- | --- | --- | --- | --- | --- |'
+  id: totrans-68
   prefs: []
   type: TYPE_TB
+  zh: '| --- | --- | --- | --- | --- | --- |'
 - en: '| Reads (3 k/s) | 7.8 B | 0.09/M | $702 | 2.3 B | -70 |'
+  id: totrans-69
   prefs: []
   type: TYPE_TB
+  zh: '| 读取（3 k/s） | 7.8 B | 0.09/M | $702 | 2.3 B | -70 |'
 - en: '| Writes (150/s) | 380 M | 0.225/M | $86 | 380 M | 0 |'
+  id: totrans-70
   prefs: []
   type: TYPE_TB
+  zh: '| 写入（150/s） | 380 M | 0.225/M | $86 | 380 M | 0 |'
 - en: '| Xfer | 1.5 TB | 0.25/GB | $375 | 300 GB | -80 |'
+  id: totrans-71
   prefs: []
   type: TYPE_TB
+  zh: '| 转移 | 1.5 TB | 0.25/GB | $375 | 300 GB | -80 |'
 - en: '| Storage | 2 TB | 0.24/GB | $480 | 800 GB | -60 |'
+  id: totrans-72
   prefs: []
   type: TYPE_TB
+  zh: '| 存储 | 2 TB | 0.24/GB | $480 | 800 GB | -60 |'
 - en: '| **Total** |  | **$1,643** |  | **-66** |'
+  id: totrans-73
   prefs: []
   type: TYPE_TB
+  zh: '| **总计** |  | **$1,643** |  | **-66** |'
 - en: Step 5: 48‑Hour Rescue Timeline
+  id: totrans-74
   prefs:
   - PREF_H2
   type: TYPE_NORMAL
+  zh: 步骤 5：48 小时救援时间表
 - en: '| Hour | Action | Tool | Win |'
+  id: totrans-75
   prefs: []
   type: TYPE_TB
+  zh: '| 小时 | 行动 | 工具 | 胜利 |'
 - en: '| --- | --- | --- | --- |'
+  id: totrans-76
   prefs: []
   type: TYPE_TB
+  zh: '| --- | --- | --- | --- |'
 - en: '| 0‑2 | Enable profiler (slowms = 50) | mongo shell | Top 10 slow ops located
     |'
+  id: totrans-77
   prefs: []
   type: TYPE_TB
+  zh: '| 0-2 | 启用分析器（slowms = 50） | mongo shell | 定位前 10 个慢操作 |'
 - en: '| 2‑6 | Replace N + 1 with $lookup | VS Code + tests | 90 % fewer reads |'
+  id: totrans-78
   prefs: []
   type: TYPE_TB
+  zh: '| 2-6 | 用 $lookup 替换 N + 1 | VS Code + 测试 | 读取量减少 90% |'
 - en: '| 6‑10 | Add projections & limit() | API layer | RAM steady, API 4× faster
     |'
+  id: totrans-79
   prefs: []
   type: TYPE_TB
+  zh: '| 6-10 | 添加投影和 limit() | API 层 | RAM 稳定，API 快 4 倍 |'
 - en: '| 10‑16 | Split jumbo docs | Scripted ETL | Working set fits in RAM |'
+  id: totrans-80
   prefs: []
   type: TYPE_TB
+  zh: '| 10-16 | 分割巨型文档 | 脚本 ETL | 工作集适合在 RAM 中 |'
 - en: '| 16‑22 | Drop/re‑order weak indexes | Compass | Disk shrinks, cache hits ↑
     |'
+  id: totrans-81
   prefs: []
   type: TYPE_TB
+  zh: '| 16-22 | 删除/重新排序弱索引 | Compass | 磁盘缩小，缓存命中↑ |'
 - en: '| 22‑30 | Create TTLs / Online Archive | Atlas UI | −60 % storage |'
+  id: totrans-82
   prefs: []
   type: TYPE_TB
+  zh: '| 22-30 | 创建 TTLs/在线存档 | Atlas UI | 存储 -60% |'
 - en: '| 30‑36 | Wire Grafana panels | Prometheus | Early warnings live |'
+  id: totrans-83
   prefs: []
   type: TYPE_TB
+  zh: '| 30-36 | 连接 Grafana 面板 | Prometheus | 提前警告实时 |'
 - en: '| 36‑48 | Load‑test with k6 | k6 + Atlas | p95 < 150 ms @ 2× load |'
+  id: totrans-84
   prefs: []
   type: TYPE_TB
+  zh: '| 36-48 | 使用 k6 进行负载测试 | k6 + Atlas | 2 倍负载下 p95 < 150 毫秒 |'
 - en: '* * *'
+  id: totrans-85
   prefs: []
   type: TYPE_NORMAL
+  zh: '* * *'
 - en: 'Step 6: Self‑Audit Checklist'
+  id: totrans-86
   prefs:
   - PREF_H2
   type: TYPE_NORMAL
+  zh: 步骤 6：自我审计清单
 - en: Largest doc ÷ median > 10? → Refactor.
+  id: totrans-87
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: 最大文档除以中位数大于 10？→ 重新设计。
 - en: Any cursor > 1 000 docs? → Paginate.
+  id: totrans-88
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: 任何游标 > 1,000 个文档？→ 分页。
 - en: TTL on every event collection? (Y/N)
+  id: totrans-89
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: 每个事件集合的 TTL？（是/否）
 - en: Index cardinality < 10 %? → Drop or reorder.
+  id: totrans-90
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: 索引基数 < 10%？→ 删除或重新排序。
 - en: Profiler “slow” ops > 1 %? → Optimize or cache.
+  id: totrans-91
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: 分析器“慢”操作 > 1%？→ 优化或缓存。
 - en: Tape this to your monitor before Friday deploys.
+  id: totrans-92
   prefs: []
   type: TYPE_NORMAL
+  zh: 在周五部署之前将此贴到你的显示器上。
 - en: '* * *'
+  id: totrans-93
   prefs: []
   type: TYPE_NORMAL
+  zh: '* * *'
 - en: Step 7: Why Shape > Indexes (Most Days)
+  id: totrans-94
   prefs:
   - PREF_H2
   type: TYPE_NORMAL
+  zh: 第 7 步：为什么形状 > 索引（大多数日子）
 - en: 'Adding an index is like buying a faster forklift for the warehouse: it speeds
     up picking, but it does **nothing** if the aisles are cluttered with oversized
     boxes. In MongoDB terms the planner’s cost formula is roughly:'
+  id: totrans-95
   prefs: []
   type: TYPE_NORMAL
+  zh: 添加索引就像为仓库购买一台更快的叉车：它能加快拣选，但如果通道被超大的箱子堵塞，则毫无作用。在 MongoDB 术语中，规划者的成本公式大致为：
 - en: '[PRE7]'
+  id: totrans-96
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE7]'
 - en: Indexes trim **, yet** and **“** can still dominate when documents are bloated,
     sparsely‑accessed, or poorly grouped.
+  id: totrans-97
   prefs: []
   type: TYPE_NORMAL
+  zh: 索引修剪 **, yet** 和 **“** 在文档膨胀、访问稀疏或分组不佳时仍然可能占主导地位。
 - en: '**A Tale of Two Queries**'
+  id: totrans-98
   prefs: []
   type: TYPE_NORMAL
+  zh: '**两个查询的故事**'
 - en: '|  | Skinny Doc (2 kB) | Jumbo Doc (16 MB) |'
+  id: totrans-99
   prefs: []
   type: TYPE_TB
+  zh: '|  | 瘦文档（2 kB） | 超大文档（16 MB） |'
 - en: '| --- | --- | --- |'
+  id: totrans-100
   prefs: []
   type: TYPE_TB
+  zh: '| --- | --- | --- |'
 - en: '| ixScans | 1 000 | 1 000 |'
+  id: totrans-101
   prefs: []
   type: TYPE_TB
+  zh: '| ixScans | 1 000 | 1 000 |'
 - en: '| fetches | 1 000×2 kB = 2 MB | 1 000×16 MB = 16 GB |'
+  id: totrans-102
   prefs: []
   type: TYPE_TB
+  zh: '| 获取 | 1 000×2 kB = 2 MB | 1 000×16 MB = 16 GB |'
 - en: '| Net time | 80 ms | 48 s + eviction storms |'
+  id: totrans-103
   prefs: []
   type: TYPE_TB
+  zh: '| 净时间 | 80 ms | 48 s + 清除风暴 |'
 - en: Same index, same query pattern — the only difference is **shape**.
+  id: totrans-104
   prefs: []
   type: TYPE_NORMAL
+  zh: 相同的索引，相同的查询模式——唯一的区别是**形状**。
 - en: '**The Rule of Thumb**'
+  id: totrans-105
   prefs: []
   type: TYPE_NORMAL
+  zh: '**经验法则**'
 - en: Fix shape first, then index once.
+  id: totrans-106
   prefs:
   - PREF_BQ
   type: TYPE_NORMAL
+  zh: 首先固定形状，然后一次性索引。
 - en: – Every reshaped document shrinks every future fetch, cache line, and replication
     packet.
+  id: totrans-107
   prefs:
   - PREF_BQ
   type: TYPE_NORMAL
+  zh: – 每个重塑的文档都会缩小未来的获取、缓存行和复制数据包。
 - en: Three shape wins easily beat a dozen extra B‑trees.
+  id: totrans-108
   prefs: []
   type: TYPE_NORMAL
+  zh: 三个形状的胜利轻易胜过十二个额外的 B 树。
 - en: '* * *'
+  id: totrans-109
   prefs: []
   type: TYPE_NORMAL
+  zh: '* * *'
 - en: Step 8: Live Metrics You Should Alert On (PromQL)
+  id: totrans-110
   prefs:
   - PREF_H2
   type: TYPE_NORMAL
+  zh: 第 8 步：你应该警告的实时指标（PromQL）
 - en: '[PRE8]'
+  id: totrans-111
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE8]'
 - en: '* * *'
+  id: totrans-112
   prefs: []
   type: TYPE_NORMAL
+  zh: '* * *'
 - en: Step 9: Thin‑Slice Migration Script
+  id: totrans-113
   prefs:
   - PREF_H2
   type: TYPE_NORMAL
+  zh: 第 9 步：薄片迁移脚本
 - en: 'Need to break a 1‑TB **`events`** collection into sub‑collections without downtime?
     Use double‑writes + backfill:'
+  id: totrans-114
   prefs: []
   type: TYPE_NORMAL
+  zh: 需要在不停机的情况下将 1 TB 的 **`events`** 集合拆分为子集合？使用双重写入 + 补充：
 - en: '[PRE9]'
+  id: totrans-115
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE9]'
 - en: '* * *'
+  id: totrans-116
   prefs: []
   type: TYPE_NORMAL
+  zh: '* * *'
 - en: Step 11: When Sharding Is Actually Required
+  id: totrans-117
   prefs:
   - PREF_H2
   type: TYPE_NORMAL
+  zh: 第 11 步：当实际需要分片时
 - en: Sharding is a **last‑mile tactic, not a first‑line cure**. It fractures data,
     multiplies failure modes, and complicates every migration. Exhaust vertical upgrades
     and shape‑based optimizations first. Reach for a shard key only when at least
     one of the thresholds below is **sustained** under real load and cannot be solved
     cheaper.
+  id: totrans-118
   prefs: []
   type: TYPE_NORMAL
+  zh: 分片是一种**最后一英里策略，而不是一线解决方案**。它分割数据，增加故障模式，并使每次迁移都变得复杂。首先耗尽垂直升级和基于形状的优化。只有在以下阈值之一在真实负载下**持续**且无法以更低成本解决时，才考虑使用分片键。
 - en: '**Hard Capacity Ceilings**'
+  id: totrans-119
   prefs: []
   type: TYPE_NORMAL
+  zh: '**硬容量上限**'
 - en: '| Symptom | Rule of Thumb | Why Horizontal Split Helps |'
+  id: totrans-120
   prefs: []
   type: TYPE_TB
+  zh: '| 症状 | 经验法则 | 为什么水平拆分有帮助 |'
 - en: '| --- | --- | --- |'
+  id: totrans-121
   prefs: []
   type: TYPE_TB
+  zh: '| --- | --- | --- |'
 - en: '| Working set sits above 80 % of physical RAM for 24 h+ | < 60 % is healthy;
     60–80 % can be masked by a bigger box; > 80 % pages constantly | Splitting puts
     hot partitions on separate nodes, restoring cache‑hit ratio |'
+  id: totrans-122
   prefs: []
   type: TYPE_TB
+  zh: '| 工作集在 24 h+ 内位于物理 RAM 的 80% 以上 | < 60% 是健康的；60-80% 可以通过更大的盒子来掩盖；> 80% 的页面会不断出现
+    | 分割将热分区放在不同的节点上，恢复缓存命中率 |'
 - en: '| Primary write throughput > 15 000 ops/s after index tuning | Below 10 000
     ops/s you can often survive by batching or bulk upserts | Isolating high‑velocity
     chunks reduces journal lag and lock contention |'
+  id: totrans-123
   prefs: []
   type: TYPE_TB
+  zh: '| 主要写入吞吐量在索引调整后 > 15 000 ops/s | 低于 10 000 ops/s，您通常可以通过批处理或批量更新来生存 | 隔离高速块可以减少日志延迟和锁竞争
+    |'
 - en: '| Multi‑region product needs < 70 ms p95 read latency | Speed‑of‑light sets
     ~80 ms US↔EU floor | Zone sharding pins data near users without resorting to edge
     caches |'
+  id: totrans-124
   prefs: []
   type: TYPE_TB
+  zh: '| 多区域产品需要 < 70 ms p95 读取延迟 | 光速设定 ~80 ms US↔EU 楼层 | 区域分片将数据靠近用户，而不需要求助于边缘缓存
+    |'
 - en: '**Soft Signals Sharding Is Approaching**'
+  id: totrans-125
   prefs: []
   type: TYPE_NORMAL
+  zh: '**软信号表明分片即将到来**'
 - en: Index builds exceed maintenance windows even with online indexing.
+  id: totrans-126
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: 即使使用在线索引，索引构建也会超过维护窗口。
 - en: Compaction time eats into disaster‑recovery SLA.
+  id: totrans-127
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: 压缩时间会侵蚀灾难恢复服务等级协议。
 - en: A single tenant owns > 25 % of cluster volume.
+  id: totrans-128
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: 单个租户拥有 > 25% 的集群容量。
 - en: Profiler shows > 500 ms lock spikes from long transactions.
+  id: totrans-129
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: 分析器显示来自长事务的 > 500 ms 锁峰值。
 - en: '**Checklist Before You Cut**'
+  id: totrans-130
   prefs: []
   type: TYPE_NORMAL
+  zh: '**切割前的清单**'
 - en: '**Reshape documents**: if the largest doc is 20 × the median, refactor first.'
+  id: totrans-131
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: '**重塑文档**：如果最大文档是中位数的 20 倍，则首先进行重构。'
 - en: '**Enable compression** ( **zstd** or **snappy** ) often buys 30 % storage headroom.'
+  id: totrans-132
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: '**启用压缩**（**zstd** 或 **snappy**）通常可以节省 30% 的存储空间。'
 - en: '**Archive cold data** via Online Archive or tiered S3 storage.'
+  id: totrans-133
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: '**通过在线归档或分层 S3 存储归档冷数据**。'
 - en: Rewrite hottest endpoints in Go/Rust if JSON parsing dominates CPU.
+  id: totrans-134
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: 如果 JSON 解析主导 CPU，则用 Go/Rust 重写最热端点。
 - en: Run **`mongo‑perf`**; if workload fits a single replica set post‑fixes, abort
     the shard plan.
+  id: totrans-135
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: 运行**`mongo-perf`**；如果工作负载适合单个副本集后修复，则中止分片计划。
 - en: '**Choosing a Shard Key**'
+  id: totrans-136
   prefs: []
   type: TYPE_NORMAL
+  zh: '**选择分片键**'
 - en: Use **high‑cardinality, monotonically increasing** fields ( **`ObjectId`** ,
     timestamp prefix).
+  id: totrans-137
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: 使用**高基数、单调递增**的字段（**`ObjectId`**，时间戳前缀）。
 - en: Avoid low‑entropy keys (**`status`** , **`country`** ) that funnel writes to
     a few chunks.
+  id: totrans-138
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: 避免低熵键（**`status`**，**`country`**）将写入引导到几个块中。
 - en: Put the most common query predicate first to avoid scatter‑gather.
+  id: totrans-139
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: 将最常见的查询谓词放在第一位，以避免分散-聚集。
 - en: Sharding is surgery; once you cut, you live with the scar. Make sure the patient
     truly needs the operation.
+  id: totrans-140
   prefs:
   - PREF_BQ
   type: TYPE_NORMAL
+  zh: 分片就像手术；一旦你切了，就得忍受疤痕。确保病人真正需要这个手术。
 - en: '* * *'
+  id: totrans-141
   prefs: []
   type: TYPE_NORMAL
+  zh: '* * *'
 - en: Conclusion — Shaping Up Before the Bill Comes Due
+  id: totrans-142
   prefs:
   - PREF_H2
   type: TYPE_NORMAL
+  zh: 结论 — 在账单到期前做好准备
 - en: When the **M60** upgrade landed with a silent boom, it wasn’t the hardware’s
     fault it was a wake-up call. This wasn’t about CPU, memory, or disk it was about
     shape. Shape of the documents. Shape of the queries. Shape of the assumptions
     that quietly bloated over months of “just ship it” sprints.
+  id: totrans-143
   prefs: []
   type: TYPE_NORMAL
+  zh: 当**M60**升级以无声的轰鸣声落地时，这不是硬件的错，这是一个警钟。这不仅仅关乎CPU、内存或磁盘，这是关于形状。文档的形状。查询的形状。在“只是发货”的冲刺中默默膨胀了几个月的假设的形状。
 - en: Fixing it didn’t take a new database, a weekend migration, or an army of consultants.
     It took a team willing to look inward, to trade panic for profiling, and to reshape
     what they already had.
+  id: totrans-144
   prefs: []
   type: TYPE_NORMAL
+  zh: 修复它不需要新的数据库、周末迁移或一队顾问。只需要一个愿意内省、用分析代替恐慌、重塑现有事物的团队。
 - en: 'The results were undeniable: latency down by **92%**, costs cut by nearly **80%**,
     and a codebase now lean enough to breathe.'
+  id: totrans-145
   prefs: []
   type: TYPE_NORMAL
+  zh: 结果是无可否认的：延迟降低了**92**%，成本减少了近**80**%，代码库现在足够精简，可以呼吸。
 - en: 'But here’s the real takeaway: technical debt on shape isn’t just a performance
     issue it’s a financial one. And unlike indexes or caching tricks, shaping things
     right up front pays off every single time your query runs, every time your data
     replicates, every time you scale.'
+  id: totrans-146
   prefs: []
   type: TYPE_NORMAL
+  zh: 但真正的收获是：形状上的技术债务不仅仅是一个性能问题，它还是一个财务问题。而且与索引或缓存技巧不同，正确塑造事物在每次查询运行时、每次数据复制时、每次你扩展时都会带来回报。
 - en: 'So before your next billing cycle spikes, ask yourself:'
+  id: totrans-147
   prefs: []
   type: TYPE_NORMAL
+  zh: 所以在你下一个账单周期激增之前，问问自己：
 - en: Does every endpoint need the full document?
+  id: totrans-148
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: 每个端点都需要完整的文档吗？
 - en: Are we designing for reads, or just writing fast?
+  id: totrans-149
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: 我们是在为读取设计，还是只是快速写入？
 - en: Are our indexes working, or just working hard?
+  id: totrans-150
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: 我们的索引是有效工作，还是只是努力工作？
 - en: Shape-first isn’t a technique — it’s a mindset. A habit. And the earlier you
     adopt it, the longer your system — and your runway — will last.
+  id: totrans-151
   prefs: []
   type: TYPE_NORMAL
+  zh: 以形状为先并不是一种技术——它是一种心态。一种习惯。而且你越早采用它，你的系统——以及你的发展空间——就会持续更久。
 - en: '* * *'
+  id: totrans-152
   prefs: []
   type: TYPE_NORMAL
+  zh: '* * *'
 - en: Sources & Further Reading
+  id: totrans-153
   prefs:
   - PREF_H2
   type: TYPE_NORMAL
+  zh: 来源与进一步阅读
 - en: MongoDB Engineering Blog — [Understanding WiredTiger Cache](https://www.mongodb.com/docs/manual/core/wiredtiger/)
+  id: totrans-154
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: MongoDB工程博客 — [理解WiredTiger缓存](https://www.mongodb.com/docs/manual/core/wiredtiger/)
 - en: AWS Architecture Blog — [Cost‑Optimizing Document Stores](https://aws.amazon.com/ru/blogs/architecture/top-architecture-blog-posts-of-2024/)
+  id: totrans-155
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: AWS架构博客 — [优化文档存储成本](https://aws.amazon.com/ru/blogs/architecture/top-architecture-blog-posts-of-2024/)
 - en: Prisma – [Avoiding N+1 Queries](https://www.youtube.com/watch?v=7oMfBGEdwsc&ab_channel=Prisma)
+  id: totrans-156
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: Prisma – [避免N+1查询](https://www.youtube.com/watch?v=7oMfBGEdwsc&ab_channel=Prisma)
 - en: MongoDB Engineering Blog — [Query Optimization Techniques](https://www.mongodb.com/docs/manual/tutorial/optimize-query-performance-with-indexes-and-projections/)
+  id: totrans-157
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: MongoDB工程博客 — [查询优化技术](https://www.mongodb.com/docs/manual/tutorial/optimize-query-performance-with-indexes-and-projections/)
 - en: About the Author
+  id: totrans-158
   prefs:
   - PREF_H2
   type: TYPE_NORMAL
+  zh: 关于作者
 - en: '**Hayk Ghukasyan** is a Chief of Engineering at Hexact, where he helps build
     automation platforms like Hexomatic and Hexospark. He has over 20 years of experience
     in large-scale systems architecture, real-time databases, and optimization engineering.'
+  id: totrans-159
   prefs: []
   type: TYPE_NORMAL
+  zh: '**海克·古卡西亚安**是Hexact的首席工程师，在那里他帮助构建自动化平台，如Hexomatic和Hexospark。他在大规模系统架构、实时数据库和优化工程方面拥有超过20年的经验。'
