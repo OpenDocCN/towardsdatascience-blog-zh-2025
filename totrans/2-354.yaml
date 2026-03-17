@@ -1,347 +1,522 @@
 - en: Pause Your ML Pipelines for Human Review Using AWS Step Functions + Slack
+  id: totrans-0
   prefs:
   - PREF_H1
   type: TYPE_NORMAL
+  zh: 使用AWS Step Functions + Slack暂停您的机器学习管道以供人工审查
 - en: 原文：[https://towardsdatascience.com/pause-your-ml-pipelines-for-human-review-using-aws-step-functions-slack/](https://towardsdatascience.com/pause-your-ml-pipelines-for-human-review-using-aws-step-functions-slack/)
+  id: totrans-1
   prefs:
   - PREF_BQ
   type: TYPE_NORMAL
+  zh: 原文：[https://towardsdatascience.com/pause-your-ml-pipelines-for-human-review-using-aws-step-functions-slack/](https://towardsdatascience.com/pause-your-ml-pipelines-for-human-review-using-aws-step-functions-slack/)
 - en: <mdspan datatext="el1746666014364" class="mdspan-comment">Have you ever</mdspan>
     wanted to pause an automated workflow to wait for a human decision?
+  id: totrans-2
   prefs: []
   type: TYPE_NORMAL
+  zh: <mdspan datatext="el1746666014364" class="mdspan-comment">你有没有想过</mdspan>暂停自动工作流程以等待人工决策？
 - en: Maybe you need approval before provisioning cloud resources, promoting a machine
     learning model to production, or charging a customer’s credit card.
+  id: totrans-3
   prefs: []
   type: TYPE_NORMAL
+  zh: 可能在你配置云资源、将机器学习模型推广到生产或向客户的信用卡收费之前需要审批。
 - en: In many **data science and machine learning workflows**, automation gets you
     90% of the way — but that critical last step often needs human judgment.
+  id: totrans-4
   prefs: []
   type: TYPE_NORMAL
+  zh: 在许多**数据科学和机器学习工作流程**中，自动化可以让你走90%的路——但那关键的最后一步通常需要人类的判断。
 - en: Especially in production environments, **model retraining**, **anomaly overrides**,
     or **large data movements** require careful human review to avoid expensive mistakes.
+  id: totrans-5
   prefs: []
   type: TYPE_NORMAL
+  zh: 尤其是在生产环境中，**模型重新训练**、**异常覆盖**或**大量数据移动**需要仔细的人工审查，以避免昂贵的错误。
 - en: In my case, I needed to manually review situations where my system flagged **more
     than 6% of customer data for anomalies** — often due to accidental pushes by customers.
+  id: totrans-6
   prefs: []
   type: TYPE_NORMAL
+  zh: 在我的情况下，我需要手动审查系统标记**超过6%的客户数据为异常**的情况——通常是由于客户意外推送造成的。
 - en: 'Before I implemented a proper workflow, this was handled informally: developers
     would directly update production databases (!) — risky, error-prone, and unscalable.'
+  id: totrans-7
   prefs: []
   type: TYPE_NORMAL
+  zh: 在我实施正式的工作流程之前，这是以非正式方式处理的：开发者会直接更新生产数据库（！）——这是危险的、容易出错的，且不可扩展的。
 - en: To solve this, I built a **scalable manual approval system** using **AWS Step
     Functions**, **Slack**, **Lambda**, and **SNS** — a cloud-native, low-cost architecture
     that cleanly paused workflows for human approvals without spinning up idle compute.
+  id: totrans-8
   prefs: []
   type: TYPE_NORMAL
+  zh: 为了解决这个问题，我使用**AWS Step Functions**、**Slack**、**Lambda**和**SNS**构建了一个**可扩展的手动审批系统**——这是一个云原生、低成本架构，可以在不启动空闲计算的情况下干净地暂停工作流程以供人工审批。
 - en: In this post, I’ll walk you through the full design, the AWS resources involved,
     and how you can apply it to your own critical workflows.
+  id: totrans-9
   prefs: []
   type: TYPE_NORMAL
+  zh: 在这篇文章中，我将向您介绍完整的设计、涉及的AWS资源以及如何将其应用于您自己的关键工作流程。
 - en: Let’s get into it 👇
+  id: totrans-10
   prefs: []
   type: TYPE_NORMAL
+  zh: 让我们深入了解 👇
 - en: The Solution
+  id: totrans-11
   prefs:
   - PREF_H2
   type: TYPE_NORMAL
+  zh: 解决方案
 - en: 'My application is deployed in the AWS ecosystem, so we’ll use AWS Step Functions
     to build a state machine that:'
+  id: totrans-12
   prefs: []
   type: TYPE_NORMAL
+  zh: 我的应用程序部署在AWS生态系统中，因此我们将使用AWS Step Functions构建一个状态机，该状态机：
 - en: Executes business logic
+  id: totrans-13
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: 执行业务逻辑
 - en: Lambda with `WaitForTaskToken` to pause until approval
+  id: totrans-14
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: 使用带有`WaitForTaskToken`的Lambda暂停直到审批
 - en: Sends a Slack message requesting approval (can be an email/)
+  id: totrans-15
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: 发送Slack消息请求审批（可以是电子邮件/）
 - en: Waits for a human to click “Approve” or “Reject”
+  id: totrans-16
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: 等待人工点击“批准”或“拒绝”
 - en: Resumes automatically from the same point
+  id: totrans-17
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: 自动从相同点恢复
 - en: '![](../Images/e90730b6e5b0d23a85698f873a24f3de.png)'
+  id: totrans-18
   prefs: []
   type: TYPE_IMG
+  zh: '![](../Images/e90730b6e5b0d23a85698f873a24f3de.png)'
 - en: The Step function flow
+  id: totrans-19
   prefs: []
   type: TYPE_NORMAL
+  zh: Step函数流程
 - en: 'Here is a youtube video showing the demo and actual application in action:'
+  id: totrans-20
   prefs: []
   type: TYPE_NORMAL
+  zh: 这里有一个YouTube视频展示了演示和实际应用：
 - en: I have also hosted the live **demo app here** →
+  id: totrans-21
   prefs: []
   type: TYPE_NORMAL
+  zh: 我还在这里托管了实时**演示应用**→
 - en: 👉 [https://v0-manual-review-app-fwtjca.vercel.app](https://kzmnoafk9udhsli0sqwj.lite.vusercontent.net/)
+  id: totrans-22
   prefs: []
   type: TYPE_NORMAL
+  zh: 👉 [https://v0-manual-review-app-fwtjca.vercel.app](https://kzmnoafk9udhsli0sqwj.lite.vusercontent.net/)
 - en: All code is hosted [here](https://gist.github.com/akritaag/1bf927c727c9cdfc769e63c604d9a9eb) with
     the right set of IAM permissions.
+  id: totrans-23
   prefs: []
   type: TYPE_NORMAL
+  zh: 所有代码都托管[这里](https://gist.github.com/akritaag/1bf927c727c9cdfc769e63c604d9a9eb)，并具有正确的IAM权限集。
 - en: '* * *'
+  id: totrans-24
   prefs: []
   type: TYPE_NORMAL
+  zh: '* * *'
 - en: Step-by-Step Implementation
+  id: totrans-25
   prefs:
   - PREF_H3
   type: TYPE_NORMAL
+  zh: 步骤实施
 - en: 'Now we will create the Step Function with a manual review flow step. Here is
     the step function definition:'
+  id: totrans-26
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: 现在，我们将创建一个包含手动审查步骤的Step Function。以下是步骤函数定义：
 - en: '![](../Images/98e67cb55bdc2131f0afa09e98ace407.png)'
+  id: totrans-27
   prefs: []
   type: TYPE_IMG
+  zh: '![](../Images/98e67cb55bdc2131f0afa09e98ace407.png)'
 - en: Step function flow with definition
+  id: totrans-28
   prefs: []
   type: TYPE_NORMAL
+  zh: 步骤函数流程与定义
 - en: 'The flow above generates a dataset, uploads it to AWS S3 and if a review is
     required, then invokes the Manual Review lambda. On the manual review step, we’ll
     use a Task lambda with an invoke on `WaitForTaskToken`, which pauses execution
     until resumed. The lambda reads the token this way:'
+  id: totrans-29
   prefs: []
   type: TYPE_NORMAL
+  zh: 上述流程生成数据集，将其上传到AWS S3，如果需要审查，则调用手动审查Lambda。在手动审查步骤中，我们将使用一个带有`WaitForTaskToken`调用的任务Lambda，它将暂停执行直到恢复。Lambda以这种方式读取令牌：
 - en: '[PRE0]'
+  id: totrans-30
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE0]'
 - en: This Lambda sends a Slack message that includes the task token so the function
     knows what execution to resume.
+  id: totrans-31
   prefs: []
   type: TYPE_NORMAL
+  zh: 此Lambda发送包含任务令牌的Slack消息，以便函数知道要继续哪个执行。
 - en: 2\. Before the we send out the slack notification, we need to
+  id: totrans-32
   prefs: []
   type: TYPE_NORMAL
+  zh: 2. 在我们发送Slack通知之前，我们需要
 - en: setup an SNS Topic that receives review messages from the lambda
+  id: totrans-33
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: 设置一个接收Lambda审查消息的SNS主题
 - en: a slack workflow with a web-hook subscribed to the SNS topic, and a confirmed
     subscription
+  id: totrans-34
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: 一个订阅了SNS主题的webhook的Slack工作流程，并且已确认订阅
 - en: an https API Gateway with `approval` and `rejection` endpoints.
+  id: totrans-35
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: 一个具有`approval`和`rejection`端点的https API网关。
 - en: a lambda function that processes the API Gateway requests: [code](https://gist.github.com/akritaag/1bf927c727c9cdfc769e63c604d9a9eb#file-api_review_processor-py)
+  id: totrans-36
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: 处理API网关请求的Lambda函数：[代码](https://gist.github.com/akritaag/1bf927c727c9cdfc769e63c604d9a9eb#file-api_review_processor-py)
 - en: I followed the youtube video here for my setup.
+  id: totrans-37
   prefs: []
   type: TYPE_NORMAL
+  zh: 我遵循了这里的youtube视频进行设置。
 - en: '3\. Once the above is setup, setup the variables into the web-hook step of
     the slack workflow:'
+  id: totrans-38
   prefs: []
   type: TYPE_NORMAL
+  zh: 3. 一旦上述设置完成，将变量设置到Slack工作流程的webhook步骤中：
 - en: '![](../Images/60ebe1477b671254970ad2dee20f4a21.png)'
+  id: totrans-39
   prefs: []
   type: TYPE_IMG
+  zh: '![图片](../Images/60ebe1477b671254970ad2dee20f4a21.png)'
 - en: 'And use the variables with a helpful note in the following step:'
+  id: totrans-40
   prefs: []
   type: TYPE_NORMAL
+  zh: 在下一步中使用带有有用说明的变量：
 - en: '![](../Images/64f9c2740792a285b3621d5aea6a8033.png)'
+  id: totrans-41
   prefs: []
   type: TYPE_IMG
+  zh: '![图片](../Images/64f9c2740792a285b3621d5aea6a8033.png)'
 - en: 'The final workflow will look like this:'
+  id: totrans-42
   prefs: []
   type: TYPE_NORMAL
+  zh: 最终的工作流程将看起来像这样：
 - en: '![](../Images/1e60f90f9826140cf161374401f4b270.png)'
+  id: totrans-43
   prefs: []
   type: TYPE_IMG
+  zh: '![图片](../Images/1e60f90f9826140cf161374401f4b270.png)'
 - en: '4\. Send a Slack Notification published to an SNS topic (you can alternately
     use slack-sdk as well) with job parameters. Here is what the message will look
     like:'
+  id: totrans-44
   prefs: []
   type: TYPE_NORMAL
+  zh: 4. 发送发布到SNS主题的Slack通知（您也可以使用slack-sdk），其中包含作业参数。消息将看起来像这样：
 - en: '[PRE1]'
+  id: totrans-45
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE1]'
 - en: This Lambda sends a Slack message that includes the task token so the function
     knows what execution to resume.
+  id: totrans-46
   prefs: []
   type: TYPE_NORMAL
+  zh: 此Lambda发送包含任务令牌的Slack消息，以便函数知道要继续哪个执行。
 - en: '[PRE2]'
+  id: totrans-47
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE2]'
 - en: 5\. Once a review notification is received in slack, the user can approve or
     reject it. The step function goes into a wait state until it receives a user response;
     however the task token is set to expire in 24 hours, so inactivity will timeout
     the step function.
+  id: totrans-48
   prefs: []
   type: TYPE_NORMAL
+  zh: 5. 一旦在Slack中收到审查通知，用户可以批准或拒绝。步骤函数进入等待状态，直到收到用户响应；然而，任务令牌设置为24小时后过期，因此不活动将使步骤函数超时。
 - en: Based on whether the user approves or rejects the review request, the rawPath
     gets set and can be parsed here: [code](https://gist.github.com/akritaag/1bf927c727c9cdfc769e63c604d9a9eb#file-api_review_processor-py)
+  id: totrans-49
   prefs: []
   type: TYPE_NORMAL
+  zh: 根据用户是否批准或拒绝审查请求，设置rawPath并可以在此处解析：[代码](https://gist.github.com/akritaag/1bf927c727c9cdfc769e63c604d9a9eb#file-api_review_processor-py)
 - en: '[PRE3]'
+  id: totrans-50
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE3]'
 - en: 'The receiving API Gateway + Lambda combo:'
+  id: totrans-51
   prefs: []
   type: TYPE_NORMAL
+  zh: 接收API网关 + Lambda组合：
 - en: Parses the Slack payload
+  id: totrans-52
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: 解析Slack有效负载
 - en: Extracts `taskToken` + decision
+  id: totrans-53
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: 提取`taskToken` + 决策
 - en: Uses `StepFunctions.send_task_success()` or `send_task_failure()`
+  id: totrans-54
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: 使用`StepFunctions.send_task_success()`或`send_task_failure()`
 - en: 'Example:'
+  id: totrans-55
   prefs: []
   type: TYPE_NORMAL
+  zh: 示例：
 - en: '[PRE4]'
+  id: totrans-56
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE4]'
 - en: '**Note**: Lambda configured with `WaitForTaskToken` **must** wait. If you don’t
     send the token, your workflow just stalls.'
+  id: totrans-57
   prefs: []
   type: TYPE_NORMAL
+  zh: '**注意**：配置了`WaitForTaskToken`的Lambda**必须**等待。如果您不发送令牌，您的流程将停滞不前。'
 - en: 'Bonus: If you need email or SMS alerts, use **SNS** to notify a broader group.'
+  id: totrans-58
   prefs:
   - PREF_BQ
   type: TYPE_NORMAL
+  zh: 奖励：如果您需要电子邮件或短信警报，请使用**SNS**通知更广泛的群体。
 - en: Just `sns.publish()` from within your Lambda or Step Function.
+  id: totrans-59
   prefs:
   - PREF_BQ
   type: TYPE_NORMAL
+  zh: 只需在Lambda或步骤函数内部调用`sns.publish()`。
 - en: Testing
+  id: totrans-60
   prefs:
   - PREF_H3
   type: TYPE_NORMAL
+  zh: 测试
 - en: 'Once the manual approval system was wired up, it was time to kick the tires.
     Here’s how I tested it:'
+  id: totrans-61
   prefs: []
   type: TYPE_NORMAL
+  zh: 一旦手动批准系统连接好，就到了测试的时候了。以下是我的测试方法：
 - en: Right after publishing the slack workflow, I confirmed the SNS subscription
     before messages get forwarded. Don’t skip this step.
+  id: totrans-62
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: 在发布Slack工作流程后，我在消息转发之前确认了SNS订阅。不要跳过此步骤。
 - en: Then, I triggered the Step Function manually with a fake payload simulating
     a data flagging event.
+  id: totrans-63
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: 然后，我使用模拟数据标记事件的假有效负载手动触发了步骤函数。
 - en: When the workflow hit the manual approval step, it sent a Slack message with
     Approve/Reject buttons.
+  id: totrans-64
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: 当工作流程达到手动批准步骤时，它会发送带有批准/拒绝按钮的Slack消息。
 - en: 'I tested **all major paths**:'
+  id: totrans-65
   prefs: []
   type: TYPE_NORMAL
+  zh: 我测试了**所有主要路径**：
 - en: '**Approve**: Clicked Approve — saw the Step Function resume and complete successfully.'
+  id: totrans-66
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: '**批准**：点击批准 — 看到步骤函数恢复并成功完成。'
 - en: '**Reject**: Clicked Reject — Step Function moved cleanly into a failure state.'
+  id: totrans-67
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: '**拒绝**：点击拒绝 — 步骤函数干净利落地进入失败状态。'
 - en: '**Timeout**: Ignored the Slack message — Step Function waited for the configured
     timeout and then gracefully timed out without hanging.'
+  id: totrans-68
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: '**超时**：忽略了Slack消息 — 步骤函数等待配置的超时时间，然后优雅地超时，没有挂起。'
 - en: 'Behind the scenes, I also verified that:'
+  id: totrans-69
   prefs: []
   type: TYPE_NORMAL
+  zh: 在幕后，我还验证了以下几点：
 - en: The Lambda receiving Slack responses was correctly parsing action payloads.
+  id: totrans-70
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: 接收Slack响应的Lambda函数正确解析了操作负载。
 - en: No rogue task tokens were left hanging.
+  id: totrans-71
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: 没有留下未处理的任务令牌。
 - en: Step Functions metrics and Slack error logs were clean.
+  id: totrans-72
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: Step Functions指标和Slack错误日志都很干净。
 - en: I highly recommend testing not just happy paths, but also “what if nobody clicks?”
     and “what if Slack glitches?” — catching these edge cases early saved me headaches
     later.
+  id: totrans-73
   prefs: []
   type: TYPE_NORMAL
+  zh: 我强烈推荐测试不仅快乐的路径，还要测试“如果没有人点击？”和“如果Slack出现故障？”的情况——及早捕捉这些边缘情况可以让我以后少头疼。
 - en: '* * *'
+  id: totrans-74
   prefs: []
   type: TYPE_NORMAL
+  zh: '* * *'
 - en: Lessons Learned
+  id: totrans-75
   prefs:
   - PREF_H3
   type: TYPE_NORMAL
+  zh: 经验教训
 - en: '**Always use timeouts**: Set a timeout both on the `WaitForTaskToken` step **and** on
     the entire Step Function. Without it, workflows can get stuck indefinitely if
     no one responds.'
+  id: totrans-76
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: '**始终使用超时**：在`WaitForTaskToken`步骤**以及**整个Step Function上设置超时。如果没有响应，工作流程可能会无限期地卡住。'
 - en: '**Pass necessary context**: If your Step Function needs certain files, paths,
     or config settings after resuming, make sure you **encode and send them along** in
     the SNS notification.'
+  id: totrans-77
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: '**传递必要的上下文**：如果你的Step Function在恢复后需要某些文件、路径或配置设置，确保你在SNS通知中**编码并发送它们**。'
 - en: Step Functions *do not* automatically retain previous in-memory context when
     resuming from a Task Token.
+  id: totrans-78
   prefs:
   - PREF_IND
   type: TYPE_NORMAL
+  zh: Step Functions在从任务令牌恢复时不会自动保留之前的内存上下文。
 - en: '**Manage Slack noise**: Be careful about spamming a Slack channel with too
     many review requests. I recommend creating **separate channels** for development,
     UAT, and production flows to keep things clean.'
+  id: totrans-79
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: '**管理Slack噪音**：小心不要在Slack频道中用过多的审查请求进行垃圾邮件式轰炸。我建议为开发、UAT和生产流程创建**单独的频道**，以保持事情整洁。'
 - en: '**Lock down permissions early**: Make sure all your AWS resources (Lambda functions,
     API Gateway, S3 buckets, SNS Topics) have **correct and minimal permissions **following
     the principle of least privilege. Where I needed to customize beyond AWS’s defaults,
     I wrote and posted inline IAM policies as JSON. (You’ll find examples in the [GitHub
     repo](https://medium.com/@akrita/building-a-manual-approval-workflow-in-aws-step-functions-with-slack-sns-and-lambda-ef4189944f14#)).'
+  id: totrans-80
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: '**尽早锁定权限**：确保所有AWS资源（Lambda函数、API网关、S3存储桶、SNS主题）都遵循最小权限原则，拥有**正确且最小的权限**。在我需要超出AWS默认设置进行自定义的地方，我编写并发布了内联IAM策略作为JSON。（你可以在[GitHub仓库](https://medium.com/@akrita/building-a-manual-approval-workflow-in-aws-step-functions-with-slack-sns-and-lambda-ef4189944f14#)中找到示例）。'
 - en: '**Pre-sign and shorten URLs**: If you’re sending links (e.g., to S3 files)
     in Slack messages, pre-sign the URLs for secure access — **and** shorten them
     for a cleaner Slack UI. Here’s a quick example I used:'
+  id: totrans-81
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: '**预先签名并缩短URL**：如果你在Slack消息中发送链接（例如，到S3文件），请预先签名URL以进行安全访问——**并且**缩短它们以获得更干净的Slack
+    UI。以下是我使用的快速示例：'
 - en: '[PRE5]'
+  id: totrans-82
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE5]'
 - en: Wrapping Up
+  id: totrans-83
   prefs:
   - PREF_H3
   type: TYPE_NORMAL
+  zh: 总结
 - en: Adding human-in-the-loop logic doesn’t have to mean duct tape and cron jobs.
     With **Step Functions + Slack**, you can build reviewable, traceable, and **production-safe
     approval flows**.
+  id: totrans-84
   prefs: []
   type: TYPE_NORMAL
+  zh: 添加人工流程逻辑不必意味着使用胶带和cron作业。通过**Step Functions + Slack**，你可以构建可审查的、可追踪的，以及**生产安全的审批流程**。
 - en: If this helped, or you’re trying something similar, drop a note in the comments!
     Let’s build better workflows.
+  id: totrans-85
   prefs: []
   type: TYPE_NORMAL
+  zh: 如果这对你有帮助，或者你正在尝试类似的事情，请在评论中留言！让我们构建更好的工作流程。
 - en: '**Note**: *All images in this article were created by the author*'
+  id: totrans-86
   prefs: []
   type: TYPE_NORMAL
+  zh: '**注意**：*本文中所有图片均由作者创建*'
