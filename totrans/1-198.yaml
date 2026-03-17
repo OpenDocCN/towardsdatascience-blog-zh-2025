@@ -1,8 +1,10 @@
 - en: 'Learning Triton One Kernel at a Time: Matrix Multiplication'
+  id: totrans-0
   prefs:
   - PREF_H1
   type: TYPE_NORMAL
 - en: 原文：[https://towardsdatascience.com/learning-triton-one-kernel-at-a-time-matrix-multiplication/](https://towardsdatascience.com/learning-triton-one-kernel-at-a-time-matrix-multiplication/)
+  id: totrans-1
   prefs:
   - PREF_BQ
   type: TYPE_NORMAL
@@ -11,51 +13,62 @@
     building block of linear algebra and shows up across a wide spectrum of different
     fields such as graphics, physics simulations and scientific computing while being
     ubiquitous in machine learning.
+  id: totrans-2
   prefs: []
   type: TYPE_NORMAL
 - en: In today’s article, we’ll break down the conceptual implementation of general
     matrix-matrix multiplication (GEMM) while introducing several optimisation concepts
     such as tiling and memory coalescing. Finally, we’ll implement GEMM in Triton!
+  id: totrans-3
   prefs: []
   type: TYPE_NORMAL
 - en: '*This article is the second of a series on Triton and GPU kernels, If you are
     not familiar with Triton or need a refresher on GPU basics, check out the previous
     article!* *All the code showcased in this article is available on [GitHub](https://github.com/RPegoud/Triton-Kernels).*'
+  id: totrans-4
   prefs: []
   type: TYPE_NORMAL
 - en: '[Learning Triton One Kernel At a Time: Vector Addition](https://towardsdatascience.com/learning-triton-one-kernel-at-a-time-vector-addition/)'
+  id: totrans-5
   prefs:
   - PREF_BQ
   type: TYPE_NORMAL
 - en: '*Disclaimer: all the following figures and animations were made by the author
     unless stated otherwise.*'
+  id: totrans-6
   prefs: []
   type: TYPE_NORMAL
 - en: Naive GEMM
+  id: totrans-7
   prefs:
   - PREF_H2
   type: TYPE_NORMAL
 - en: 'Let’s start simple: we want to multiply two matrices `X` and `Y` with shapes
     `(M,N)` and `(N,K)` respectively. The output matrix `Z=X@Y` will therefore have
     shape `(M,K)`.'
+  id: totrans-8
   prefs: []
   type: TYPE_NORMAL
 - en: 'This operation involves computing the dot products of all pairs of rows and
     columns in `X` and `Y` respectively. A straightforward NumPy implementation might
     look something like this:'
+  id: totrans-9
   prefs: []
   type: TYPE_NORMAL
 - en: While easy to write, read and understand, this implementation is highly inefficient
     in terms of memory access and caching. As mentioned in the first article of this
     series, a fundamental aspect of GPU optimisation is **minimising data transfers**.
+  id: totrans-10
   prefs: []
   type: TYPE_NORMAL
 - en: However, our current implementation starts by loading a row from `X`, iteratively
     loads all `K` columns of `Y`, computes their dot product and repeats the process
     for every row in `X`. This results in a total of `M(K+1)` loading operations.
+  id: totrans-11
   prefs: []
   type: TYPE_NORMAL
 - en: '![](../Images/da96daa411a1e452382d92725abe2fc9.png)'
+  id: totrans-12
   prefs: []
   type: TYPE_IMG
 - en: 'As seen in the animation, the memory access pattern is wasteful, as every column
@@ -64,17 +77,21 @@
     of preparing all the ingredients on your kitchen counter (shared memory). Ideally,
     we would like to minimise the number of times each chunk of data is loaded and
     maximise its reusability once loaded. This leaves us with two main axes of optimisation:'
+  id: totrans-13
   prefs: []
   type: TYPE_NORMAL
 - en: How can we improve the access pattern to minimise redundant loads?
+  id: totrans-14
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
 - en: How much data can we load at once, and where should it be stored on the GPU?
+  id: totrans-15
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
 - en: Tiled GEMM
+  id: totrans-16
   prefs:
   - PREF_H2
   type: TYPE_NORMAL
@@ -82,12 +99,14 @@
     loads, which induces unnecessary overhead. Ideally, we’d like to load each segment
     of data only once and perform all the operations in which they are used before
     dropping them from memory.
+  id: totrans-17
   prefs: []
   type: TYPE_NORMAL
 - en: An elegant approach to this problem is **tiling**, which involves dividing large
     matrices in smaller *“tiles”* or sub-matrices. Consider two matrices `X` and `Y`
     with shapes `(4,6)` and `(6,4)` respectively, `X@Y` results in a matrix `Z` with
     shape `(4,4)`.
+  id: totrans-18
   prefs: []
   type: TYPE_NORMAL
 - en: 'In order to compute the first element of `Z`, `Z[0,0]`, we need to compute
@@ -95,17 +114,21 @@
     = dot(X[0, :], Y[:, 0])`. We can also break down the dot product into smaller
     chunks, for instance in groups of 3 elements: `Z[0,0] = dot(X[0,0:3], Y[0:3, 0])
     + dot(X[0,3:6], Y[3:6, 0])`.'
+  id: totrans-19
   prefs: []
   type: TYPE_NORMAL
 - en: 'Alternatively, we can expand this approach to two dimensions and compute an
     entire `(2,2)` block of Z at a time: `Z[0:2, 0:2] = dot(X[0:2, 0:2], Y[0:2, 0:2])
     + dot(X[0:2, 2:4], Y[2:4, 0:2]) + dot(X[0:2, 4:6], Y[4:6, 0:2])`.'
+  id: totrans-20
   prefs: []
   type: TYPE_NORMAL
 - en: 'Here’s a visual representation of tiled matrix multiplication:'
+  id: totrans-21
   prefs: []
   type: TYPE_NORMAL
 - en: '![](../Images/05c848f754139f912aa32238f9acf483.png)'
+  id: totrans-22
   prefs: []
   type: TYPE_IMG
 - en: Tiled Matrix Multiplication. The computation is split in several “tiles” of
@@ -114,6 +137,7 @@
     X and Y). These dot products are accumulated across the blocks of a tile to compute
     the output values in Z (the accumulation is represented by colors from orange
     to green).
+  id: totrans-23
   prefs: []
   type: TYPE_NORMAL
 - en: The above animation illustrates how data is reused in tiled GEMM. For each 2×2
@@ -121,11 +145,13 @@
     matrix in `Z`. Since each tile contains 3 blocks, we need to accumulate 3 of these
     matrices to compute the final `(2,2)` output in `Z`. This accumulation is represented
     by colored cells in `Z`.
+  id: totrans-24
   prefs: []
   type: TYPE_NORMAL
 - en: In the kitchen analogy, this is like fetching ingredients from the store and
     preparing them on the kitchen counter (i.e. small shared memory), reusing them
     several times before going back to the store.
+  id: totrans-25
   prefs: []
   type: TYPE_NORMAL
 - en: Importantly, reusing loaded data over multiple steps allows this approach to
@@ -134,18 +160,22 @@
     as many operations** with each block of loaded data, roughly **halving** the number
     of load operations! Note that this generalises to larger blocks as well, using
     a `(32,32)` block would reduce the number of loads by a factor of around 32.
+  id: totrans-26
   prefs: []
   type: TYPE_NORMAL
 - en: Now you’re probably wondering “how large can these blocks be”? To answer this
     question, let’s recall how memory is managed in modern GPUs.
+  id: totrans-27
   prefs: []
   type: TYPE_NORMAL
 - en: GPU Memory Hierarchy
+  id: totrans-28
   prefs:
   - PREF_H2
   type: TYPE_NORMAL
 - en: 'We distinguish four main types of memory in Nvidia GPUs. Here, we take the
     example of an A100:'
+  id: totrans-29
   prefs: []
   type: TYPE_NORMAL
 - en: '**Registers:** The fastest and smallest type of memory on the GPU, residing
@@ -155,6 +185,7 @@
     variables and intermediate results, avoiding memory traffic altogether. However,
     register usage per thread directly affects occupancy, as using too many registers
     per thread limits how many threads can run concurrently.'
+  id: totrans-30
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
@@ -164,6 +195,7 @@
     For performance-critical kernels like matrix multiplication, we explicitly use
     this space as shared memory to stage data tiles close to the compute units, bypassing
     the L1 cache entirely. This gives us fine-grained control over data reuse.'
+  id: totrans-31
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
@@ -174,6 +206,7 @@
     visible to others, enabling synchronisation between thread blocks. Its bandwidth
     can reach several terabytes per second, acting as a buffer between the fast on-chip
     SRAM and the slower HBM.'
+  id: totrans-32
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
@@ -184,43 +217,53 @@
     datasets reside during execution. Since accessing HBM is expensive, efficient
     kernels aim to **minimise data movement** and **maximise on-chip data reuse**
     via registers and shared memory.'
+  id: totrans-33
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
 - en: As you can see, the memory hierarchy generally trades off capacity with latency.
     Therefore, maximising performance boils down to loading data from HBM into shared
     memory efficiently and reusing it as much as possible.
+  id: totrans-34
   prefs: []
   type: TYPE_NORMAL
 - en: '![](../Images/7925bcca2d2881c04a6d16e30e7ac312.png)'
+  id: totrans-35
   prefs: []
   type: TYPE_IMG
 - en: GPU Memory Hierarchy, from fastest/smallest (top) to slowest/largest (bottom).
+  id: totrans-36
   prefs: []
   type: TYPE_NORMAL
 - en: Choosing our block size is critical. We want blocks to be large enough to create
     a lot of parallel work, but small enough that their data fits in the SM’s shared
     memory and registers. A `BLOCK_SIZE` of **64** is a common starting point because
     it’s a multiple of the **warp size** (32 threads), ensuring full hardware utilisation.
+  id: totrans-37
   prefs: []
   type: TYPE_NORMAL
 - en: Parallel Tiled GEMM
+  id: totrans-38
   prefs:
   - PREF_H2
   type: TYPE_NORMAL
 - en: With these considerations in mind, a natural follow-up to our tiled GEMM is
     to parallelise the computation of each pairs of tiles over several thread blocks,
     as depicted on the following animation.
+  id: totrans-39
   prefs: []
   type: TYPE_NORMAL
 - en: '![](../Images/8189a5adb11e097039cba9314e568665.png)'
+  id: totrans-40
   prefs: []
   type: TYPE_IMG
 - en: Parallel Tiled Matrix Multiplication. The iteration over tiles is replaced by
     a parallel operation over multiple thread blocks.
+  id: totrans-41
   prefs: []
   type: TYPE_NORMAL
 - en: Memory Coalescing
+  id: totrans-42
   prefs:
   - PREF_H3
   type: TYPE_NORMAL
@@ -231,6 +274,7 @@
     all books are side-by-side on a shelf, they can grab them all at once. In contrast,
     if all books are lying on different shelves, they’ll have to grab them one by
     one, which takes significantly longer.'
+  id: totrans-43
   prefs: []
   type: TYPE_NORMAL
 - en: 'To understand how this applies to our case, note that matrices are stored linearly
@@ -240,19 +284,23 @@
     `(2,2)` matrix would be stored as follows: `[(0,0), (0,1), (1,0), (1,1)]`, notice
     that elements of the same row are *contiguous* (touching) while elements of the
     same column have a *stride* of 1 (separated by one element).'
+  id: totrans-44
   prefs: []
   type: TYPE_NORMAL
 - en: '![](../Images/e897da52108bc6e066c290de9547e542.png)'
+  id: totrans-45
   prefs: []
   type: TYPE_IMG
 - en: PyTorch stores matrices in row-major layout. Elements of a row contiguous in
     memory while elements of a column are strided.
+  id: totrans-46
   prefs: []
   type: TYPE_NORMAL
 - en: This implies that we can load rows using **coalesced loads**, but columns do
     **not** satisfy this condition. However, we need to access columns of `Y` to compute
     dot products. In order to maximise performance, a good practice is to transpose
     `Y` so that we iterate on its rows rather than its columns.
+  id: totrans-47
   prefs: []
   type: TYPE_NORMAL
 - en: However, transposing `Y` isn’t enough to modify its layout in memory. As mentioned
@@ -261,40 +309,48 @@
     element to the next one along this dimension. For instance, a `(10,10)` matrix
     would have `strides=(10,1)`. Indeed, starting from element `[0,0]`, element `[1,0]`
     is 10 memory slots (i.e. one row) away, whereas element `[0,1]` is adjacent.
+  id: totrans-48
   prefs: []
   type: TYPE_NORMAL
 - en: When transposing a tensor, PyTorch doesn’t modify the layout in memory but simply
     recomputes the strides. In order to make the transpose effective from a memory
     standpoint we need to call `Y.T.contiguous()`.
+  id: totrans-49
   prefs: []
   type: TYPE_NORMAL
 - en: 'These are the required steps the load columns of `Y` efficiently, however we’ll
     need to transpose the loaded blocks within the kernel to perform the dot product
     properly: `z_block = tl.dot(X_block, Y_block.T)`.'
+  id: totrans-50
   prefs: []
   type: TYPE_NORMAL
 - en: '![](../Images/4138d2ccc9106c3b087165df158ffa9d.png)'
+  id: totrans-51
   prefs: []
   type: TYPE_IMG
 - en: Representation of Y, Y.T and Y.T.contiguous() in their block representation
     and memory layout. The transpose operation changes the behaviour of the matrix
     but doesn’t modify its memory layout. This is why we need to add .contiguous()
     to enable coalesced reads on rows.
+  id: totrans-52
   prefs: []
   type: TYPE_NORMAL
 - en: Triton Implementation
+  id: totrans-53
   prefs:
   - PREF_H3
   type: TYPE_NORMAL
 - en: From here on, we first describe the kernel without memory coalescing to simplify
     the logic and pointer arithmetic before summarising the changes required to make
     the load operations coalesced on `Y` columns.
+  id: totrans-54
   prefs: []
   type: TYPE_NORMAL
 - en: Let’s start by focusing on the PyTorch wrapper around the kernel. We need to
     read `M, N, K` from the input matrices and compute their strides since these constants
     will be useful later in the kernel. Then, we define the `BLOCK_SIZE` and declare
     the `grid`.
+  id: totrans-55
   prefs: []
   type: TYPE_NORMAL
 - en: Now let’s dive into the actual kernel code. We’re going to make use of Triton’s
@@ -304,12 +360,14 @@
     the top-left element in the current block. For `X`, this corresponds to `(m_idx
     * BLOCK_SIZE, 0)` where `m_idx` is the index of the current block along the `M`
     dimension.
+  id: totrans-56
   prefs: []
   type: TYPE_NORMAL
 - en: From there, we define `z_acc`, a zero matrix that will receive the partial dot-products
     as we iterate through tiles. We now iterate through the shared dimension `N`,
     loading blocks of size `(BLOCK_SIZE, BLOCK_SIZE)`, and accumulate their dot products
     in `z_acc`. We then move the block pointers along the shared dimension by using `.advance`.
+  id: totrans-57
   prefs: []
   type: TYPE_NORMAL
 - en: You might have noticed that when loading data, we use `boundary_check` and `padding_option`
@@ -317,40 +375,54 @@
     specific to the use of block pointers and specify which axes to check for out-of-bound
     operations (here `(0,1)` for x and y) and how to treat those invalid values. Here
     we set them to zero to be ignored in the dot product.
+  id: totrans-58
   prefs: []
   type: TYPE_NORMAL
 - en: 'We can now take a look at the performance of this kernel by using the following
     function:'
+  id: totrans-59
   prefs: []
   type: TYPE_NORMAL
 - en: '[PRE0]'
+  id: totrans-60
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE0]'
 - en: 'We get the following outputs (using a T4 GPU on Colab):'
+  id: totrans-61
   prefs: []
   type: TYPE_NORMAL
 - en: '[PRE1]'
+  id: totrans-62
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE1]'
 - en: 'Now let’s review the changes required for coalesced loads on `Y`: we mainly
     need to flip the shape, strides and offsets when defining the block pointer for
     `Y`. Additionally, we update the block pointer to move along the column dimension
     (previously row dimension). The full code for this implementation is available
     on [GitHub](https://github.com/RPegoud/Triton-Kernels).'
+  id: totrans-63
   prefs: []
   type: TYPE_NORMAL
 - en: '[PRE2]'
+  id: totrans-64
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE2]'
 - en: 'Here are the results of our benchmark for the kernel with coalesced loads for
     `Y`:'
+  id: totrans-65
   prefs: []
   type: TYPE_NORMAL
 - en: '[PRE3]'
+  id: totrans-66
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE3]'
 - en: Surprisingly, the throughput of this second kernel is only half of what we obtained
     with the first one, despite improving the efficiency of load operations 🤔
+  id: totrans-67
   prefs: []
   type: TYPE_NORMAL
 - en: 'A quick inspection using `nsight` (Nvidia’s kernel profiler, more on that in
@@ -359,87 +431,130 @@
     threads to remain idle most of the time. Notably, the warp scheduler has no eligible
     warp to dispatch 87.6% of the time as they are waiting for the bank conflict to
     resolve. Additionally, the report reads:'
+  id: totrans-68
   prefs: []
   type: TYPE_NORMAL
 - en: ———————– ———– ————–
+  id: totrans-69
   prefs: []
   type: TYPE_NORMAL
 - en: Metric Name Metric Unit Metric Value
+  id: totrans-70
   prefs: []
   type: TYPE_NORMAL
 - en: ———————– ———– ————–
+  id: totrans-71
   prefs: []
   type: TYPE_NORMAL
 - en: …
+  id: totrans-72
   prefs: []
   type: TYPE_NORMAL
 - en: DRAM Throughput % 8.20
+  id: totrans-73
   prefs: []
   type: TYPE_NORMAL
+  zh: DRAM吞吐量百分比 8.20
 - en: Compute (SM) Throughput % 21.14
+  id: totrans-74
   prefs: []
   type: TYPE_NORMAL
+  zh: 计算吞吐量（SM）百分比 21.14
 - en: …
+  id: totrans-75
   prefs: []
   type: TYPE_NORMAL
+  zh: …
 - en: This indicates that the kernel is **latency bound** (i.e. neither memory nor
     compute bound, refer to the previous article for more details). In contrast, the
     first kernel is **compute bound** (i.e. increasing compute will improve performance)
     since the compute throughput is high compared to the DRAM throughput.
+  id: totrans-76
   prefs: []
   type: TYPE_NORMAL
+  zh: 这表明内核是**延迟受限**的（即既不是内存受限也不是计算受限，更多细节请参考上一篇文章）。相比之下，第一个内核是**计算受限**的（即增加计算量将提高性能），因为计算吞吐量相对于DRAM吞吐量较高。
 - en: ———————– ———– ————–
+  id: totrans-77
   prefs: []
   type: TYPE_NORMAL
+  zh: ———————– ———– ————–
 - en: Metric Name Metric Unit Metric Value
+  id: totrans-78
   prefs: []
   type: TYPE_NORMAL
+  zh: 指标名称 指标单位 指标值
 - en: ———————– ———– ————–
+  id: totrans-79
   prefs: []
   type: TYPE_NORMAL
+  zh: ———————– ———– ————–
 - en: …
+  id: totrans-80
   prefs: []
   type: TYPE_NORMAL
+  zh: …
 - en: DRAM Throughput % 29.35
+  id: totrans-81
   prefs: []
   type: TYPE_NORMAL
+  zh: DRAM吞吐量百分比 29.35
 - en: Compute (SM) Throughput % 74.39
+  id: totrans-82
   prefs: []
   type: TYPE_NORMAL
+  zh: 计算吞吐量（SM）百分比 74.39
 - en: …
+  id: totrans-83
   prefs: []
   type: TYPE_NORMAL
+  zh: …
 - en: Conclusion
+  id: totrans-84
   prefs:
   - PREF_H2
   type: TYPE_NORMAL
+  zh: 结论
 - en: This experiment highlights the importance of profiling and empirical validation.
     Even well-intentioned optimisations like coalescing memory accesses can introduce
     new bottlenecks if not evaluated carefully. The first kernel, though simpler,
     was compute-bound and better matched the hardware characteristics.
+  id: totrans-85
   prefs: []
   type: TYPE_NORMAL
+  zh: 这个实验强调了分析和经验验证的重要性。即使是有良好意图的优化，如合并内存访问，如果没有仔细评估，也可能引入新的瓶颈。尽管第一个内核更简单，但它计算受限，更符合硬件特性。
 - en: In the next articles of this series, we’ll implement a softmax kernel, paying
     particular attention to integrating Triton with PyTorch’s `autograd` and profiling
     kernels using Nsight.
+  id: totrans-86
   prefs: []
   type: TYPE_NORMAL
+  zh: 在本系列的下一篇文章中，我们将实现一个softmax核，特别关注将Triton与PyTorch的`autograd`集成以及使用Nsight进行内核分析。
 - en: Until next time! 👋
+  id: totrans-87
   prefs: []
   type: TYPE_NORMAL
+  zh: 下次再见！👋
 - en: Useful Resources
+  id: totrans-88
   prefs:
   - PREF_H4
   type: TYPE_NORMAL
+  zh: 有用资源
 - en: '[Complete implementation](https://github.com/RPegoud/Triton-Kernels)'
+  id: totrans-89
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: '[完整实现](https://github.com/RPegoud/Triton-Kernels)'
 - en: '[Introduction to GEMM and Assignment](https://www.cs.sfu.ca/~ashriram/Courses/CS7ARCH/hw/hw4.html)'
+  id: totrans-90
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: '[GEMM和分配简介](https://www.cs.sfu.ca/~ashriram/Courses/CS7ARCH/hw/hw4.html)'
 - en: '[Nvidia Ampere Architecture (A100 specs)](https://en.wikipedia.org/wiki/Ampere_%28microarchitecture%29#cite_note-15)'
+  id: totrans-91
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: '[Nvidia Ampere架构（A100规格）](https://en.wikipedia.org/wiki/Ampere_%28microarchitecture%29#cite_note-15)'
