@@ -1,556 +1,816 @@
 - en: The Architecture Behind Web Search in AI Chatbots
+  id: totrans-0
   prefs:
   - PREF_H1
   type: TYPE_NORMAL
+  zh: AI聊天机器人网络搜索背后的架构
 - en: 原文：[https://towardsdatascience.com/the-architecture-behind-web-search-in-ai-chatbots-2/](https://towardsdatascience.com/the-architecture-behind-web-search-in-ai-chatbots-2/)
+  id: totrans-1
   prefs:
   - PREF_BQ
   type: TYPE_NORMAL
+  zh: 原文：[https://towardsdatascience.com/the-architecture-behind-web-search-in-ai-chatbots-2/](https://towardsdatascience.com/the-architecture-behind-web-search-in-ai-chatbots-2/)
 - en: <mdspan datatext="el1764828771491" class="mdspan-comment">When you ask ChatGPT</mdspan>
     or Claude to “search the web,” it isn’t just answering from its training data.
     It’s calling a separate search system.
+  id: totrans-2
   prefs: []
   type: TYPE_NORMAL
+  zh: <mdspan datatext="el1764828771491" class="mdspan-comment">当你向ChatGPT或Claude询问“搜索网络”时</mdspan>，它不仅仅是从其训练数据中回答。它是在调用一个单独的搜索系统。
 - en: Most people know that part.
+  id: totrans-3
   prefs: []
   type: TYPE_NORMAL
+  zh: 大多数人都知道这部分。
 - en: What’s less clear is how much traditional search engines matter and how much
     has been built on top of them.
+  id: totrans-4
   prefs: []
   type: TYPE_NORMAL
+  zh: 不太清楚的是传统搜索引擎有多重要，以及有多少是基于它们构建的。
 - en: All of it isn’t fully public, so I’m doing some mental deduction here. But we
     can use different hints from looking at larger systems to build a useful mental
     model.
+  id: totrans-5
   prefs: []
   type: TYPE_NORMAL
+  zh: 所有这些并不完全公开，所以我在这里进行一些心理推理。但我们可以通过观察更大的系统来使用不同的提示来构建一个有用的心理模型。
 - en: We’ll go through query optimization, how search engines are used for discovery,
     chunking content, “on-the-fly” retrieval, and how you could potentially reverse-engineer
     a system like this to build a “GEO [<mdspan datatext="el1764828654960" class="mdspan-comment">Generative
     Engine Optimization</mdspan>] scoring system.”
+  id: totrans-6
   prefs: []
   type: TYPE_NORMAL
+  zh: 我们将探讨查询优化、搜索引擎如何用于发现、内容分块、“即时”检索，以及如何可能逆向工程这样一个系统来构建一个“GEO [<mdspan datatext="el1764828654960"
+    class="mdspan-comment">生成式引擎优化</mdspan>] 评分系统。”
 - en: If you’re familiar with RAG, some of this will be repetition, but it can still
     be useful to see how larger systems split the pipeline into a discovery phase
     and a retrieval phase (if this is new).
+  id: totrans-7
   prefs: []
   type: TYPE_NORMAL
+  zh: 如果你熟悉RAG，其中一些内容将是重复的，但仍然可以很有用，看看更大的系统如何将管道分成发现阶段和检索阶段（如果这是新的）。
 - en: If you’re short on time, you can read the TL;DR.
+  id: totrans-8
   prefs: []
   type: TYPE_NORMAL
+  zh: 如果你时间紧迫，你可以阅读TL;DR。
 - en: TL;DR
+  id: totrans-9
   prefs:
   - PREF_H2
   type: TYPE_NORMAL
+  zh: TL;DR
 - en: Web search in these AI chatbots is likely a two-part process. The first part
     leans on traditional search engines to find and rank candidate docs. In the second
     part, they fetch the content from those URLs and pull out the most relevant passages
     using passage-level retrieval.
+  id: totrans-10
   prefs: []
   type: TYPE_NORMAL
+  zh: 在这些AI聊天机器人中，网络搜索可能是一个两步的过程。第一步依赖于传统搜索引擎来查找和排名候选文档。在第二步中，它们从这些URL中获取内容，并使用段落级检索提取最相关的段落。
 - en: The big change (from traditional SEO) is query rewriting and passage-level chunking,
     which let lower-ranked pages outrank higher ones if their specific paragraphs
     match the question better.
+  id: totrans-11
   prefs: []
   type: TYPE_NORMAL
+  zh: 与传统SEO相比，重大变化是查询重写和段落级分块，这允许排名较低的页面在特定段落与问题匹配得更好时超越排名较高的页面。
 - en: The technical process
+  id: totrans-12
   prefs:
   - PREF_H2
   type: TYPE_NORMAL
+  zh: 技术过程
 - en: The companies behind Claude and ChatGPT aren’t fully transparent about how their
     web search systems work within the UI chat, but we can infer a lot by piecing
     things together.
+  id: totrans-13
   prefs: []
   type: TYPE_NORMAL
+  zh: Claude和ChatGPT背后的公司对其网络搜索系统在UI聊天中的工作方式并不完全透明，但我们可以通过拼凑信息来推断很多。
 - en: We know they lean on search engines to find candidates, at this scale, it would
     be absurd not to. We also know that what the LLM actually sees are pieces of text
     (chunks or passages) when grounding their answer.
+  id: totrans-14
   prefs: []
   type: TYPE_NORMAL
+  zh: 我们知道它们依赖于搜索引擎来找到候选者，在这个规模上，不这样做将是荒谬的。我们也知道，当LLM根据其答案进行定位时，它们实际上看到的是文本片段（块或段落）。
 - en: This strongly hints at some kind of embedding-based retrieval over those chunks
     rather than over full pages.
+  id: totrans-15
   prefs: []
   type: TYPE_NORMAL
+  zh: 这强烈暗示了在这些块上基于嵌入的检索，而不是在完整页面上。
 - en: This process has several parts, so we’ll go through it step by step.
+  id: totrans-16
   prefs: []
   type: TYPE_NORMAL
+  zh: 这个过程有几个部分，所以我们将一步一步地进行。
 - en: Query re-writing & fan-out
+  id: totrans-17
   prefs:
   - PREF_H3
   type: TYPE_NORMAL
+  zh: 查询重写 & 扩散
 - en: First, we’ll look at how the system cleans up human queries and expands them.
     We’ll cover the rewrite step, the fan-out step, and why this matters for SEO.
+  id: totrans-18
   prefs: []
   type: TYPE_NORMAL
+  zh: 首先，我们将看看系统如何清理人类查询并扩展它们。我们将涵盖重写步骤、扩散步骤以及为什么这对SEO很重要。
 - en: '![](../Images/d1da9bf59b4490de9e474c882205da4a.png)'
+  id: totrans-19
   prefs: []
   type: TYPE_IMG
+  zh: '![图片](../Images/d1da9bf59b4490de9e474c882205da4a.png)'
 - en: we’ll start at query rewriting — showing the entire pipeline we’re going through
+  id: totrans-20
   prefs: []
   type: TYPE_NORMAL
+  zh: 我们将从查询重写开始——展示我们正在经历的整个管道
 - en: I think this part might be the most transparent, and the one most people seem
     to agree on online.
+  id: totrans-21
   prefs: []
   type: TYPE_NORMAL
+  zh: 我认为这部分可能是最透明的，也是大家在线上最一致认同的部分。
 - en: The query optimization step is about taking a human query and turning it into
     something more precise. For example, “please search for those red shoes we talked
     about earlier” becomes “brown-red Nike sneakers.”
+  id: totrans-22
   prefs: []
   type: TYPE_NORMAL
+  zh: 查询优化步骤是将人类查询转化为更精确的内容。例如，“请搜索我们之前讨论过的那些红色鞋子”变为“棕色红色耐克运动鞋。”
 - en: The fan-out step, on the other hand, is about generating additional rewrites.
     So if a user asks about hiking routes near me, the system might try things like
     “beginner hikes near Stockholm,” “day hikes near Stockholm public transport,”
     or “family-friendly trails near Stockholm.”
+  id: totrans-23
   prefs: []
   type: TYPE_NORMAL
+  zh: 另一方面，扩展步骤是关于生成额外的重写。所以如果一个用户询问“我附近的徒步路线”，系统可能会尝试“斯德哥尔摩附近的初学者徒步”、“斯德哥尔摩公共交通附近的日间徒步”或“斯德哥尔摩附近的家庭友好型步道”等。
 - en: This is different from just using synonyms, which traditional search engines
     are already optimized for.
+  id: totrans-24
   prefs: []
   type: TYPE_NORMAL
+  zh: 这与仅仅使用同义词不同，传统搜索引擎已经对此进行了优化。
 - en: If this is the first time you’re hearing about it and you’re unconvinced, take
     a look at Google’s own docs on [AI query fan-out](https://developers.google.com/search/docs/appearance/ai-features)
     or do a bit of digging around query rewriting.
+  id: totrans-25
   prefs: []
   type: TYPE_NORMAL
+  zh: 如果你第一次听说这个，并且还不信服，可以查看谷歌自己关于[AI查询扩展](https://developers.google.com/search/docs/appearance/ai-features)的文档，或者对查询重写进行一些研究。
 - en: To what extent this actually works, we can’t know. They may not fan it out that
     much and just work with a single query, then send additional ones down the pipeline
     if the results are lackluster.
+  id: totrans-26
   prefs: []
   type: TYPE_NORMAL
+  zh: 实际上这个方法能到什么程度，我们无法得知。它们可能不会过度扩展，只是用一个查询开始，如果结果不尽人意，再通过管道发送额外的查询。
 - en: What we *can* say is that it’s probably not a big model doing this part. If
     you look at the research, [Ye et al.](https://aclanthology.org/2023.findings-emnlp.398/)
     explicitly use an LLM to generate strong rewrites, then distill that into a smaller
     rewriter to avoid latency and cost overhead.
+  id: totrans-27
   prefs: []
   type: TYPE_NORMAL
+  zh: 我们可以说，这很可能不是一个大模型在处理这部分工作。如果你看研究，[Ye等人](https://aclanthology.org/2023.findings-emnlp.398/)明确使用LLM生成强大的重写，然后将其提炼成一个更小的重写器，以避免延迟和成本开销。
 - en: As for what this part of the pipeline means, for engineering, it just means
     you want to clean up the messy human queries and turn them into something that
     has a higher hit rate.
+  id: totrans-28
   prefs: []
   type: TYPE_NORMAL
+  zh: 关于这个管道部分的意义，对于工程来说，只是意味着你想要清理混乱的人类查询，并将它们转换成具有更高命中率的查询。
 - en: For the business and SEO people out there, it means those human queries you’ve
     been optimizing for are getting transformed into more robotic, document-shaped
     ones.
+  id: totrans-29
   prefs: []
   type: TYPE_NORMAL
+  zh: 对于那些商业和SEO人士来说，这意味着你们一直优化的人类查询正在被转换成更机械、文档形状的查询。
 - en: SEO, as I understand it, used to care a lot about matching the exact long-tail
     phrase in titles and headings. If someone searched for “best running shoes for
     bad knees,” you’d stick to that exact string.
+  id: totrans-30
   prefs: []
   type: TYPE_NORMAL
+  zh: 就我理解，SEO过去非常重视标题和副标题中与精确的长尾短语匹配。如果有人搜索“适合坏膝盖的最佳跑鞋”，你会坚持使用那个确切的字符串。
 - en: What you need to care about now is also entities, attributes, and relationships.
+  id: totrans-31
   prefs: []
   type: TYPE_NORMAL
+  zh: 你现在需要关注的是实体、属性和关系。
 - en: So, if a user asks for “something for dry skin,” the rewrites might include
     things like “moisturizer,” “occlusive,” “humectant,” “ceramides,” “fragrance-free,”
     “avoid alcohols” and not just “how would I find a good product for dry skin.”
+  id: totrans-32
   prefs: []
   type: TYPE_NORMAL
+  zh: 因此，如果一个用户询问“干燥皮肤的护肤品”，重写可能包括“保湿霜”、“封闭剂”、“保湿剂”、“神经酰胺”、“无香料”、“避免酒精”等，而不仅仅是“如何找到适合干燥皮肤的优质产品”。
 - en: 'But let’s be clear so there’s no confusion: we can’t see the internal rewrites
     themselves, so these are just examples.'
+  id: totrans-33
   prefs: []
   type: TYPE_NORMAL
+  zh: 但让我们明确一点，以避免混淆：我们无法看到内部的重写本身，所以这些只是例子。
 - en: If you’re interested in this part, you can dig deeper. I bet there are plenty
     of papers out there on how to do this well.
+  id: totrans-34
   prefs: []
   type: TYPE_NORMAL
+  zh: 如果你对此部分感兴趣，可以深入研究。我敢打赌，关于如何做得好的论文有很多。
 - en: Let’s move on to what these optimized queries are actually used for.
+  id: totrans-35
   prefs: []
   type: TYPE_NORMAL
+  zh: 让我们继续讨论这些优化查询的实际用途。
 - en: Using search engines (for doc level discovery)
+  id: totrans-36
   prefs:
   - PREF_H3
   type: TYPE_NORMAL
+  zh: 使用搜索引擎（用于文档级发现）
 - en: It’s pretty common knowledge by now that, to get up-to-date answers, most AI
     bots rely on traditional search engines. That’s not the whole story, but it does
     cut the web down to something smaller to work with.
+  id: totrans-37
   prefs: []
   type: TYPE_NORMAL
+  zh: 到现在为止，这已经成为一个普遍的知识，为了获得最新的答案，大多数AI机器人依赖于传统的搜索引擎。这并不是全部的故事，但它确实将网络缩小到可以工作的规模。
 - en: '![](../Images/652fd9b469f7bd240f4284463716fbbe.png)'
+  id: totrans-38
   prefs: []
   type: TYPE_IMG
+  zh: '![图片](../Images/652fd9b469f7bd240f4284463716fbbe.png)'
 - en: next up doc discovery — showing the entire pipeline we’re going through
+  id: totrans-39
   prefs: []
   type: TYPE_NORMAL
+  zh: 接下来是文档发现——展示我们正在经历的整个管道
 - en: I’m assuming the full web is too large, too noisy, and too fast-changing for
     an LLM pipeline to pull raw content directly. So by using already established
     search engines, you get a way to narrow the universe.
+  id: totrans-40
   prefs: []
   type: TYPE_NORMAL
+  zh: 我假设整个网络太大、太嘈杂、变化太快，以至于LLM管道无法直接提取原始内容。因此，通过使用已经建立的搜索引擎，你可以得到一种缩小搜索范围的方法。
 - en: If you look at larger RAG pipelines that work with millions of documents, they
     do something similar. I.e. using a filter of some sort to decide which documents
     are important and worth further processing.
+  id: totrans-41
   prefs: []
   type: TYPE_NORMAL
+  zh: 如果你看看与数百万份文档一起工作的更大的RAG管道，它们会做类似的事情。也就是说，使用某种过滤器来决定哪些文档是重要的，值得进一步处理。
 - en: For this part, we do have proof.
+  id: totrans-42
   prefs: []
   type: TYPE_NORMAL
+  zh: 对于这部分，我们确实有证据。
 - en: Both [OpenAI](https://help.openai.com/en/articles/9237897-chatgpt-search) and
     [Anthropic](https://techcrunch.com/2025/03/21/anthropic-appears-to-be-using-brave-to-power-web-searches-for-its-claude-chatbot/)
     have said they use third-party search engines like Bing and Brave, alongside their
     own crawlers.
+  id: totrans-43
   prefs: []
   type: TYPE_NORMAL
+  zh: '[OpenAI](https://help.openai.com/en/articles/9237897-chatgpt-search)和[Anthropic](https://techcrunch.com/2025/03/21/anthropic-appears-to-be-using-brave-to-power-web-searches-for-its-claude-chatbot/)都表示，他们使用像Bing和Brave这样的第三方搜索引擎，以及他们自己的爬虫。'
 - en: Perplexity may have built out this part on their own by now, but in the beginning,
     they would have done the same.
+  id: totrans-44
   prefs: []
   type: TYPE_NORMAL
+  zh: 可能到现在为止，Perplexity已经独立构建了这部分，但在最初，他们也会做同样的事情。
 - en: We also have to consider that traditional search engines like Google and Bing
     have already solved the hardest problems. They’re an established technology that
     handles things like language detection, authority scoring, domain trust, spam
     filtering, and so on.
+  id: totrans-45
   prefs: []
   type: TYPE_NORMAL
+  zh: 我们还必须考虑，像Google和Bing这样的传统搜索引擎已经解决了最困难的问题。它们是成熟的技术，可以处理诸如语言检测、权威评分、域名信任、垃圾邮件过滤等问题。
 - en: Throwing all of that away to embed the entire web yourself seems unlikely.
+  id: totrans-46
   prefs: []
   type: TYPE_NORMAL
+  zh: 丢弃所有这些来自己嵌入整个网络似乎不太可能。
 - en: However, we don’t know how many results they actually fetch per query, whether
     it’s just the top 20 or 30\. One [unofficial article](https://www.seerinteractive.com/insights/87-percent-of-searchgpt-citations-match-bings-top-results)
     compared citations from ChatGPT and Bing, looked at the ranking order, and found
     that some came from as far down as 22nd place.
+  id: totrans-47
   prefs: []
   type: TYPE_NORMAL
+  zh: 然而，我们不知道他们实际上每次查询会检索多少结果，是前20个还是30个。一篇[非官方文章](https://www.seerinteractive.com/insights/87-percent-of-searchgpt-citations-match-bings-top-results)比较了ChatGPT和Bing的引用，观察了排名顺序，发现一些结果甚至来自第22位。
 - en: If true, this suggests you need to aim for top-20-ish visibility.
+  id: totrans-48
   prefs: []
   type: TYPE_NORMAL
+  zh: 如果这是真的，这表明你需要争取大约前20名的可见度。
 - en: Furthermore, we also don’t know what other metrics they use to decide what surfaces
     from there. This [article](https://arxiv.org/html/2509.08919v1) argues that AI
     engines heavily favor *earned media* rather than official sites or socials.
+  id: totrans-49
   prefs: []
   type: TYPE_NORMAL
+  zh: 此外，我们也不知道他们使用哪些其他指标来决定哪些内容会从中浮现。这篇文章[链接](https://arxiv.org/html/2509.08919v1)认为，AI引擎更倾向于**
+    earned media**（ earned media）而不是官方网站或社交媒体。
 - en: Still, the search engine’s job (whether it’s fully third-party or a mix) is
     discovery. It ranks the URL based on authority and keywords.
+  id: totrans-50
   prefs: []
   type: TYPE_NORMAL
+  zh: 然而，搜索引擎的工作（无论是完全第三方还是混合型）是发现。它根据权威性和关键词对URL进行排名。
 - en: It might include a snippet of information, but that alone won’t be enough to
     answer the question. Unless of course it’s a very easy question like “who is the
     CEO of X?”
+  id: totrans-51
   prefs: []
   type: TYPE_NORMAL
+  zh: 它可能包括一些信息片段，但这本身不足以回答问题。除非当然是一个非常简单的问题，比如“X公司的CEO是谁？”
 - en: But for deeper questions, if the model relied only on the snippet, plus the
     title and URL, it would likely hallucinate the details. It’s not enough context.
+  id: totrans-52
   prefs: []
   type: TYPE_NORMAL
+  zh: 但对于更深入的问题，如果模型只依赖于片段、标题和URL，它很可能会在细节上产生幻觉。这不足以提供足够的上下文。
 - en: So this pushes us toward a two-stage architecture, where a retrieval step is
     baked in (which we’ll get to soon).
+  id: totrans-53
   prefs: []
   type: TYPE_NORMAL
+  zh: 因此，这促使我们走向一个两阶段架构，其中包含一个检索步骤（我们很快就会讨论到）。
 - en: What does this mean in terms of SEO?
+  id: totrans-54
   prefs: []
   type: TYPE_NORMAL
+  zh: 这在SEO方面意味着什么？
 - en: It means you still need to rank high in traditional search engines to be included
     in that initial batch of documents that gets processed. So, yes, classic SEO still
     matters.
+  id: totrans-55
   prefs: []
   type: TYPE_NORMAL
+  zh: 这意味着你仍然需要在传统搜索引擎中排名很高，才能被包含在最初处理的文档批次中。所以，是的，经典SEO仍然很重要。
 - en: But it may also mean you need to think about po*tential new* metrics they might
     be using to rank those results.
+  id: totrans-56
   prefs: []
   type: TYPE_NORMAL
+  zh: 但这也可能意味着你需要考虑他们可能使用的新指标来对这些结果进行排名。
 - en: This stage is all about narrowing the universe to a few pages worth digging
     into, using established search tech plus internal knobs. Everything else (the
     “it returns passages of information” part) comes after this step, using standard
     retrieval techniques.
+  id: totrans-57
   prefs: []
   type: TYPE_NORMAL
+  zh: 这个阶段完全是关于将宇宙缩小到几个值得深入挖掘的页面，使用既定的搜索技术和内部调节。其他所有内容（“它返回信息段落”的部分）都在这一步之后，使用标准的检索技术。
 - en: Crawl, chunk & retrieve
+  id: totrans-58
   prefs:
   - PREF_H3
   type: TYPE_NORMAL
+  zh: 爬取、分割和检索
 - en: Now let’s move on to what happens when the system has identified a handful of
     interesting URLs.
+  id: totrans-59
   prefs: []
   type: TYPE_NORMAL
+  zh: 现在，让我们看看当系统识别出一些有趣的URL时会发生什么。
 - en: 'Once a small set of URLs passes the first filter, the pipeline is fairly straightforward:
     crawl the page, break it into pieces, embed those pieces, retrieve the ones that
     match the query, and then re-rank them.'
+  id: totrans-60
   prefs: []
   type: TYPE_NORMAL
+  zh: 一旦一小批URL通过了第一轮筛选，流程就相当直接：爬取页面，将其分解成片段，嵌入这些片段，检索与查询匹配的片段，然后重新排序。
 - en: This is what’s called retrieval.
+  id: totrans-61
   prefs: []
   type: TYPE_NORMAL
+  zh: 这就是所谓的检索。
 - en: '![](../Images/bce09cd6cffe1ab36db6884f181e4db1.png)'
+  id: totrans-62
   prefs: []
   type: TYPE_IMG
+  zh: '![图片](../Images/bce09cd6cffe1ab36db6884f181e4db1.png)'
 - en: next up chunking, retrieval — showing the entire pipeline we’re going through
+  id: totrans-63
   prefs: []
   type: TYPE_NORMAL
+  zh: 接下来是分块、检索——展示我们正在经历的整个流程
 - en: I call it *on-the-fly* here because the system only embeds chunks once a URL
     becomes a candidate, then it caches those embeddings for reuse. This part might
     be new if you’re already familiar with retrieval.
+  id: totrans-64
   prefs: []
   type: TYPE_NORMAL
+  zh: 我在这里称之为“即时”是因为系统仅在URL成为候选时才嵌入片段，然后它会缓存这些嵌入以供重用。如果你已经熟悉检索，这部分可能对你来说是新的。
 - en: To crawl the page, it seem like they use their own crawlers. For OpenAI, this
     is OAI-SearchBot, which should then fect the raw HTML so it can be processed.
+  id: totrans-65
   prefs: []
   type: TYPE_NORMAL
+  zh: 为了爬取页面，它们似乎使用自己的爬虫。对于OpenAI来说，这是OAI-SearchBot，它应该随后获取原始HTML以便进行处理。
 - en: 'Crawlers don’t typically execute JavaScript. They most likely rely on server-rendered
     HTML, so the same SEO rules apply: content needs to be accessible.'
+  id: totrans-66
   prefs: []
   type: TYPE_NORMAL
+  zh: 爬虫通常不会执行JavaScript。它们最有可能依赖于服务器渲染的HTML，因此相同的SEO规则适用：内容需要可访问。
 - en: Once the HTML is fetched, the content has to be turned into something searchable.
+  id: totrans-67
   prefs: []
   type: TYPE_NORMAL
+  zh: 一旦获取了HTML，内容就必须被转换成可搜索的形式。
 - en: If you’re new to this, it might feel like the AI “scans the document,” but that’s
     not what happens. Scanning entire pages per query would be too slow and too expensive.
+  id: totrans-68
   prefs: []
   type: TYPE_NORMAL
+  zh: 如果你刚开始接触这个，可能会感觉AI“扫描文档”，但实际上并非如此。每次查询扫描整个页面会太慢也太昂贵。
 - en: 'Instead, pages are split into passages, usually guided by HTML structure: headings,
     paragraphs, lists, section breaks, that kind of thing. These are called *chunks*
     in the context of retrieval.'
+  id: totrans-69
   prefs: []
   type: TYPE_NORMAL
+  zh: 相反，页面被分成段落，通常由HTML结构引导：标题、段落、列表、部分分隔符等。在检索的上下文中，这些被称为“片段”。
 - en: Each chunk becomes a small, self-contained unit. Token-wise, you can see from
     Perplexity UI citations that chunks are on the order of tens of tokens, maybe
     around 150, not 1,000\.
+  id: totrans-70
   prefs: []
   type: TYPE_NORMAL
+  zh: 每个片段都变成了一个小型、自包含的单位。从Perplexity UI引用中，你可以看到片段的顺序是数十个标记，可能大约是150个，而不是1000个。
 - en: That’s about 110–120 words.
+  id: totrans-71
   prefs: []
   type: TYPE_NORMAL
+  zh: 大概是110-120个单词。
 - en: After chunking, those units are embedded using both sparse and dense vectors.
     This enables the system to run hybrid search and match a query both semantically
     and by keyword.
+  id: totrans-72
   prefs: []
   type: TYPE_NORMAL
+  zh: 在分块之后，这些单元使用稀疏和密集向量进行嵌入。这使得系统能够运行混合搜索并通过语义和关键词匹配查询。
 - en: If you’re new to semantic search, in short, it means the system searches for
     meaning instead of exact words. *So a query like “symptoms of iron deficiency”
     and “signs your body is low on iron” would still land near each other in embedding
     space.*
+  id: totrans-73
   prefs: []
   type: TYPE_NORMAL
+  zh: 如果你刚开始接触语义搜索，简而言之，这意味着系统搜索的是意义而不是精确的单词。*所以像“铁缺乏的症状”和“你的身体铁含量低的迹象”这样的查询在嵌入空间中仍然会靠近彼此。*
 - en: '*You can read more on embeddings [here](https://towardsdatascience.com/working-with-embeddings-closed-versus-open-source-39491f0b95c2/)
     if you’re keen to learn how it works.*'
+  id: totrans-74
   prefs: []
   type: TYPE_NORMAL
+  zh: '*如果你对嵌入的工作原理感兴趣，可以在这里了解更多[嵌入](https://towardsdatascience.com/working-with-embeddings-closed-versus-open-source-39491f0b95c2/)。*'
 - en: Once a popular page has been chunked and embedded, those embeddings are probably
     cached. No one is re-embedding the same StackOverflow answer thousands of times
     a day.
+  id: totrans-75
   prefs: []
   type: TYPE_NORMAL
+  zh: 一旦热门页面被分块和嵌入，这些嵌入很可能被缓存。没有人每天会重新嵌入相同的StackOverflow答案数千次。
 - en: This is obviously why the system feels so fast, probably the hot 95–98% of the
     web that actually gets cited is already embedded, and cached aggressively.
+  id: totrans-76
   prefs: []
   type: TYPE_NORMAL
+  zh: 这显然是系统感觉如此快速的原因，可能是因为热点的95-98%的网页实际上已经被嵌入，并且被积极缓存。
 - en: We don’t know to what extent though and how much they pre-embed to make sure
     the system runs fast for popular queries.
+  id: totrans-77
   prefs: []
   type: TYPE_NORMAL
+  zh: 我们不知道它们预嵌入的程度以及多少，以确保系统对热门查询运行得快。
 - en: Now the system needs to figure out which chunks matter. It uses the embeddings
     for each chunk of text to compute a score for both semantic and keyword matching.
+  id: totrans-78
   prefs: []
   type: TYPE_NORMAL
+  zh: 现在，系统需要确定哪些片段是重要的。它使用每个文本片段的嵌入来计算语义和关键词匹配的分数。
 - en: It picks the chunks with the highest scores. This can be anything from 10 to
     50 top-scoring chunks.
+  id: totrans-79
   prefs: []
   type: TYPE_NORMAL
+  zh: 它选择得分最高的片段。这可以是10到50个得分最高的片段。
 - en: From here, most mature systems will use a re-ranker (cross-encoder) to process
     those top chunks again, doing another round of ranking. This is the “fix the retrieval
     mess” stage, because unfortunately retrieval isn’t always completely reliable
     for a lot of reasons.
+  id: totrans-80
   prefs: []
   type: TYPE_NORMAL
+  zh: 从这里开始，大多数成熟的系统都会使用重新排序器（交叉编码器）再次处理这些顶级部分，进行另一轮排名。这是“修复检索混乱”阶段，因为不幸的是，由于许多原因，检索并不总是完全可靠的。
 - en: Although they say nothing about using a cross-encoder, Perplexity is one of
     the few that documents their retrieval process openly.
+  id: totrans-81
   prefs: []
   type: TYPE_NORMAL
+  zh: 虽然他们没有提及使用交叉编码器，但Perplexity是少数公开其检索过程的之一。
 - en: Their [Search API](https://www.perplexity.ai/hub/blog/introducing-the-perplexity-search-api)
     says they “divide documents into fine-grained units” and score those units individually
     so they can return the “most relevant snippets already ranked.”
+  id: totrans-82
   prefs: []
   type: TYPE_NORMAL
+  zh: 他们的[搜索API](https://www.perplexity.ai/hub/blog/introducing-the-perplexity-search-api)表示他们“将文档划分为细粒度单元”并对这些单元进行单独评分，以便他们可以返回“已排序的最相关片段。”
 - en: What does this all mean for SEO? If the system is doing retrieval like this,
     your page isn’t treated as one big blob.
+  id: totrans-83
   prefs: []
   type: TYPE_NORMAL
+  zh: 这一切对SEO意味着什么？如果系统像这样进行检索，你的页面不会被当作一个大的整体来处理。
 - en: It’s broken into pieces (often paragraph or heading level) and those pieces
     are what get scored. The full page matters during discovery, but once retrieval
     begins, it’s the chunks that matter.
+  id: totrans-84
   prefs: []
   type: TYPE_NORMAL
+  zh: 它被分成几块（通常是段落或标题级别），这些块就是被评分的内容。在发现过程中，整个页面很重要，但一旦开始检索，重要的是这些部分。
 - en: That means each chunk needs to answer the user’s question.
+  id: totrans-85
   prefs: []
   type: TYPE_NORMAL
+  zh: 这意味着每个部分都需要回答用户的问题。
 - en: It also means that if your important information isn’t contained inside a single
     chunk, the system can lose context. Retrieval isn’t magic. The model never sees
     your full page.
+  id: totrans-86
   prefs: []
   type: TYPE_NORMAL
+  zh: 这也意味着，如果你的重要信息没有包含在单个部分中，系统可能会失去上下文。检索并不是魔法。模型从未看到你的整个页面。
 - en: 'So now we’ve covered the retrieval stage: where the system crawls pages, chops
     them into units, embeds those units, and then uses hybrid retrieval and re-ranking
     to pull out only the passages that can answer the user’s question.'
+  id: totrans-87
   prefs: []
   type: TYPE_NORMAL
+  zh: 因此，我们现在已经涵盖了检索阶段：系统爬取页面，将它们切割成单元，嵌入这些单元，然后使用混合检索和重新排序来提取只有能够回答用户问题的段落。
 - en: Doing another pass & handing over chunks to LLM
+  id: totrans-88
   prefs:
   - PREF_H3
   type: TYPE_NORMAL
+  zh: 进行另一轮遍历并将部分内容交给LLM处理
 - en: Now let’s move on to what happens after the retrieval part, including the “continuing
     to search” feature and handing the chunks to the main LLM.
+  id: totrans-89
   prefs: []
   type: TYPE_NORMAL
+  zh: 现在，让我们继续讨论检索部分之后发生的事情，包括“继续搜索”功能和将部分交给主LLM。
 - en: '![](../Images/60a94ad5e1ef6cc6ec176c112a699690.png)'
+  id: totrans-90
   prefs: []
   type: TYPE_IMG
+  zh: '![](../Images/60a94ad5e1ef6cc6ec176c112a699690.png)'
 - en: next up checking content + handing it over to the LLM
+  id: totrans-91
   prefs: []
   type: TYPE_NORMAL
+  zh: 接下来检查内容并将其交给LLM
 - en: Once the system has identified a few high-ranking chunks, it has to decide whether
     they’re good enough or if it needs to keep searching. This decision is almost
     certainly made by a small controller model, not the main LLM.
+  id: totrans-92
   prefs: []
   type: TYPE_NORMAL
+  zh: 一旦系统识别出几个排名靠前的部分，它必须决定这些部分是否足够好，或者是否需要继续搜索。这个决定几乎肯定是由一个小型控制器模型而不是主LLM做出的。
 - en: I’m guessing here, but if the material looks thin or off-topic, it may run another
     round of retrieval. If it looks solid, it can hand those chunks over to the LLM.
+  id: totrans-93
   prefs: []
   type: TYPE_NORMAL
+  zh: 我在这里进行猜测，但如果材料看起来很单薄或离题，它可能会进行另一轮检索。如果看起来很扎实，它可以将这些部分交给LLM。
 - en: At some point, that handoff happens. The selected passages, along with some
     metadata, are passed to the main LLM.
+  id: totrans-94
   prefs: []
   type: TYPE_NORMAL
+  zh: 在某个时刻，这种交接发生。选定的段落以及一些元数据被传递给主LLM。
 - en: The model reads all the provided chunks and picks whichever one best supports
     the answer it wants to generate.
+  id: totrans-95
   prefs: []
   type: TYPE_NORMAL
+  zh: 模型读取所有提供的部分，并选择其中最能支持它想要生成的答案的部分。
 - en: It does not mechanically follow the retriever’s order. So there’s no guarantee
     the LLM will use the “top” chunk. It may prefer a lower-ranked passage simply
     because it’s clearer, more self-contained, or closer to the phrasing needed for
     the answer.
+  id: totrans-96
   prefs: []
   type: TYPE_NORMAL
+  zh: 它并不机械地遵循检索器的顺序。因此，不能保证LLM会使用“顶级”部分。它可能更喜欢排名较低的部分，仅仅因为它更清晰、更自包含，或者更接近所需答案的措辞。
 - en: So just like us, it decides what to take in and what to ignore. And even if
     your chunk scores the highest, there’s no assurance it will be the first one mentioned.
+  id: totrans-97
   prefs: []
   type: TYPE_NORMAL
+  zh: 所以就像我们一样，它决定要接受什么，忽略什么。即使你的部分得分最高，也不能保证它将是第一个被提到的。
 - en: What to think about
+  id: totrans-98
   prefs:
   - PREF_H3
   type: TYPE_NORMAL
+  zh: 需要考虑的问题
 - en: This system isn’t really a black box. It’s a system people have built to hand
     the LLMs the right information to answer a user’s question.
+  id: totrans-99
   prefs: []
   type: TYPE_NORMAL
+  zh: 这个系统并不是真正的黑盒。这是一个人们构建的系统，用来向LLM提供正确的信息以回答用户的问题。
 - en: If what I’ve inferred here is true, then it finds candidates, splits documents
     into units, searches and ranks those units, and then hands them over to an LLM
     to summarize.
+  id: totrans-100
   prefs: []
   type: TYPE_NORMAL
+  zh: 如果我这里推断的是真的，那么它会找到候选人，将文档分成单元，搜索和排名这些单元，然后将它们交给LLM进行总结。
 - en: From this we can also figure out what we need to think about when creating content
     for it.
+  id: totrans-101
   prefs: []
   type: TYPE_NORMAL
+  zh: 从这个结果中，我们还可以了解在为它创建内容时需要考虑什么。
 - en: Traditional SEO still matters a lot, because this system leans on the old one.
     Things like having a proper sitemap, easily rendered content, proper headings,
     domain authority, and accurate last-modified tags are all important for your content
     to be sorted correctly.
+  id: totrans-102
   prefs: []
   type: TYPE_NORMAL
+  zh: 传统的SEO仍然非常重要，因为这个系统依赖于旧的那个。拥有合适的网站地图、易于渲染的内容、合适的标题、域名权威性和准确的最后修改时间标签，对于正确排序你的内容都是非常重要的。
 - en: As I pointed out, they may be mixing search engines with their own technology
     to decide which URLs get picked, which is worth keeping in mind.
+  id: totrans-103
   prefs: []
   type: TYPE_NORMAL
+  zh: 正如我指出的，他们可能会将搜索引擎与自己的技术结合起来，以决定哪些URL被选中，这一点值得记住。
 - en: But if they use retrieval on top of it, then paragraph level relevance is the
     new leverage point.
+  id: totrans-104
   prefs: []
   type: TYPE_NORMAL
+  zh: 但如果他们在其上使用检索，那么段落级别的相关性就成为了新的杠杆点。
 - en: 'This then means answer-in-one-chunk design will rule. (Just don’t do it in
     a way that feels weird, maybe a TL;DR.) And remember to use the right vocabulary:
     entities, attributes, relationships, like we talked about in the query optimization
     section.'
+  id: totrans-105
   prefs: []
   type: TYPE_NORMAL
+  zh: 这意味着答案在一块的设计将占主导地位。（只是不要做得太奇怪，也许是一个TL;DR。）并且记得使用正确的词汇：实体、属性、关系，就像我们在查询优化部分讨论的那样。
 - en: How to build a “GEO Scoring System” (for fun)
+  id: totrans-106
   prefs:
   - PREF_H2
   type: TYPE_NORMAL
+  zh: 如何构建“地理评分系统”（仅供娱乐）
 - en: To figure out how well your content will do, we’ll have to simulate the hostile
     environment your content will live in. So let’s try to reverse engineer this pipeline.
+  id: totrans-107
   prefs: []
   type: TYPE_NORMAL
+  zh: 为了了解你的内容将如何表现，我们必须模拟你的内容将存在的敌对环境。所以让我们尝试逆向工程这个管道。
 - en: '*Note, this is non-trivial, as we don’t know the internal metrics they use
     nor is this system fully public, so think of this as a rough blueprint.*'
+  id: totrans-108
   prefs: []
   type: TYPE_NORMAL
+  zh: '*注意，这并不简单，因为我们不知道他们使用的内部指标，这个系统也不是完全公开的，所以把这个看作是一个粗略的蓝图。*'
 - en: The idea is to create a pipeline that can do query rewrite, discovery, retrieval,
     re-ranking and an LLM judge, and then see where you end up compared to your competitors
     for different topics.
+  id: totrans-109
   prefs: []
   type: TYPE_NORMAL
+  zh: 目标是创建一个可以执行查询重写、发现、检索、重新排序和LLM裁判的管道，然后看看你在不同主题上与竞争对手相比处于什么位置。
 - en: '![](../Images/9b596b1f57b9563f9db074f4ba3227ba.png)'
+  id: totrans-110
   prefs: []
   type: TYPE_IMG
+  zh: '![图片](../Images/9b596b1f57b9563f9db074f4ba3227ba.png)'
 - en: sketching the pipeline to check where you score compared to competitors
+  id: totrans-111
   prefs: []
   type: TYPE_NORMAL
+  zh: 绘制管道草图以检查你与竞争对手相比的得分情况
 - en: You can begin with a few topics like “hybrid retrieval for enterprise RAG” or
     “LLM evaluation with LLM-as-judge,” and then build a system that generates natural
     queries around them.
+  id: totrans-112
   prefs: []
   type: TYPE_NORMAL
+  zh: 你可以从一些主题开始，比如“企业RAG的混合检索”或“以LLM作为裁判的LLM评估”，然后构建一个围绕这些主题生成自然查询的系统。
 - en: Then you pass those queries through an LLM rewrite step, because these systems
     often reformulate the user query before retrieval. Those rewritten queries are
     what you actually push through the pipeline.
+  id: totrans-113
   prefs: []
   type: TYPE_NORMAL
+  zh: 然后你将这些查询通过一个LLM重写步骤，因为这些系统通常在检索之前重新表述用户查询。这些重写的查询是你实际上推过管道的。
 - en: The first check is visibility. For each query, look at the top 20–30 results
     across Brave, Google and Bing. Note whether your page appears and where it sits
     relative to competitors.
+  id: totrans-114
   prefs: []
   type: TYPE_NORMAL
+  zh: 第一项检查是可见性。对于每个查询，查看Brave、Google和Bing上前20-30个结果。注意你的页面是否出现以及它相对于竞争对手的位置。
 - en: If your page appears in these first results, you move on to the retrieval part.
+  id: totrans-115
   prefs: []
   type: TYPE_NORMAL
+  zh: 如果你的页面出现在这些最初的结果中，你就可以进入检索部分。
 - en: Fetch your page and the competing pages, clean the HTML, split them into chunks,
     embed those chunks, and build a small hybrid retrieval setup that combines semantic
     and keyword matching. Add a re-ranking step.
+  id: totrans-116
   prefs: []
   type: TYPE_NORMAL
+  zh: 获取你的页面和竞争对手的页面，清理HTML，将它们分成块，嵌入这些块，并构建一个结合语义和关键词匹配的小型混合检索设置。添加一个重新排序步骤。
 - en: 'Once you have the top chunks, you add the final layer: an LLM-as-a-judge. Being
     in the top five doesn’t guarantee citation, so you simulate the last step by handing
     the LLM a few of the top-scored chunks (with some metadata) and see which one
     it cites first.'
+  id: totrans-117
   prefs: []
   type: TYPE_NORMAL
+  zh: 一旦你有了最顶层的块，你添加最后一层：一个LLM作为裁判。排名前五并不保证被引用，所以你通过将一些得分最高的块（附带一些元数据）交给LLM来模拟最后一步，看看它首先引用哪一个。
 - en: 'When you run this for your pages and competitors, you see where you win or
     lose: the search layer, the retrieval layer or the LLM layer.'
+  id: totrans-118
   prefs: []
   type: TYPE_NORMAL
+  zh: 当你为你的页面和竞争对手运行这个时，你会看到你在哪些方面获胜或失败：搜索层、检索层或LLM层。
 - en: Remember this is still a rough sketch, we can’t know the exact authority scores
     they use, but it gives you something to start with if you want to build a similar
     system.
+  id: totrans-119
   prefs: []
   type: TYPE_NORMAL
+  zh: 记住，这仍然是一个粗略的草图，我们无法知道他们使用的确切权威分数，但如果您想构建类似的系统，这至少给您提供了一个起点。
 - en: '* * *'
+  id: totrans-120
   prefs: []
   type: TYPE_NORMAL
+  zh: '* * *'
 - en: This article focused on the mechanics rather than the strategy side of SEO/GEO,
     which I get won’t be for everyone.
+  id: totrans-121
   prefs: []
   type: TYPE_NORMAL
+  zh: 这篇文章侧重于SEO/GEO的机制方面，而不是策略方面，我明白这不会适合每个人。
 - en: The goal was to map the flow from a user query to the final answer and show
     that the AI search tool isn’t some opaque force.
+  id: totrans-122
   prefs: []
   type: TYPE_NORMAL
+  zh: 目标是将用户查询到最终答案的流程进行映射，并展示人工智能搜索工具并非某种不透明的力量。
 - en: Even if parts of the system aren’t public, we can still infer a reasonable sketch
     of what’s happening. What’s clear so far is that the AI web search doesn’t replace
     traditional search engines.
+  id: totrans-123
   prefs: []
   type: TYPE_NORMAL
+  zh: 即使系统的某些部分不是公开的，我们仍然可以推断出其大致的运作情况。到目前为止，明确的是，人工智能网络搜索并不会取代传统的搜索引擎。
 - en: It just layers retrieval on top of them.
+  id: totrans-124
   prefs: []
   type: TYPE_NORMAL
+  zh: 它只是在它们之上叠加检索功能。
 - en: There’s still more to figure out before saying what actually matters in practice.
     Here I’ve mostly gone through the technical pipeline but if this is new stuff
     I hoped it explain it well.
+  id: totrans-125
   prefs: []
   type: TYPE_NORMAL
+  zh: 在确定实践中真正重要的事情之前，还有更多需要弄清楚。在这里，我主要介绍了技术流程，但如果这是新内容，我希望我已经很好地解释了它。
 - en: '* * *'
+  id: totrans-126
   prefs: []
   type: TYPE_NORMAL
+  zh: '* * *'
 - en: Hopefully it was easy to read. If you enjoyed it, feel free to share it or connect
     with me on [LinkedIn](https://www.linkedin.com/in/ida-silfverskiold/), [Medium](https://medium.com/@ilsilfverskiold)
     or through my [site](https://www.ilsilfverskiold.com/).
+  id: totrans-127
   prefs: []
   type: TYPE_NORMAL
+  zh: 希望阅读起来容易。如果您喜欢它，请随意分享或通过[LinkedIn](https://www.linkedin.com/in/ida-silfverskiold/)、[Medium](https://medium.com/@ilsilfverskiold)或我的[网站](https://www.ilsilfverskiold.com/)与我联系。
 - en: ❤
+  id: totrans-128
   prefs: []
   type: TYPE_NORMAL
+  zh: ❤

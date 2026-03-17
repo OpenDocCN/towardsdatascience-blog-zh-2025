@@ -1,12 +1,16 @@
 - en: 'Overcoming the Hidden Performance Traps of Variable-Shaped Tensors: Efficient
     Data Sampling in PyTorch'
+  id: totrans-0
   prefs:
   - PREF_H1
   type: TYPE_NORMAL
+  zh: 克服变量形状张量的隐藏性能陷阱：PyTorch 中的高效数据采样
 - en: 原文：[https://towardsdatascience.com/overcoming-the-hidden-performance-traps-of-variable-shaped-tensors-efficient-data-sampling-in-pytorch/](https://towardsdatascience.com/overcoming-the-hidden-performance-traps-of-variable-shaped-tensors-efficient-data-sampling-in-pytorch/)
+  id: totrans-1
   prefs:
   - PREF_BQ
   type: TYPE_NORMAL
+  zh: '[https://towardsdatascience.com/overcoming-the-hidden-performance-traps-of-variable-shaped-tensors-efficient-data-sampling-in-pytorch/](https://towardsdatascience.com/overcoming-the-hidden-performance-traps-of-variable-shaped-tensors-efficient-data-sampling-in-pytorch/)'
 - en: <mdspan datatext="el1764508226421" class="mdspan-comment">This</mdspan> is the
     <mdspan datatext="el1764619607491" class="mdspan-comment">eleventh</mdspan> part
     of a [series of posts](https://towardsdatascience.com/pytorch-model-performance-analysis-and-optimization-10c3c5822869/) on
@@ -21,20 +25,33 @@
     tensors can be avoided — although this may come at the expense of additional compute
     and/or memory. We will demonstrate the tradeoffs of these alternatives on a toy
     implementation of data sampling in PyTorch.
+  id: totrans-2
   prefs: []
   type: TYPE_NORMAL
+  zh: <mdspan datatext="el1764508226421" class="mdspan-comment">这是</mdspan>关于分析并优化
+    PyTorch 模型的[一系列文章](https://towardsdatascience.com/pytorch-model-performance-analysis-and-optimization-10c3c5822869/)的第
+    <mdspan datatext="el1764619607491" class="mdspan-comment">十一</mdspan> 部分。在整个系列中，我们一直提倡在
+    AI 模型开发中使用 [PyTorch Profiler](https://pytorch.org/tutorials/recipes/recipes/profiler_recipe.html)，并展示了性能优化对运行
+    AI/ML 工作负载的速度和成本的影响。我们观察到的一个常见现象是，看似无害的代码如何影响运行时性能。在这篇文章中，我们将探讨与使用形状可变的张量（其形状依赖于前面的计算和/或输入）相关的某些惩罚。虽然这并不适用于所有情况，但在某些时候，可以避免使用形状可变的张量——尽管这可能以额外的计算和/或内存为代价。我们将通过
+    PyTorch 中数据采样的玩具实现来展示这些替代方案的权衡。
 - en: Three Downsides of Variable Shaped Tensors
+  id: totrans-3
   prefs:
   - PREF_H2
   type: TYPE_NORMAL
+  zh: 变量形状张量的三个缺点
 - en: 'We motivate the discussion by presenting three disadvantages to the use of
     variable-shaped tensors:'
+  id: totrans-4
   prefs: []
   type: TYPE_NORMAL
+  zh: 我们通过提出使用变量形状张量的三个缺点来激发讨论：
 - en: Host-Device Sync Events
+  id: totrans-5
   prefs:
   - PREF_H3
   type: TYPE_NORMAL
+  zh: 主设备同步事件
 - en: In an ideal scenario, the CPU and GPU are able to run in parallel in an asynchronous
     manner, with the CPU continuously feeding the GPU with input samples, allocating
     required GPU memory, and loading GPU compute kernels, and the GPU executing the
@@ -44,8 +61,12 @@
     shape, and then the GPU must wait for the CPU to allocate the memory and proceed
     with the kernel loading. The overhead of this sync event can cause a drop in the
     GPU utilization and slow runtime performance.
+  id: totrans-6
   prefs: []
   type: TYPE_NORMAL
+  zh: 在理想情况下，CPU 和 GPU 能够以异步方式并行运行，CPU 持续向 GPU 提供输入样本，分配所需的 GPU 内存，并加载 GPU 计算内核，而
+    GPU 则使用分配的内存执行提供的输入上的加载内核。动态形状张量的存在破坏了这种并行性。为了分配适当的内存量，CPU 必须等待 GPU 报告张量的形状，然后
+    GPU 必须等待 CPU 分配内存并继续内核加载。这种同步事件的开销可能导致 GPU 利用率下降和运行时性能变慢。
 - en: We saw an example of this in [part three](https://towardsdatascience.com/pytorch-model-performance-analysis-and-optimization-part-3-1c5876d78fe2) of
     this series when we studied a naive implementation of the common [cross-entropy
     loss](https://pytorch.org/docs/stable/generated/torch.nn.CrossEntropyLoss.html) that
@@ -56,12 +77,19 @@
     we discovered the inefficiency through the use of [PyTorch Profiler](https://pytorch.org/tutorials/recipes/recipes/profiler_recipe.html) and
     were able to easily overcome it with an alternative implementation that avoided
     the use of variable-shaped tensors and demonstrated much better runtime performance.
+  id: totrans-7
   prefs: []
   type: TYPE_NORMAL
+  zh: 在本系列的第三部分[这里](https://towardsdatascience.com/pytorch-model-performance-analysis-and-optimization-part-3-1c5876d78fe2)中，我们研究了常见的[cross-entropy
+    loss](https://pytorch.org/docs/stable/generated/torch.nn.CrossEntropyLoss.html)的一个简单实现，其中包含了调用[torch.nonzero](https://pytorch.org/docs/stable/generated/torch.nonzero.html)和[torch.unique](https://pytorch.org/docs/stable/generated/torch.unique.html)的代码。这两个API返回的tensor形状是动态的，并且依赖于输入的内容。当这些函数在GPU上运行时，会发生主机设备同步事件。在[cross-entropy
+    loss](https://pytorch.org/docs/stable/generated/torch.nn.CrossEntropyLoss.html)的情况下，我们通过使用[PyTorch
+    Profiler](https://pytorch.org/tutorials/recipes/recipes/profiler_recipe.html)发现了低效性，并通过一个避免使用可变形状tensor的替代实现轻松克服了它，该实现展示了更好的运行时性能。
 - en: Graph Compilation
+  id: totrans-8
   prefs:
   - PREF_H3
   type: TYPE_NORMAL
+  zh: 图编译
 - en: 'In a [recent post](https://towardsdatascience.com/maximizing-ai-ml-model-performance-with-pytorch-compilation/) we
     explored the performance benefits of applying *just-in-time* (JIT) compilation
     using the [torch.compile](https://docs.pytorch.org/docs/stable/generated/torch.compile.html) operator.
@@ -71,43 +99,58 @@
     in others it results in lower performance gains. The same implications also apply
     to other forms of graph compilation, such as [XLA](https://openxla.org/xla), [ONNX](https://onnx.ai/), [OpenVINO](https://github.com/openvinotoolkit/openvino),
     and [TensorRT](https://developer.nvidia.com/tensorrt).'
+  id: totrans-9
   prefs: []
   type: TYPE_NORMAL
+  zh: 在一篇[最近的文章](https://towardsdatascience.com/maximizing-ai-ml-model-performance-with-pytorch-compilation/)中，我们探讨了使用[torch.compile](https://docs.pytorch.org/docs/stable/generated/torch.compile.html)操作符应用*即时编译*（JIT）的性能优势。我们的观察之一是，当图是静态的时候，图编译提供了更好的结果。图中动态形状的存在限制了编译优化程度的范围：在某些情况下，它完全失败；在另一些情况下，它导致性能提升较低。同样的影响也适用于其他形式的图编译，例如[XLA](https://openxla.org/xla)、[ONNX](https://onnx.ai/)、[OpenVINO](https://github.com/openvinotoolkit/openvino)和[TensorRT](https://developer.nvidia.com/tensorrt)。
 - en: Data Batching
+  id: totrans-10
   prefs:
   - PREF_H3
   type: TYPE_NORMAL
+  zh: 数据批处理
 - en: 'Another optimization we have encountered in several of our posts (e.g., [here](https://chaimrand.medium.com/optimizing-pytorch-model-inference-on-cpu-ccd3aa5884ad))
     is sample-batching. Batching improves performance in two primary ways:'
+  id: totrans-11
   prefs: []
   type: TYPE_NORMAL
+  zh: 我们在多篇帖子中遇到了另一种优化（例如，[这里](https://chaimrand.medium.com/optimizing-pytorch-model-inference-on-cpu-ccd3aa5884ad)），即样本批处理。批处理以两种主要方式提高性能：
 - en: '**Reducing overhead of kernel loading**: Rather than loading the GPU kernels
     required for the computation pipeline once per input sample, the CPU can load
     the kernels once per batch.'
+  id: totrans-12
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: '**减少内核加载的开销**：而不是每次输入样本计算管道需要时才加载GPU内核，CPU可以一次批处理加载内核。'
 - en: '**Maximizing parallelization across compute units**: GPUs are highly parallel
     compute engines. The more we are able to parallelize computation, the more we
     can saturate the GPU and increase its utilization. By batching we can potentially
     increase the degree of parallelization by a factor of the batch size.'
+  id: totrans-13
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: '**最大化计算单元的并行化**：GPU是高度并行的计算引擎。我们能够并行化的计算越多，就越能饱和GPU并提高其利用率。通过批处理，我们可以通过批量大小的倍数增加并行化的程度。'
 - en: Despite their downsides, the use of variable-shaped tensors is often unavoidable.
     But sometimes we can modify our model implementation to circumvent them. Sometimes
     these changes will be straightforward (as in the cross-entropy loss example).
     Other times they may require some creativity in coming up with a different sequence
     of fixed-shape PyTorch APIs that provide the same numerical result. Often, this
     effort can deliver meaningful rewards in runtime and costs.
+  id: totrans-14
   prefs: []
   type: TYPE_NORMAL
+  zh: 尽管存在缺点，但使用形状可变的张量往往是不可避免的。但有时我们可以修改我们的模型实现来规避这些问题。有时这些更改将非常直接（例如，在交叉熵损失示例中）。其他时候，它们可能需要一些创意，以提出不同的固定形状
+    PyTorch API 序列，以提供相同的数值结果。通常，这种努力可以在运行时间和成本上带来有意义的回报。
 - en: In the next sections, we will study the use of variable-shaped tensors in the
     context of the data sampling operation. We will start with a trivial implementation
     and analyze its performance. We will then propose a GPU-friendly alternative that
     avoids the use of variable-shaped tensors.
+  id: totrans-15
   prefs: []
   type: TYPE_NORMAL
+  zh: 在接下来的章节中，我们将研究在数据采样操作中变量形状张量的使用。我们将从一个简单的实现开始，并分析其性能。然后我们将提出一个对 GPU 友好的替代方案，以避免使用变量形状张量。
 - en: To compare our implementations, we will use an [Amazon EC2 g6e.xlarge](https://aws.amazon.com/ec2/instance-types/g6e/) with
     an [NVIDIA L40S](https://www.nvidia.com/en-eu/data-center/l40s/) running an [AWS
     Deep Learning AMI (DLAMI)](https://docs.aws.amazon.com/dlami/latest/devguide/appendix-ami-release-notes.html) with [PyTorch
@@ -115,95 +158,144 @@
     for demonstration purposes. Please do not rely on it for accuracy or optimality.
     Please do not interpret our mention of any framework, library, or platform and
     an endorsement of its use.
+  id: totrans-16
   prefs: []
   type: TYPE_NORMAL
+  zh: 为了比较我们的实现，我们将使用一个 [Amazon EC2 g6e.xlarge](https://aws.amazon.com/ec2/instance-types/g6e/)，它运行着一个
+    [AWS Deep Learning AMI (DLAMI)](https://docs.aws.amazon.com/dlami/latest/devguide/appendix-ami-release-notes.html)，该
+    AMI 配备了 [PyTorch (2.8)](https://pytorch.org/get-started/locally/) 和 [NVIDIA L40S](https://www.nvidia.com/en-eu/data-center/l40s/)。我们分享的代码仅用于演示目的。请勿依赖其准确性或最优性。请勿将我们对任何框架、库或平台的提及解释为对其使用的认可。
 - en: Sampling in AI Model Workloads
+  id: totrans-17
   prefs:
   - PREF_H2
   type: TYPE_NORMAL
+  zh: AI 模型工作负载中的采样
 - en: In the context of this post, sampling refers to the selection of a subset of
     items from a large set of candidates for the purposes of computational efficiency,
     balancing of datatypes, or regularization. Sampling is common in many AI/ML models,
     such as detection, ranking, and contrastive learning systems.
+  id: totrans-18
   prefs: []
   type: TYPE_NORMAL
+  zh: 在本文的上下文中，采样指的是从大量候选集中选择子集以实现计算效率、数据类型平衡或正则化的目的。在许多 AI/ML 模型中，如检测、排名和对比学习系统中，采样是常见的。
 - en: 'We define a simple variation of the sampling problem: Given a list of *N* tensors
     each with a binary label, we are asked to return a subset of *K *tensors containing
     both positive and negative examples, in random order. If the input list contains
     enough samples of each label (*K/2*), the returned subset should be evenly split.
     If it is lacking samples of one type, these should be filled with random samples
     of the second type.'
+  id: totrans-19
   prefs: []
   type: TYPE_NORMAL
+  zh: 我们定义了一个简单的采样问题变体：给定一个包含 *N* 个张量的列表，每个张量都有一个二进制标签，我们被要求返回一个包含正负例子的 *K* 个张量的子集，且顺序随机。如果输入列表中每个标签的样本足够（*K/2*），则返回的子集应该均匀分割。如果缺少某种类型的样本，则应使用第二种类型的随机样本填充。
 - en: The code block below contains a PyTorch implementation of our sampling function.
     The implementation is inspired by the popular [Detectron2](https://github.com/facebookresearch/detectron2) library
     (e.g., see [here](https://github.com/facebookresearch/detectron2/blob/v0.6/detectron2/modeling/sampling.py#L9) and [here](https://github.com/facebookresearch/detectron2/blob/v0.6/detectron2/modeling/roi_heads/roi_heads.py#L181)).
     For the experiments in this post, we will fix the sampling ratio to *1:10.*
+  id: totrans-20
   prefs: []
   type: TYPE_NORMAL
+  zh: 下面的代码块包含我们采样函数的 PyTorch 实现。该实现受到了流行的 [Detectron2](https://github.com/facebookresearch/detectron2)
+    库的启发（例如，参见 [这里](https://github.com/facebookresearch/detectron2/blob/v0.6/detectron2/modeling/sampling.py#L9)
+    和 [这里](https://github.com/facebookresearch/detectron2/blob/v0.6/detectron2/modeling/roi_heads/roi_heads.py#L181)）。对于本文中的实验，我们将采样比例固定为
+    *1:10*。
 - en: '[PRE0]'
+  id: totrans-21
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE0]'
 - en: Performance Analysis With PyTorch Profiler
+  id: totrans-22
   prefs:
   - PREF_H2
   type: TYPE_NORMAL
+  zh: 使用 PyTorch Profiler 进行性能分析
 - en: 'Even when not immediately obvious, the use of dynamic shapes is easily identifiable
     in the PyTorch Profiler Trace view. We use the following function to enable PyTorch
     Profiler:'
+  id: totrans-23
   prefs: []
   type: TYPE_NORMAL
+  zh: 即使不是立即明显的，动态形状的使用在 PyTorch Profiler 跟踪视图中很容易识别。我们使用以下函数来启用 PyTorch Profiler：
 - en: '[PRE1]'
+  id: totrans-24
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE1]'
 - en: 'The image below was captured for the value of ten million input samples. It
     clearly shows the presence of sync events coming from the torch.nonzero call,
     as well as the corresponding drops in GPU utilization:'
+  id: totrans-25
   prefs: []
   type: TYPE_NORMAL
+  zh: 下面的图像是在一千万个输入样本的值下捕获的。它清楚地显示了来自torch.nonzero调用的同步事件的存在，以及相应的GPU利用率下降：
 - en: '![](../Images/af5b1a08ff417e8bd50bccd1dc65e28a.png)'
+  id: totrans-26
   prefs: []
   type: TYPE_IMG
+  zh: '![](../Images/af5b1a08ff417e8bd50bccd1dc65e28a.png)'
 - en: Profiler Trace of Sampler (by Author)
+  id: totrans-27
   prefs: []
   type: TYPE_NORMAL
+  zh: 采样器分析器跟踪（作者）
 - en: The use of torch.nonzero in our implementation is not ideal, but can it be avoided?
+  id: totrans-28
   prefs: []
   type: TYPE_NORMAL
+  zh: 在我们的实现中，使用torch.nonzero并不理想，但它可以避免吗？
 - en: A GPU-Friendly Data Sampler
+  id: totrans-29
   prefs:
   - PREF_H2
   type: TYPE_NORMAL
+  zh: GPU友好的数据采样器
 - en: 'We propose an alternative implementation of our sampling function that replaces
     the dynamic torch.nonzero function with a creative combination of the static [torch.count_nonzero](https://docs.pytorch.org/docs/stable/generated/torch.count_nonzero.html), [torch.topk](https://docs.pytorch.org/docs/stable/generated/torch.topk.html),
     and other APIs:'
+  id: totrans-30
   prefs: []
   type: TYPE_NORMAL
+  zh: 我们提出了一种替代的采样函数实现，用静态的[tensor.count_nonzero](https://docs.pytorch.org/docs/stable/generated/tensor.count_nonzero.html)、[tensor.topk](https://docs.pytorch.org/docs/stable/generated/tensor.topk.html)和其他API的组合来替换动态的torch.nonzero函数：
 - en: '[PRE2]'
+  id: totrans-31
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE2]'
 - en: 'Clearly, this function requires more memory and more operations than our first
     implementation. The question is: Do the performance benefits of a static, synchronization-free
     implementation outweigh the extra cost in memory and compute?'
+  id: totrans-32
   prefs: []
   type: TYPE_NORMAL
+  zh: 显然，这个函数比我们的第一个实现需要更多的内存和更多的操作。问题是：静态、无同步实现的性能好处是否超过了在内存和计算上的额外成本？
 - en: 'To assess the tradeoffs between the two implementations, we introduce the following
     benchmarking utility:'
+  id: totrans-33
   prefs: []
   type: TYPE_NORMAL
+  zh: 为了评估两种实现之间的权衡，我们引入了以下基准测试工具：
 - en: '[PRE3]'
+  id: totrans-34
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE3]'
 - en: 'The following table compares the average runtime of each of the implementations
     for a variety of input sample sizes:'
+  id: totrans-35
   prefs: []
   type: TYPE_NORMAL
+  zh: 下表比较了各种输入样本大小下每种实现的平均运行时间：
 - en: '![](../Images/e0680690e47a89b578a241ca6ca2df7e.png)'
+  id: totrans-36
   prefs: []
   type: TYPE_IMG
+  zh: '![](../Images/e0680690e47a89b578a241ca6ca2df7e.png)'
 - en: Comparative Step Time Performance — Lower is Better (by Author)
+  id: totrans-37
   prefs: []
   type: TYPE_NORMAL
+  zh: 比较步进时间性能——越低越好（作者）
 - en: For most of the input sample sizes, the overhead of the host-device sync event
     is either comparable or lower than the additional compute of the static implementation.
     Disappointingly, we only see a major benefit from the sync-free alternative when
@@ -211,107 +303,155 @@
     in AI/ML settings. But it’s not our tendency to give up so easily. As noted above,
     the static implementation enables other optimizations like graph compilation and
     input batching.
+  id: totrans-38
   prefs: []
   type: TYPE_NORMAL
+  zh: 对于大多数输入样本大小，主机设备同步事件的额外开销要么与静态实现的额外计算相当，要么更低。令人失望的是，我们只有在输入样本大小达到一千万时，才能从无同步的替代方案中看到主要的好处。在AI/ML设置中，这样的样本大小并不常见。但我们的倾向并不是轻易放弃。如上所述，静态实现使得其他优化成为可能，如图编译和输入批处理。
 - en: Graph Compilation
+  id: totrans-39
   prefs:
   - PREF_H3
   type: TYPE_NORMAL
+  zh: 图编译
 - en: 'Contrary to the original function — which fails to compile — our static implementation
     is fully compatible with torch.compile:'
+  id: totrans-40
   prefs: []
   type: TYPE_NORMAL
+  zh: 与原始函数——它无法编译——相反，我们的静态实现与torch.compile完全兼容：
 - en: '[PRE4]'
+  id: totrans-41
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE4]'
 - en: 'The following table includes the runtimes of our compiled function:'
+  id: totrans-42
   prefs: []
   type: TYPE_NORMAL
+  zh: 下表包括我们编译函数的运行时间：
 - en: '![](../Images/582a4d12f0657864a0a5df28442939ac.png)'
+  id: totrans-43
   prefs: []
   type: TYPE_IMG
+  zh: '![](../Images/582a4d12f0657864a0a5df28442939ac.png)'
 - en: Comparative Step Time Performance — Lower is Better (by Author)
+  id: totrans-44
   prefs: []
   type: TYPE_NORMAL
+  zh: 比较步进时间性能——越低越好（作者）
 - en: The results are significantly better — providing a 70–75 percent boost over
     the original sampler implementation in the 1–10 thousand range. But we still have
     one more optimization up our sleeve.
+  id: totrans-45
   prefs: []
   type: TYPE_NORMAL
+  zh: 结果显著更好——在1万到10万范围内，比原始采样器实现提供了70-75%的提升。但我们还有一项优化。
 - en: Maximizing Performance with Batched Input
+  id: totrans-46
   prefs:
   - PREF_H3
   type: TYPE_NORMAL
+  zh: 通过批处理输入最大化性能
 - en: 'Because the original implementation contains variable-shaped operations, it
     cannot handle batched input directly. To process a batch, we have no choice but
     to apply it to each input individually, in a Python loop:'
+  id: totrans-47
   prefs: []
   type: TYPE_NORMAL
+  zh: 由于原始实现包含形状可变的操作，它不能直接处理批处理输入。为了处理一个批次，我们别无选择，只能将每个输入单独应用，在Python循环中：
 - en: '[PRE5]'
+  id: totrans-48
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE5]'
 - en: In contrast, our optimized function supports batched inputs as is — no changes
     necessary.
+  id: totrans-49
   prefs: []
   type: TYPE_NORMAL
+  zh: 相比之下，我们的优化函数支持批处理输入，无需任何更改。
 - en: '[PRE6]'
+  id: totrans-50
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE6]'
 - en: 'The table below compares the step times of our sampling functions on a batch
     size of 32:'
+  id: totrans-51
   prefs: []
   type: TYPE_NORMAL
+  zh: 下表比较了我们在32个批次大小上的采样函数的步进时间：
 - en: '![](../Images/d562107006270e767fd986b311b55476.png)'
+  id: totrans-52
   prefs: []
   type: TYPE_IMG
+  zh: '![](../Images/d562107006270e767fd986b311b55476.png)'
 - en: Step Time Performance on Batched Input — Lower is Better (by Author)
+  id: totrans-53
   prefs: []
   type: TYPE_NORMAL
+  zh: 批处理输入的步进时间性能——越低越好（作者）
 - en: 'Now the results are definitive: By using a static implementation of the data
     sampler, we are able to boost performance by 2X–52X(!!) the variable-shaped option,
     depending on the input sample size.'
+  id: totrans-54
   prefs: []
   type: TYPE_NORMAL
+  zh: 现在的结果是确定的：通过使用数据采样器的静态实现，我们能够将性能提升2倍至52倍（!!），具体取决于输入样本的大小。
 - en: Note that although our experiments were run on a GPU device, the model compilation
     and input batching optimizations also apply to a CPU environment. Thus, avoiding
     variable shapes could have implications on AI/ML model performance on CPU, as
     well.
+  id: totrans-55
   prefs: []
   type: TYPE_NORMAL
+  zh: 注意，尽管我们的实验是在GPU设备上运行的，但模型编译和输入批处理优化也适用于CPU环境。因此，避免使用可变形状可能对CPU上的AI/ML模型性能产生影响。
 - en: Summary
+  id: totrans-56
   prefs:
   - PREF_H2
   type: TYPE_NORMAL
+  zh: 摘要
 - en: 'The optimization process we demonstrated in this post generalizes beyond the
     specific case of data sampling:'
+  id: totrans-57
   prefs: []
   type: TYPE_NORMAL
+  zh: 我们在这篇文章中展示的优化过程不仅限于数据采样的特定案例：
 - en: '**Discovery via Performance Profiling:** Using the [PyTorch Profiler](https://pytorch.org/tutorials/recipes/recipes/profiler_recipe.html) we
     were able to identify drops in GPU utilization and discover their source: the
     presence of variable-shaped tensors resulting from the torch.nonzero operation.'
+  id: totrans-58
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: '**通过性能分析发现：**使用[PyTorch分析器](https://pytorch.org/tutorials/recipes/recipes/profiler_recipe.html)，我们能够识别GPU利用率下降，并发现其来源：torch.nonzero操作产生的可变形状张量。'
 - en: '**An Alternate Implementation:** Our profiling findings allowed us to develop
     an alternative implementation that accomplished the same goal while avoiding the
     use of variable-shaped tensors. However, this step came at the cost of additional
     compute and memory overhead. As seen in our initial benchmarks, the sync-free
     alternative demonstrated worse performance on common input sizes.'
+  id: totrans-59
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: '**另一种实现方法：**我们的分析发现使我们能够开发出一种替代实现，它实现了相同的目标，同时避免了使用可变形状的张量。然而，这一步骤带来了额外的计算和内存开销。正如我们最初的基准测试所示，无同步的替代方案在常见输入大小上表现较差。'
 - en: '**Unlocking Further Potential for Optimization:** The true breakthrough came
     because the static-shaped implementation was compilation-friendly and supported
     batching. These optimizations provided performance gains that dwarfed the initial
     overhead, leading to a 2x to 52x speedup over the original implementation.'
+  id: totrans-60
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: '**释放进一步优化的潜力：**真正的突破在于静态形状实现易于编译且支持批处理。这些优化提供了巨大的性能提升，远远超过了初始开销，使得性能比原始实现提高了2倍至52倍。'
 - en: Naturally, not all stories will end as happily as ours. In many cases, we may
     come across PyTorch code that performs poorly on the GPU but does not have an
     alternative implementation, or it may have one that requires significantly more
     compute resources. However, given the potential for meaningful gains in performance
     and reductions in cost, the process of identifying runtime inefficiencies and
     exploring alternative implementations is an essential part of AI/ML development.
+  id: totrans-61
   prefs: []
   type: TYPE_NORMAL
+  zh: 自然地，并非所有故事都会像我们这样有一个幸福的结局。在许多情况下，我们可能会遇到在GPU上表现不佳的PyTorch代码，但没有替代实现，或者它可能有一个需要显著更多计算资源的实现。然而，鉴于在性能和成本方面有意义的提升潜力，识别运行时效率低下和探索替代实现的过程是AI/ML开发的一个基本部分。
