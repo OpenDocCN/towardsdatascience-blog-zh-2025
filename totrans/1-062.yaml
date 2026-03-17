@@ -1,8 +1,10 @@
 - en: Learning Triton One Kernel at a Time: Softmax
+  id: totrans-0
   prefs:
   - PREF_H1
   type: TYPE_NORMAL
 - en: 原文：[https://towardsdatascience.com/learning-triton-one-kernel-at-a-time-softmax/](https://towardsdatascience.com/learning-triton-one-kernel-at-a-time-softmax/)
+  id: totrans-1
   prefs:
   - PREF_BQ
   type: TYPE_NORMAL
@@ -15,6 +17,7 @@
     to layer. This is one of the reasons why we use activation functions, for example
     the logistic function (aka sigmoid) which projects any real number in the `[0;
     1]` range.'
+  id: totrans-2
   prefs: []
   type: TYPE_NORMAL
 - en: The softmax function, also known as the normalised exponential function, is
@@ -23,50 +26,63 @@
     interpret it as a **weighted average** that behaves as a **smooth function** and
     can be conveniently **differentiated**. It is a crucial component of dot-product
     attention, language modeling, and multinomial logistic regression.
+  id: totrans-3
   prefs: []
   type: TYPE_NORMAL
 - en: 'In this article, we’ll cover:'
+  id: totrans-4
   prefs: []
   type: TYPE_NORMAL
 - en: Implementing an efficient softmax kernel in Triton.
+  id: totrans-5
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
 - en: Implementing the backward pass (`autograd`).
+  id: totrans-6
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
 - en: 'Optimisation: cache modifiers and auto-tuning.'
+  id: totrans-7
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
 - en: If you aren’t familiar with Triton yet, refer to the previous articles!
+  id: totrans-8
   prefs: []
   type: TYPE_NORMAL
 - en: '[Learning Triton One Kernel At a Time: Vector Addition](https://towardsdatascience.com/learning-triton-one-kernel-at-a-time-vector-addition/)'
+  id: totrans-9
   prefs:
   - PREF_BQ
   type: TYPE_NORMAL
 - en: '[Learning Triton One Kernel at a Time: Matrix Multiplication](https://towardsdatascience.com/learning-triton-one-kernel-at-a-time-matrix-multiplication/)'
+  id: totrans-10
   prefs:
   - PREF_BQ
   type: TYPE_NORMAL
 - en: '*Disclaimer: all the illustrations and animations are made by the author unless
     specified otherwise.*'
+  id: totrans-11
   prefs: []
   type: TYPE_NORMAL
 - en: Definition
+  id: totrans-12
   prefs:
   - PREF_H2
   type: TYPE_NORMAL
 - en: 'The softmax is defined as follows:'
+  id: totrans-13
   prefs: []
   type: TYPE_NORMAL
 - en: '![](../Images/e018bda521ca2374827f1e3c1411f5c4.png)'
+  id: totrans-14
   prefs: []
   type: TYPE_IMG
 - en: The normalisation ensures that the vector sums to **1**, so that it can be interpreted
     as a valid probability distribution.
+  id: totrans-15
   prefs: []
   type: TYPE_NORMAL
 - en: Note that this formulation of the softmax is highly sensitive to **numerical
@@ -74,17 +90,21 @@
     is **65 504**, which is roughly **exp(11)**. This means that any input value greater
     than ~11 will result in `exp(z_i)` exceeding the representable range, leading
     to **overflow**.
+  id: totrans-16
   prefs: []
   type: TYPE_NORMAL
 - en: A common trick to mitigate this issue is to subtract the maximum value of the
     input vector from every element, such that the new maximum is **0** before exponentiation
     and **1** after.
+  id: totrans-17
   prefs: []
   type: TYPE_NORMAL
 - en: '![](../Images/79eeee461ec0386b8909e13335c9165c.png)'
+  id: totrans-18
   prefs: []
   type: TYPE_IMG
 - en: Naive Implementation
+  id: totrans-19
   prefs:
   - PREF_H2
   type: TYPE_NORMAL
@@ -92,50 +112,62 @@
     a **max** and a **sum**. A naive algorithm require three separate passes over
     the input vector. First to compute the maximum, then the sum, and finally the
     normalised outputs.
+  id: totrans-20
   prefs: []
   type: TYPE_NORMAL
 - en: 'Here’s what a naive Numpy implementation looks like:'
+  id: totrans-21
   prefs: []
   type: TYPE_NORMAL
 - en: A recurrent theme in this Triton series is minimising high-latency **global
     memory access**. Our current Numpy implementation requires three separate memory
     reads of the full input vector, which is highly inefficient.
+  id: totrans-22
   prefs: []
   type: TYPE_NORMAL
 - en: Online Softmax
+  id: totrans-23
   prefs:
   - PREF_H3
   type: TYPE_NORMAL
 - en: Fortunately, we can use a clever trick, known as the **online softmax**, to
     fuse the `max` and `sum` steps, reducing the number of memory reads to **2**.
+  id: totrans-24
   prefs: []
   type: TYPE_NORMAL
 - en: First, we define the sum of exponentials recursively. In the following set of
     equalities, `m_i` refers to the maximum over `x` until the ***i***-th index.
+  id: totrans-25
   prefs: []
   type: TYPE_NORMAL
 - en: '![](../Images/62ae8f4871407ddd1bffce74b9daf8f8.png)'
+  id: totrans-26
   prefs: []
   type: TYPE_IMG
 - en: This equality allows us to compute the sum of exponentials **iteratively** using
     the maximum value **so far**. We can leverage it to fuse the first and second
     loop in the naive implementation and compute the maximum and sum of exponentials
     iteratively.
+  id: totrans-27
   prefs: []
   type: TYPE_NORMAL
 - en: 'Our algorithm becomes:'
+  id: totrans-28
   prefs: []
   type: TYPE_NORMAL
 - en: '![](../Images/f9d6f4e6d6aab49d5ec763dd23a1d053.png)'
+  id: totrans-29
   prefs: []
   type: TYPE_IMG
 - en: 'This is easily translated to Numpy:'
+  id: totrans-30
   prefs: []
   type: TYPE_NORMAL
 - en: Now that we understand the main principles behind the softmax, we’ll implement
     it in Triton, starting by the simple, single-block version and building up to
     the online, multi-block formulation. In the end, we want our kernel to behave
     like a PyTorch module and be compatible with `autograd`.
+  id: totrans-31
   prefs: []
   type: TYPE_NORMAL
 - en: 'Unfortunately, from PyTorch’s point of view, Triton kernels behave like black
@@ -143,44 +175,55 @@
     us to implement the backward pass ourselves and explicitly specify how gradients
     should be computed. Let’s brush up on our beloved chain rule and derive the softmax
     gradient.'
+  id: totrans-32
   prefs: []
   type: TYPE_NORMAL
 - en: Gradient
+  id: totrans-33
   prefs:
   - PREF_H2
   type: TYPE_NORMAL
 - en: 'Since the outputs of the softmax are strictly positive, we can use the **logarithmic
     derivative** to make the derivation of the gradient easier. Here, we take the
     derivative of the **log** of the output and apply the chain rule:'
+  id: totrans-34
   prefs: []
   type: TYPE_NORMAL
 - en: '![](../Images/aa67a76cb69563e51bbcdf82a5b152ae.png)'
+  id: totrans-35
   prefs: []
   type: TYPE_IMG
 - en: 'From there, we rearrange the terms and follow these steps:'
+  id: totrans-36
   prefs: []
   type: TYPE_NORMAL
 - en: '![](../Images/bf2d8c2c1e1be32884aa76bd40efd495.png)'
+  id: totrans-37
   prefs: []
   type: TYPE_IMG
 - en: 'Now assume that we have some upstream gradient, for example generated by a
     loss function ***L*** (e.g. a cross-entropy loss). We get the following expression
     of the gradient:'
+  id: totrans-38
   prefs: []
   type: TYPE_NORMAL
 - en: '![](../Images/2ef2ed8d3b2fd6653125065bb2041197.png)'
+  id: totrans-39
   prefs: []
   type: TYPE_IMG
 - en: The simplification of the left term in **(9)** is due to the fact that `δ_ij`
     will only be equal to **1** for the ***i***-th element, collapsing the sum over
     **j** to a single term.
+  id: totrans-40
   prefs: []
   type: TYPE_NORMAL
 - en: Triton Implementation
+  id: totrans-41
   prefs:
   - PREF_H2
   type: TYPE_NORMAL
 - en: Single Block Softmax
+  id: totrans-42
   prefs:
   - PREF_H3
   type: TYPE_NORMAL
@@ -189,21 +232,25 @@
     to understand how the single block implementation works at a high level. Given
     a 2D input tensor, the forward and backward kernels are going to process all rows
     in parallel.
+  id: totrans-43
   prefs: []
   type: TYPE_NORMAL
 - en: For simplicity, we’ll define the `BLOCK_SIZE` to be large enough to handle all
     columns at once. Specifically, we’ll set it as the next power of 2 superior to
     the number of columns, as required by Triton.
+  id: totrans-44
   prefs: []
   type: TYPE_NORMAL
 - en: Then, we’ll define our `grid` to be the number of rows (it could potentially
     also handle a batch dimension).
+  id: totrans-45
   prefs: []
   type: TYPE_NORMAL
 - en: The PyTorch wrapper for our `SoftmaxSingleBlock` is a class inheriting from
     `torch.autograd.Function` that implements `forward` and `backward`. Both methods
     take a `ctx` argument, which we’ll use to cache the softmax outputs during the
     forward pass and reuse them during the backward pass.
+  id: totrans-46
   prefs: []
   type: TYPE_NORMAL
 - en: 'Both kernels are pretty straightforward, we start by loading the row inputs
@@ -213,31 +260,38 @@
     and was reused in other kernel libraries such as [**LigerKernel**](https://github.com/linkedin/Liger-Kernel)
     (which the kernels in this article are loosely based on), it provides heuristics
     to tune both variables:'
+  id: totrans-47
   prefs: []
   type: TYPE_NORMAL
 - en: '[PRE0]'
+  id: totrans-48
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE0]'
 - en: 'Then, we implement the regular softmax for the forward pass and equation **(10)**
     for the backward pass. The only novelty here compared to previous articles is
     the use of cache modifiers, which tell the compiler how to cache and evict data.
     For now, we’ll only focus on three cache modifiers:'
+  id: totrans-49
   prefs: []
   type: TYPE_NORMAL
 - en: '**`.ca`** (**Cache at all levels**): Tells the compiler to load the data in
     both L1 and L2 cache, suggesting that it might be reused soon. This modifier should
     be used when the data is small enough to fit into L1 (~128–192KB per SM on an
     A100) and will likely be accessed repeatedly.'
+  id: totrans-50
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
 - en: '**`.cs`** (**Streaming**): Treat data as **streaming**, it will be used once
     and then discarded to free up space in L1.'
+  id: totrans-51
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
 - en: '**`.wb`** (**Write-back**): Normal cached write, the data will remain in the
     cache hierarchy, good if the output may be reused.'
+  id: totrans-52
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
@@ -246,9 +300,11 @@
     pass, since the outputs won’t be immediately reused and `.wb` in the backward
     pass since in the context of `autograd` (i.e. the chain rule), gradient outputs
     will be consumed by downstream kernels.
+  id: totrans-53
   prefs: []
   type: TYPE_NORMAL
 - en: Multi-Block Softmax
+  id: totrans-54
   prefs:
   - PREF_H3
   type: TYPE_NORMAL
@@ -257,24 +313,30 @@
     `BLOCK_SIZE < n_cols`, in other words, we’ll only load a tile with `BLOCK_SIZE`
     elements at a time, similar to how we handled tiled GEMM in the [last tutorial](https://medium.com/data-science-collective/learning-triton-one-kernel-at-a-time-matrix-multiplication-44851b4146dd).
     Now you might ask “how do we select the block size?”.
+  id: totrans-55
   prefs: []
   type: TYPE_NORMAL
 - en: This is a great occasion to introduce Triton’s `autotune` utility. Provided
     with a list of configuration, `autotune` will perform a grid-search to determine
     and cache the best configuration for a specific input shape. This process is repeated
     every time a new input shape is passed to the kernel.
+  id: totrans-56
   prefs: []
   type: TYPE_NORMAL
 - en: 'Here, we perform a grid search over the block size and number of warps using
     the following utility function:'
+  id: totrans-57
   prefs: []
   type: TYPE_NORMAL
 - en: '[PRE1]'
+  id: totrans-58
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE1]'
 - en: We can now decorate our multi-block kernels with `autotune` and pass the list
     of configs, `key=”n_cols”` indicates that the optimal config is dependent on the
     number of columns of the input.
+  id: totrans-59
   prefs: []
   type: TYPE_NORMAL
 - en: The implementation of these kernels is conceptually very close to the online
@@ -282,59 +344,75 @@
     (not over single elements like in Numpy), which requires some adjustments. For
     instance, we add a sum over the tile in the `d` update and the backward kernel
     now requires two iterations as well.
+  id: totrans-60
   prefs: []
   type: TYPE_NORMAL
 - en: '*Note: the PyTorch wrapper is exactly the same except we delete the line where*
     `BLOCK_SIZE` *and* `num_warps` *are declared (since they are picked by* `autotune`*).*'
+  id: totrans-61
   prefs: []
   type: TYPE_NORMAL
 - en: Testing and Benchmarking
+  id: totrans-62
   prefs:
   - PREF_H2
   type: TYPE_NORMAL
 - en: 'We can now execute a forward and backward pass with both kernels and ensure
     they match the PyTorch baselines:'
+  id: totrans-63
   prefs: []
   type: TYPE_NORMAL
 - en: '[PRE2]'
+  id: totrans-64
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE2]'
 - en: 'Finally, we benchmark our implementation against the PyTorch baseline using
     the following snippet:'
+  id: totrans-65
   prefs: []
   type: TYPE_NORMAL
 - en: '[PRE3]'
+  id: totrans-66
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE3]'
 - en: 'Good news! Our single-block kernel consistently outperforms the PyTorch baseline
     while the multi-block variant falls off for inputs with more than 6k columns:'
+  id: totrans-67
   prefs: []
   type: TYPE_NORMAL
 - en: '![](../Images/3cd63a97152c0277f299072c6b6dfc0a.png)'
+  id: totrans-68
   prefs: []
   type: TYPE_IMG
 - en: 'Considering larger inputs, we can make several observations:'
+  id: totrans-69
   prefs: []
   type: TYPE_NORMAL
 - en: The multi-block kernel eventually stabilises around 900GB/s of throughput, surpassing
     the PyTorch baseline for inputs with more than 30k columns.
+  id: totrans-70
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
 - en: Interestingly, it seems like the multi-block variant will dominate for inputs
     with more than 60k columns.
+  id: totrans-71
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
 - en: Even though we exceed the maximum block size with the single-block variant,
     the kernel still runs smoothly for some reason. Indeed, Triton automatically manages
     the block size under the hood.
+  id: totrans-72
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
 - en: When `n_cols` is larger than the hardware limit, Triton will break down the
     input and iterate over it. However, this seems to be slower than the multi-block
     approach.
+  id: totrans-73
   prefs:
   - PREF_IND
   type: TYPE_NORMAL
@@ -342,40 +420,62 @@
     selects the optimal kernel based on the input size. This way, we would benefit
     from the high performance of the single-block kernel for small inputs and the
     higher throughput of the multi-block variant for inputs with more than 60k columns.
+  id: totrans-74
   prefs: []
   type: TYPE_NORMAL
+  zh: 要进一步深入，我们可以将两种方法结合在一个内核中，该内核会根据输入大小显式选择最优内核。这样，对于小于 60k 列的小输入，我们可以从单块内核的高性能中受益，而对于超过
+    60k 列的输入，我们可以从多块变体的更高吞吐量中受益。
 - en: '![](../Images/da653d08b90dccc59f7fb75e4e9f4357.png)'
+  id: totrans-75
   prefs: []
   type: TYPE_IMG
+  zh: '![](../Images/da653d08b90dccc59f7fb75e4e9f4357.png)'
 - en: This concludes the third episode of this Triton series, thanks again for your
     support!
+  id: totrans-76
   prefs: []
   type: TYPE_NORMAL
+  zh: 这标志着 Triton 系列的第三集结束，再次感谢您的支持！
 - en: In the next article, we’ll leverage the online softmax formulation in the context
     of **Flash Attention**.
+  id: totrans-77
   prefs: []
   type: TYPE_NORMAL
+  zh: 在下一篇文章中，我们将利用在线 softmax 公式在 **Flash Attention** 的背景下进行探讨。
 - en: Until next time! 👋
+  id: totrans-78
   prefs: []
   type: TYPE_NORMAL
+  zh: 下次再见！👋
 - en: 'Resources:'
+  id: totrans-79
   prefs:
   - PREF_H2
   type: TYPE_NORMAL
+  zh: 资源：
 - en: '[**LigerKernel Softmax Implementation**](https://github.com/linkedin/Liger-Kernel/blob/main/src/liger_kernel/ops/softmax.py)'
+  id: totrans-80
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: '[**LigerKernel Softmax 实现**](https://github.com/linkedin/Liger-Kernel/blob/main/src/liger_kernel/ops/softmax.py)'
 - en: '[**Softmax Gradient derivation by Thomas Kurbiel**](https://medium.com/data-science/derivative-of-the-softmax-function-and-the-categorical-cross-entropy-loss-ffceefc081d1)'
+  id: totrans-81
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: '[**托马斯·库尔比尔的 Softmax 梯度推导**](https://medium.com/data-science/derivative-of-the-softmax-function-and-the-categorical-cross-entropy-loss-ffceefc081d1)'
 - en: '[**GPU kernel optimization: Softmax — Part 2 by Hugo Rosenkranz-costa**](https://medium.com/@hugo.rosenkranz/gpu-kernel-optimization-softmax-part-2-43ce9f8019e8)
     (Cuda & Triton kernels with more emphasis on profiling and hardware optimisation)'
+  id: totrans-82
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: '[**GPU 内核优化：Softmax — 第 2 部分 by Hugo Rosenkranz-costa**](https://medium.com/@hugo.rosenkranz/gpu-kernel-optimization-softmax-part-2-43ce9f8019e8)
+    (Cuda & Triton 内核，更侧重于性能分析和硬件优化)'
 - en: '[**From online softmax to FlashAttention by Zihao Ye**](https://courses.cs.washington.edu/courses/cse599m/23sp/notes/flashattn.pdf)'
+  id: totrans-83
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: '[**从在线 softmax 到 FlashAttention by 叶子豪**](https://courses.cs.washington.edu/courses/cse599m/23sp/notes/flashattn.pdf)'
