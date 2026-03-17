@@ -1,11 +1,15 @@
 - en: 'Scaling Statistics: Incremental Standard Deviation in SQL with dbt'
+  id: totrans-0
   prefs:
   - PREF_H1
   type: TYPE_NORMAL
+  zh: 扩展统计：使用 dbt 在 SQL 中实现增量标准差
 - en: 原文：[https://towardsdatascience.com/scaling-statistics-incremental-standard-deviation-in-sql-with-dbt-2eb0505aad2b/](https://towardsdatascience.com/scaling-statistics-incremental-standard-deviation-in-sql-with-dbt-2eb0505aad2b/)
+  id: totrans-1
   prefs:
   - PREF_BQ
   type: TYPE_NORMAL
+  zh: 原文：[https://towardsdatascience.com/scaling-statistics-incremental-standard-deviation-in-sql-with-dbt-2eb0505aad2b/](https://towardsdatascience.com/scaling-statistics-incremental-standard-deviation-in-sql-with-dbt-2eb0505aad2b/)
 - en: 'SQL aggregation functions can be computationally expensive when applied to
     large datasets. As datasets grow, recalculating metrics over the entire dataset
     repeatedly becomes inefficient. To address this challenge, **incremental aggregation**
@@ -13,178 +17,265 @@
     it with new incoming data. While this approach is straightforward for aggregations
     like COUNT or SUM, the question arises: how can it be applied to more complex
     metrics like standard deviation?'
+  id: totrans-2
   prefs: []
   type: TYPE_NORMAL
+  zh: 当 SQL 聚合函数应用于大型数据集时，可能会非常耗费计算资源。随着数据集的增长，反复在整个数据集上重新计算指标变得效率低下。为了应对这一挑战，**增量聚合**通常被采用——这是一种涉及维护先前状态并使用新传入数据更新它的方法。虽然这种方法对于
+    COUNT 或 SUM 这样的聚合来说很简单，但对于标准差这样的更复杂指标，问题就出现了：如何将其应用呢？
 - en: '[Standard deviation](https://en.wikipedia.org/wiki/Standard_deviation) is a
     statistical metric that measures the extent of variation or dispersion in a variable’s
     values relative to its mean. It is derived by taking the square root of the [variance](https://en.wikipedia.org/wiki/Variance).
     The formula for calculating the variance of a sample is as follows:'
+  id: totrans-3
   prefs: []
   type: TYPE_NORMAL
+  zh: '[标准差](https://en.wikipedia.org/wiki/Standard_deviation)是一种统计指标，它衡量了变量值相对于其平均值的变异或分散程度。它是通过取方差的平方根得到的。[方差](https://en.wikipedia.org/wiki/Variance)的计算公式如下：'
 - en: '![Sample variance formula](../Images/a740f71788ea7a1d8d6d0c0d0f50e3cb.png)'
+  id: totrans-4
   prefs: []
   type: TYPE_IMG
+  zh: '![样本方差公式](../Images/a740f71788ea7a1d8d6d0c0d0f50e3cb.png)'
 - en: Sample variance formula
+  id: totrans-5
   prefs: []
   type: TYPE_NORMAL
+  zh: 样本方差公式
 - en: Calculating standard deviation can be complex, as it involves updating both
     the mean and the sum of squared differences across all data points. However, with
     algebraic manipulation, we can derive a formula for incremental computation –
     enabling updates using an existing dataset and incorporating new data seamlessly.
     This approach avoids recalculating from scratch whenever new data is added, making
     the process much more efficient (A detailed derivation is available [on my GitHub](https://github.com/YuvalGorch/math_proofs/blob/main/incremental_stddev_proof.pdf)).
+  id: totrans-6
   prefs: []
   type: TYPE_NORMAL
+  zh: 计算标准差可能很复杂，因为它涉及到更新所有数据点的平均值和平方差的和。然而，通过代数变换，我们可以推导出一个增量计算的公式——允许使用现有数据集进行更新并无缝地结合新数据。这种方法避免了每次添加新数据时都需要从头开始重新计算，使整个过程更加高效（详细的推导可以在我的
+    GitHub 上找到：[https://github.com/YuvalGorch/math_proofs/blob/main/incremental_stddev_proof.pdf]）。
 - en: '![Derived sample variance formula](../Images/4fca54cd3a23b2c9bb93c97533c98baa.png)'
+  id: totrans-7
   prefs: []
   type: TYPE_IMG
+  zh: '![导出的样本方差公式](../Images/4fca54cd3a23b2c9bb93c97533c98baa.png)'
 - en: Derived sample variance formula
+  id: totrans-8
   prefs: []
   type: TYPE_NORMAL
+  zh: 导出的样本方差公式
 - en: 'The formula was basically broken into 3 parts:'
+  id: totrans-9
   prefs: []
   type: TYPE_NORMAL
+  zh: 公式基本上被分解成了3个部分：
 - en: The existing’s set weighted variance
+  id: totrans-10
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: 现有的加权方差集
 - en: The new set’s weighted variance
+  id: totrans-11
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: 新集合的加权方差
 - en: The mean difference variance, accounting for between-group variance.
+  id: totrans-12
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: 考虑组间方差的平均差异方差。
 - en: This method enables incremental variance computation by retaining the COUNT
     (k), AVG (µk), and VAR (Sk) of the existing set, and combining them with the COUNT
     (n), AVG (µn), and VAR (Sn) of the new set. As a result, the updated standard
     deviation can be calculated efficiently without rescanning the entire dataset.
+  id: totrans-13
   prefs: []
   type: TYPE_NORMAL
+  zh: 此方法通过保留现有集合的 COUNT (k)、AVG (µk) 和 VAR (Sk)，并将它们与新的集合的 COUNT (n)、AVG (µn) 和 VAR
+    (Sn) 结合起来，实现了增量方差计算。因此，可以高效地计算更新后的标准差，而无需重新扫描整个数据集。
 - en: Now that we’ve wrapped our heads around the math behind incremental standard
     deviation (or at least caught the gist of it), let’s dive into the dbt SQL implementation.
     In the following example, we’ll walk through how to set up an incremental model
     to calculate and update these statistics for a user’s transaction data.
+  id: totrans-14
   prefs: []
   type: TYPE_NORMAL
+  zh: 现在我们已经理解了增量标准差背后的数学原理（至少抓住了其精髓），让我们深入探讨 dbt SQL 的实现。在下面的示例中，我们将介绍如何设置一个增量模型来计算和更新用户的交易数据中的这些统计数据。
 - en: Consider a transactions table named **stg__transactions**, which tracks user
     transactions (events). Our goal is to create a time-static table, **int__user_tx_state**,
     that aggregates the ‘state’ of user transactions. The column details for both
     tables are provided in the picture below.
+  id: totrans-15
   prefs: []
   type: TYPE_NORMAL
+  zh: 考虑一个名为**stg__transactions**的交易表，它跟踪用户交易（事件）。我们的目标是创建一个时间静态表，**int__user_tx_state**，该表聚合用户交易的状态。两个表的列详细信息如下图中所示。
 - en: '![Image by the author](../Images/56200361ee96923ee490c50dd75af9e8.png)'
+  id: totrans-16
   prefs: []
   type: TYPE_IMG
+  zh: '![作者图片](../Images/56200361ee96923ee490c50dd75af9e8.png)'
 - en: Image by the author
+  id: totrans-17
   prefs: []
   type: TYPE_NORMAL
+  zh: 作者图片
 - en: To make the process efficient, we aim to update the state table incrementally
     by combining the new incoming transactions data with the existing aggregated data
     (i.e. the current user state). This approach allows us to calculate the updated
     user state without scanning through all historical data.
+  id: totrans-18
   prefs: []
   type: TYPE_NORMAL
+  zh: 为了使过程高效，我们旨在通过将新到达的交易数据与现有的聚合数据（即当前用户状态）结合起来，增量地更新状态表。这种方法允许我们计算更新的用户状态，而无需扫描所有历史数据。
 - en: '![Image by the author](../Images/16bce03be1aff0e1acb238599dabe6e5.png)'
+  id: totrans-19
   prefs: []
   type: TYPE_IMG
+  zh: '![作者图片](../Images/16bce03be1aff0e1acb238599dabe6e5.png)'
 - en: Image by the author
+  id: totrans-20
   prefs: []
   type: TYPE_NORMAL
+  zh: 作者图片
 - en: The code below assumes understanding of some dbt concepts, if you’re unfamiliar
     with it, you may still be able to understand the code, although I strongly encourage
     going through [dbt’s incremental guide](https://docs.getdbt.com/docs/build/incremental-models-overview)
     or read [this awesome post](https://towardsdatascience.com/dbt-incremental-the-right-way-63f931263f4a).
+  id: totrans-21
   prefs:
   - PREF_BQ
   type: TYPE_NORMAL
+  zh: 以下代码假设您对一些dbt概念有所了解，如果您不熟悉它，您仍然可以理解代码，尽管我强烈建议您阅读[dbt的增量指南](https://docs.getdbt.com/docs/build/incremental-models-overview)或阅读[这篇精彩的帖子](https://towardsdatascience.com/dbt-incremental-the-right-way-63f931263f4a)。
 - en: We’ll construct a full dbt SQL step by step, aiming to calculate incremental
     aggregations efficiently without repeatedly scanning the entire table. The process
     begins by defining the model as incremental in dbt and using `unique_key` to update
     existing rows rather than inserting new ones.
+  id: totrans-22
   prefs: []
   type: TYPE_NORMAL
+  zh: 我们将逐步构建一个完整的dbt SQL步骤，目的是高效地计算增量聚合，而不需要重复扫描整个表。这个过程从在dbt中将模型定义为增量开始，并使用`unique_key`来更新现有行而不是插入新行。
 - en: '[PRE0]'
+  id: totrans-23
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE0]'
 - en: Next, we fetch records from the _**stg__transactions**_ table. The `is_incremental`
     block filters transactions with timestamps later than the latest user update,
     effectively including "only new transactions".
+  id: totrans-24
   prefs: []
   type: TYPE_NORMAL
+  zh: 接下来，我们从**stg__transactions**表中获取记录。`is_incremental`块通过时间戳过滤出晚于最新用户更新的交易，有效地包括“仅新交易”。
 - en: '[PRE1]'
+  id: totrans-25
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE1]'
 - en: After retrieving the new transaction records, we aggregate them by user, allowing
     us to incrementally update each user’s state in the following CTEs.
+  id: totrans-26
   prefs: []
   type: TYPE_NORMAL
+  zh: 在检索到新的交易记录后，我们按用户对它们进行聚合，这使得我们可以在以下CTE中逐步更新每个用户的状态。
 - en: '[PRE2]'
+  id: totrans-27
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE2]'
 - en: Now we get to the heavy part where we need to actually calculate the aggregations.
     When we’re not in incremental mode (i.e. we don’t have any "state" rows yet) we
     simply select the new aggregations
+  id: totrans-28
   prefs: []
   type: TYPE_NORMAL
+  zh: 现在我们来到了重头戏，我们需要实际计算聚合。当我们不在增量模式（即我们还没有任何“状态”行）时，我们只需简单地选择新的聚合。
 - en: '[PRE3]'
+  id: totrans-29
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE3]'
 - en: 'But when we’re in incremental mode, we need to join past data and combine it
     with the new data we created in the `INCREMENTAL_USER_TX_DATA` CTE based on the
     formula described above. We start by calculating the new SUM, COUNT and AVG:'
+  id: totrans-30
   prefs: []
   type: TYPE_NORMAL
+  zh: 但当我们处于增量模式时，我们需要根据上述公式将过去的数据与我们在`INCREMENTAL_USER_TX_DATA` CTE中创建的新数据结合起来。我们首先计算新的SUM、COUNT和AVG：
 - en: '[PRE4]'
+  id: totrans-31
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE4]'
 - en: We then calculate the variance formula’s three parts
+  id: totrans-32
   prefs: []
   type: TYPE_NORMAL
+  zh: 然后我们计算方差公式的三个部分
 - en: 'The existing weighted variance, which is truncated to 0 if the previous set
     is composed of one or less items:'
+  id: totrans-33
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: 现有的加权方差，如果前一个集合由一个或更少的项组成，则截断为0：
 - en: '[PRE5]'
+  id: totrans-34
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE5]'
 - en: 'The incremental weighted variance in the same way:'
+  id: totrans-35
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: 以相同的方式增量加权方差：
 - en: '[PRE6]'
+  id: totrans-36
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE6]'
 - en: The mean difference variance, as outlined earlier, along with SQL join terms
     to include past data.
+  id: totrans-37
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: 如前所述的平均差异方差，以及SQL连接项以包括过去的数据。
 - en: '[PRE7]'
+  id: totrans-38
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE7]'
 - en: 'Finally, we select the table’s columns, accounting for both incremental and
     non-incremental cases:'
+  id: totrans-39
   prefs: []
   type: TYPE_NORMAL
+  zh: 最后，我们选择表的列，考虑到增量和非增量情况：
 - en: '[PRE8]'
+  id: totrans-40
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE8]'
 - en: 'By combining all these steps, we arrive at the final SQL model:'
+  id: totrans-41
   prefs: []
   type: TYPE_NORMAL
+  zh: 通过结合所有这些步骤，我们得到了最终的SQL模型：
 - en: '[PRE9]'
+  id: totrans-42
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE9]'
 - en: Throughout this process, we demonstrated how to handle both non-incremental
     and incremental modes effectively, leveraging mathematical techniques to update
     metrics like variance and standard deviation efficiently. By combining historical
     and new data seamlessly, we achieved an optimized, scalable approach for real-time
     data aggregation.
+  id: totrans-43
   prefs: []
   type: TYPE_NORMAL
+  zh: 在整个过程中，我们展示了如何有效地处理非增量模式和增量模式，利用数学技术高效地更新像方差和标准差这样的指标。通过无缝结合历史数据和新的数据，我们实现了一种优化、可扩展的实时数据聚合方法。
 - en: In this article, we explored the mathematical technique for incrementally calculating
     standard deviation and how to implement it using dbt’s incremental models. This
     approach proves to be highly efficient, enabling the processing of large datasets
@@ -192,5 +283,7 @@
     more scalable systems that can handle real-time updates efficiently. If you’d
     like to discuss this further or share your thoughts, feel free to reach out –
     I’d love to hear your thoughts!
+  id: totrans-44
   prefs: []
   type: TYPE_NORMAL
+  zh: 在本文中，我们探讨了增量计算标准差的数学技术以及如何使用 dbt 的增量模型来实现它。这种方法证明是非常高效的，能够在不重新扫描整个数据集的情况下处理大量数据集。在实践中，这导致更快速、更可扩展的系统，能够有效地处理实时更新。如果您想进一步讨论或分享您的想法，请随时联系我——我很乐意听听您的看法！
