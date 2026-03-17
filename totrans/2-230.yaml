@@ -1,126 +1,179 @@
 - en: What PyTorch Really Means by a Leaf Tensor and Its Grad
+  id: totrans-0
   prefs:
   - PREF_H1
   type: TYPE_NORMAL
+  zh: PyTorch中叶子张量的真正含义及其梯度
 - en: 原文：[https://towardsdatascience.com/what-pytorch-really-means-by-a-leaf-tensor-2/](https://towardsdatascience.com/what-pytorch-really-means-by-a-leaf-tensor-2/)
+  id: totrans-1
   prefs:
   - PREF_BQ
   type: TYPE_NORMAL
+  zh: 原文：[https://towardsdatascience.com/what-pytorch-really-means-by-a-leaf-tensor-2/](https://towardsdatascience.com/what-pytorch-really-means-by-a-leaf-tensor-2/)
 - en: <mdspan datatext="el1750293464837" class="mdspan-comment">This post</mdspan>
     isn’t yet another explanation of the chain rule. It’s a tour through the bizarre
     side of autograd — where gradients serve physics, not just weights
+  id: totrans-2
   prefs: []
   type: TYPE_NORMAL
+  zh: <mdspan datatext="el1750293464837" class="mdspan-comment">这篇帖子</mdspan>并不是对链式法则的另一种解释。它是对autograd奇特一面的游览——在这里，梯度服务于物理，而不仅仅是权重。
 - en: I originally wrote this tutorial for myself during the first year of my PhD,
     while navigating the intricacies of gradient calculations in PyTorch. Most of
     it is clearly designed with standard backpropagation in mind — and that’s fine,
     since that’s what most people need.
+  id: totrans-3
   prefs: []
   type: TYPE_NORMAL
+  zh: 我最初在攻读博士学位的第一年写了这个教程，当时我在PyTorch中导航梯度计算的复杂性。大部分内容显然是针对标准反向传播设计的——这是可以的，因为这是大多数人需要的。
 - en: But Physics-Informed Neural Network (PINN) is a moody beast and it needs a different
     kind of gradient logic. I spent some time feeding it and I figured it might be
     worth sharing the findings with the community, especially with fellow PINN practitioners
     — maybe it’ll save someone a few headaches. But if you have never heard of PINNs,
     don’t worry! This post is still for you — especially if you’re into things like
     gradients of gradients and all that fun stuff.
+  id: totrans-4
   prefs: []
   type: TYPE_NORMAL
+  zh: 但物理信息神经网络（PINN）是一个情绪化的生物，它需要不同类型的梯度逻辑。我花了一些时间来喂养它，并认为将发现与社区分享可能是有价值的，特别是与PINN实践者——也许它能节省某人一些头疼。但如果你从未听说过PINNs，不用担心！这篇帖子对你来说仍然适用——特别是如果你对梯度、梯度等的有趣内容感兴趣。
 - en: Basics terms
+  id: totrans-5
   prefs:
   - PREF_H2
   type: TYPE_NORMAL
+  zh: 基本术语
 - en: '**Tensor** in the computer world means simply a multidimensional array, i.e.
     a bunch of numbers indexed by one or more integers. To be precise, there exist
     also zero-dimensional tensors, which are just single numbers. Some people say
     that tensors are a generalization of matrices to more than two dimensions.'
+  id: totrans-6
   prefs: []
   type: TYPE_NORMAL
+  zh: 在计算机世界中，**张量**意味着一个多维数组，即一组由一个或多个整数索引的数字。更准确地说，也存在零维张量，它们只是单个数字。有些人说张量是矩阵在超过两个维度上的推广。
 - en: If you have studied general relativity before, you may have heard that mathematical
     tensors have such things as covariant and contravariant indices. But forget about
     it — in PyTorch tensors are just multidimensional arrays. No finesse here.
+  id: totrans-7
   prefs: []
   type: TYPE_NORMAL
+  zh: 如果你之前研究过广义相对论，你可能听说过数学张量有协变和逆变指标这样的东西。但忘掉它吧——在PyTorch中，张量只是多维数组。这里没有技巧。
 - en: '**Leaf tensor** is a tensor that is a leaf (in the sense of a graph theory)
     of a computation graph. We will look at those below, so this definition will make
     a bit more sense.'
+  id: totrans-8
   prefs: []
   type: TYPE_NORMAL
+  zh: '**叶子张量**是一个计算图中的叶子（在图论意义上的叶子）。我们将在下面查看这些内容，所以这个定义将更有意义。'
 - en: The `requires_grad` property of a tensor tells PyTorch whether it should remember
     how this tensor is used in further computations. For now, think of tensors with
     `requires_grad=True`as variables, while tensors with `requires_grad=False`as constants.
+  id: totrans-9
   prefs: []
   type: TYPE_NORMAL
+  zh: 张量的`requires_grad`属性告诉PyTorch是否应该记住这个张量在后续计算中的使用情况。目前，可以将`requires_grad=True`的张量视为变量，而将`requires_grad=False`的张量视为常量。
 - en: Leaf tensors
+  id: totrans-10
   prefs:
   - PREF_H2
   type: TYPE_NORMAL
+  zh: 叶子张量
 - en: Let’s start by creating a few tensors and checking their properties `requires_grad`
     and `is_leaf`.
+  id: totrans-11
   prefs: []
   type: TYPE_NORMAL
+  zh: 让我们从创建几个张量并检查它们的属性`requires_grad`和`is_leaf`开始。
 - en: '[PRE0]'
+  id: totrans-12
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE0]'
 - en: '`a`is a leaf as expected, and `b`is not because it is a result of a multiplication.
     `a`is set to require grad, so naturally `b`inherits this property.'
+  id: totrans-13
   prefs: []
   type: TYPE_NORMAL
+  zh: '`a`是一个叶子张量，正如预期的那样，而`b`不是，因为它是一个乘法的结果。`a`被设置为需要梯度，所以自然地`b`继承了这一属性。'
 - en: '`c`is a leaf obviously, but why `d`is a leaf? The reason `d.is_leaf`is True
     stems from a specific convention: all tensors with `requires_grad`set to False
     are considered leaf tensors, as per [PyTorch’s documentation](https://pytorch.org/docs/stable/generated/torch.Tensor.is_leaf.html):'
+  id: totrans-14
   prefs: []
   type: TYPE_NORMAL
+  zh: '`c`显然是一个叶子张量，但为什么`d`是叶子张量呢？`d.is_leaf`为真的原因源于一个特定的约定：所有`requires_grad`设置为False的张量都被认为是叶子张量，如[PyTorch文档](https://pytorch.org/docs/stable/generated/torch.Tensor.is_leaf.html)中所述：'
 - en: All Tensors that have [`requires_grad`](https://docs.pytorch.org/docs/stable/generated/torch.Tensor.requires_grad.html#torch.Tensor.requires_grad) which
     is `False` will be leaf Tensors by convention.
+  id: totrans-15
   prefs:
   - PREF_BQ
   type: TYPE_NORMAL
+  zh: 所有具有`requires_grad`（[PyTorch文档](https://docs.pytorch.org/docs/stable/generated/torch.Tensor.requires_grad.html#torch.Tensor.requires_grad)）属性为`False`的张量按惯例都是叶子张量。
 - en: While mathematically, `d`is not a leaf (since it results from another operation,
     `c * c`), gradient computation will never extend beyond it. In other words, there
     won’t be any derivative with respect to `c`. This allows`d`to be treated as a
     leaf.
+  id: totrans-16
   prefs: []
   type: TYPE_NORMAL
+  zh: 虽然在数学上 `d` 不是一个叶子（因为它是由另一个操作 `c * c` 得出的），梯度计算永远不会超出它。换句话说，不会有关于 `c` 的导数。这允许
+    `d` 被视为一个叶子。
 - en: 'In a nutshell, in PyTorch, leaf tensors are either:'
+  id: totrans-17
   prefs: []
   type: TYPE_NORMAL
+  zh: 简而言之，在 PyTorch 中，叶子张量可以是：
 - en: 'Directly inputted (i.e. not calculated from other tensors) and have `requires_grad=True`.
     Example: neural network weights that are randomly initialized.'
+  id: totrans-18
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: 直接输入（即不是从其他张量计算得出）并且有 `requires_grad=True`。例如：随机初始化的神经网络权重。
 - en: 'Do not require gradients at all, regardless of whether they are directly inputted
     or computed. In the eyes of autograd, these are just constants. Examples:'
+  id: totrans-19
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: 完全不需要梯度，无论它们是直接输入还是计算得出。在 autograd 的眼中，这些只是常数。例如：
 - en: any neural network input data,
+  id: totrans-20
   prefs:
   - PREF_IND
   - PREF_UL
   type: TYPE_NORMAL
+  zh: 任何神经网络输入数据，
 - en: an input image after mean removal or other operations, which involves only non-gradient-requiring
     tensors.
+  id: totrans-21
   prefs:
   - PREF_IND
   - PREF_UL
   type: TYPE_NORMAL
+  zh: 一个输入图像在去除均值或其他操作后的情况，这仅涉及不要求梯度的张量。
 - en: 'A small remark for those who want to know more. The `requires_grad`property
     is inherited as illustrated here:'
+  id: totrans-22
   prefs: []
   type: TYPE_NORMAL
+  zh: 一个小备注，对于那些想了解更多的人来说。`requires_grad` 属性如下所示继承：
 - en: '[PRE1]'
+  id: totrans-23
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE1]'
 - en: '*Code remark: all code snippets should be self-contained except for imports
     that I include only when they appear first time. I drop them in order to minimize
     boilerplate code. I trust that the reader will be able to take care of those easily.*'
+  id: totrans-24
   prefs: []
   type: TYPE_NORMAL
+  zh: '*代码备注：所有代码片段都应该自包含，除了我首次包含的导入。我省略它们是为了最小化样板代码。我相信读者能够轻松处理这些内容。*'
 - en: Grad retention
+  id: totrans-25
   prefs:
   - PREF_H2
   type: TYPE_NORMAL
+  zh: 梯度保留
 - en: 'A separate issue is gradient retention. All nodes in the computation graph,
     meaning all tensors used, have gradients computed if they require grad. However,
     only leaf tensors retain these gradients. This makes sense because gradients are
@@ -131,164 +184,255 @@
     Networks (PINNs), where you might want to retain the gradients of these intermediate
     tensors. In such cases, you will need to explicitly mark non-leaf tensors to retain
     their gradients. Let’s see:'
+  id: totrans-26
   prefs: []
   type: TYPE_NORMAL
+  zh: 一个单独的问题是梯度保留。计算图中所有节点，即所有使用的张量，如果需要梯度，都会计算梯度。然而，只有叶子张量保留这些梯度。这很有道理，因为梯度通常用于更新张量，只有叶子张量在训练过程中会进行更新。非叶子张量，如第一个例子中的
+    `b`，不会直接更新；它们会随着 `a` 的变化而变化，因此它们的梯度可以被丢弃。然而，在某些情况下，尤其是在物理信息神经网络（PINNs）中，你可能希望保留这些中间张量的梯度。在这种情况下，你需要显式标记非叶子张量以保留它们的梯度。让我们看看：
 - en: '[PRE2]'
+  id: totrans-27
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE2]'
 - en: 'You probably have just seen a warning:'
+  id: totrans-28
   prefs: []
   type: TYPE_NORMAL
+  zh: 你可能刚刚看到了一个警告：
 - en: '[PRE3]'
+  id: totrans-29
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE3]'
 - en: So let’s fix it by forcing `b`to retain its gradient
+  id: totrans-30
   prefs: []
   type: TYPE_NORMAL
+  zh: 因此，让我们通过强制 `b` 保留其梯度来修复它。
 - en: '[PRE4]'
+  id: totrans-31
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE4]'
 - en: Mysteries of grad
+  id: totrans-32
   prefs:
   - PREF_H2
   type: TYPE_NORMAL
+  zh: 梯度的奥秘
 - en: Now let’s look at the famous grad itself. What is it? Is it a tensor? If so,
     is it a leaf tensor? Does it require or retain grad?
+  id: totrans-33
   prefs: []
   type: TYPE_NORMAL
+  zh: 现在让我们看看著名的梯度本身。它是什么？它是一个张量吗？如果是，它是一个叶子张量吗？它需要或保留梯度吗？
 - en: '[PRE5]'
+  id: totrans-34
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE5]'
 - en: 'Apparently:'
+  id: totrans-35
   prefs: []
   type: TYPE_NORMAL
+  zh: 显然：
 - en: '**–** grad itself is a tensor,'
+  id: totrans-36
   prefs: []
   type: TYPE_NORMAL
+  zh: '**–** 梯度本身是一个张量，'
 - en: '**–** grad is a leaf tensor,'
+  id: totrans-37
   prefs: []
   type: TYPE_NORMAL
+  zh: '**–** 梯度是一个叶子张量，'
 - en: '**–** grad does not require grad.'
+  id: totrans-38
   prefs: []
   type: TYPE_NORMAL
+  zh: '**–** 梯度不需要梯度。'
 - en: Does it retain grad? This question does not make sense because it does not require
     grad in the first place. We will come back to the question of the grad being a
     leaf tensor in a second, but now we will test a few things.
+  id: totrans-39
   prefs: []
   type: TYPE_NORMAL
+  zh: 它保留梯度吗？这个问题没有意义，因为它最初就不需要梯度。我们将在下一秒回到梯度是否是叶子张量的问题，但现在我们将测试一些事情。
 - en: Multiple backwards and `retain_graph`
+  id: totrans-40
   prefs:
   - PREF_H3
   type: TYPE_NORMAL
+  zh: 多次反向传播和 `retain_graph`
 - en: What will happen when we calculate the same grad twice?
+  id: totrans-41
   prefs: []
   type: TYPE_NORMAL
+  zh: 当我们两次计算相同的梯度时会发生什么？
 - en: '[PRE6]'
+  id: totrans-42
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE6]'
 - en: 'The error message explains it all. This should work:'
+  id: totrans-43
   prefs: []
   type: TYPE_NORMAL
+  zh: 错误信息解释了一切。这应该可以工作：
 - en: '[PRE7]'
+  id: totrans-44
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE7]'
 - en: 'Side (but important) note: you can also observe, how the gradient accumulates
     in `a`: with every iteration it is added.'
+  id: totrans-45
   prefs: []
   type: TYPE_NORMAL
+  zh: 侧（但很重要）注：你还可以观察梯度如何在 `a` 中累积：每次迭代都会增加。
 - en: Powerful `create_graph` argument
+  id: totrans-46
   prefs:
   - PREF_H3
   type: TYPE_NORMAL
+  zh: 强大的 `create_graph` 参数
 - en: How to make grad require grad?
+  id: totrans-47
   prefs: []
   type: TYPE_NORMAL
+  zh: 如何使梯度需要梯度？
 - en: '[PRE8]'
+  id: totrans-48
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE8]'
 - en: 'The above is very useful: `a.grad`which mathematically is \[\frac{\partial
     b}{\partial a}\] is not a constant (leaf) anymore, but a regular member of the
     computation graph that can be further used. We will use that fact in Part 2.'
+  id: totrans-49
   prefs: []
   type: TYPE_NORMAL
+  zh: 上述内容非常有用：`a.grad` 在数学上表示 \[\frac{\partial b}{\partial a}\] 不再是一个常数（叶子节点），而是计算图中的一员，可以进一步使用。我们将在第2部分中使用这个事实。
 - en: Why the `b.grad`does not require grad? Because derivative of `b` with respect
     to `b`is simply 1.
+  id: totrans-50
   prefs: []
   type: TYPE_NORMAL
+  zh: 为什么 `b.grad` 不需要求导？因为 `b` 对 `b` 的导数简单地为1。
 - en: 'If the `backward` feels counterintuitive for you now, don’t worry. We will
     soon switch to another method called nomen omen `grad` that allows to precisely
     choose ingredients of the derivatives. Before, two side notes:'
+  id: totrans-51
   prefs: []
   type: TYPE_NORMAL
+  zh: 如果你现在觉得 `backward` 感觉不太直观，不要担心。我们很快就会切换到另一种称为 nomen omen `grad` 的方法，它允许我们精确选择导数的成分。在此之前，有两个旁注：
 - en: '**Side note 1**: If you set `create_graph`to True, it also sets `retain_graph`
     to True (if not explicitly set). In the pytorch code it looks exactly like'
+  id: totrans-52
   prefs: []
   type: TYPE_NORMAL
+  zh: '**旁注1**：如果你将 `create_graph` 设置为 True，它也会将 `retain_graph` 设置为 True（如果未明确设置）。在
+    PyTorch 代码中，它看起来完全像'
 - en: 'this:'
+  id: totrans-53
   prefs: []
   type: TYPE_NORMAL
+  zh: 这：
 - en: '[PRE9]'
+  id: totrans-54
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE9]'
 - en: '**Side note 2**: You probably saw a warning like this:'
+  id: totrans-55
   prefs: []
   type: TYPE_NORMAL
+  zh: '**旁注2**：你可能看到了这样的警告：'
 - en: '[PRE10]'
+  id: totrans-56
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE10]'
 - en: And we will follow the advice and use `autograd.grad`now.
+  id: totrans-57
   prefs: []
   type: TYPE_NORMAL
+  zh: 我们将遵循建议，现在使用 `autograd.grad`。
 - en: Taking derivatives with `autograd.grad` function
+  id: totrans-58
   prefs:
   - PREF_H2
   type: TYPE_NORMAL
+  zh: 使用 `autograd.grad` 函数求导
 - en: Now let’s move from the somehow high-level `.backward()`method to lower level
     `grad` method that explicitly calculates derivative of one tensor with respect
     to another.
+  id: totrans-59
   prefs: []
   type: TYPE_NORMAL
+  zh: 现在让我们从某种程度上的高级 `.backward()` 方法转向更底层的 `grad` 方法，该方法明确地计算一个张量相对于另一个张量的导数。
 - en: '[PRE11]'
+  id: totrans-60
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE11]'
 - en: 'Similarly, as with `backward`, the derivative of `b`with respect to `a`can
     be treated as a function and differentiated further. So in other words, the `create_graph`flag
     can be understood as: *when calculating gradients, keep the history of how they
     were calculated, so we can treat them as non-leaf tensors that require grad, and
     use further.*'
+  id: totrans-61
   prefs: []
   type: TYPE_NORMAL
+  zh: 同样，与 `backward` 类似，`b` 对 `a` 的导数可以被视为一个函数并进一步求导。所以换句话说，`create_graph` 标志可以理解为：*在计算梯度时，保留它们是如何计算的记录，这样我们可以将它们视为需要求导的非叶张量，并进一步使用。*
 - en: 'In particular, we can calculate second-order derivative:'
+  id: totrans-62
   prefs: []
   type: TYPE_NORMAL
+  zh: 特别是，我们可以计算二阶导数：
 - en: '[PRE12]'
+  id: totrans-63
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE12]'
 - en: 'As said before: this is actually the key property that allows us to do PINN
     with pytorch.'
+  id: totrans-64
   prefs: []
   type: TYPE_NORMAL
+  zh: 正如之前所说：这实际上是允许我们使用 PyTorch 进行 PINN 的关键属性。
 - en: Wrapping up
+  id: totrans-65
   prefs:
   - PREF_H2
   type: TYPE_NORMAL
+  zh: 总结
 - en: Most tutorials about PyTorch gradients focus on backpropagation in classical
     supervised learning. This one explored a different perspective — one shaped by
     the needs of PINNs and other gradient-hungry beasts.
+  id: totrans-66
   prefs: []
   type: TYPE_NORMAL
+  zh: 大多数关于 PyTorch 梯度的教程都集中在经典监督学习中的反向传播。这个教程探索了一个不同的视角——一个由 PINNs 和其他对梯度有强烈需求的生物的需求所塑造的视角。
 - en: We learnt what leaves are in the PyTorch jungle, why gradients are retained
     by default only for leaf nodes, and how to retain them when needed for other tensors.
     We saw how `create_graph` turns gradients into differentiable citizens of the
     autograd world.
+  id: totrans-67
   prefs: []
   type: TYPE_NORMAL
+  zh: 我们学习了 PyTorch 森林中的叶子是什么，为什么默认情况下只保留叶节点的梯度，以及如何在需要时为其他张量保留它们。我们看到了 `create_graph`
+    如何将梯度转化为 autograd 世界中的可导公民。
 - en: But there are still many things to uncover — especially why gradients of non-scalar
     functions require extra care, how to compute second-order derivatives without
     using your whole RAM, and why slicing your input tensor is a bad idea when you
     need an *elementwise* gradient.
+  id: totrans-68
   prefs: []
   type: TYPE_NORMAL
+  zh: 但仍有许多东西需要揭示——特别是为什么非标量函数的梯度需要额外小心，如何在不使用整个RAM的情况下计算二阶导数，以及为什么在需要元素级梯度时切片输入张量是个坏主意。
 - en: So let’s meet in Part 2, where we’ll take a closer look at `grad` 👋
+  id: totrans-69
   prefs: []
   type: TYPE_NORMAL
+  zh: 所以让我们在第二部分见面，我们将更仔细地看看 `grad` 👋
