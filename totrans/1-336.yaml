@@ -1,54 +1,66 @@
 - en: 'A Deep Dive into RabbitMQ & Python’s Celery: How to Optimise Your Queues'
+  id: totrans-0
   prefs:
   - PREF_H1
   type: TYPE_NORMAL
 - en: 原文：[https://towardsdatascience.com/deep-dive-into-rabbitmq-pythons-celery-how-to-optimise-your-queues/](https://towardsdatascience.com/deep-dive-into-rabbitmq-pythons-celery-how-to-optimise-your-queues/)
+  id: totrans-1
   prefs:
   - PREF_BQ
   type: TYPE_NORMAL
 - en: <mdspan datatext="el1756873996638" class="mdspan-comment">If you’re an engineer</mdspan>,
     have worked with machine learning or large-scale data pipelines, chances are you’ve
     used some sort of queueing system.
+  id: totrans-2
   prefs: []
   type: TYPE_NORMAL
 - en: 'Queues let services talk to each other asynchronously: you send off work, don’t
     wait around, and let another system pick it up when ready. This is essential when
     your tasks aren’t instant — think long-running model training jobs, batch ETL
     pipelines, or even processing requests for LLMs that take minutes per query.'
+  id: totrans-3
   prefs: []
   type: TYPE_NORMAL
 - en: So why am I writing this? I recently migrated a production queueing setup to
     RabbitMQ, ran into a bunch of bugs, and found that documentation was thin on the
     trickier parts. After a fair bit of trial and error, I thought it’d be worth sharing
     what I learned.
+  id: totrans-4
   prefs: []
   type: TYPE_NORMAL
 - en: Hope you will find this useful!
+  id: totrans-5
   prefs: []
   type: TYPE_NORMAL
 - en: 'A quick primer: queues vs request-response model'
+  id: totrans-6
   prefs:
   - PREF_H2
   type: TYPE_NORMAL
 - en: Microservices typically communicate in two styles — the classic request–response
     model, or the more flexible queue-based model.
+  id: totrans-7
   prefs: []
   type: TYPE_NORMAL
 - en: Imagine ordering pizza. In a **request–response model**, you tell the waiter
     your order and then wait. He disappears, and thirty minutes later your pizza shows
     up — but you’ve been left in the dark the whole time.
+  id: totrans-8
   prefs: []
   type: TYPE_NORMAL
 - en: In a **queue-based model**, the waiter repeats your order, gives you a number,
     and drops it into the kitchen’s queue. Now you know it’s being handled, and you’re
     free to do something else till the chef gets to it.
+  id: totrans-9
   prefs: []
   type: TYPE_NORMAL
 - en: 'That’s the difference: request–response keeps you blocked until the work is
     done, while queues confirm right away and let the work happen in the background.'
+  id: totrans-10
   prefs: []
   type: TYPE_NORMAL
 - en: What is Rabbit MQ?
+  id: totrans-11
   prefs:
   - PREF_H2
   type: TYPE_NORMAL
@@ -56,280 +68,346 @@
     delivered from producers (senders) to consumers (receivers). First released in
     2007 and written in Erlang, it implements AMQP (Advanced Message Queuing Protocol),
     an open standard for structuring, routing, and acknowledging messages.
+  id: totrans-12
   prefs: []
   type: TYPE_NORMAL
 - en: 'Think of it like a post office for distributed systems: applications drop off
     messages, RabbitMQ sorts them into queues, and consumers pick them up when ready.'
+  id: totrans-13
   prefs:
   - PREF_BQ
   type: TYPE_NORMAL
 - en: 'A common pairing in the Python world is Celery + RabbitMQ: RabbitMQ brokers
     the tasks, while Celery workers execute them in the background.'
+  id: totrans-14
   prefs: []
   type: TYPE_NORMAL
 - en: In containerised setups, RabbitMQ typically runs in its own container, while
     Celery workers run in separate containers that you can scale independently.
+  id: totrans-15
   prefs: []
   type: TYPE_NORMAL
 - en: How it works at a high level
+  id: totrans-16
   prefs:
   - PREF_H3
   type: TYPE_NORMAL
 - en: Your app wants to run some work asynchronously. Since this task might take a
     while, you don’t want the app to sit idle waiting. Instead, it creates a message
     describing the task and sends it to RabbitMQ.
+  id: totrans-17
   prefs: []
   type: TYPE_NORMAL
 - en: '**Exchange**: This lives inside RabbitMQ. It doesn’t store messages but just
     decides where each message should go based on rules you set (routing keys and
     bindings).'
+  id: totrans-18
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
 - en: Producers publish messages to an exchange, which acts as a routing intermediary.
+  id: totrans-19
   prefs:
   - PREF_IND
   type: TYPE_NORMAL
 - en: '**Queues**: They’re like mailboxes. Once the exchange decides which queue(s)
     a message should go to, it sits there till it’s picked up.'
+  id: totrans-20
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
 - en: '**Consumer**: The service that reads and processes messages from a queue. In
     a Celery setup, the Celery worker is the consumer — it pulls tasks off the queue
     and does the actual work.'
+  id: totrans-21
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
 - en: '![](../Images/ae47de6864557ed9a16cb1b64c1b82e8.png)'
+  id: totrans-22
   prefs: []
   type: TYPE_IMG
 - en: High level overview of Rabbit MQ’s architecture. Drawn by writer.
+  id: totrans-23
   prefs: []
   type: TYPE_NORMAL
 - en: Once the message is routed into a queue, the RabbitMQ broker **pushes** it out
     to a consumer (if one is available) over a TCP connection.
+  id: totrans-24
   prefs: []
   type: TYPE_NORMAL
 - en: Core components in Rabbit MQ
+  id: totrans-25
   prefs:
   - PREF_H2
   type: TYPE_NORMAL
 - en: 1\. Routing and binding keys
+  id: totrans-26
   prefs:
   - PREF_H3
   type: TYPE_NORMAL
 - en: Routing and binding keys work together to decide where a message ends up.
+  id: totrans-27
   prefs: []
   type: TYPE_NORMAL
 - en: A **routing** key is attached to a **message** by the producer.
+  id: totrans-28
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
 - en: A **binding** key is the rule a **queue** declares when it connects (binds)
     to an exchange.
+  id: totrans-29
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
 - en: A binding defines the link between an exchange and a queue.
+  id: totrans-30
   prefs:
   - PREF_IND
   type: TYPE_NORMAL
 - en: When a message is sent, the exchange looks at the message’s routing key. If
     that routing key matches the binding key of a queue, the message is delivered
     to that queue.
+  id: totrans-31
   prefs: []
   type: TYPE_NORMAL
 - en: A message can only have **one** routing key.
+  id: totrans-32
   prefs:
   - PREF_BQ
   type: TYPE_NORMAL
 - en: A queue can have **one or multiple** binding keys, meaning it can listen for
     several different routing keys or patterns.
+  id: totrans-33
   prefs:
   - PREF_BQ
   type: TYPE_NORMAL
 - en: 2\. Exchanges
+  id: totrans-34
   prefs:
   - PREF_H3
   type: TYPE_NORMAL
 - en: An exchange in RabbitMQ is like a **traffic controller.** It receives messages,
     does not store messages, and it’s key job is to decide which queue(s) the message
     should go to, based on rules.
+  id: totrans-35
   prefs: []
   type: TYPE_NORMAL
 - en: '*If the routing key of a message does not match any the binding keys of any
     queues, it will not get delivered.*'
+  id: totrans-36
   prefs: []
   type: TYPE_NORMAL
 - en: There are several types of exchanges, each with its own routing style.
+  id: totrans-37
   prefs: []
   type: TYPE_NORMAL
 - en: 2a) Direct exchange
+  id: totrans-38
   prefs:
   - PREF_H4
   type: TYPE_NORMAL
 - en: Think of a direct exchange like an exact address delivery. The exchange looks
     for queues with binding keys that exactly match the routing key.
+  id: totrans-39
   prefs: []
   type: TYPE_NORMAL
 - en: If only one queue matches, the message will only be sent there (1:1).
+  id: totrans-40
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
 - en: If multiple queues have the same binding key, the message will be copied to
     all of them (1:many).
+  id: totrans-41
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
 - en: 2b) Fanout exchange
+  id: totrans-42
   prefs:
   - PREF_H4
   type: TYPE_NORMAL
 - en: A fanout exchange is like shouting through a loudspeaker.
+  id: totrans-43
   prefs: []
   type: TYPE_NORMAL
 - en: Every message is copied to **all** queues bound to the exchange. The routing
     keys are ignored, and it is **always a 1:many broadcast**.
+  id: totrans-44
   prefs: []
   type: TYPE_NORMAL
 - en: Fanout exchanges can be useful when the same message needs to be sent to one
     or more queues with consumers who may process the same message in different ways.
+  id: totrans-45
   prefs: []
   type: TYPE_NORMAL
 - en: 2c) Topic exchange
+  id: totrans-46
   prefs:
   - PREF_H4
   type: TYPE_NORMAL
 - en: A topic exchange works like a subscription system with categories.
+  id: totrans-47
   prefs: []
   type: TYPE_NORMAL
 - en: Every message has a routing key, for example `"order.completed”`. Queues can
     then subscribe to patterns such as `"order.*”`. This means that whenever a message
     is related to an order, it will be delivered to any queues that have subscribed
     to that category.
+  id: totrans-48
   prefs: []
   type: TYPE_NORMAL
 - en: Depending on the patterns, a message might end up in just one queue or in several
     at the same time.
+  id: totrans-49
   prefs: []
   type: TYPE_NORMAL
 - en: 'There are two important special cases for binding keys:'
+  id: totrans-50
   prefs: []
   type: TYPE_NORMAL
 - en: '`*` (star) matches **exactly one word** in the routing key.'
+  id: totrans-51
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
 - en: '`#` (hash) matches **zero or more words**.'
+  id: totrans-52
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
 - en: Let’s illustrate this to make the syntax alot more intuitive.
+  id: totrans-53
   prefs: []
   type: TYPE_NORMAL
 - en: '![](../Images/54e57c1f7deed0c2918872e31c4aabe6.png)'
+  id: totrans-54
   prefs: []
   type: TYPE_IMG
 - en: 2d) Headers exchange
+  id: totrans-55
   prefs:
   - PREF_H4
   type: TYPE_NORMAL
 - en: A headers exchange is like sorting mail by labels instead of addresses.
+  id: totrans-56
   prefs: []
   type: TYPE_NORMAL
 - en: 'Instead of looking at the routing key (like `"order.completed"`), the exchange
     inspects the **headers** of a message: These are key–value pairs attached as metadata.
     For instance:'
+  id: totrans-57
   prefs: []
   type: TYPE_NORMAL
 - en: '`x-match: all, priority: high, type: email` → the queue will only get messages
     that have **both** `priority=high` **and** `type=email`.'
+  id: totrans-58
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
 - en: '`x-match: any, region: us, region: eu` → the queue will get messages where
     **at least one** of the conditions is true (`region=us` or `region=eu`).'
+  id: totrans-59
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
 - en: The `x-match` field is what determines whether all rules must match or any one
     rule is enough.
+  id: totrans-60
   prefs: []
   type: TYPE_NORMAL
 - en: Because multiple queues can each declare their own header rules, a single message
     might end up in just one queue (1:1) or in several queues at once (1:many).
+  id: totrans-61
   prefs: []
   type: TYPE_NORMAL
 - en: Headers exchanges are less common in practice, but they’re useful when routing
     depends on more complex business logic. For example, you might want to deliver
     a message only if `customer_tier=premium`, `message_format=json`, or `region=apac` .
+  id: totrans-62
   prefs: []
   type: TYPE_NORMAL
 - en: 2e) Dead letter exchange
+  id: totrans-63
   prefs:
   - PREF_H4
   type: TYPE_NORMAL
 - en: A dead letter exchange is a safety net for undeliverable messages.
+  id: totrans-64
   prefs: []
   type: TYPE_NORMAL
 - en: 3\. A push delivery model
+  id: totrans-65
   prefs:
   - PREF_H3
   type: TYPE_NORMAL
 - en: This means that as soon as a message enters a queue, the broker will push it
     out to a consumer that is subscribed and ready. The **consumer doesn’t request
     messages** and instead just listens on the queue.
+  id: totrans-66
   prefs: []
   type: TYPE_NORMAL
 - en: This push approach is great for low-latency delivery — messages get to consumers
     as soon as possible.
+  id: totrans-67
   prefs:
   - PREF_BQ
   type: TYPE_NORMAL
 - en: Useful features in Rabbit MQ
+  id: totrans-68
   prefs:
   - PREF_H2
   type: TYPE_NORMAL
 - en: Rabbit MQ’s architecture lets you shape message flow to fit your workload. Here
     are some useful patterns.
+  id: totrans-69
   prefs: []
   type: TYPE_NORMAL
 - en: Work queues — competing consumers pattern
+  id: totrans-70
   prefs:
   - PREF_H3
   type: TYPE_NORMAL
 - en: You publish tasks into **one queue**, and **many consumers** (eg. celery workers)
     all listen to that queue. The broker delivers **each message to exactly one consumer**,
     so workers “compete” for work. This implicitly translates to simple load-balancing.
+  id: totrans-71
   prefs: []
   type: TYPE_NORMAL
 - en: If you’re on celery, you’ll want to keep `worker_prefetch_multiplier=1` . What
     this means is that a worker will only fetch one message at a time, avoiding slow
     workers from hoarding tasks.
+  id: totrans-72
   prefs: []
   type: TYPE_NORMAL
 - en: Pub/sub pattern
+  id: totrans-73
   prefs:
   - PREF_H3
   type: TYPE_NORMAL
 - en: '**Multiple queues** bound to an exchange and each queue gets a **copy** of
     the message (fanout or topic exchanges). Since each queue gets its own message
     copy, so different consumers can process the same event in different ways.'
+  id: totrans-74
   prefs: []
   type: TYPE_NORMAL
 - en: Explicit acknowledgements
+  id: totrans-75
   prefs:
   - PREF_H3
   type: TYPE_NORMAL
 - en: RabbitMQ uses explicit acknowledgements (**ACKs**) to guarantee reliable delivery.
     An ACK is a confirmation sent from the consumer back to the broker once a message
     has been successfully processed.
+  id: totrans-76
   prefs: []
   type: TYPE_NORMAL
 - en: When a consumer sends an ACK, the broker removes that message from the queue.
     If the consumer **NACKs** or dies before ACKing, RabbitMQ can **redeliver** (requeue)
     the message or route it to a dead letter queuefor inspection or retry.
+  id: totrans-77
   prefs: []
   type: TYPE_NORMAL
 - en: There is, however, an important nuance when using Celery. Celery does send acknowledgements
@@ -337,134 +415,165 @@
     before it actually executes it. This behaviour (`acks_late=False`, which is the
     default) means that if a worker crashes midway through running the task, the broker
     has already been told the message was handled and won’t redeliver it.
+  id: totrans-78
   prefs: []
   type: TYPE_NORMAL
 - en: Priority queues
+  id: totrans-79
   prefs:
   - PREF_H3
   type: TYPE_NORMAL
 - en: RabbitMQ has a out of the box priority queueing feature which lets higher priority
     messages jump the line. Under the hood, the broker creates an **internal sub-queue**
     for each priority level defined on a queue.
+  id: totrans-80
   prefs: []
   type: TYPE_NORMAL
 - en: For example, if you configure five priority levels, RabbitMQ maintains five
     internal sub-queues. Within each level, messages are still consumed in **FIFO
     order**, but when consumers are ready, RabbitMQ will always try to deliver messages
     from higher-priority sub-queues first.
+  id: totrans-81
   prefs: []
   type: TYPE_NORMAL
 - en: Doing so implicitly would mean an increasing amount of overhead if there were
     many priority levels. [Rabbit MQ’s docs note that though priorities between 1
     and 255 are supported, **values between 1 and 5 are highly recommended**.](https://www.rabbitmq.com/docs/priority)
+  id: totrans-82
   prefs: []
   type: TYPE_NORMAL
 - en: Message TTL & scheduled deliveries
+  id: totrans-83
   prefs:
   - PREF_H3
   type: TYPE_NORMAL
 - en: Message TTL (per-message or per-queue) automatically expires stale messages;
     and delayed delivery is available via plugins (e.g., delayed-message exchange)
     when you need scheduled execution.
+  id: totrans-84
   prefs: []
   type: TYPE_NORMAL
 - en: How to optimise your Rabbit MQ and Celery setup
+  id: totrans-85
   prefs:
   - PREF_H2
   type: TYPE_NORMAL
 - en: When you deploy Celery with RabbitMQ, you’ll notice a few “mystery” queues and
     exchanges appearing in the RabbitMQ management dashboard. These aren’t mistakes — they’re
     part of Celery’s internals.
+  id: totrans-86
   prefs: []
   type: TYPE_NORMAL
 - en: After a few painful rounds of trial and error, here’s what I learned about how
     Celery really uses RabbitMQ under the hood — and how to tune it properly.
+  id: totrans-87
   prefs: []
   type: TYPE_NORMAL
 - en: Kombu
+  id: totrans-88
   prefs:
   - PREF_H3
   type: TYPE_NORMAL
 - en: 'Celery relies on Kombu, a Python messaging framework. Kombu abstracts away
     the low-level AMQP operations, giving Celery a high-level API to:'
+  id: totrans-89
   prefs: []
   type: TYPE_NORMAL
 - en: Declare queues and exchanges
+  id: totrans-90
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
 - en: Publish messages (tasks)
+  id: totrans-91
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
 - en: Consume messages in workers
+  id: totrans-92
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
 - en: It also handles serialisation (JSON, Pickle, YAML, or custom formats) so tasks
     can be encoded and decoded across the wire.
+  id: totrans-93
   prefs: []
   type: TYPE_NORMAL
 - en: Celery events and the `celeryev` Exchange
+  id: totrans-94
   prefs:
   - PREF_H3
   type: TYPE_NORMAL
 - en: '![](../Images/bb62246908783f751182492b27972882.png)'
+  id: totrans-95
   prefs: []
   type: TYPE_IMG
 - en: Screenshot by writer on how a celeryev queue appears on the RabbitMQ management
     dashboard
+  id: totrans-96
   prefs: []
   type: TYPE_NORMAL
 - en: Celery includes an event system that tracks worker and task state. Internally,
     events are published to a special **topic exchange called `celeryev`**.
+  id: totrans-97
   prefs: []
   type: TYPE_NORMAL
 - en: 'There are two such event types:'
+  id: totrans-98
   prefs: []
   type: TYPE_NORMAL
 - en: '**Worker events** eg.`worker.online`, `worker.heartbeat`, `worker.offline`
     are always on and are lightweight liveliness signals.'
+  id: totrans-99
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
 - en: '**Task events**, eg.`task-received`, `task-started`, `task-succeeded`, `task-failed`
     which are disabled by default unless the `-E` flag is added.'
+  id: totrans-100
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
 - en: You have fine grain control over both types of events. You can turn off worker
     events (by turning off gossip, more on that below) while turning on task events.
+  id: totrans-101
   prefs: []
   type: TYPE_NORMAL
 - en: Gossip
+  id: totrans-102
   prefs:
   - PREF_H3
   type: TYPE_NORMAL
 - en: Gossip is Celery’s mechanism for workers to “chat” about cluster state — who’s
     alive, who just joined, who dropped out, and occasionally elect a leader for coordination.
     It’s useful for debugging or ad-hoc cluster coordination.
+  id: totrans-103
   prefs: []
   type: TYPE_NORMAL
 - en: 'By default, Gossip is enabled. When a worker starts:'
+  id: totrans-104
   prefs: []
   type: TYPE_NORMAL
 - en: It creates an **exclusive, auto-delete queue** just for itself.
+  id: totrans-105
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
 - en: That queue is bound to the **`celeryev` topic exchange** with the routing key
     pattern `worker.#`.
+  id: totrans-106
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
 - en: Because every worker subscribes to every `worker.*` event, the traffic grows
     quickly as the cluster scales.
+  id: totrans-107
   prefs: []
   type: TYPE_NORMAL
 - en: With N workers, each one publishes its own heartbeat, and RabbitMQ fans that
     message out to the other N-1 gossip queues. In effect, you get an N × (N-1) fan-out
     pattern.
+  id: totrans-108
   prefs:
   - PREF_BQ
   type: TYPE_NORMAL
@@ -473,24 +582,30 @@
     a burst of join, leave, and heartbeat events — the pattern spiraled out of control.
     **The `celeryev` exchange was suddenly handling 7–8k messages per second, pushing
     RabbitMQ past its memory watermark and leaving the cluster in a degraded state.**
+  id: totrans-109
   prefs: []
   type: TYPE_NORMAL
 - en: When this memory limit is exceeded, RabbitMQ blocks publishers until usage drops.
     Once memory falls back under the threshold, RabbitMQ resumes normal operation.
+  id: totrans-110
   prefs: []
   type: TYPE_NORMAL
 - en: However, this means that during the memory spike the broker becomes unusable — effectively
     causing downtime. You won’t want that in production!
+  id: totrans-111
   prefs: []
   type: TYPE_NORMAL
 - en: The solution is to disable Gossip so workers don’t bind to `worker.#`. You can
     do this in the docker compose where the workers are spun up.
+  id: totrans-112
   prefs: []
   type: TYPE_NORMAL
 - en: '`celery -A myapp worker --without-gossip`'
+  id: totrans-113
   prefs: []
   type: TYPE_NORMAL
 - en: Mingle
+  id: totrans-114
   prefs:
   - PREF_H3
   type: TYPE_NORMAL
@@ -498,54 +613,70 @@
     to synchronise state — things like revoked tasks and logical clocks. This happens
     only once, during worker boot. If you don’t need this coordination, you can also
     disable it with `--without-mingle`
+  id: totrans-115
   prefs: []
   type: TYPE_NORMAL
 - en: Occasional connection drops
+  id: totrans-116
   prefs:
   - PREF_H3
   type: TYPE_NORMAL
 - en: In production, connections between Celery and RabbitMQ can occasionally drop — for
     example, due to a brief network blip. If you have monitoring in place, you may
     see these as transient errors.
+  id: totrans-117
   prefs: []
   type: TYPE_NORMAL
 - en: The good news is that these drops are usually **recoverable**. Celery relies
     on Kombu, which includes **automatic connection retry logic**. When a connection
     fails, the worker will attempt to reconnect and resume consuming tasks.
+  id: totrans-118
   prefs:
   - PREF_BQ
   type: TYPE_NORMAL
 - en: 'As long as your queues are configured correctly, messages are **not** lost:'
+  id: totrans-119
   prefs: []
   type: TYPE_NORMAL
 - en: '`durable=True` (queue survives broker restart)'
+  id: totrans-120
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
 - en: '`delivery_mode=2` (persistent messages)'
+  id: totrans-121
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
 - en: Consumers send explicit ACKs to confirm successful processing
+  id: totrans-122
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
 - en: If a connection drops before a task is acknowledged, RabbitMQ will safely requeue
     it for delivery once the worker reconnects.
+  id: totrans-123
   prefs: []
   type: TYPE_NORMAL
+  zh: 如果在任务被确认之前连接断开，RabbitMQ 将在工作者重新连接后安全地重新入队该任务以进行交付。
 - en: Once the connection is re-established, the worker continues normal operation.
     In practice, occasional drops are fine, as long as they remain infrequent and
     queue depth doesn’t build up.
+  id: totrans-124
   prefs: []
   type: TYPE_NORMAL
+  zh: 一旦连接重新建立，工作者将继续正常操作。在实践中，偶尔的断开是可以接受的，只要它们保持不频繁，并且队列深度不会累积。
 - en: To end off
+  id: totrans-125
   prefs:
   - PREF_H2
   type: TYPE_NORMAL
+  zh: 结束语
 - en: That’s all folks, these are some of the key lessons I’ve learned running RabbitMQ
     + Celery in production. I hope this deep dive has helped you better understand
     how things work under the hood. If you have more tips, I’d love to hear them in
     the comments and do reach out!!
+  id: totrans-126
   prefs: []
   type: TYPE_NORMAL
+  zh: 好了，朋友们，这些都是我在生产环境中运行 RabbitMQ + Celery 时学到的一些关键经验。希望这次深入探讨能帮助你更好地理解底层的工作原理。如果你有更多建议，我非常乐意在评论中听到它们，并且确实会联系你！！
