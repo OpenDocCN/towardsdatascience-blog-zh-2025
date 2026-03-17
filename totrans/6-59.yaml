@@ -1,0 +1,473 @@
+- en: How I Built a Real-Time Weather Data Pipeline Using AWS-Entirely Serverless
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 原文：[https://towardsdatascience.com/how-i-built-a-real-time-weather-data-pipeline-using-aws-entirely-serverless-12ddbca19289/](https://towardsdatascience.com/how-i-built-a-real-time-weather-data-pipeline-using-aws-entirely-serverless-12ddbca19289/)
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: '![Photo by Brett Sayles: https://www.pexels.com/photo/clouds-1431822/](../Images/6e006aaf5a4168a0d324b09bcaed3c68.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'Photo by Brett Sayles: [https://www.pexels.com/photo/clouds-1431822/](https://www.pexels.com/photo/clouds-1431822/)'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Table of Contents
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: ∘ [Introduction](#c36a) ∘ [Data](#e335) ∘ [Proposed Workflow](#db9f) ∘ [AWS
+    Cloud Components](#f00f) ∘ [Collecting the Data (Lambda Function 1)](#255d) ∘
+    [Writing the Data to the Table (Lambda Function 2)](#e8ff) ∘ [Converting the data
+    in CSV format (Lambda Function 3)](#ba46) ∘ [The Final AWS Cloud Solution](#a7be)
+    ∘ [Visualizing the Data (Bonus)](#5c95) ∘ [Advantages](#4464) ∘ [Limitations](#a7b2)
+    ∘ [Conclusion](#191c)
+  prefs: []
+  type: TYPE_NORMAL
+- en: '* * *'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Introduction
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: 'A couple of months ago, I worked on a project in which [I built a solar energy
+    forecasting model](https://medium.com/towards-data-science/forecasting-germanys-solar-energy-production-a-practical-approach-with-prophet-717aa23ecd58)
+    aimed at aiding Germany’s transition to clean energy. The results were promising,
+    but the model’s performance was limited by a crucial factor: the lack of weather
+    data, which is a strong indicator of available solar energy.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: The experience underscored a key lesson – real-time data is essential for practical
+    forecasting models. Yet, collecting such data demands a robust data engineering
+    solution.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Here, I propose a workflow that leverages AWS to build a high-performing and
+    scalable data pipeline for real-time data collection. The tools and techniques
+    applied here can also be applied to other real-time analytics challenges.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '* * *'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Data
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: The pipeline retrieves its data using [OpenWeatherMap](https://openweathermap.org/),
+    an online service that provides forecasts and nowcasts for locations around the
+    world.
+  prefs: []
+  type: TYPE_NORMAL
+- en: OpenWeatherMap provides an API that enables quick and easy access to weather
+    data. The API updates its nowcast every 10 minutes, meaning that the data pulls
+    for a given location will be run at the same frequency.
+  prefs: []
+  type: TYPE_NORMAL
+- en: For simplicity, the data’s scope is limited to the weather in Berlin, Germany.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '* * *'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Proposed Workflow
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: '![Workflow (Created by Author)](../Images/c6aa1bffe57750252130a02a3bfa45dc.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Workflow (Created by Author)
+  prefs: []
+  type: TYPE_NORMAL
+- en: The data collection workflow aims to update the database with weather data in
+    real time. Since the OpenWeatherMap API updates every 10 minutes, API calls are
+    made at the same frequency, with the responses stored immediately in the database.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Whenever the data is needed for downstream tasks (e.g., visualization, machine
+    learning), it is read, transformed into tabular format, and exported to a flat
+    file.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Note: The following sections delve into the individual AWS services used to
+    implement the workflow, including the configuration (e.g., code, logic) that makes
+    them work as needed. If you want to skip ahead to the final solution and discussion,
+    [click here](#a7be).'
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: '* * *'
+  prefs: []
+  type: TYPE_NORMAL
+- en: AWS Cloud Components
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: 'The workflow utilizes the following AWS components to ensure efficient data
+    collection, processing, and storage:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**AWS DynamoDB**'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: AWS DynamoDB offers the noSQL database needed to house the API responses, which
+    are in a semi-structured format. The project creates a DynamoDB table named `WeatherData`
+    to serve this purpose.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![DynamoDB table (Created by Author)](../Images/4f5aea36e5c2416cde6c1117d353cff4.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: DynamoDB table (Created by Author)
+  prefs: []
+  type: TYPE_NORMAL
+- en: The table uses `city` as the partition key and `timestamp` as the sort key.
+    This arrangement allows data to be queried efficiently by place and time.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**2\. Amazon S3**'
+  prefs: []
+  type: TYPE_NORMAL
+- en: The project uses a S3 bucket named `[owm-data-bucket](https://us-east-1.console.aws.amazon.com/s3/buckets/owm-data-bucket?region=us-east-1)`
+    to store file objects used throughout the project.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**3\. AWS Kinesis**'
+  prefs: []
+  type: TYPE_NORMAL
+- en: The pipeline utilizes Amazon Kinesis to create a data stream named `WeatherDataStream`
+    that serves as an intermediary between the lambda function and the DynamoDB table.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Kinesis Data Stream (Created by Author)](../Images/00de7cc2b496d3661047079cd87e9f07.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Kinesis Data Stream (Created by Author)
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**4\. Lambda functions**'
+  prefs: []
+  type: TYPE_NORMAL
+- en: The workflow relies on 3 lambda functions to carry out the data collection and
+    transformation tasks.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The first lambda function, named `fetch_data`, pulls the data using the OpenWeatherMap
+    API and sends it to the Kinesis stream. It is triggered every 10 minutes by an
+    EventBridge rule.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![fetch_data Function (Created by Author)](../Images/cba1f7a071f7b8c8f3bf484cbd9ca583.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: fetch_data Function (Created by Author)
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![fetch_data Function Overview (Created by Author)](../Images/be265236ca0db88342d547e1b2539352.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: fetch_data Function Overview (Created by Author)
+  prefs: []
+  type: TYPE_NORMAL
+- en: The second lambda function, named `write_to_ddb`, reads the data from the Kinesis
+    stream and writes it to the `WeatherData` table. It runs as soon as new data is
+    added to the stream.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![write_to_ddb Function (Created by Author)](../Images/ba0b23dd2cb582b29d4ec29518115685.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: write_to_ddb Function (Created by Author)
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![write_to_ddb Function Overview (Created by Author)](../Images/468cfe7ae60da809e2babee72aa83c06.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: write_to_ddb Function Overview (Created by Author)
+  prefs: []
+  type: TYPE_NORMAL
+- en: The third lambda function, named `send_data_to_s3`, reads the data from the
+    DynamoDB table and exports it as a CSV file to the `owm-bucket` bucket. Unlike
+    the first two functions, this one has no trigger and runs on demand.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![send_data_to_s3 Function (Created by Author)](../Images/24f56fbffcf2e2a271742c958078a476.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: send_data_to_s3 Function (Created by Author)
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![send_data_to_s3 Function Overview (Created by Author)](../Images/372904f55764793f03558cc3c7c188c4.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: send_data_to_s3 Function Overview (Created by Author)
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**5\. AWS Eventbridge**'
+  prefs: []
+  type: TYPE_NORMAL
+- en: AWS Eventbridge creates a schedule that automates the execution of the `fetch_data`
+    function every 10 minutes.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Event Schedule (Created by Author)](../Images/6432efb0adadec22274b361c797ab313.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Event Schedule (Created by Author)
+  prefs: []
+  type: TYPE_NORMAL
+- en: The next few sections focus on the code and logic used for each Lambda function.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '* * *'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Collecting the Data (Lambda Function 1)
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: The code for the `fetch_data` function is shown below.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In short, the function uses the `pyowm` library to access the newcast data in
+    Berlin and the `boto3` library to push the data to the Kinesis stream. I manually
+    create the timestamp variable, which records the time of the program’s execution.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '* * *'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Writing the Data to the Table (Lambda Function 2)
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: 'The code for the `write_to_ddb` function is shown below:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: These two functions facilitate the data pulls and database writes. After running
+    them every 10 minutes, the records become now visible in the `WeatherData` table
+    in DynamoDB.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![WeatherData Table in DynamoDB (Created by Author)](../Images/7996a89869df9070f5e47a9fe09172c0.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: WeatherData Table in DynamoDB (Created by Author)
+  prefs: []
+  type: TYPE_NORMAL
+- en: '* * *'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Converting the data in CSV format (Lambda Function 3)
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: The `send_data_to_s3` function reads all of the data in the WeatherData table,
+    flattens it, and saves in the S3 bucket as a CSV file.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Unlike the first two lambda functions, this one is run on demand (i.e., whenever
+    the tabulated data is needed for analysis). Below is a screenshot of the outputted
+    flat file retrieved from the bucket.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![CSV File (Created by Author)](../Images/ad956fc547673212e2cde00abe1515ba.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: CSV File (Created by Author)
+  prefs: []
+  type: TYPE_NORMAL
+- en: '* * *'
+  prefs: []
+  type: TYPE_NORMAL
+- en: The Final AWS Cloud Solution
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: '![AWS Architecture (Created by Author)](../Images/93338db9f6d2b233a0dc4d5bbd0cf75d.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: AWS Architecture (Created by Author)
+  prefs: []
+  type: TYPE_NORMAL
+- en: The diagram above showcases how the individual AWS services interact with each
+    other to power the weather data pipeline.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The first lambda function, run every 10 minutes by the Eventbridge schedule,
+    collects data from OpenWeatherMap via API and sends it to the Kinesis stream.
+    The second lambda function (triggered as soon as new data is added to the stream)
+    takes the API responses from the stream and writes them to the DynamoDB table.
+    The third function (run on user demand) reads and tabulates the data in the database
+    and then stores the output in a bucket as a flat file. This file can be used for
+    subsequent analyses or visualization.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '* * *'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Visualizing the Data (Bonus)
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: 'I built a Tableau dashboard to track Berlin weather using the flat file created
+    above. For simplicity’s sake, I limited my visualization to a few metrics:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Temperature over time
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Average % Cloud Coverage
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Average Duration of Daily Sunlight
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Average Wind Speed
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'The following is one way to display these metrics:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Dashboard (Created by Author)](../Images/3cb6d6c3299d8592212e99b9b46428b9.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Dashboard (Created by Author)
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Here’s the link to the dashboard for those interested: [https://public.tableau.com/views/BerlinWeatherTracker/Dashboard1?:language=en-US&publish=yes&:sid=&:redirect=auth&:display_count=n&:origin=viz_share_link](https://public.tableau.com/views/BerlinWeatherTracker/Dashboard1?:language=en-US&publish=yes&:sid=&:redirect=auth&:display_count=n&:origin=viz_share_link)'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '* * *'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Advantages of the Solution
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: Leveraging AWS solutions allowed me to create a high-performing, resilient real-time
+    data collection pipeline. Here are a few of the main advantages of the presented
+    setup.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Note: This project only focused on data collection in Berlin, Germany. However,
+    I evaluate the solution based on its ability to expand the data collection to
+    every city in Germany (~2000 cities in total).'
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: '**Real-time Data Collection**'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: The Lambda functions can handle the volume of API calls (~2000 calls per 10
+    minutes), ensuring continuous, real-time collection across Germany.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**2\. Serverless Architecture**'
+  prefs: []
+  type: TYPE_NORMAL
+- en: The current solution is entirely serverless, meaning that users don’t need to
+    create or manage resources manually to accommodate an increase in traffic. The
+    lambda functions can scale automatically to handle traffic, while the DynamoDB
+    table can automatically adjust its read-throughput.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**3\. Fault Tolerant**'
+  prefs: []
+  type: TYPE_NORMAL
+- en: The use of the Kinesis stream as an intermediary layer ensures that data is
+    not preserved during database downtime, minimizing data loss.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '* * *'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Limitations of the Solution
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: 'While the real-time data collection solution works well, I’d be hesitant to
+    propose this to a client, due to its limitations. Here are a few that stand out
+    to me:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Dependence on OpenWeatherMap**'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: The solution relies entirely on the OpenWeatherMap API, making it a single point
+    of failure. Any issues like API rate limits and outages can disrupt the entire
+    data collection process.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**2\. Cost**'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Although the solution only provisions necessary resources, services like Lambda,
+    Kinesis, and DynamoDB charge every time they are used. Data collection at a larger
+    scale would increase the cost exponentially, potentially making the solution infeasible.
+  prefs: []
+  type: TYPE_NORMAL
+- en: This project (i.e., collecting data for Berlin alone) has cost about 50 cents
+    per day. Thus, expanding the data collection to every German city (~2000 cities)
+    would cost hundreds of dollars per day.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**3\. Limited Historical Data**'
+  prefs: []
+  type: TYPE_NORMAL
+- en: The solution only collects nowcasts, rendering analyses requiring past data
+    impossible. One possible fix could involve building a second pipeline that collects
+    all historical weather records from OpenWeatherMap.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '* * *'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Conclusion
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: '![Photo by Alexas_Fotos on Unsplash](../Images/1940e864e663b693b543c3d977c3d3e5.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Photo by [Alexas_Fotos](https://unsplash.com/@alexas_fotos?utm_source=medium&utm_medium=referral)
+    on [Unsplash](https://unsplash.com?utm_source=medium&utm_medium=referral)
+  prefs: []
+  type: TYPE_NORMAL
+- en: My previous project approached solar energy forecasting by focusing primarily
+    on forecasting algorithms. However, this current project has deepened my appreciation
+    for the crucial role data engineering plays in forecasting applications. For time-sensitive
+    use cases like solar energy generation, real-time data collection and processing
+    are essential.
+  prefs: []
+  type: TYPE_NORMAL
+- en: If you have any ideas for improving the performance or reducing the cost of
+    this solution, feel free to share them!
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'You can access the repository with the lambda functions here:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[anair123/Berlin-Real-Time-Weather-Data-Collection-With-AWS](https://github.com/anair123/Berlin-Real-Time-Weather-Data-Collection-With-AWS)'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Also, if you’re curious about my energy forecasting project that inspired this
+    project, you can check it out here:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[Forecasting Germany’s Solar Energy Production: A Practical Approach with Prophet
+    | by Aashish Nair | Towards Data Science](https://medium.com/towards-data-science/forecasting-germanys-solar-energy-production-a-practical-approach-with-prophet-717aa23ecd58)'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Thank you for reading!
+  prefs: []
+  type: TYPE_NORMAL

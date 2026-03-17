@@ -1,0 +1,646 @@
+- en: Nine Pico PIO Wats with Rust (Part 1)
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 原文：[https://towardsdatascience.com/nine-pico-pio-wats-with-rust-part-1-9d062067dc25/](https://towardsdatascience.com/nine-pico-pio-wats-with-rust-part-1-9d062067dc25/)
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: '![Pico PIO Surprises - Source: https://openai.com/dall-e-2/. All other figures
+    from the author.](../Images/e024abc2ae319029127fad2ee656e687.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'Pico PIO Surprises – Source: [https://openai.com/dall-e-2/](https://openai.com/dall-e-2/).
+    All other figures from the author.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Also available: A [MicroPython version of this article](https://medium.com/towards-data-science/nine-pico-pio-wats-with-micropython-part-1-82b80fb84473)'
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: In JavaScript and other languages, we call [a surprising or inconsistent behavior
+    a “Wat!”](https://www.destroyallsoftware.com/talks/wat) [that is, a “What!?”].
+    For example, in JavaScript, an empty array plus an empty array produces an empty
+    string, `[] + [] === ""`. Wat!
+  prefs: []
+  type: TYPE_NORMAL
+- en: Rust, by comparison, is consistent and predictable. However, one corner of Rust
+    on the Raspberry Pi Pico microcontroller offers similar surprises. Specifically,
+    the Pico’s **Programmable Input/Output (PIO)** subsystem, while incredibly powerful
+    and versatile, comes with peculiarities.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'PIO programming matters because it provides an ingenious solution to the challenge
+    of precise, low-level hardware control. It is incredibly fast and flexible: rather
+    than relying on special-purpose hardware for the countless peripherals you might
+    want to control, PIO allows you to define custom behaviors in software, seamlessly
+    adapting to your needs without adding hardware complexity.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Consider this simple example: a $15 theremin-like musical instrument. By waving
+    their hand in the air, the musician changes the pitch of (admittedly annoying)
+    tones. Using PIO provides a simple way to program this device that ensures it
+    reacts instantly to movement.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'So, all is wonderful, except – to paraphrase Spider-Man:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: With great power comes… nine Wats!?
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: We’ll explore and illustrate those nine PIO Wats through the creation of this
+    theremin.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Who Is This Article For?**'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**All Programmers**: Microcontrollers like the Pico cost under $7 and support
+    high-level languages like Python, Rust, and C/C++. This article will show how
+    microcontrollers let your programs interact with the physical world and introduce
+    you to programming the Pico’s low-level, high-performance PIO hardware.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Rust Pico Programmers**: Curious about the Pico’s hidden potential? Beyond
+    its two main cores, it has eight tiny “state machines” dedicated to PIO programming.
+    These state machines take over time-critical tasks, freeing up the main processors
+    for other work and enabling surprising parallelism.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**C/C++ Pico Programmers**: While this article uses Rust, PIO programming is
+    – for good and bad – nearly identical across all languages. If you understand
+    it here, you’ll be well-equipped to apply it in C/C++.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '***MicroPython Pico Programmers:** You may wish to read the [MicroPython version
+    of this article](https://medium.com/towards-data-science/nine-pico-pio-wats-with-micropython-part-1-82b80fb84473).*'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**PIO Programmers**: The journey through nine Wats may not be as entertaining
+    as JavaScript’s quirks (thankfully), but it will shed light on the peculiarities
+    of PIO programming. If you’ve ever found PIO programming confusing, this article
+    should reassure you that the problem isn’t (necessarily) you – it’s partly PIO
+    itself. Most importantly, understanding these Wats will make writing PIO code
+    simpler and more effective.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'Finally, this article isn’t about “fixing” PIO programming. PIO excels at its
+    primary purpose: efficiently and flexibly handling custom peripheral interfaces.
+    Its design is purposeful and well-suited to its goals. Instead, this article focuses
+    on understanding PIO programming and its quirks – starting with a bonus Wat.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Bonus Wat 0: “State Machines” Are Not State Machines – Except When They Are'
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: Despite their name, the eight “PIO state machines” in the Raspberry Pi Pico
+    are not state machines in the strict, formal sense of computer science. A classical
+    **[finite state machine (FSM)](https://en.wikipedia.org/wiki/Finite-state_machine)**
+    consists of a finite set of states and transitions, driven purely by input symbols.
+    In contrast, the Pico’s PIO state machines are tiny programmable processors with
+    their own instruction set. Unlike a formal FSM, they have a program counter, **[registers](https://en.wikipedia.org/wiki/Register_machine)**,
+    and **the ability to modify those registers** through shifting and decrementing,
+    allowing them to store intermediate values and influence execution flow beyond
+    fixed state transitions.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'That said, calling them **[programmable state machines](https://www.reddit.com/r/raspberrypipico/comments/1idteeq/comment/ma5kgy0/)**
+    makes sense: rather than having a fixed set of predefined states, their behavior
+    depends on the program they execute. And in most cases, that program will define
+    a state machine or something similar – especially since PIO is often used to implement
+    precise, state-driven I/O control.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Each PIO processes one instruction per clock cycle. The $4 Pico 1 runs at 125
+    million cycles per second, while the $5 Pico 2 offers a faster 150 million cycles
+    per second. Each instruction performs a simple operation, such as “move a value”
+    or “jump to a label”.
+  prefs: []
+  type: TYPE_NORMAL
+- en: With that bonus Wat out of the way, let’s move to our first main Wat.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Wat 1: The Register Hunger Games'
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'In PIO programming, a **register** is a small, fast storage location that acts
+    like a variable for the state machine. You might dream of an abundance of variables
+    to hold your counters, delays, and temporary values, but the reality is brutal:
+    you only get two general-purpose registers, `x` and `y`. It’s like The Hunger
+    Games, where no matter how many tributes enter the arena, only Katniss and Peeta
+    emerge as victors. You’re forced to winnow down your needs to fit within these
+    two registers, ruthlessly deciding what to prioritize and what to sacrifice. Also,
+    like the Hunger Games, we can sometimes bend the rules.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Let’s start with a challenge: create a backup beeper – 1000 Hz for ½ second,
+    silence for ½ second, repeat. The result? “Beep Beep Beep…”'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'We would like five variables:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '`half_period:` The number of clock cycles to hold the voltage high and then
+    low to create a 1000 Hz tone. This is 125,000,000 / 1000 / 2 = 62,500 cycles high
+    and 62, 500 cycles low.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '![Voltage and timing (millisecond and clock cycles) to generate a 1000 Hz square
+    tone.](../Images/128d150779f9cd02a88a902f812e9ded.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Voltage and timing (millisecond and clock cycles) to generate a 1000 Hz square
+    tone.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '`y`: Loop counter from 0 to `half_period` to create a delay.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '`period_count`: The number of repeated periods needed to fill ½ second of time.
+    125,000,000 × 0.5 / (62,500 × 2) = 500.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '`x`: Loop counter from 0 to `period_count` to fill ½ second of time.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '`silence_cycles`: The number of clock cycles for ½ second of silence. 125,000,000
+    × 0.5 = 62,500,000.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '![](../Images/891a6624dc85204433f15537b0296d04.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: We want five registers but can only have two, so let the games begin! May the
+    odds be ever in your favor.
+  prefs: []
+  type: TYPE_NORMAL
+- en: First, we can eliminate `silence_cycles` because it can be derived as `half_period
+    × period_count × 2`. While PIO doesn’t support multiplication, it does support
+    loops. By nesting two loops—where the inner loop delays for 2 clock cycles—we
+    can create a delay of 62,500,000 clock cycles.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'One variable down, but how can we eliminate two more? Fortunately, we don’t
+    have to. While PIO only provides two general-purpose registers, `x` and `y`, it
+    also includes two special-purpose registers: `osr` (output shift register) and
+    `isr` (input shift register).'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The PIO code that we’ll see in a moment implements the backup beeper. Here’s
+    how it works:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Initialization**:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: The `pull block` instruction reads the half period of the tone (62,500 clock
+    cycles) from a buffer and places the value into `osr`.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: The value is then copied to `isr` for later use.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: The second `pull block` reads the period count (500 repeats) from the buffer
+    and places the value in `osr`, where we leave it.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Beep Loops**:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: The `mov x, osr` instruction copies the period count into the `x` register,
+    which serves as the outer loop counter.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: For the inner loops, `mov y, isr` repeatedly copies the half period into `y`
+    to create delays for the high and low states of the tone.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Silence Loops**:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: The silence loops mirror the structure of the beep loops but don’t set any pins,
+    so they act solely as a delay.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Wrap and Continuous Execution**:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: The `.wrap_target` and `.wrap` directives define the main loop of the state
+    machine.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: After finishing both the beep and silence loops, the state machine jumps back
+    near the start of the program, repeating the sequence indefinitely.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: With this outline in mind, here’s the PIO assembly code for generating the backup
+    beeper signal.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE0]'
+  prefs: []
+  type: TYPE_PRE
+- en: Here’s the core Rust code to configure and run the PIO program for the backup
+    beeper. It uses the [Embassy](https://github.com/embassy-rs/embassy) framework
+    for embedded applications. The function initializes the state machine, calculates
+    the timing values (`half_period` and `period_count`), and sends them to the PIO.
+    It then plays the beeping sequence for 5 seconds before entering an endless loop.
+    The full source [file](https://github.com/CarlKCarlK/pico_pio/blob/main/examples/backup_demo.rs)
+    and [project](https://github.com/CarlKCarlK/pico_pio) are available on GitHub.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE1]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Here’s what happens when you run the program:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Aside 1: **Running this yourself**The simplest – but often frustrating – way
+    to run Rust code on the Pico is to cross-compile it on your desktop and manually
+    copy over the resulting files. A much better approach is to invest in a $12 R**aspberry
+    Pi Debug Probe** and set up **[[probe-rs](https://probe.rs/docs/getting-started/installation/)](https://probe.rs/)**
+    on your desktop. With this setup, you can use `cargo run` to automatically compile
+    on your desktop, copy to your Pico, and then start your code running. Even better,
+    your Pico code can use `info!` statements to send messages back to your desktop,
+    and you can perform interactive breakpoint debugging. For setup instructions,
+    visit the probe-rs website.'
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: ''
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: To hear sound, I connected a passive buzzer, a resistor, and a transistor to
+    the Pico. For detailed wiring diagrams and a parts list, check out the [passive
+    buzzer instructions](https://docs.sunfounder.com/projects/kepler-kit/en/latest/pyproject/py_pa_buz.html#py-pa-buz)
+    in the SunFounder’s Kepler Kit.
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: ''
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: 'Aside 2: If your only goal is to generate tones with the Pico, PIO isn’t necessary.
+    MicroPython is fast enough to [toggle pins directly](https://docs.sunfounder.com/projects/kepler-kit/en/latest/pyproject/py_pa_buz.html#py-pa-buz),
+    or you can use the Pico’s built-in [pulse width modulation (PWM) feature](https://docs.micropython.org/en/latest/library/machine.PWM.html).'
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: Alternative Endings to the Register Hunger Games
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: 'We used four registers – two general and two special – to resolve the challenge.
+    If this solution feels less than satisfying, here are alternative approaches to
+    consider:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Use Constants**: Why make `half_period`, `period_count`, and `silence_cycles`
+    variables at all? Hardcoding the constants “62,500,” “500,” and “62,500,000” could
+    simplify the design. However, PIO constants have limitations, which we’ll explore
+    in **Wat 5**.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Pack Bits**: Registers hold 32 bits. Do we really need two registers (2×32=64
+    bits) to store `half_period` and `period_count`? No. Storing 62,500 only requires
+    16 bits, and 500 requires 9 bits. We could pack these into a single register and
+    use the `out` instruction to shift values into `x` and `y`. This approach would
+    free up either `osr` or `isr` for other tasks, but only one at a time—the other
+    register must hold the packed value.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Slow Motion**: In Rust with the Embassy framework, you can configure a PIO
+    state machine to run at a slower frequency by setting its `clock_divider`. This
+    allows the state machine to run as slow as ~1907 Hz. Running the state machine
+    at a slower speed means that values like `half_period` can be smaller, potentially
+    as small as `2`. Small values are easier to hardcode as constants and more compactly
+    bit-packed into registers.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: A Happy Ending to the Register Hunger Games
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: The Register Hunger Games demanded strategic sacrifices and creative workarounds,
+    but we emerged victorious by leveraging PIO’s special registers and clever looping
+    structures. If the stakes had been higher, alternative techniques could have helped
+    us adapt and survive.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'But victory in one arena doesn’t mean the challenges are over. In the next
+    Wat, we face a new trial: PIO’s strict 32-instruction limit.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Wat 2: The 32-Instruction Carry-On Suitcase'
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: Congratulations! You’ve purchased a trip around the world for just $4\. The
+    catch? All your belongings must fit into a tiny carry-on suitcase. Likewise, PIO
+    programs allow you to create incredible functionality, but every PIO program is
+    limited to just 32 instructions.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Wat!** Only 32 instructions? That’s not much space to pack everything you
+    need! But with clever planning, you can usually make it work.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/ea7711c207a999c9d006300e50f7343c.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: The Rules
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: No PIO program can be longer than 32 instructions.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: The `wrap_target` and `wrap` directives do not count.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Labels do not count.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: A Pico 1 includes eight state machines, organized into two blocks of four. A
+    Pico 2 includes twelve state machines, organized into three blocks of four. **Each
+    block shares 32 instruction slots.** So, because all four state machines in a
+    block draw from the same 32-instruction pool, if one machine’s program uses all
+    32 slots, there’s no space left for the other three.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: When Your Suitcase Won’t Close
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'If your idea doesn’t fit in the PIO instruction slots, these packing tricks
+    may help. *(Disclaimer: I haven’t tried all of these myself.)*'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE2]'
+  prefs: []
+  type: TYPE_PRE
+- en: '**Use PIO’s `exec` commands:**Within your state machine, you can dynamically
+    execute instructions using PIO’s `exec` mechanism. For example, you can execute
+    an instruction value stored in `osr` with `out exec`. Alternatively, you can use
+    `mov exec, x` or `mov exec, y` to execute instructions directly from those registers.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: With your bags now packed, let’s join Dr. Dolittle’s search for a fabled creature.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Bonus Wat 2.5: Dr. Dolittle’s PIO Pushmi-Pullyu'
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: '*Two readers pointed out an important PIO Wat that I missed – so here’s a bonus!*
+    When programming PIO, you’ll notice something peculiar:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: The PIO **`pull`** instruction receives values from TX FIFO (**transmit** buffer)
+    and inputs them into the **output** shift register (`osr`). So, it inputs into
+    output and transmits from receive.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Likewise, the PIO **`push`** instruction outputs values from the **input** shift
+    register (`isr`) and transmits them to the RX FIFO (**receive** buffer). So, it
+    outputs from input and receives from transmit.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Wat!?** Like the two-headed [Pushmi-Pullyu](https://en.wikipedia.org/wiki/List_of_Doctor_Dolittle_characters#Pushmi-Pullyu)
+    from the Dr. Dolittle stories, something seems backwards. But it starts to make
+    sense when you realize PIO names most things from the **host’s perspective** (MicroPython,
+    Rust, C/C++), not the point of view of the PIO program.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: This table summarizes the instructions, registers, and buffer names. (“FIFO”
+    stands for first-in-first-out.)
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/a3deb59eea17390ec778d2304593c443.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: With the Pushmi-Pullyu in hand, we next move to the scene of a mystery.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Wat 3: The pull noblock “ Mystery'
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: In **Wat 1**, we programmed our audio hardware as a backup beeper. But that’s
+    not what we need for our musical instrument. Instead, we want a PIO program that
+    plays a given tone indefinitely – until it’s told to play a new one. The program
+    should also wait silently when given a special “rest” tone.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Resting until a new tone is provided is easy to program with `pull block`—we’ll
+    explore the details below. Playing a tone at a specific frequency is also straightforward,
+    building on the work we did in **Wat 1**.
+  prefs: []
+  type: TYPE_NORMAL
+- en: But how can we check for a new tone while continuing to play the current one?
+    The answer lies in using “noblock” instead of “block” in `pull noblock`. Now,
+    if there’s a new value, it will be loaded into `osr`, allowing the program to
+    update seamlessly.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Here’s where the mystery begins: what happens to `osr` if `pull noblock` is
+    called and there’s no new value?'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'I assumed it would keep its previous value. Wrong! Maybe it gets reset to 0?
+    Wrong again! The surprising truth: it gets the value of `x`. Why? (No, not `y`
+    – `x`.) Because the [Pico SDK](https://datasheets.raspberrypi.com/pico/raspberry-pi-pico-c-sdk.pdf)
+    says so. Specifically, section 3.4.9.2 explains:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: A nonblocking PULL on an empty FIFO has the same effect as MOV OSR, X.
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: Knowing how `pull noblock` works is important, but there’s a bigger lesson here.
+    Treat the [Pico SDK documentation](https://datasheets.raspberrypi.com/pico/raspberry-pi-pico-c-sdk.pdf)
+    like the back of a mystery novel. Don’t try to solve everything on your own—cheat!
+    Skip to the “who done it” section, and in section 3.4, read the fine details for
+    each command you use. Reading just a few paragraphs can save you hours of confusion.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Aside: When even the SDK documentation feels unclear, turn to the [RP2040](https://datasheets.raspberrypi.com/rp2040/rp2040-datasheet.pdf)
+    (Pico 1) and [RP2350](https://datasheets.raspberrypi.com/rp2350/rp2350-datasheet.pdf)
+    (Pico 2) datasheets. These encyclopedias – 600 and 1,300 pages respectively –
+    are like omnipotent narrators: they provide the ground truth.'
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: With this in mind, let’s look at a practical example. Below is the PIO program
+    for playing tones and rests continuously. It uses `pull block` to wait for input
+    during a rest and `pull noblock` to check for updates while playing a tone.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE3]'
+  prefs: []
+  type: TYPE_PRE
+- en: We’ll eventually use this PIO program in our theremin-like musical instrument.
+    For now, let’s see the PIO program in action by playing a familiar melody. This
+    demo uses “Twinkle, Twinkle, Little Star” to show how you can control a melody
+    by feeding frequencies and durations to the state machine. With just this code
+    ([full file](https://github.com/CarlKCarlK/pico_pio/blob/main/examples/sound_demo.rs)
+    and [project](https://github.com/CarlKCarlK/pico_pio)), you can make the Pico
+    sing!
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE4]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Here’s what happens when you run the program:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: We’ve solved one mystery, but there’s always another challenge lurking around
+    the corner. In **Wat 4**, we’ll explore what happens when your smart hardware
+    comes with a catch – it’s also very cheap.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Wat 4: Smart, Cheap Hardware: An Emotional Roller Coaster'
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: With sound working, we turn next to measuring the distance to the musician’s
+    hand using the HC-SR04+ ultrasonic range finder. This small but powerful device
+    is available for less than two dollars.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/0367cda0b7f56378b757812ba1621ac9.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: HC-SR04+ Range Finder (Pen added for scale.)
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'This little peripheral took me on an emotional roller coaster of “Wats!?”:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Up**: Amazingly, this $2 range finder includes its own microcontroller, making
+    it smarter and easier to use.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Down**: Frustratingly, that same “smart” behavior is unintuitive.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Up**: Conveniently, the Pico can supply peripherals with either 3.3V or 5V
+    power.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Down**: Unpredictably, many range finders are unreliable – or fail outright
+    – at 3.3V, and they can damage your Pico at 5V.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Up**: Thankfully, both damaged range finders and Picos are inexpensive to
+    replace, and a dual-voltage version of the range finder solved my problems.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Details
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: I initially assumed the range finder would set the **Echo** pin high when the
+    echo returned. I was wrong.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Instead, the range finder emits a pattern of 8 ultrasonic pulses at 40 kHz (think
+    of it as a backup beeper for dogs). Immediately after, it sets **Echo** high.
+    The Pico should then start measuring the time until **Echo** goes low, which signals
+    that the sensor detected the pattern – or that it timed out.
+  prefs: []
+  type: TYPE_NORMAL
+- en: As for voltage, the documentation specifies the range finder operates at 5V.
+    It seemed to work at 3.3V – until it didn’t. Around the same time, while my Pico
+    kept working with Rust (via the [Debug Probe](https://www.raspberrypi.com/documentation/microcontrollers/debug-probe.html)
+    and [probe-rs](https://probe.rs/)), it stopped working with any of the MicroPython
+    IDEs, which rely on a special USB protocol.
+  prefs: []
+  type: TYPE_NORMAL
+- en: So, at this point both the Pico and the range finder were damaged.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'After experimenting with various cables, USB drivers, programming languages,
+    and even an older 5V-only range finder, I finally resolved the issue by:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Continuing to use this Pico with Rust but switching to another Pico for MicroPython.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Buying a new [dual-voltage 3.3/5V range finder](https://www.amazon.com/dp/B0CRKHV4XY?ref=ppx_yo2ov_dt_b_fed_asin_title),
+    still just $2 per piece.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'Wat 4: Lessons Learned'
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: As the roller coaster return to the station, I learned two key lessons. First,
+    thanks to microcontrollers, even simple hardware can behave in non-intuitive ways
+    that require careful reading of the documentation. Second, while this hardware
+    is clever, it’s also inexpensive – and that means it is prone to failure. When
+    it fails, take a deep breath, remember it’s only a few dollars, and replace it.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Hardware quirks, however, are only part of the story. In **Wat 5**, in Part
+    2, we’ll shift our focus back to software: the PIO programming language itself.
+    We’ll uncover a behavior so unexpected, it might leave you questioning everything
+    you thought you knew about constants.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '* * *'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Those are the first four Wats from programming the Pico PIO with MicroPython.
+    You can find the [code for the project on GitHub](https://github.com/CarlKCarlK/pico_pio/).
+  prefs: []
+  type: TYPE_NORMAL
+- en: In **[Part 2](https://towardsdatascience.com/nine-pico-pio-wats-with-rust-part-2/)**,
+    we’ll explore Wats 5 through 9\. These will cover inconstant constants, conditions
+    through the looking glass, overshooting jumps, too many pins, and kludgy debugging.
+    We’ll also unveil the code for the finished musical instrument.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '*[Follow me on Medium](https://medium.com/@carlmkadie) to get notified about
+    this and future articles. I write on scientific programming in Rust and Python,
+    machine learning, and statistics. I typically post one article a month.*'
+  prefs: []
+  type: TYPE_NORMAL

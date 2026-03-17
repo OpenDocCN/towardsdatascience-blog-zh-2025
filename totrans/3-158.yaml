@@ -1,0 +1,351 @@
+- en: 'R.E.D.: Scaling Text Classification with Expert Delegation'
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 原文：[https://towardsdatascience.com/r-e-d-scaling-text-classification-with-expert-delegation/](https://towardsdatascience.com/r-e-d-scaling-text-classification-with-expert-delegation/)
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: With the new age of problem-solving augmented by Large Language Models (LLMs),
+    only a handful of problems remain that have subpar solutions. Most classification
+    problems (at a PoC level) can be solved by leveraging LLMs at 70–90% Precision/F1
+    with just good prompt engineering techniques, as well as adaptive in-context-learning
+    (ICL) examples.
+  prefs: []
+  type: TYPE_NORMAL
+- en: What happens when you want to consistently achieve performance **higher** than
+    that — when prompt engineering no longer suffices?
+  prefs: []
+  type: TYPE_NORMAL
+- en: The classification conundrum
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: Text classification is one of the oldest and most well-understood examples of
+    supervised learning. Given this premise, it should really not be hard to build
+    robust, well-performing classifiers that handle a large number of input classes,
+    right…?
+  prefs: []
+  type: TYPE_NORMAL
+- en: Welp. It is.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'It actually has to do a lot more with the ‘constraints’ that the algorithm
+    is generally expected to work under:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: low amount of training data per class
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: high classification accuracy (that plummets as you add more classes)
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: possible addition of **new classes** to an existing subset of classes
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: quick training/inference
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: cost-effectiveness
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: (potentially) really large number of training classes
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: (potentially) endless **required **retraining of *some* classes due to data
+    drift, etc.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Ever tried building a classifier beyond a few dozen classes under these conditions?
+    (I mean, even GPT could probably do a great job up to ~30 text classes with just
+    a few samples…)
+  prefs: []
+  type: TYPE_NORMAL
+- en: Considering you take the GPT route — If you have more than a couple dozen classes
+    or a sizeable amount of data to be classified, you are gonna have to reach deep
+    into your pockets with the system prompt, user prompt, few shot example tokens
+    that you will need to classify **one sample.**That is after making peace with
+    the throughput of the API, even if you are running async queries.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'In applied ML, problems like these are generally tricky to solve since they
+    don’t fully satisfy the requirements of supervised learning or aren’t cheap/fast
+    enough to be run via an LLM. This particular pain point is what the R.E.D algorithm
+    addresses: semi-supervised learning, when the training data per class is not enough
+    to build (quasi)traditional classifiers.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: The R.E.D. algorithm
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: '**R.E.D: Recursive Expert Delegation** is a novel framework that changes how
+    we approach text classification. This is an applied ML paradigm — i.e., there
+    is no *fundamentally different* architecture to what exists, but its a highlight
+    reel of ideas that work best to build something that is practical and scalable.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: In this post, we will be working through a specific example where we have a
+    large number of text classes (100–1000), each class only has few samples (30–100),
+    and there are a non-trivial number of samples to classify (10,000–100,000). We
+    approach this as a **semi-supervised learning** problem via R.E.D.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Let’s dive in.
+  prefs: []
+  type: TYPE_NORMAL
+- en: How it works
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: '![](../Images/5e0ee3afabea9dd2c5208da495e03626.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: simple representation of what R.E.D. does
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Instead of having a single classifier classify between a large number of classes,
+    R.E.D. intelligently:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Divides and conquers **— Break the label space (large number of input labels)
+    into multiple subsets of labels. This is a greedy label subset formation approach.'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '**Learns efficiently** — Trains specialized classifiers for each subset. This
+    step focuses on building a classifier that oversamples on noise, where noise is
+    intelligently modeled as data from *other subsets.*'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '**Delegates to an expert** — Employes LLMs as expert oracles for specific label
+    validation and correction only, similar to having a team of domain experts. Using
+    an LLM as a proxy, it empirically ‘mimics’ **how **a human expert validates an
+    output.'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '**Recursive retraining **— Continuously retrains with fresh samples added back
+    from the expert until there are no more samples to be added/a saturation from
+    information gain is achieved'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: The intuition behind it is not very hard to grasp: [Active Learning](https://en.wikipedia.org/wiki/Active_learning_(machine_learning)) employs
+    humans as domain experts to consistently ‘correct’ or ‘validate’ the outputs from
+    an ML model, with continuous training. This stops when the model achieves acceptable
+    performance. We intuit and rebrand the same, with a few clever innovations that
+    will be detailed in a research pre-print later.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Let’s take a deeper look…
+  prefs: []
+  type: TYPE_NORMAL
+- en: Greedy subset selection with least similar elements
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: When the number of input labels (classes) is high, the complexity of learning
+    a linear decision boundary between classes increases. As such, the quality of
+    the classifier deteriorates as the number of classes increases. This is especially
+    true when the classifier does not have enough **samples** to learn from — i.e.
+    each of the training classes has only a few samples.
+  prefs: []
+  type: TYPE_NORMAL
+- en: This is very reflective of a real-world scenario, and the primary motivation
+    behind the creation of R.E.D.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Some ways of improving a classifier’s performance under these constraints:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Restrict **the number of classes a classifier needs to classify between'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Make the decision boundary between classes clearer, i.e., train the classifier
+    on **highly dissimilar classes**
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'Greedy Subset Selection does exactly this — since the scope of the problem
+    is text classification, we form embeddings of the training labels, reduce their
+    dimensionality via UMAP, then form ***S*** subsets from them. Each of the ***S ***subsets
+    has elements as ***n ***training labels. We pick training labels greedily, ensuring
+    that every label we pick for the subset is the most dissimilar label w.r.t. the
+    other labels that exist in the subset:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE0]'
+  prefs: []
+  type: TYPE_PRE
+- en: the result of this greedy subset sampling is all the training labels clearly
+    boxed into subsets, where each subset has at most only ***n ***classes. This inherently
+    makes the job of a classifier easier, compared to the original ***S ***classes
+    it would have to classify between otherwise!
+  prefs: []
+  type: TYPE_NORMAL
+- en: Semi-supervised classification with noise oversampling
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: Cascade this after the initial label subset formation — i.e., this classifier
+    is only classifying between a given **subset **of classes.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Picture this: when you have low amounts of training data, you absolutely cannot
+    create a hold-out set that is meaningful for evaluation. Should you do it at all?
+    How do you know if your classifier is working well?'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'We approached this problem slightly differently — we defined the fundamental
+    job of a semi-supervised classifier to be **pre-emptive** classification of a
+    sample. This means that regardless of what a sample gets classified as it will
+    be ‘verified’ and ‘corrected’ at a later stage: this classifier only needs to
+    identify what needs to be verified.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'As such, we created a design for how it would treat its data:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '***n+1***classes, where the last class is **noise**'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**noise: **data from classes that are NOT in the current classifier’s purview.
+    The noise class is oversampled to be 2x the average size of the data for the classifier’s
+    labels'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Oversampling on noise is a faux-safety measure, to ensure that adjacent data
+    that belongs to another class is most likely predicted as noise instead of slipping
+    through for verification.
+  prefs: []
+  type: TYPE_NORMAL
+- en: How do you check if this classifier is working well — in our experiments, we
+    define this as the number of ‘uncertain’ samples in a classifier’s prediction.
+    Using uncertainty sampling and information gain principles, we were effectively
+    able to gauge if a classifier is ‘learning’ or not, which acts as a pointer towards
+    classification performance. This classifier is consistently retrained unless there
+    is an inflection point in the number of uncertain samples predicted, or there
+    is only a delta of information being added iteratively by new samples.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Proxy active learning via an LLM agent
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: This is the heart of the approach — using an LLM as a proxy for a human validator.
+    The human validator approach we are talking about is Active Labelling
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Let’s get an intuitive understanding of Active Labelling:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Use an ML model to learn on a sample input dataset, predict on a large set of
+    datapoints
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: For the predictions given on the datapoints, a subject-matter expert (SME) evaluates
+    ‘validity’ of predictions
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Recursively, new ‘corrected’ samples are added as training data to the ML model
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: The ML model consistently learns/retrains, and makes predictions until the SME
+    is satisfied by the quality of predictions
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'For Active Labelling to work, there are expectations involved for an SME:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: when we expect a human expert to ‘validate’ an output sample, the expert understands
+    what the task is
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: a human expert will use judgement to evaluate ‘what else’ definitely belongs
+    to a label **L** when deciding if a new sample should belong to **L**
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'Given these expectations and intuitions, we can ‘mimic’ these using an LLM:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**give the LLM an ‘understanding’ of what each label means**. This can be done
+    by using a larger model to **critically evaluate the relationship** between {label:
+    data mapped to label} for all labels. In our experiments, this was done using
+    a **32B variant of DeepSeek** that was self-hosted.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '![](../Images/c65bb0598fff296da7eea7a04efd8388.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Giving an LLM the capability to understand ‘why, what, and how’
+  prefs: []
+  type: TYPE_NORMAL
+- en: Instead of predicting what is the correct label, **leverage the LLM to identify
+    if a prediction is ‘valid’ or ‘invalid’ only** (i.e., LLM only has to answer a
+    binary query).
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Reinforce the idea of what other valid samples for the label look like,** i.e.,
+    for every pre-emptively predicted label for a sample, dynamically source ***c*** closest
+    samples in its training (guaranteed valid) set when prompting for validation.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'The result? A cost-effective framework that relies on a fast, cheap classifier
+    to make pre-emptive classifications, and an LLM that verifies these using (meaning
+    of the label + dynamically sourced training samples that are similar to the current
+    classification):'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE1]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'By feeding the valid samples (voted_data) to our classifier under controlled
+    parameters, we achieve the ‘recursive’ part of our algorithm:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/cb4d532935b4064b55df2b4ee5f278d8.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'Recursive Expert Delegation: R.E.D.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: By doing this, we were able to achieve close-to-human-expert validation numbers
+    on controlled multi-class datasets. Experimentally, R.E.D. scales up to **1,000
+    classes while maintaining a competent degree of accuracy** almost on par with
+    human experts (90%+ agreement).
+  prefs: []
+  type: TYPE_NORMAL
+- en: I believe this is a significant achievement in applied ML, and has real-world
+    uses for production-grade expectations of cost, speed, scale, and adaptability.
+    The technical report, publishing later this year, highlights relevant code samples
+    as well as experimental setups used to achieve given results.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '*All images, unless otherwise noted, are by the author*'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Interested in more details? Reach out to me over [Medium](https://medium.com/@aamirsyed2801)
+    or email for a chat!
+  prefs: []
+  type: TYPE_NORMAL

@@ -1,0 +1,698 @@
+- en: 'Evaluation-Driven Development for LLM-Powered Products: Lessons from Building
+    in Healthcare'
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 原文：[https://towardsdatascience.com/evaluation-driven-development-for-llm-powered-products-lessons-from-building-in-healthcare/](https://towardsdatascience.com/evaluation-driven-development-for-llm-powered-products-lessons-from-building-in-healthcare/)
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: '* * *'
+  prefs: []
+  type: TYPE_NORMAL
+- en: <mdspan datatext="el1752108482014" class="mdspan-comment">The pace of development</mdspan>
+    in the field of large language models (LLM) and their applications is extraordinarily
+    rapid. Costs are coming down and foundation models are becoming increasingly capable,
+    able to handle communication in text, images, video. Open source solutions have
+    also exploded in diversity and capability, with many models being lightweight
+    enough to explore, fine-tune and iterate on without huge expense. Finally, cloud
+    AI training and inference providers such as Databricks and Nebius are making it
+    increasingly easy for organizations to scale up their applied AI products from
+    POCs to production ready systems. These advances go hand in hand with a diversification
+    of the business uses of LLMs and the rise of agentic applications, where models
+    plan and execute complex multi-step workflows that may involve interaction with
+    tools or other agents. These technologies are already making an impact in healthcare
+    and this is projected to grow rapidly [1].
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'All of this capability makes it exciting to get started, and building a baseline
+    solution for a particular use case can be very fast. However, by their nature
+    LLMs are non-deterministic and less predictable than traditional software or ML
+    models. The real challenge therefore comes in iteration: How do we know that our
+    development process is improving the system? If we fix a problem, how do we know
+    if the change won’t break something else? Once in production, how do we check
+    if performance is on par with what we saw in development? Answering these questions
+    with systems that make single LLM calls is hard enough, but with [agentic systems](https://en.wikipedia.org/wiki/Agentic_AI)
+    we also need to consider all the individual steps and routing decisions made between
+    them. To address these issues — and therefore gain trust and confidence in the
+    systems we build — we need [evaluation-driven development](https://arxiv.org/html/2411.13768v2).
+    This is a methodology that places iterative, actionable evaluation at the core
+    of the product lifecycle from development and deployment to monitoring.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: As a data scientist at Nuna, Inc., a healthcare AI company, I’ve been spearheading
+    our efforts to embed evaluation-driven development into our products. With the
+    support of our leadership, we’re sharing some of the key lessons we’ve learned
+    so far. We hope these insights will be valuable not only to those building AI
+    in healthcare but also to anyone developing AI products, especially those just
+    beginning their journey.
+  prefs: []
+  type: TYPE_NORMAL
+- en: This article is broken into the following sections, which seek to explain our
+    broad learnings from the literature in addition to tricks and tips gained from
+    experience.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In Section 1 we’ll briefly touch on Nuna’s products and explain why AI evaluation
+    is so critical for us and for healthcare-focused AI in general.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: In Section 2, we’ll explore how evaluation-driven development brings structure
+    to the pre-deployment phase of our products. This involves developing metrics
+    using both LLM-as-Judge and programmatic approaches, which are heavily inspired
+    by [this excellent article](https://hamel.dev/blog/posts/llm-judge/). Once reliable
+    judges and expert-aligned metrics have been established, we describe how to use
+    them to iterate in the right direction using error analysis. In this section,
+    we’ll also touch on the unique challenges posed by chatbot applications.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: In Section 3, we’ll discuss the use of model-based classification and alerting
+    to monitor applications in production and use this feedback for further improvements.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Section 4 summarizes all that we’ve learned
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Any organization’s perspective on these subjects is influenced by the tools
+    it uses — for example we use MLflow and Databricks Mosaic Evaluation to keep track
+    of our pre-production experiments, and AWS Agent Evaluation to test our chatbot.
+    However, we believe that the ideas presented here should be applicable regardless
+    of tech stack, and there are many excellent options available from the likes of
+    Arize (Phoenix evaluation suite), LangChain (LangSmith) and Confident AI (DeepEval).
+    Here we’ll focus on projects where iterative development mainly involves prompt
+    engineering, but a similar approach could be followed for fine-tuned models too.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 1.0 AI and evaluation at Nuna
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: '[Nuna’s](https://www.nuna.com/) goal is to reduce the total cost of care and
+    improve the lives of people with chronic conditions such as hypertension (high
+    blood pressure) and diabetes, which together affect more than 50% of the US adult
+    population [2,3]. This is done through a patient-focused mobile app that encourages
+    healthy habits such as medication adherence and blood pressure monitoring, in
+    addition to a care-team-focused dashboard that organizes data from the app to
+    providers*. In order for the system to succeed, both patients and care teams must
+    find it easy to use, engaging and insightful. It must also produce measurable
+    benefits to health. This is critical because it distinguishes healthcare technology
+    from most other technology sectors, where business success is more closely tied
+    to engagement alone.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'AI plays a critical, patient and care-team-facing role in the product: On the
+    patient side we have an in-app care coach chatbot, as well as features such as
+    medication containers and meal photo-scanning. On the care-team side we are developing
+    summarization and data sorting capabilities to reduce time to action and tailor
+    the experience for different users. The table below shows the four AI-powered
+    product components whose development served as inspiration for this article, and
+    which will be referred to in the following sections.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '| **Product description** | **Unique characteristics** | **Most critical evaluation
+    components** |'
+  prefs: []
+  type: TYPE_TB
+- en: '| Scanning of medication containers (image to text) | Multimodal with clear
+    ground truth labels (medication details extracted from container) | Representative
+    development dataset, iteration and tracking, monitoring in production |'
+  prefs: []
+  type: TYPE_TB
+- en: '| Scanning of meals (ingredient extraction, nutritional insights and scoring)
+    | Multimodal, mixture of clear ground truth (extracted ingredients) and subjective
+    judgment of LLM-generated assessments & SME input | Representative development
+    dataset, appropriate metrics, iteration and tracking, monitoring in production
+    |'
+  prefs: []
+  type: TYPE_TB
+- en: '| In-app care coach chatbot (text to text) | Multi-turn transcripts, tool calling,
+    wide variety of personas and use cases, subjective judgement | Representative
+    development dataset, appropriate metrics, monitoring in production |'
+  prefs: []
+  type: TYPE_TB
+- en: '| Medical record summarization (text & numerical data to text)  | Complex input
+    data, narrow use case, critical need for high accuracy and SME judgement | Representative
+    development dataset, expert-aligned LLM-judge, iteration & tracking |'
+  prefs: []
+  type: TYPE_TB
+- en: 'Figure 1: Table showing the AI use cases at Nuna which will be referred to
+    in this article. We believe that the evaluation-driven development framework presented
+    here is sufficiently broad to apply to these and similar types of AI products.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Respect for patients and the sensitive data they entrust us with is at the core
+    of our business. In addition to safeguarding data privacy, we must ensure that
+    our AI products operate in ways that are safe, reliable, and aligned with users’
+    needs. We need to anticipate how people might use the products and test both standard
+    and edge-case uses. Where mistakes are possible — such as ingredient recognition
+    from meal photographs — we need to know where to invest in building ways for users
+    to easily correct them. We also need to be on the lookout for more subtle failures
+    — for example, [recent research suggests that prolonged chatbot use can lead to
+    increased feelings of loneliness](https://www.media.mit.edu/publications/how-ai-and-human-behaviors-shape-psychosocial-effects-of-chatbot-use-a-longitudinal-controlled-study/)
+    — so we need to identify and monitor for concerning use cases to ensure that our
+    AI is aligned with the goal of improving lives and reducing cost of care. This
+    aligns with recommendations from the NIST AI Risk Management Framework, which
+    emphasizes preemptive identification of plausible misuse scenarios, including
+    edge cases and unintended consequences, especially in high-impact domains such
+    as healthcare.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**This system provides wellness support only and is not intended for medical
+    diagnosis, treatment, or to replace professional healthcare judgment.*'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '2.0 Pre-deployment: Metrics, alignment and iteration'
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: In the development stage of an LLM-powered product, it is important to establish
+    evaluation metrics that are aligned with the business/product goals, a testing
+    dataset that is representative enough to simulate production behavior and a robust
+    method to actually calculate the evaluation metrics. With these things in place,
+    we can enter the virtuous cycle of iteration and error analysis (see [this short
+    book](https://info.deeplearning.ai/machine-learning-yearning-book) for details).
+    The faster we can iterate in the right direction, the higher our chances of success.
+    It also goes without saying that whenever testing involves passing sensitive data
+    through an LLM, it must be done from a secure environment with a trusted provider
+    in accordance with data privacy regulations. For example, in the United States,
+    the Health Insurance Portability and Accountability Act (HIPAA) sets strict standards
+    for protecting patients’ health information. Any handling of such data must meet
+    HIPAA’s requirements for security and confidentiality.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 2.1 Development dataset
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: At the outset of a project, it is important to identify and engage with subject
+    matter experts (SMEs) who can help generate example input data and define what
+    success looks like. At Nuna our SMEs are consultant healthcare professionals such
+    as physicians and nutritionists. Depending on the problem context, we’ve found
+    that opinions from healthcare experts can be nearly uniform — where the answer
+    can be sourced from core principles of their training — or quite varied, drawing
+    on their individual experiences. To mitigate this, we’ve found it useful to seek
+    advice from a small panel of experts (typically 2-5) who are engaged from the
+    beginning of the project and whose consensus view acts as our ultimate source
+    of truth.
+  prefs: []
+  type: TYPE_NORMAL
+- en: It’s advisable to work with the SMEs to build a representative dataset of inputs
+    to the system. To do this, we should consider the broad categories of personas
+    who might be using it and the main functionalities. The broader the use case,
+    the more of these there will be. For example, the Nuna chatbot is accessible to
+    all users, helps answer any wellness-based question and also has access to the
+    user’s own data via tool calls. Some of the functionalities are therefore “emotional
+    support”, “hypertension support”, “nutrition advice”, “app support”, and we might
+    consider splitting these further into “new user” vs. “exiting user” or “skeptical
+    user” vs. “power user” personas. This segmentation is useful for the data generation
+    process and error analysis later on, after these inputs have run through the system.
+  prefs: []
+  type: TYPE_NORMAL
+- en: It’s also important to consider specific scenarios — both typical and edge-case
+    — that the system must handle. For our chatbot these include “user asks for a
+    diagnosis based on symptoms” (we always refer them to a healthcare professional
+    in such situations), “user ask is truncated or incomplete”, “user attempts to
+    jailbreak the system”. Of course, it’s unlikely that all critical scenarios will
+    be accounted for, which is why later iteration (section 2.5) and monitoring in
+    production (section 3.0) is needed.
+  prefs: []
+  type: TYPE_NORMAL
+- en: With the categories in place, the data itself might be generated by filtering
+    existing proprietary or open source datasets (e.g. [Nutrition5k](https://github.com/google-research-datasets/Nutrition5k)
+    for food images, OpenAI’s [HealthBench](https://openai.com/index/healthbench/)
+    for patient-clinician conversations). In some cases, both inputs and gold standard
+    outputs might be available, for example in the ingredient labels on each image
+    in Nutition5k. This makes metric design (section 2.3) easier. More commonly though,
+    expert labelling will be required for the gold standard outputs. Indeed, even
+    if pre-existing input examples are not available, these can be generated synthetically
+    with an LLM and then curated by the team — Databricks has some tools for this,
+    described [here](https://docs.databricks.com/aws/en/generative-ai/agent-evaluation/synthesize-evaluation-set).
+  prefs: []
+  type: TYPE_NORMAL
+- en: How big should this development set be? The more examples we have, the more
+    likely it is to be representative of what the model will see in production but
+    the more expensive it will be to iterate. Our development sets typically start
+    out on the order of a few hundred examples. For chatbots, where to be representative
+    the inputs might need to be multi-step conversations with sample patient data
+    in context, we recommend using a testing framework like [AWS Agent Evaluation](https://awslabs.github.io/agent-evaluation/),
+    where the input example files can be generated manually or via LLM by prompting
+    and curation.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 2.2 Baseline model pipeline
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: If starting from scratch, the process of thinking through the use cases and
+    building the development set will likely give the team a sense for the difficulty
+    of this problem and hence the architecture of the baseline system to be built.
+    Unless made infeasible by security or cost concerns, it’s advisable to keep the
+    initial architecture simple and use powerful, API-based models for the baseline
+    iteration. The main purpose of the iteration process described in subsequent sections
+    is to improve the prompts in this baseline version, so we typically keep them
+    simple while trying to adhere to general prompt engineering best practices such
+    as those described in this [guide by Anthropic](https://docs.anthropic.com/en/docs/build-with-claude/prompt-engineering/overview).
+  prefs: []
+  type: TYPE_NORMAL
+- en: Once the baseline system is up and running, it should be run on the development
+    set to generate the first outputs. Running the development dataset through the
+    system is a batch process that may need to be repeated many times, so it is worth
+    parallelizing. At Nuna we use PySpark on Databricks for this. The most straightforward
+    method for batch parallelism of this type is the [pandas user-defined function](https://docs.databricks.com/aws/en/udf/pandas)
+    (UDF), which allows us to call the model API in a loop over rows in Pandas dataframe,
+    and then use Pyspark to break up the input dataset into chunks to be processed
+    in parallel over the nodes of a cluster. An alternative method, described [here](https://docs.databricks.com/aws/en/machine-learning/model-inference/dl-model-inference),
+    first requires us to log a script that calls the model as an [mlflow PythonModel
+    object](https://mlflow.org/docs/latest/model#models-from-code), load that as a
+    pandas UDF and then run inference using that.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/c4a15edb7a281151552073d63b583881.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'Figure 2: High level workflow showing the process of building the development
+    dataset and metrics, with input from subject matter experts (SME). Construction
+    of the dataset is iterative. After the baseline model is run, SME critiques can
+    be used to define optimizing and satisficing metrics and their associated thresholds
+    for success. Image generated by the author.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 2.3 Metric design
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: Designing evaluation metrics that are actionable and aligned with the feature’s
+    goals is a critical part of evaluation-driven development. Given the context of
+    the feature you are developing, there may be some metrics that are minimum requirements
+    for ship — e.g. a minimum rate of the numerical accuracy for a text summary on
+    a graph. Especially in a healthcare context, we have found that SMEs are again
+    essential resources here in the identification of additional supplementary metrics
+    that will be important for stakeholder buy-in and end-user interpretation. Asynchronously,
+    SMEs should be able to securely review the inputs and outputs from the development
+    set and make comments on them. Various purpose-built tools support this kind of
+    review and can be adapted to the project’s sensitivity and maturity. For early-stage
+    or low-volume work, lightweight methods such as a secure spreadsheet may suffice.
+    If possible, the feedback should consist of a simple pass/fail decision for each
+    input/output pair, along with critique of the LLM-generated output explaining
+    the decision. The idea is that we can then use these critiques to inform our choice
+    of evaluation metrics and provide few-shot examples to any LLM-judges that we
+    build. Why pass/fail rather than a likert score or some other numerical metric?
+    This is a developer choice, but we found it is much easier to get alignment between
+    SMEs and LLM judges in the binary case. It is straightforward to aggregate results
+    into a simple accuracy measure across the development set. For example, if 30%
+    of the “90 day blood pressure time series summaries” get a zero for groundedness
+    but none of the 30 day summaries do, then this points to the model struggling
+    with long inputs.
+  prefs: []
+  type: TYPE_NORMAL
+- en: At the initial review stage, it is often also useful to document a clear set
+    of guidelines around what constitutes success in the outputs, which allows all
+    annotators to have a source of truth. Disagreements between SME annotators can
+    often be resolved with reference to these guidelines, and if disagreements persist
+    this may be a sign that the guidelines — and hence the purpose of the AI system
+    — is not defined clearly enough. It’s also important to note that depending on
+    your company’s resourcing, ship timelines, and risk level of the feature, it may
+    not be possible to get SME comments on the entire development set here — so it’s
+    important to choose representative examples.
+  prefs: []
+  type: TYPE_NORMAL
+- en: As a concrete example, Nuna has developed a medication logging history AI summary,
+    to be displayed in the care team-facing portal. Early in the development of this
+    AI summary, we curated a set of representative patient records, ran them through
+    the summarization model, plotted the data and shared a secure spreadsheet containing
+    the input graphs and output summaries with our SMEs for their comments. From this
+    exercise we identified and documented the need for a range of metrics including
+    readability, style (i.e. objective and not alarmist), formatting and groundedness
+    (i.e. accuracy of insights against the input timeseries).
+  prefs: []
+  type: TYPE_NORMAL
+- en: Some metrics can be calculated programmatically with simple tests on the output.
+    This includes formatting and length constraints, and readability as quantified
+    by scores like the [F-K grade level](https://en.wikipedia.org/wiki/Flesch%E2%80%93Kincaid_readability_tests).
+    Other metrics require an LLM-judge (see below for more detail) because the definition
+    of success is more nuanced. This is where we prompt an LLM to act like a human
+    expert, giving pass/fail decisions and critiques of the outputs. The idea is that
+    if we can align the LLM judge’s results with those of the experts, we can run
+    it automatically on our development set and quickly compute our metrics when iterating.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We found it useful to choose a single “optimizing metric” for each project,
+    for example the proportion of the development set that is marked as accurately
+    grounded in the input data, but back it up with several “satisficing metrics”
+    such as percent within length constraints, percent with suitable style, percent
+    with readability score > 60 etc. Factors like [latency percentile](https://www.tuanh.net/blog/oop/statistics-behind-latency-metrics-understanding-p90-p95-and-p99)
+    and mean token cost per request also make ideal satisficing metrics. If an update
+    makes the optimizing metric value go up without lowering any of the satisficing
+    metric values below pre-defined thresholds, then we know we’re going in the right
+    direction.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 2.4 Building the LLM judge
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: The purpose of LLM-judge development is to distill the advice of the SMEs into
+    a prompt that allows an LLM to score the development set in a way that is aligned
+    with their professional judgement. The judge is usually a larger/more powerful
+    model than the one being judged, though this is not a strict requirement. We found
+    that while it’s possible to have a single LLM judge prompt output the scores and
+    critiques for several metrics, this can be confusing and incompatible with the
+    tracking tools described in 2.4\. We therefore make a single judge prompt per
+    metric, which has the added benefit of forcing conservatism on the number of LLM-generated
+    metrics.
+  prefs: []
+  type: TYPE_NORMAL
+- en: An initial judge prompt, to be run on the development set, might look something
+    like the block below. The instructions will be iterated on during the alignment
+    step, so at this stage they should represent a best effort to capture the SME’s
+    thought process when writing their criques. It’s important to ensure that the
+    LLM provides its reasoning, and that this is detailed enough to understand why
+    it made the determination. We should also double check the reasoning against its
+    pass/fail judgement to ensure they are logically consistent. For more detail about
+    LLM reasoning in cases like this, we recommend this [excellent article](https://www.anthropic.com/research/tracing-thoughts-language-model).
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE0]'
+  prefs: []
+  type: TYPE_PRE
+- en: To keep the judge outputs as reliable as possible, its temperature setting should
+    be as low as possible. To validate the judge, the SMEs need to see representative
+    examples of input, output, judge decision and judge critique. This should preferably
+    be a different set of examples than the ones they looked at for the metric design,
+    and given the human effort involved in this step it can be small.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The SMEs might first give their own pass/fail assessments for each example without
+    seeing the judge’s version. They should then be able to see everything and have
+    the opportunity to modify the model’s critique to become more aligned with their
+    own thoughts. The results can be used to make modifications to the LLM judge prompt
+    and the process repeated until the alignment between the SME assessments and model
+    assessments stops improving, as time constraints allow. Alignment can be measured
+    using simple accuracy or statistical measures such as [Cohen’s kappa](https://en.wikipedia.org/wiki/Cohen%27s_kappa).
+    We have found that including relevant few-shot examples in the judge prompt typically
+    helps with alignment, and there is also work suggesting that [adding grading notes](https://www.databricks.com/blog/enhancing-llm-as-a-judge-with-grading-notes)
+    for each example to be judged is also beneficial.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We have typically used spreadsheets for this type of iteration, but more sophisticated
+    tools such as Databrick’s [review apps](https://docs.databricks.com/aws/en/mlflow3/genai/human-feedback/concepts/review-app)
+    also exist and could be adapted for LLM judge prompt development. With expert
+    time in short supply, LLM judges are very important in healthcare AI and as foundation
+    models become more sophisticated, their ability to stand in for human experts
+    appears to be improving. [OpenAI’s HealthBench work](https://openai.com/index/healthbench/),
+    for example, found that physicians were generally unable to improve the responses
+    generated by April 2025’s models and that when GPT4.1 is used as a grader on healthcare-related
+    problems, its scores are very well aligned with those of human experts [4].
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/ccf3dc61a71bfbcfd31576fd54d198ac.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'Figure 3: High level workflow showing how the development set (section 2.1)
+    is used to build and align LLM judges. Experiment tracking is used for the evolution
+    loop, which involves calculating metrics, refining the model, regenerating the
+    output and re-running the judges. Image generated by the author.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 2.5 Iteration and tracking
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: With our LLM judges in place, we are finally in a good position to start iterating
+    on our main system. To do so, we’ll systematically update the prompts, regenerate
+    the development set outputs, run the judges, compute the metrics and do a comparison
+    between the new and old results. This is an iterative process with potentially
+    many cycles, which is why it benefits from tracing, prompt logging and experiment
+    tracking. The process of regenerating the development dataset outputs is described
+    in section 2.1, and tools like MLflow make it possible to track and version the
+    judge iterations too. We use [Databricks Mosaic AI Agent Evaluation](https://docs.databricks.com/aws/en/generative-ai/agent-evaluation/),
+    which provides a framework for adding custom Judges (both LLM and programmatic),
+    in addition to several built-in ones with pre-defined prompts (we typically turn
+    these off). In code, the core evaluation commands look like this
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE1]'
+  prefs: []
+  type: TYPE_PRE
+- en: Under the hood, MLflow will issue parallel calls to the judge models (packaged
+    in the agent metrics list in the code above) and also call the programmatic metrics
+    with relevant functions (in the programmatic metrics list), saving the results
+    and relevant artifacts to Unity Catalog and also providing a nice user interface
+    with which to compare metrics across experiments, view traces and read the LLM
+    judge critiques. It should be noted [MLflow 3.0](https://www.databricks.com/blog/mlflow-30-unified-ai-experimentation-observability-and-governance),
+    released just after this was written, and has some tooling that may simplify the
+    code above.
+  prefs: []
+  type: TYPE_NORMAL
+- en: To identity improvements with highest ROI, we can revisit the development set
+    segmentation into personas, functionalities and situations described in section
+    2.1\. We can compare the value of the optimizing metric between segments and choose
+    to focus our prompt iterations on the one with the lowest scores, or with the
+    most concerning edge cases. With our evaluation loop in place, we can catch any
+    unintended consequences of model updates. Additionally, with tracking we can reproduce
+    results and revert to previous prompt versions if needed.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 2.6 When is it ready for production?
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: In AI applications, and healthcare in particular, some failures are more consequential
+    than others. We never want our chatbot to claim that it’s a healthcare professional,
+    for example. But it is inevitable that our meal scanner will make mistakes identifying
+    ingredients in uploaded images — humans are not particularly good at identifying
+    ingredients from a photo, and so even human-level accuracy can contain frequent
+    mistakes. It’s therefore important to work with the SMEs and product stakeholders
+    to develop realistic thresholds for the optimizing metrics, above which the development
+    work can be declared successful to enable migration into production. Some projects
+    may fail at this stage because it’s not possible to push the optimizing metrics
+    above the agreed threshold without compromising the satisificing metrics or because
+    of resource constraints.
+  prefs: []
+  type: TYPE_NORMAL
+- en: If the thresholds are very high then missing them slightly might be acceptable
+    because of unavoidable error or ambiguity in the LLM judge. For example we initially
+    set a ship requirement of 100% of our development set health record summaries
+    to be graded as “accurately grounded.” We then found that the LLM-judge occasionally
+    would quibble over statements like, “the patient has recorded their blood pressure
+    on most days of the last week”, when the actual number of days with recordings
+    was 4\. In our judgement, a reasonable end-user would not find this statement
+    troubling, despite the LLM-as-judge classifying it as a failure. Thorough manual
+    review of failure cases is important to identify whether the performance is actually
+    acceptable and/or whether further iteration is needed.
+  prefs: []
+  type: TYPE_NORMAL
+- en: These go/no-go decisions also align with the [NIST AI Risk Management Framework](https://www.nist.gov/itl/ai-risk-management-framework),
+    which encourages context-driven risk thresholds and emphasizes traceability, validity,
+    and stakeholder-aligned governance throughout the AI lifecycle.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Even with a temperature of zero, LLM judges are non-deterministic. A reliable
+    judge should give the same determination and roughly the same critique every time
+    it’s on a given example. If this is not happening, it suggests that the judge
+    prompt needs to be improved. We found this issue to be particularly problematic
+    in chatbot testing with the [AWS Evaluation Framework](https://awslabs.github.io/agent-evaluation/),
+    where each conversation to be graded has a custom rubric and the LLM generating
+    the input conversations has some leeway on the exact wording of the “user messages”.
+    We therefore wrote a simple script to run each test multiple times and record
+    the average failure rate. Tests with failure at a rate that is not 0 or 100% can
+    be marked as unreliable and updated until they become consistent.This experience
+    highlights the limitations of LLM judges and automated evaluation more broadly.
+    It reinforces the importance of incorporating human review and feedback before
+    declaring a system ready for production. Clear documentation of performance thresholds,
+    test results, and review decisions supports transparency, accountability, and
+    informed deployment.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In addition to performance thresholds, it’s important to assess the system against
+    known security vulnerabilities. The [OWASP Top 10 for LLM Applications](https://owasp.org/www-project-top-10-for-large-language-model-applications/)
+    outlines common risks such as prompt injection, insecure output handling, and
+    over-reliance on LLMs in high-stakes decisions, all of which are highly relevant
+    for healthcare use cases. Evaluating the system against this guidance can help
+    mitigate downstream risks as the product moves into production.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '3.0 Post-deployment: Monitoring and classification'
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: Moving an LLM application from development to deployment in a scalable, sustainable
+    and reproducible way is a complex undertaking and the subject of excellent “LLMOps”
+    articles like [this one](https://aws.amazon.com/blogs/machine-learning/fmops-llmops-operationalize-generative-ai-and-differences-with-mlops/).
+    Having a process like this, which operationalizes each stage of the data pipeline,
+    is very useful for evaluation-driven development because it allows for new iterations
+    to be quickly deployed. However, in this section we’ll focus mainly on how to
+    actually use the logs generated by an LLM application running in production to
+    understand how it’s performing and inform further development.
+  prefs: []
+  type: TYPE_NORMAL
+- en: One major goal of monitoring is to validate that the evaluation metrics defined
+    in the development phase behave similarly with production data, which is essentially
+    a test of the representativeness of the development dataset. This should first
+    ideally be done internally in a dogfooding or “bug bashing” exercise, with involvement
+    from unrelated teams and SMEs. We can re-use the metric definitions and LLM judges
+    built in development here, running them on samples of production data at periodic
+    intervals and maintaining a breakdown of the results. For data security at Nuna,
+    all of this is done within Databricks, which allows us to take advantage of Unity
+    Catalog for lineage tracking and dashboarding tools for easy visualization.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Monitoring on LLM-powered products is a broad topic, and our focus here is on
+    how it can be used to complete the evaluation-driven development loop so that
+    the models can be improved and adjusted for drift. Monitoring should also be used
+    to track broader “product success” metrics such as user-provided feedback, user
+    engagement, token usage, and chatbot question resolution. This [excellent article](https://humanloop.com/blog/llm-monitoring)
+    contains more details, and LLM judges can also be deployed in this capacity —
+    they would go through the same development process described in section 2.4.
+  prefs: []
+  type: TYPE_NORMAL
+- en: This approach aligns with the NIST AI Risk Management Framework (“AI RMF”),
+    which emphasizes continuous monitoring, measurement, and documentation to manage
+    AI risk over time. In production, where ambiguity and edge cases are more common,
+    automated evaluation alone is often insufficient. Incorporating structured human
+    feedback, domain expertise, and transparent decision-making is essential for building
+    trustworthy systems, especially in high-stakes domains like healthcare. These
+    practices support the AI RMF’s core principles of governability, validity, reliability,
+    and transparency.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/cfee51a6e384d561036332c514b5f49b.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'Figure 4: High level workflow showing components of the post-deployment data
+    pipeline that allows for monitoring, alerting, tagging and evaluation of the model
+    outputs in production. This is essential for evaluation-driven development, since
+    insights can be fed back into the development stage. Image generated by the author.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 3.1 Additional LLM classification
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: 'The concept of the LLM judge can be extended to post-deployment classification,
+    assigning tags to model outputs and giving insights about how applications are
+    being used “in the wild”, highlighting unexpected interactions and alerting about
+    concerning behaviors. Tagging is the process of assigning simple labels to data
+    so that they are easier to segment and analyze. This is particularly useful for
+    chatbot applications: If users on a certain Nuna app version start asking our
+    chatbot questions about our blood pressure cuff, for example, this may point to
+    a cuff setup problem. Similarly, if certain styles of medication container are
+    leading to higher than average failure rates from our medication scanning tool,
+    this suggests the need to investigate and maybe update that tool.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: In practice, LLM classification is itself a development project of the type
+    described in section 2\. We need to build a tag taxonomy (i.e. a description of
+    each tag that could be assigned) and prompts with instructions about how to use
+    it, then we need to use a development set to validate tagging accuracy. Tagging
+    often involves generating consistently formatted output to be ingested by a downstream
+    process — for example a list of topic ids for each chatbot conversation segment
+    — which is why enforcing [structured output](https://humanloop.com/blog/structured-outputs)
+    on the LLM calls can be very helpful here, and Databricks has [an example](https://docs.databricks.com/aws/en/machine-learning/model-inference/dl-model-inference)
+    of how this is can be done at scale.
+  prefs: []
+  type: TYPE_NORMAL
+- en: For long chatbot transcripts, LLM classification can be adapted for summarization
+    to improve readability and protect privacy. Conversation summaries can then be
+    vectorized, clustered and visualized to gain an understanding of groups that naturally
+    emerge from the data. This is often the first step in designing a topic classification
+    taxonomy such as the one the Nuna uses to tag our chats. Anthropic has also built
+    an internal tool for similar purposes, which reveals fascinating insights into
+    usage patterns of Claude and is outlined in their [Clio research article](https://www.anthropic.com/research/clio).
+  prefs: []
+  type: TYPE_NORMAL
+- en: Depending on the urgency of the information, tagging can happen in real time
+    or as a batch process. Tagging that looks for concerning behavior — for example
+    flagging chats for immediate review if they describe violence, illegal activities
+    or severe health issues — might be best suited to a real-time system where notifications
+    are sent as soon as conversations are tagged. Whereas more general summarization
+    and classification can probably afford to happen as a batch process that updates
+    a dashboard, and maybe only on a subset of the data to reduce costs. For chat
+    classification, we found that including an “other” tag for the LLM to assign to
+    examples that don’t fit neatly into the taxonomy is very useful. Data tagged as
+    “other” can then be examined in more detail for new topics to add to the taxonomy.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 3.2 Updating the development set
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: Monitoring and tagging grant visibility into application performance, but they
+    are also part of the feedback loop that drives evaluation driven development.
+    As new or unexpected examples come in and are tagged, they can be added to the
+    development dataset, reviewed by the SMEs and run through the LLM judges. It’s
+    possible that the judge prompts or few-shot examples may need to evolve to accommodate
+    this new information, but the tracking steps outlined in section 2.4 should enable
+    progress without the risk of confusing or unintended overwrites. This completes
+    the feedback loop of evaluation-driven development and enables confidence in LLM
+    products not just when they ship, but also as they evolve over time.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 4.0 Summary
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: The rapid evolution of large language models (LLMs) is transforming industries
+    and offers great potential to benefit healthcare. However, the non-deterministic
+    nature of AI presents unique challenges, particularly in ensuring reliability
+    and safety in healthcare applications.
+  prefs: []
+  type: TYPE_NORMAL
+- en: At Nuna, Inc., we’re embracing evaluation-driven development to address these
+    challenges and drive our approach to AI products. In summary, the idea is to emphasize
+    evaluation and iteration throughout the product lifecycle, from development to
+    deployment and monitoring.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Our methodology involves close collaboration with subject matter experts to
+    create representative datasets and define success criteria. We focus on iterative
+    improvement through prompt engineering, supported by tools like MLflow and Databricks,
+    to track and refine our models.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Post-deployment, continuous monitoring and LLM tagging provide insights into
+    real-world application performance, enabling us to adapt and improve our systems
+    over time. This feedback loop is crucial for maintaining high standards and ensuring
+    AI products continue to align with our goals of improving lives and decreasing
+    cost of care.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In summary, evaluation-driven development is essential for building reliable,
+    impactful AI solutions in healthcare and elsewhere. By sharing our insights and
+    experiences, we hope to guide others in navigating the complexities of LLM deployment
+    and contribute to the broader goal of improving efficiency of AI project development
+    in healthcare.
+  prefs: []
+  type: TYPE_NORMAL
+- en: References
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: '[1] Boston Consulting Group, Digital and AI Solutions to Reshape Health Care
+    (2025), [https://www.bcg.com/publications/2025/digital-ai-solutions-reshape-health-care-2025](https://www.bcg.com/publications/2025/digital-ai-solutions-reshape-health-care-2025)'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[2] Centers for Disease Control and Prevention, High Blood Pressure Facts (2022),
+    [https://www.cdc.gov/high-blood-pressure/data-research/facts-stats/index.html](https://www.cdc.gov/high-blood-pressure/data-research/facts-stats/index.html)'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[3] Centers for Disease Control and Prevention, Diabetes Data and Research
+    (2022), [https://www.cdc.gov/diabetes/php/data-research/index.html](https://www.cdc.gov/diabetes/php/data-research/index.html)'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[4] R.K. Arora, et al. HealthBench: Evaluating Large Language Models Towards
+    Improved Human Health (2025), OpenAI'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Authorship
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'This article was written by Robert Martin-Short, with contributions from the
+    Nuna team: Kate Niehaus, Michael Stephenson, Jacob Miller & Pat Alberts'
+  prefs: []
+  type: TYPE_NORMAL

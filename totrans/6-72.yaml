@@ -1,0 +1,333 @@
+- en: 'The Key to Smarter Models: Tracking Feature Histories'
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 原文：[https://towardsdatascience.com/the-key-to-smarter-models-tracking-feature-histories-a9e3baadd52a/](https://towardsdatascience.com/the-key-to-smarter-models-tracking-feature-histories-a9e3baadd52a/)
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: I recently made a career shift slightly away from data science to a more engineering-heavy
+    role. My team is building a high-quality data warehouse to feed the organization’s
+    BI and ML needs. I took this position because I saw it as an opportunity to use
+    the insight I’ve gained from my data science roles to influence the design and
+    development of a data warehouse with a forward-looking focus.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In nearly every data science role I’ve worked in over the past 6 years, I noticed
+    a common theme – the data infrastructure wasn’t designed with data science in
+    mind. Many tables in the data warehouse/lakehouse, usually facts and dimensions,
+    lacked critical fields or structure required to build performant machine learning
+    models. The most prevalent limitation I noticed was that most tables only tracked
+    the current state of an observation rather than the history.
+  prefs: []
+  type: TYPE_NORMAL
+- en: This article explores this common problem and demonstrates how to address it
+    through a data modeling technique called Slowly Changing Dimensions. By the end,
+    you’ll understand the impact of storing historical data on your model’s performance,
+    and you’ll have strategies to help you implement this for your use cases.
+  prefs: []
+  type: TYPE_NORMAL
+- en: A Common Curse for Data Scientists
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'If you’ve worked as a data scientist or machine learning engineer for long
+    enough, you’ve likely encountered the following modeling problem. For each instance
+    in your data, you want to model the probability of some event occurring over time:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Modeling the probability of an event occuring at each time step. Image by
+    Author.](../Images/a1be1aeb254fe3864c43c297756a318a.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Modeling the probability of an event occuring at each time step. Image by Author.
+  prefs: []
+  type: TYPE_NORMAL
+- en: This modeling paradigm, often referred to as panel modeling, comes up everywhere.
+    Any modeling problem where **the features interact with time** can and often ****
+    should be modeled this wa**y. **Common example**s** include customer churn prediction,
+    loan default prediction, disease progression monitoring, fraud detection, equipment
+    failure prediction, and many more.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'More formally, you can describe this problem with the following notation:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Notation for a panel machine learning model. Image by Author.](../Images/88fe92588e03c870bcfa4255c32bbef2.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Notation for a panel machine learning model. Image by Author.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Take loan default prediction as an example. The generic goal is to predict
+    the probability that an individual will default on a loan (**Y**) for each time
+    period (**t**) since their loan originated using time-varying borrower features
+    (**X**). For a given borrower, your model’s predictions might look something like
+    this:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Predicted loan default probability for a borrower over time. Image by Author.](../Images/745ef2250daf345845b9f274828dc630.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Predicted loan default probability for a borrower over time. Image by Author.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In this plot, t = 0 is the loan origination week, and t = 100 is when the loan
+    reaches maturity. For this example, the model predicts the borrower’s default
+    probability to decrease as the loan approaches completion, but this won’t always
+    be the case depending on the individual’s credit profile and other relevant features.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'To create features for this model, you’ll likely rely on several fact and dimension
+    tables in your data warehouse. For instance, many of your features might come
+    from a `dim_borrower` dimension table that records borrower attributes. In many
+    organizations that adopt machine learning initiatives later in their lifetime,
+    the `dim_borrower` table looks like this:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![A typical borrower dimension table. Image by Author.](../Images/6bc34f8653b7e07fbe4f8f8b0a8872cb.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: A typical borrower dimension table. Image by Author.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Each row in `dim_borrower` records attributes of an individual borrower uniquely
+    identified by a `borrower_key`. For instance, borrower 153443 currently has a
+    FICO score of 567, an income of $55,123, and a DTI ratio of 0.25\. The `created_datetime_utc`
+    is the time when the record was created, and `updated_datetime_utc` is the last
+    time the record was updated.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The problem with these kinds of dimension tables is that they don’t keep track
+    of history. In the above example, you have no idea what borrower 153443’s FICO,
+    income, and DTI ratio were when the record was created on `2024–04–19`. You also
+    don’t know how many times the record has been updated or which features have been
+    updated. All you know is the borrower’s current features, the time their record
+    was created, and the time of the most recent update.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'If you construct a panel training set with borrower 153443’s data, it’d look
+    something like this:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![An example panel training set with one borrower''s data derived from a dimension
+    table that doesn''t keep track of history. Image by Author.](../Images/bd1ac8c1ce729cc087420c9ff34bda27.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: An example panel training set with one borrower’s data derived from a dimension
+    table that doesn’t keep track of history. Image by Author.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The issue with this training data is that it’s probably incorrect until `weeks_to_completion`
+    = 0 when you have the most recent record of the borrower’s features. In reality,
+    the history of the borrower’s data probably looks more like this:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![What the panel training set for a borrower should look like. Image by Author.](../Images/20a9a5d4aaee66ae6184444a1bd337f6.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: What the panel training set for a borrower should look like. Image by Author.
+  prefs: []
+  type: TYPE_NORMAL
+- en: This data tells a different story than the original training data that applied
+    the borrower’s most recent features to their history. You can see that the borrower’s
+    FICO score dropped significantly from week 20 to week 11, and their DTI ratio
+    increased from 0.018 (almost no debt) to 0.25\. These changes indicate that the
+    borrower acquired more external debt over these weeks, and their credit profile
+    worsened. A model trained on this dataset will be far superior to one trained
+    on the dataset that doesn’t keep a historical record of the borrower’s features.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Now that you understand the problem with tables that don’t track history, you’ll
+    explore one of the best and most popular ways to address it – slowly changing
+    dimensions.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The Solution: Slowly Changing Dimensions'
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: One of the best and most popular ways to track the history of a dimension is
+    through a data modeling paradigm called **slowly changing dimensions (SCD)**.
+    An SCD is what it sounds like – a relatively stable dimension that changes (slowly)
+    over time. There are four types of SCDs, but the most common is SCD type II.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The loan borrower dimension is a perfect SCD candidate. Under the SCD paradigm,
+    the standard dimension table like this one:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![A typical borrower dimension table. Image by Author.](../Images/6bc34f8653b7e07fbe4f8f8b0a8872cb.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: A typical borrower dimension table. Image by Author.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Becomes this:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![An SCD Type II borrower dimension table. Image by Author.](../Images/a85133374e1a716fc4f825dfc434e4bc.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: An SCD Type II borrower dimension table. Image by Author.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In this borrower SCD, each row represents a borrower’s attributes during a time
+    interval defined by `start_datetime_utc` and `end_datetime_utc`. For example,
+    from roughly 2024–04–27 to 2024–06–09, borrower 153443 had a FICO score of 567,
+    an income of $55,123, and a DTI Ratio of 0.25\. The current state of each borrower
+    is recorded where `is_current` = 1 or equivalently when `end_datetime_utc` is
+    null. Hence, `borrower_key` is unique only when `is_current` = 1.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Think about the impact of using SCD data for your machine learning models. If
+    all the tables you use to create the dataset for your machine learning model are
+    SCDs or facts, you can train the best possible model with an accurate view of
+    how changes in feature values over time affect your target.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'You can easily transform SCDs to create the panel view your model needs. Think
+    back to the borrower 153443 example from the previous section:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![An example panel training set with one borrower''s data derived from an SCD
+    table. Image by Author.](../Images/20a9a5d4aaee66ae6184444a1bd337f6.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: An example panel training set with one borrower’s data derived from an SCD table.
+    Image by Author.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'From the perspective of the training data, the `dti_ratio` feature over time
+    looks like this:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![DTI ratio vs weeks since loan origination for a non-SCD training set and
+    an SCD training set. Image by Author.](../Images/d24aed8dd779e3fcf3a5348e08d91294.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: DTI ratio vs weeks since loan origination for a non-SCD training set and an
+    SCD training set. Image by Author.
+  prefs: []
+  type: TYPE_NORMAL
+- en: A model trained on the standard dimension data can’t see how the DTI ratio changes
+    over time and can’t accurately model how changes in the DTI ratio affect the probability
+    of loan default. Conversely, the model trained on SCD data has complete visibility
+    into the history of the borrower’s DTI ratio and can incorporate this into its
+    predictions.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'In production, if you compare the predictions between the two models for the
+    same borrower, you may get drastically different results:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Model predictions for the same borrower using a model trained on non-SCD
+    data (blue) and a model trained on SCD data (orange). Image by Author.](../Images/add2499c9652ea9cb90692dac1fc0817.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Model predictions for the same borrower using a model trained on non-SCD data
+    (blue) and a model trained on SCD data (orange). Image by Author.
+  prefs: []
+  type: TYPE_NORMAL
+- en: At inference time, the model trained on standard dimension data only knows the
+    borrower’s current feature values. In the case of borrower 153443, this model
+    can only see that the loan balance is decreasing or staying the same over time.
+    Because of this, the predicted probability of default will steadily decrease over
+    time unless the borrower’s features move into an extreme range indicative of a
+    default in the training data.
+  prefs: []
+  type: TYPE_NORMAL
+- en: On the other hand, the model trained on SCD data sees the borrower’s FICO score
+    dropping and their DTI ratio rising. As a result, the predicted probability of
+    default increases over time as the borrower becomes more risky.
+  prefs: []
+  type: TYPE_NORMAL
+- en: You can probably imagine many more situations where SCDs, or generally tables
+    that track full history, would be useful. To conclude this article, you’ll get
+    a few tips on what you can do to start using SCDs in your organization.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Call to Action
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: Depending on your role, you can advocate for SCDs or other history tracking
+    tables to improve the quality of machine learning models in your organization.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Data Engineers**'
+  prefs: []
+  type: TYPE_NORMAL
+- en: If you’re a data engineer, you likely get at least some say in the design of
+    your data warehouse/lakehouse. If you’re unsure whether a table should track history,
+    by default, it probably should. While implementing SCDs requires more complicated
+    ETLs, it’s often well worth the work for the value it brings.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The most common pushback you’ll get is the increased storage costs, but storage
+    is cheap in most modern data platforms thanks to columnar storage formats.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Data Scientists/ML Engineers**'
+  prefs: []
+  type: TYPE_NORMAL
+- en: As a data scientist/ML engineer, you might have less say in data warehouse/lakehouse
+    design, especially if machine learning models aren’t the primary consumers of
+    your organization’s data. Do the best you can to advocate for tables that track
+    history.
+  prefs: []
+  type: TYPE_NORMAL
+- en: If you can’t influence the upstream tables you consume, start tracking history
+    in your feature stores or the datasets that feed your models. It might take a
+    while before you can leverage the historical data you collect, but the sooner
+    you can start the better.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Product Managers**'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Perhaps the best way to influence the creation of history-tracking tables is
+    by making them a product requirement. Machine learning models are only as good
+    as the data their training data, and models that use historyless data can never
+    reach their full potential. To build the highest quality machine learning product,
+    you need the highest quality data, and datasets that track history are fundamental
+    for high-quality models.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Final Thoughts
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: Tracking feature histories is a must-have for building smarter machine learning
+    models. By incorporating historical data into your datasets, you capture context
+    and temporal dynamics, improving prediction accuracy and model robustness.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Adopting historical data tracking does come with challenges, such as increased
+    storage needs and more complex ETL processes. However, the payoff in model performance
+    and insights far outweighs these costs. For data engineers, data scientists, and
+    product managers, embracing history tracking as a foundational principle can elevate
+    your organization’s data infrastructure and machine learning capabilities.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Start small if needed – advocate for changes in key tables, build historical
+    tracking into feature stores, or incorporate SCDs into new data pipelines. The
+    value of historical data grows over time, and the sooner you begin, the better
+    your models will be positioned to deliver actionable, context-aware predictions.
+  prefs: []
+  type: TYPE_NORMAL
+- en: By focusing on feature histories, you’re not just building better models – you’re
+    laying the groundwork for a more insightful and future-ready data ecosystem.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '*Become a Member: [https://harrisonfhoffman.medium.com/membership](https://harrisonfhoffman.medium.com/membership)*'
+  prefs: []
+  type: TYPE_NORMAL
+- en: References
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: _Slowly Changing Dimensions – [https://en.wikipedia.org/wiki/Slowly_changing_dimension](https://en.wikipedia.org/wiki/Slowly_changing_dimension)_
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL

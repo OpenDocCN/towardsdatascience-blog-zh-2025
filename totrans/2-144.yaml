@@ -1,0 +1,288 @@
+- en: 'From Equal Weights to Smart Weights: OTPO’s Approach to Better LLM Alignment'
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 原文：[https://towardsdatascience.com/from-equal-weights-to-smart-weights-otpos-approach-to-better-llm-alignment/](https://towardsdatascience.com/from-equal-weights-to-smart-weights-otpos-approach-to-better-llm-alignment/)
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: Context
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: <mdspan datatext="el1752537727331" class="mdspan-comment">Language models</mdspan>
+    have evolved from basic search tools to AI assistants that code, write, and research.
+    Now they’re accessible through smartphone apps via internet APIs, putting powerful
+    AI at everyone’s fingertips. These systems are becoming an integral part of our
+    daily lives. People are using AI assistants for seeking advice for personal relationships,
+    fact-checking to form opinions (though it clearly states it can make mistakes),
+    diet plans and next holiday destinations.
+  prefs: []
+  type: TYPE_NORMAL
+- en: As more and more powerful models are launched, the question of trust arises
+    and models are more scrutinized to make sure the responses produced by them are
+    trustworthy and aligned with human values. These are not new questions. Traditionally,
+    models are fine-tuned on human preference data (usually contains input, chosen
+    answer, rejected answer) before launching them for public use. Model alignment
+    and safety have been major areas of research, and multiple algorithms have been
+    developed to train the model for alignment. Among all the alignment training algorithms,
+    the most popular is Direct Preference Optimization (DPO) due to its simplicity
+    and efficiency.
+  prefs: []
+  type: TYPE_NORMAL
+- en: But DPO has a fundamental limitation. When calculating the likelihood of a response,
+    it uses equal weight for each word or token present in the response, though humans
+    naturally give more importance or weight to meaningful words. For example, let’s
+    look at the following user interaction with LLM.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**User:** What’s the capital of France?'
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: '**LLM:** The capital of France is Paris, and it’s a beautiful city with many
+    attractions.'
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: In this interaction, humans primarily care about the accuracy of “Paris” rather
+    than the stylistic flourishes, yet standard DPO gives equal weight to every token,
+    allowing less relevant content to dilute the learning signal.
+  prefs: []
+  type: TYPE_NORMAL
+- en: There have been multiple attempts to fix DPO’s problems. Algorithms like SimPO
+    and SamPO were introduced to address different issues. In this post, we’re going
+    to look into another algorithm published in May 2025 on “**O**ptimal **T**ransport-Based
+    Token Weighting scheme for Enhanced **P**reference **O**ptimization (**OTPO**).”
+    This post explains the core ideas behind their work and builds a foundation for
+    understanding LLM alignment with human preferences.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Why Equal Token Weighting Fails
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: To understand why token weighting matters, we first need to examine how DPO
+    actually processes tokens. Usually pre-trained models are trained with trillions
+    of parameters, then fine tuned, and then trained further using DPO on human preference
+    data to align with human preferences before being released to the public.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'DPO operates by computing log likelihood differences between chosen and rejected
+    responses at the token level. For each training example with a chosen response
+    y_w and rejected response y_l, DPO calculates its objective value. The core of
+    DPO lies in its loss function formula:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/89b24855e8f669788468dc608b3d3443.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Image from [DPO paper](https://arxiv.org/pdf/2305.18290)
+  prefs: []
+  type: TYPE_NORMAL
+- en: Pi_theta(πθ) is the model to be optimized, Pi_reference(π_ref) is a reference
+    model, and π∗(y|x) denotes the probability of response y given user input x.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'π∗(y|x) breaks down into token-level computations. For a chosen response with
+    tokens `[t₁, t₂, ..., tₙ]`, the log probability becomes:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: log π∗(y|x) = Σᵢ log π(tᵢ|x, t₁…tᵢ₋₁)
+  prefs: []
+  type: TYPE_NORMAL
+- en: Each token contributes its individual log probability to the overall sequence
+    probability, and there is no mechanism to weight important content more than filler.
+    Let’s look at an example of preference data.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Input**: What is the capital of France?'
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: '**Chosen**: The capital of France is Paris.'
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: '**Rejected**: The capital of France is Italy, which is actually incorrect.'
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: DPO computes log probabilities for every token equally.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '`Chosen: log P("The") + log P("capital") + log P("of") + log P("France") +
+    log P("is") + log P("Paris") + log P(".")`'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '`Rejected: log P("The") + log P("capital") + ... + log P("Italy") + ... + log
+    P("incorrect") + log P(".")`'
+  prefs: []
+  type: TYPE_NORMAL
+- en: The critical factual difference lies in “Paris” vs “Italy,” but DPO gives equal
+    weight to articles, prepositions, and the factually crucial tokens. This uniform
+    token treatment creates a mismatch between what the optimization focuses on and
+    what humans actually care about.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The model receives equal learning signal from semantically crucial tokens (“Paris”)
+    and inconsequential ones (“which”, “actually”). This leads to the verbosity trap,
+    longer sequences accumulate more log likelihood mass through sheer token count,
+    so DPO can inadvertently reward verbosity over quality.
+  prefs: []
+  type: TYPE_NORMAL
+- en: When semantically crucial tokens get averaged with stylistic ones, the learning
+    signals become unreliable, leading to suboptimal preference learning. These problems
+    can be solved if we have a better way to give more weight to relevant tokens when
+    calculating the probability of the response. That’s exactly what OTPO does.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Optimal Transport-Based Token Weighting (OTPO)
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: Now that we understand DPO’s token weighting problem, let’s see how OTPO solves
+    it using optimal transport theory. OTPO views preference optimization as a transport
+    problem, how much effort does it take to transform one response into another?
+  prefs: []
+  type: TYPE_NORMAL
+- en: The key insight is what’s the minimum effort needed to change “The capital of
+    France is Paris” into “The capital of France is Italy”? Most tokens remain the
+    same, but “Paris” → “Italy” requires significant semantic transformation since
+    they’re completely different concepts.
+  prefs: []
+  type: TYPE_NORMAL
+- en: OTPO formulates this as an optimal transport problem where sources are tokens
+    in the chosen response, targets are tokens in the rejected response, and transport
+    costs reflect semantic similarity between token pairs. Semantically similar tokens
+    (like “Paris” and “London”) have low transport costs, while distant tokens (like
+    “Paris” and “apple”) have high costs.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The algorithm computes an optimal transport solution that tells us how to move
+    probability mass between responses with minimal total cost. Token pairs that participate
+    heavily in this transport, especially those requiring expensive semantic transformations,
+    receive higher weights in the final loss calculation. This means OTPO automatically
+    focuses learning on the tokens that matter most for human preferences, solving
+    DPO’s equal weighting problem.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Math behind OTPO
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: Now let’s dive into the mathematical foundation of OTPO. The algorithm has three
+    main components, constructing a cost matrix, solving the optimal transport problem,
+    and computing weighted token losses.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Step 1: Cost Matrix Construction'
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: OTPO starts by building a cost matrix M that measures semantic distance between
+    every token pair. For the i-th token in the chosen(w) response and j-th token
+    in the rejected(l) response the cost is
+  prefs: []
+  type: TYPE_NORMAL
+- en: M[i][j] = ( h[w][i] — h[l][j] )²
+  prefs: []
+  type: TYPE_NORMAL
+- en: Where h[w][i] and h[l][j] are the last-layer hidden representations of tokens
+    from the model. This Euclidean distance captures semantic similarity. Similar
+    tokens like “Paris” and “London” have low cost, while distant tokens like “Paris”
+    and “apple” have high cost.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Step 2: Optimal Transport Problem'
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: 'OTPO formulates token weighting as an unbalanced optimal transport optimization:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/5a2c03110ac8511541e4f8dcbc559914.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Image from [OTPO paper](https://arxiv.org/pdf/2505.18720)
+  prefs: []
+  type: TYPE_NORMAL
+- en: Here Γ is the transport plan (what we’re solving for) that aligns tokens between
+    the chosen and rejected responses. Ω controls entropy regularization. KL terms
+    ensure that the marginal distributions of Γ are close to the naive DPO uniform
+    weights. The solution Γ* tells us how to optimally transport probability mass
+    between chosen and rejected tokens.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Step 3: Computing Token Weights'
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: 'From the optimal transport solution, we derive token-level weights by summing
+    along dimensions:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/8d2d4339aea0e1ea32171abab1011fb1.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Image from [OTPO paper](https://arxiv.org/pdf/2505.18720)
+  prefs: []
+  type: TYPE_NORMAL
+- en: Here, Γ(i,j) represents the weight assigned to each token pair (i, j) from chosen(w)
+    and rejected(r) response. Finally these weights are applied on the DPO to replace
+    the uniform weighting. Reward difference with weighting scheme.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/2e1433cc3a87b4a5bd249ed2f20fece9.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Image from [OTPO paper](https://arxiv.org/pdf/2505.18720)
+  prefs: []
+  type: TYPE_NORMAL
+- en: Experiment Results and Limitations
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: OTPO was tested on a variety of tasks but in a controlled environment. When
+    it was applied to summarization tasks, it showed about 8.5% improvement over other
+    methods. When it was tested for length biases on the UltraFeedback dataset with
+    smaller models like Llama-3–8B, OTPO was producing shorter responses. These initial
+    tests provide evidence that OTPO helps reduce the verbosity and improve the quality
+    of responses which are more likely to be chosen by humans.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The testing was not exhaustive enough to present the accuracy number across
+    the domain. There were mixed results on different datasets. OTPO requires expensive
+    cost metric and transport plan calculation. Also, the LLM as judge was used to
+    calculate the quality of response, which was further scanned manually by a few
+    people. These methods are good only but totally dependent on reviewers who might
+    be easily biased towards certain datasets.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Conclusion
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: LLM alignment has been major a topic of research, and OTPO offers promising
+    results in a controlled environment. While this approach is not perfect, the introduction
+    of weighted token selection lays the groundwork for more fine-grained preference
+    modeling in alignment tasks.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'References:'
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: Direct policy optimization(DPO). [https://arxiv.org/pdf/2305.18290](https://arxiv.org/pdf/2305.18290)
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Optimal transport based token weighting scheme. [https://arxiv.org/pdf/2505.18720](https://arxiv.org/pdf/2505.18720)
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Eliminating Biased Length Reliance of Direct Preference Optimization(SamPO).
+    [https://arxiv.org/pdf/2406.10957](https://arxiv.org/pdf/2406.10957)
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL

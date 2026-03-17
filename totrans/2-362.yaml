@@ -1,0 +1,374 @@
+- en: How Not to Write an MCP Server
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 原文：[https://towardsdatascience.com/how-not-to-write-an-mcp-server/](https://towardsdatascience.com/how-not-to-write-an-mcp-server/)
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: I <mdspan datatext="el1746766844980" class="mdspan-comment">recently had</mdspan>
+    the chance to create an MCP server for an observability application in order to
+    provide the AI agent with dynamic code analysis capabilities. Because of its potential
+    to transform applications, MCP is a technology I’m even more ecstatic about than
+    I originally was about genAI in general. I wrote more about that and some intro
+    to MCPs in general in a previous [post](https://towardsdatascience.com/a-farewell-to-apms-the-future-of-observability-is-mcp-tools/).
+  prefs: []
+  type: TYPE_NORMAL
+- en: While an initial POCs demonstrated that there was an **immense** potential for
+    this to be a force multiplier to our product’s value, it took several iterations
+    and several stumbles to deliver on that promise. In this post, I’ll try to capture
+    some of the lessons learned, as I think that this can benefit other MCP server
+    developers.
+  prefs: []
+  type: TYPE_NORMAL
+- en: My Stack
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: I was using [Cursor](https://www.cursor.com/) and [vscode](https://code.visualstudio.com/docs/copilot/chat/mcp-servers)
+    intermittently as the main MCP client
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: To develop the MCP server itself, I used the[ .NET MCP SDK](https://github.com/modelcontextprotocol/csharp-sdk),
+    as I decided to host the server on another service written in .NET
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'Lesson 1: Don’t dump all of your data on the agent'
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: 'In my application, one tool returns aggregated information on errors and exceptions.
+    The API is very detailed as it serves a complex UI view, and spews out large amounts
+    of deeply linked data:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Error frames
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Affected endpoints
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Stack traces
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Priority and trends
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Histograms
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: My first hunch was to simply expose the API **as is** as an MCP tool. After
+    all, the agent should be able to make more sense of it than any UI view, and catch
+    on to interesting details or connections between events. There were several scenarios
+    I had in mind as to how I would expect this data to be useful. The agent could
+    automatically offer fixes for recent exceptions recorded in production or in the
+    testing environment, let me know about errors that stand out, or help me address
+    some systematic problems that are the underlying root cause of the issues.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The basic premise was therefore to allow the agent to work its ‘magic’, with
+    more data potentially meaning more hooks for the agent to latch on in its investigation
+    efforts. I quickly coded a wrapper around our API on the MCP endpoint and decided
+    to start with a basic prompt to see whether everything is working:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/3bfb4c1a26175f89302783b5d55cdf88.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Image by author
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'We can see the agent was smart enough to know that it needed to call another
+    tool to grab the environment ID for that ‘**test**’ environment I mentioned. With
+    that at hand, after discovering that there was actually no recent exception in
+    the last 24 hours, it then took the liberty to scan a more extended time period,
+    and this is when things got a little weird:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/03b9c208e6e470b95b8d66e0dbe0a989.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Image by author
+  prefs: []
+  type: TYPE_NORMAL
+- en: What a strange response. The agent queries for exceptions from the last seven
+    days, gets back some tangible results this time, and yet proceeds to ramble on
+    as if ignoring the data altogether. It continues to try and use the tool in different
+    ways and different parameter combinations, obviously fumbling, until I notice
+    it flat out calls out the fact that the data is completely invisible to it. While
+    errors are being sent back in the response, the agent actually claims there are
+    **no errors.** What is going on?
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/79b453bd15e1acde2b74d73d61e9e87c.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Image by author
+  prefs: []
+  type: TYPE_NORMAL
+- en: After some investigation, the problem was revealed to be the fact that we’ve
+    simply reached a cap in the agent’s capacity to process large amounts of data
+    in the response.
+  prefs: []
+  type: TYPE_NORMAL
+- en: I used an existing API that was extremely verbose, which I initially even considered
+    to be an advantage. The end result, however, was that I somehow managed to overwhelm
+    the model. Overall, there were around 360k characters and 16k words in the response
+    JSON. This includes call stacks, error frames, and references. This **should**
+    have been supported just by looking at the context window limit for the model
+    I was using (Claude 3.7 Sonnet should support up to 200k tokens), but nevertheless
+    the large data dump left the agent thoroughly stumped.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'One strategy would be to change the model to one that supports an even bigger
+    context window. I switched over to the **Gemini 2.5 pro** model just to test that
+    theory out, as it boasts an outrageous limit of one million tokens. Sure enough,
+    the same query now yielded a much more intelligent response:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/acd3979e91fe89f7247cbcc1f35d0719.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Image by author
+  prefs: []
+  type: TYPE_NORMAL
+- en: This is great! The agent was able to parse the errors and find the systematic
+    cause of many of them with some basic reasoning. However, we can’t rely on the
+    user using a specific model, and to complicate things, this was output from a
+    relatively low bandwidth testing environment. What if the dataset were even larger?
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'To solve this issue, I made some fundamental changes to how the API was structured:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Nested data hierarchy:** Keep the initial response focused on high-level
+    details and aggregations. Create a separate API to retrieve the call stacks of
+    specific frames as needed.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Enhance queryability:** All of the queries made so far by the agent used
+    a very small page size for the data (10), if we want the agent to be able to to
+    access more relevant subsets of the data to fit with the limitations of its context,
+    we need to provide more APIs to query errors based on different dimensions, for
+    example: affected methods, error type, priority and impact etc.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: With the new changes, the tool now consistently analyzes important new exceptions
+    and comes up with fix suggestions. However, I glanced over another minor detail
+    I needed to sort before I could really use it reliably.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Lesson 2: What’s the time?'
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: '![](../Images/71e5941177161d8cf8ae60701d6fe8ae.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Image generated by the author with Midjourney
+  prefs: []
+  type: TYPE_NORMAL
+- en: The keen-eyed reader may have noticed that in the previous example, to retrieve
+    the errors in a specific time range, the agent uses the **ISO 8601 time duration**
+    format instead of the actual dates and times. So instead of including standard
+    ‘**From**’ and ‘**To**’ parameters with datetime values, the AI sent a duration
+    value, for example, seven days or **P7D,** to indicate it wants to check for errors
+    in the past week.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The reason for this is somewhat strange — **the agent might not know the current
+    date and time!** You can verify that yourself by asking the agent that simple
+    question. The below would have made sense were it not for the fact that I typed
+    that prompt in at around noon on May 4th…
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/d188551c833b3e2b417753a8d612f950.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Image by author
+  prefs: []
+  type: TYPE_NORMAL
+- en: Using time **duration** values turned out to be a great solution that the agent
+    handled quite well. Don’t forget to document the expected value and example syntax
+    in the tool parameter description, though!
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Lesson 3: When the agent makes a mistake, show it how to do better'
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: In the first example, I was actually taken aback by how the agent was able to
+    decipher the dependencies between the different tool calls In order to provide
+    the right environment identifier. In studying the MCP contract, it figured out
+    that it had to call on a dependent another tool to get the list of environment
+    IDs first.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'However, responding to other requests, the agent would sometimes take the environment
+    names mentioned in the prompt verbatim. For example, I noticed that in response
+    to this question: **compare slow traces for this method between the test and prod
+    environments, are there any significant differences?** Depending on the context,the
+    agent would sometimes use the environment names mentioned in the request and would
+    send the strings “test” and “prod” as the environment ID.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: In my original implementation, my MCP server would silently fail in this scenario,
+    returning an empty response. The agent, upon receiving no data or a generic error,
+    would simply quit and try to solve the request using another strategy. To offset
+    that behavior, I quickly changed my implementation so that if an incorrect value
+    was provided, the JSON response would describe exactly what went wrong, and even
+    provide a valid list of possible values to save the agent another tool call.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/50e130df3d8e6993f00e127560f468d8.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Image by author
+  prefs: []
+  type: TYPE_NORMAL
+- en: This was enough for the agent, learning from its mistake, it repeated the call
+    with the correct value and somehow also avoided making that same error in the
+    future.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Lesson 4: Focus on user intent and not functionality'
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: While it is tempting to simply describe what the API is doing, sometimes the
+    generic terms don’t quite allow the agent to realize the type of requirements
+    for which this functionality might apply best.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Let’s take a simple example: My MCP server has a tool that, for each method,
+    endpoint, or code location, can indicate how it’s being used at runtime. Specifically,
+    it uses the tracing data to indicate which application flows reach the specific
+    function or method.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The original documentation simply described this functionality:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE0]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The above represents a functionally accurate description of what this tool
+    does, but it doesn’t necessarily make it clear what types of activities it might
+    be relevant for. After seeing that the agent wasn’t picking this tool up for various
+    prompts I thought it would be fairly useful for, I decided to rewrite the tool
+    description, this time emphasizing the use cases:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE1]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Updating the text helped the agent realize **why** the information was useful.
+    For example, before making this change, the agent would not even trigger the tool
+    in response to a prompt similar to the one below. Now, it has become completely
+    seamless, without the user having to directly mention that this tool should be
+    used:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/1576e29f9149d65ab0192237700d2b66.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Image by author
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Lesson 5: Document your JSON responses'
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: 'The JSON standard, at least officially, does not support comments. That means
+    that if the JSON is all the agent has to go on, it might be missing some clues
+    about the context of the data you’re returning. For example, in my aggregated
+    error response, I returned the following **score** object:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE2]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Without proper documentation, any non-clairvoyant agent would be hard pressed
+    to make sense of what these numbers mean. Thankfully, it is easy to add a comment
+    element at the beginning of the JSON file with additional information about the
+    data provided:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE3]'
+  prefs: []
+  type: TYPE_PRE
+- en: This enables the agent to explain to the user what the score means if they ask,
+    but also feed this explanation into its own reasoning and recommendations.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Choosing the right architecture: SSE vs STDIO,'
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: There are two architectures you can use in developing an MCP server. The more
+    common and widely supported implementation is making your server available as
+    a **command** triggered by the MCP client. This could be any CLI-triggered command;
+    **npx, docker**, and **python** are some common examples.In this configuration,
+    all communication is done via the process **STDIO**, and the process itself is
+    running on the client machine. The client is responsible for instantiating and
+    maintaining the lifecycle of the MCP server.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/a88fa3364746869ff5a706e60a25f523.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Image by author
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'This client-side architecture has one major drawback from my perspective: Since
+    the MCP server implementation is run by the client on the local machine, it is
+    much harder to roll out updates or new capabilities. Even if that problem is somehow
+    solved, the tight coupling between the MCP server and the backend APIs it depends
+    on in our applications would further complicate this model in terms of versioning
+    and forward/backward compatibility.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: For these reasons, I chose the second type of MCP Server — an [SSE](https://en.wikipedia.org/wiki/Server-sent_events)
+    Server hosted as a part of our application services. This removes any friction
+    from running CLI commands on the client machine, as well as allows me to update
+    and version the MCP server code along with the application code that it consumes.
+    In this scenario, the client is provided with a URL of the SSE endpoint with which
+    it interacts. While not all clients currently support this option, there is a
+    brilliant commandMCP called [supergateway](https://github.com/supercorp-ai/supergateway)
+    that can be used as a proxy to the SSE server implementation. That means users
+    can still add the more widely supported STDIO variant and still consume the functionality
+    hosted on your SSE backend.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/70f9fff162027724a185e15782689a28.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Image by author
+  prefs: []
+  type: TYPE_NORMAL
+- en: MCPs are still new
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: There are many more lessons and nuances to using this deceptively simple technology.
+    I have found that there is a big gap between implementing a workable MCP to one
+    that can actually integrate with user needs and usage scenarios, even beyond those
+    you have anticipated. Hopefully, as the technology matures, we’ll see more posts
+    on best practices.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Want to Connect? **You can reach me on Twitter at @doppleware or via [LinkedIn](https://www.linkedin.com/in/ronidover/).'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Follow my **MCP** for dynamic code analysis using observability at [https://github.com/digma-ai/digma-mcp-server](https://github.com/digma-ai/digma-mcp-server)
+  prefs: []
+  type: TYPE_NORMAL

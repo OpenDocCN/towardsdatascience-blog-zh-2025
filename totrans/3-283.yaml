@@ -1,0 +1,494 @@
+- en: 'Training Large Language Models: From TRPO to GRPO'
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 原文：[https://towardsdatascience.com/training-large-language-models-from-trpo-to-grpo/](https://towardsdatascience.com/training-large-language-models-from-trpo-to-grpo/)
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: 'DeepSeek has recently made **quite a buzz** in the AI community, thanks to
+    its impressive performance at relatively low costs. I think this is a perfect
+    opportunity to dive deeper into how Large Language Models (LLMs) are trained.
+    In this article, we will focus on the Reinforcement Learning (RL) side of things:
+    we will cover TRPO, PPO, and, more recently, GRPO (don’t worry, I will explain
+    all these terms soon!)'
+  prefs: []
+  type: TYPE_NORMAL
+- en: I have aimed to keep this article relatively easy to read and accessible, by
+    minimizing the math, so you won’t need a deep Reinforcement Learning background
+    to follow along. However, I will assume that you have some familiarity with Machine
+    Learning, Deep Learning, and a basic understanding of how LLMs work.
+  prefs: []
+  type: TYPE_NORMAL
+- en: I hope you enjoy the article!
+  prefs: []
+  type: TYPE_NORMAL
+- en: The 3 steps of LLM training
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: '![](../Images/e6352f05d285ed64b2d9d86566bd94dd.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: The 3 steps of LLM training [1]
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Before diving into RL specifics, let’s briefly recap the three main stages
+    of training a Large Language Model:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Pre-training**: the model is trained on a massive dataset to predict the
+    next token in a sequence based on preceding tokens.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Supervised Fine-Tuning (SFT)**: the model is then **fine-tuned** on more
+    targeted data and aligned with specific instructions.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Reinforcement Learning** (often called *RLHF* for Reinforcement Learning
+    with Human Feedback): this is the focus of this article. The main goal is to further
+    refine responses’ alignments with human preferences, by allowing the model to
+    learn directly from feedback.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Reinforcement Learning Basics
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: '![](../Images/bb3a061f85724810ef7c452e2c0a6ed7.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: A robot trying to exit a maze! [2]
+  prefs: []
+  type: TYPE_NORMAL
+- en: Before diving deeper, let’s briefly revisit the core ideas behind Reinforcement
+    Learning.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'RL is quite straightforward to understand at a high level: an **agent** interacts
+    with an **environment**. The agent resides in a specific **state** within the
+    environment and can take **actions** to transition to other states. Each action
+    yields a **reward** from the environment: this is how the environment provides
+    feedback that guides the agent’s future actions.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Consider the following example: a **robot** (the agent) navigates (and tries
+    to exit) a **maze** (the environment).'
+  prefs: []
+  type: TYPE_NORMAL
+- en: The **state** is the current situation of the environment (the robot’s position
+    in the maze).
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'The robot can take different **actions**: for example, it can move forward,
+    turn left, or turn right.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Successfully navigating towards the exit yields a **positive reward**, while
+    hitting a wall or getting stuck in the maze results in **negative rewards.**
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Easy! Now, let’s now make an analogy to how RL is used in the context of LLMs.
+  prefs: []
+  type: TYPE_NORMAL
+- en: RL in the context of LLMs
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: '![](../Images/6d5ddfb87f9ce187d71ec389982d6cde.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Simplified RLHF Process [3]
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'When used during LLM training, RL is defined by the following components:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: The LLM itself **is the agent**
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Environment**: everything external to the LLM, including user prompts, feedback
+    systems, and other contextual information. This is basically the framework the
+    LLM is interacting with during training.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Actions:** these are responses to a query from the model. More specifically:
+    these are the **tokens** that the LLM decides to generate in response to a query.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**State:** the current query being answered along with tokens the LLM has generated
+    so far (i.e., the partial responses).'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Rewards:** this is a bit more tricky here: unlike the maze example above,
+    there is **usually** no binary reward. In the context of LLMs, rewards usually
+    come from a separate *reward model*, which outputs a score for each (query, response)
+    pair. This model is trained from human-annotated data (hence “RLHF”) where annotators
+    rank different responses. The goal is for higher-quality responses to receive
+    higher rewards.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'Note: in some cases, rewards can actually get simpler. For example, in DeepSeekMath,
+    **rule-based approaches** can be used because math responses tend to be more deterministic
+    (correct or wrong answer)'
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: '**Policy** is the final concept we need for now. In RL terms, a policy is simply
+    the strategy for deciding which action to take. In the case of an LLM, the policy
+    outputs a probability distribution over possible tokens at each step: in short,
+    this is what the model uses to sample the next token to generate. Concretely,
+    the policy is determined by the model’s parameters (weights). During RL training,
+    we adjust these parameters so the LLM becomes more likely to produce “better”
+    tokens— that is, tokens that produce higher reward scores.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'We often write the policy as:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/fceaad2d93785d5d17e5ce25e63462b0.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: where *a* is the action (a token to generate), *s* the state (the query and
+    tokens generated so far), and *θ* (model’s parameters).
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'This idea of finding the best policy is the whole point of RL! Since we don’t
+    have labeled data (like we do in supervised learning) **we use rewards to adjust
+    our policy to take better actions.** *(In LLM terms: we adjust the parameters
+    of our LLM to generate better tokens.)*'
+  prefs: []
+  type: TYPE_NORMAL
+- en: TRPO (Trust Region Policy Optimization)
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: An analogy with supervised learning
+  prefs:
+  - PREF_H4
+  type: TYPE_NORMAL
+- en: Let’s take a quick step back to how supervised learning typically works. you
+    have labeled data and use a loss function (like cross-entropy) to measure how
+    close your model’s predictions are to the true labels.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/a08c4af7c0f1b77ba401843932e0eb1b.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: We can then use algorithms like backpropagation and gradient descent to minimize
+    our loss function and update the weights *θ* of our model.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Recall that our policy also outputs probabilities! In that sense, it is analogous
+    to the model’s predictions in supervised learning… We are tempted to write *something
+    like*:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/a1e5d95c3929bddfb14fd2ddbaed5b2e.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: where *s* is the current state and *a* is a possible action.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '*A(s, a)* is called the **advantage function** and measures how good is the
+    chosen action in the current state, compared to a baseline. This is very much
+    like the notion of **labels** in supervised learning but derived from **rewards**
+    instead of explicit labeling. *To simplify*, we can write the advantage as:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/8733907cd1d78c7faa223dd9d3bcc36e.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: In practice, the baseline is calculated using a **value function**. This is
+    a common term in RL that I will explain later. What you need to know for now is
+    that it measures the expected reward we would receive if we continue following
+    the current policy from the state *s*.
+  prefs: []
+  type: TYPE_NORMAL
+- en: What is TRPO?
+  prefs:
+  - PREF_H4
+  type: TYPE_NORMAL
+- en: 'TRPO (Trust Region Policy Optimization) builds on this idea of using the advantage
+    function but adds a critical ingredient for **stability**: it **constrains** how
+    far the new policy can deviate from the old policy at each update step (similar
+    to what we do with batch gradient descent for example).'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'It introduces a KL divergence term (see it as a measure of similarity) between
+    the current and the old policy:'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '![](../Images/3fc5ada6007f2abb6b651b0c7807d860.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: It also divides the policy by the old policy. This ratio, multiplied by the
+    advantage function, gives us a sense of how beneficial each update is **relative
+    to the old policy**.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Putting it all together, TRPO tries to **maximize** a surrogate objective (which
+    involves the advantage and the policy ratio) subject to a **KL divergence constraint**.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/54764701008a9b5bea7e58c06894238a.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: PPO (Proximal Policy Optimization)
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: While TRPO was a significant advancement, it’s no longer used widely in practice,
+    especially for training LLMs, due to its computationally intensive gradient calculations.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Instead, PPO is now the preferred approach in most LLMs architecture, including
+    ChatGPT, Gemini, and more.
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: It is actually quite similar to TRPO, but instead of enforcing **a hard constraint
+    on the KL divergence**, PPO introduces a “**clipped** surrogate objective” that
+    implicitly restricts policy updates, and greatly simplifies the optimization process.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Here is a breakdown of the PPO objective function we maximize to tweak our model’s
+    parameters.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/03b20ffe02f1d0ccaec0e6e8923c161b.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: GRPO (Group Relative Policy Optimization)
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: How is the value function usually obtained?
+  prefs:
+  - PREF_H4
+  type: TYPE_NORMAL
+- en: Let’s first talk more about the **advantage** and the **value functions** I
+    introduced earlier.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In typical setups (like PPO), a **value model** is trained alongside the policy.
+    Its goal is to predict the value of each action we take (each token generated
+    by the model), using the rewards we obtain (remember that the value should represent
+    the expected cumulative reward).
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Here is how it works in practice. Take the query “What is 2+2?” as an example.
+    Our model outputs “2+2 is 4” and receives a reward of 0.8 for that response. We
+    then go backward and attribute **discounted rewards** to each prefix:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: “2+2 is 4” gets a value of 0.8
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: “2+2 is” (1 token backward) gets a value of 0.8*γ*
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: “2+2” (2 tokens backward) gets a value of 0.8*γ²*
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: etc.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: where *γ* is the discount factor (0.9 for example). We then use these prefixes
+    and associated values to train the value model.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Important note: the value model and the reward model are two different things.
+    The reward model is trained before the RL process and uses pairs of (query, response)
+    and human ranking. The value model is trained concurrently to the policy, and
+    aims at predicting the future expected reward at each step of the generation process.'
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: What’s new in GRPO
+  prefs:
+  - PREF_H4
+  type: TYPE_NORMAL
+- en: Even if in practice, the reward model is often derived from the policy (training
+    only the “head”), we still end up maintaining many models and handling multiple
+    training procedures (policy, reward, value model). **GRPO** streamlines this by
+    introducing a more efficient method.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Remember what I said earlier?
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/29615780f5049efb1d7292294b8d13e4.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'In PPO, we decided to use our value function as the baseline. GRPO chooses
+    something else: Here is what GRPO does: concretely, **for each query**, GRPO generates
+    a group of responses (group of size G) and uses their rewards to calculate each
+    response’s advantage as a **z-score**:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/379984f65a82eeae2b231f2f63cf6e4d.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: where *rᵢ* is the reward of the *i*-th response and *μ* and *σ* are the mean
+    and standard deviation of rewards in that group.
+  prefs: []
+  type: TYPE_NORMAL
+- en: This naturally eliminates the need for a separate value model. This idea makes
+    a lot of sense when you think about it! **It aligns with the value function we
+    introduced before** and also measures, in a sense, an “expected” reward we can
+    obtain. Also, this new method is well adapted to our problem because LLMs can
+    easily generate multiple **non-deterministic outputs** by using a low *temperature*
+    (controls the randomness of tokens generation).
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'This is the main idea behind GRPO: getting rid of the value model.'
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: Finally, GRPO adds a **KL divergence** term (to be exact, GRPO uses a simple
+    approximation of the KL divergence to improve the algorithm further) directly
+    into its objective, comparing the current policy to a **reference policy** (often
+    the post-SFT model).
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'See the final formulation below:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/e965b0db19fae262fdaee789b8653e77.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: '**And… that’s mostly it for GRPO!** I hope this gives you a clear overview
+    of the process: it still relies on the same foundational ideas as TRPO and PPO
+    but introduces additional improvements to make training more efficient, faster,
+    and cheaper — key factors behind **DeepSeek’s success**.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Conclusion
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: 'Reinforcement Learning has become a cornerstone for training today’s Large
+    Language Models, particularly through PPO, and more recently GRPO. Each method
+    rests on the same RL fundamentals — states, actions, rewards, and policies — but
+    adds its own twist to balance stability, efficiency, and human alignment:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: • **TRPO** introduced strict policy constraints via KL divergence
+  prefs: []
+  type: TYPE_NORMAL
+- en: • **PPO** eased those constraints with a clipped objective
+  prefs: []
+  type: TYPE_NORMAL
+- en: • **GRPO** took an extra step by removing the value model requirement and using
+    group-based reward normalization. Of course, DeepSeek also benefits from other
+    innovations, like high-quality data and other training strategies, but that is
+    for another time!
+  prefs: []
+  type: TYPE_NORMAL
+- en: I hope this article gave you a clearer picture of how these methods connect
+    and evolve. I believe that Reinforcement Learning will become **the main focus
+    in training LLMs** to improve their performance, surpassing pre-training and SFT
+    in driving future innovations.
+  prefs: []
+  type: TYPE_NORMAL
+- en: If you’re interested in diving deeper, feel free to check out the references
+    below or explore my previous posts.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Thanks for reading, and feel free to leave a clap and a comment!
+  prefs: []
+  type: TYPE_NORMAL
+- en: '* * *'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Want to learn more about Transformers or dive into the math behind the Curse
+    of Dimensionality? Check out my previous articles:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[Transformers: How Do They Transform Your Data?](https://towardsdatascience.com/transformers-how-do-they-transform-your-data-72d69e383e0d/)'
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: '[Deep Learning](https://towardsdatascience.com/category/artificial-intelligence/deep-learning/)'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Diving into the Transformers architecture and what makes them unbeatable at
+    language tasks
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Maxime Wolf Avatar](../Images/e7871d9c3be83d02b4c35e857d0e69b5.png)[Maxime
+    Wolf](https://towardsdatascience.com/author/maxwolf34/)Mar 2812 min read![Image
+    by the author](../Images/0b9b0c18d5dada87845788517c4cb722.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: '* * *'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Feel free to connect on [LinkedIn](https://www.linkedin.com/in/maxime-wolf/)
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Follow me on [GitHub](https://github.com/maxime7770) for more content
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'Visit my website: [maximewolf.com](http://maximewolf.com/)'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '* * *'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'References:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[1] “Foundations of Large Language Models”, 2025\. [https://arxiv.org/pdf/2501.09223](https://arxiv.org/pdf/2501.09223)'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '[2] **“**Reinforcement Learning**.”** Enaris. Available at: [https://enaris.org/material/en/Reinforcement%20Learning/index.html](https://enaris.org/material/en/Reinforcement%20Learning/index.html)'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '[3] Y. Gokhale. “Introduction to LLMs and the Generative AI Part 5: RLHF,”
+    *Medium*, 2023\. Available at: [https://medium.com/@yash9439/introduction-to-llms-and-the-generative-ai-part-5-rlhf-64e83fbcd795](https://medium.com/@yash9439/introduction-to-llms-and-the-generative-ai-part-5-rlhf-64e83fbcd795)'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '[4] L. Weng. “An Overview of Reinforcement Learning,” 2018\. Available at:
+    [https://lilianweng.github.io/posts/2018-02-19-rl-overview/](https://lilianweng.github.io/posts/2018-02-19-rl-overview/)'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '[5] “DeepSeek-R1: Incentivizing Reasoning Capability in LLMs via Reinforcement
+    Learning”, 2025\. [https://arxiv.org/pdf/2501.12948](https://arxiv.org/pdf/2501.12948)'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '[6] “DeepSeekMath: Pushing the Limits of Mathematical Reasoning in Open Language
+    Models”, 2025\. [https://arxiv.org/pdf/2402.03300](https://arxiv.org/pdf/2402.03300)'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '[7] “Trust Region Policy Optimization”, 2017\. [https://arxiv.org/pdf/1502.05477](https://arxiv.org/pdf/1502.05477)'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL

@@ -1,0 +1,201 @@
+- en: Decision Trees Natively Handle Categorical Data
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 原文：[https://towardsdatascience.com/decision-trees-natively-handle-categorical-data/](https://towardsdatascience.com/decision-trees-natively-handle-categorical-data/)
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: <mdspan datatext="el1748975096821" class="mdspan-comment">Many claim that</mdspan>
+    machine learning algorithms can’t handle categorical variables. But decision trees
+    (DTs) can. Classification trees don’t require a numerical target either. Below
+    is an illustration of a tree that classifies a subset of Cyrillic letters into
+    vowels and consonants. It uses no numeric features — yet it exists.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Many also promote mean target encoding (MTE) as a clever way to convert categorical
+    data into numerical form — without inflating the feature space as one-hot encoding
+    does. However, I haven’t seen any mention of this inherent connection between
+    MTE and decision tree logic on TDS. This article addresses exactly that gap through
+    an illustrative experiment. In particular:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: I’ll start with a quick recap of how decision trees handle categorical features.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: We’ll see that this becomes a computational challenge for features with high
+    cardinality.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: I’ll demonstrate how mean target encoding naturally emerges as a solution to
+    this problem — unlike, say, label encoding.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: You can reproduce my experiment using the code from [GitHub](https://github.com/Arzik1987/medium/blob/main/mt_encoding/mt_encoding.ipynb).
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '![](../Images/23221d6bc97cefeab598ff63c3f08f25.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: This simple decision tree (a decision stump) uses no numerical features — yet
+    it exists. Image created by author with the help of ChatGPT-4o
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'A quick note: One-hot encoding is often portrayed unfavorably by fans of mean
+    target encoding — but it’s not as bad as they suggest. In fact, in our benchmark
+    experiments, it often ranked first among the 32 categorical encoding methods we
+    evaluated. [1]'
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: Decision trees and the curse of categorical features
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: Decision tree learning is a recursive algorithm. At each recursive step, it
+    iterates over all features, searching for the best split. So, it’s enough to examine
+    how a single recursive iteration handles a categorical feature. If you’re unsure
+    how this operation generalizes to the construction of the full tree, take a look
+    here [2].
+  prefs: []
+  type: TYPE_NORMAL
+- en: For a categorical feature, the algorithm evaluates all possible ways to divide
+    the categories into two nonempty sets and selects the one that yields the highest
+    split quality. The quality is typically measured using Gini impurity for binary
+    classification or mean squared error for regression — both of which are better
+    when lower. See their pseudocode below.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE0]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE1]'
+  prefs: []
+  type: TYPE_PRE
+- en: Let’s say the feature has cardinality *k*. Each category can belong to either
+    of the two sets, giving 2*ᵏ* total combinations. Excluding the two trivial cases
+    where one of the sets is empty, we’re left with 2*ᵏ*−2 feasible splits. Next,
+    note that we don’t care about the order of the sets — splits like {{A,B},{C}}
+    and {{C},{A,B}} are equivalent. This cuts the number of unique combinations in
+    half, resulting in a final count of (2*ᵏ*−2)/2 iterations. For our above toy example
+    with *k=5* Cyrillic letters, that number is 15\. But when *k=20*, it balloons
+    to 524,287 combinations — enough to significantly slow down DT training.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Mean target encoding solves the efficiency problem
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: What if one could reduce the search space from (2*ᵏ*−2)/2 to something more
+    manageable — without losing the optimal split? It turns out this is indeed possible.
+    One can show theoretically that mean target encoding enables this reduction [3].
+    Specifically, if the categories are arranged in order of their MTE values, and
+    only splits that respect this order are considered, the optimal split — according
+    to Gini impurity for classification or mean squared error for regression — will
+    be among them. There are exactly *k-1* such splits, a dramatic reduction compared
+    to (2*ᵏ*−2)/2\. The pseudocode for MTE is below.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE2]'
+  prefs: []
+  type: TYPE_PRE
+- en: Experiment
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: I’m not going to repeat the theoretical derivations that support the above claims.
+    Instead, I designed an experiment to validate them empirically and to get a sense
+    of the efficiency gains brought by MTE over native partitioning, which exhaustively
+    iterates over all possible splits. In what follows, I explain the data generation
+    process and the experiment setup.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Data
+  prefs:
+  - PREF_H4
+  type: TYPE_NORMAL
+- en: To generate synthetic data for the experiment, I used a simple function that
+    constructs a two-column dataset. The first column contains **n** distinct categorical
+    levels, each repeated **m** times, resulting in a total of **n × m** rows. The
+    second column represents the target variable and can be either binary or continuous,
+    depending on the input parameter. Below is the pseudocode for this function.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE3]'
+  prefs: []
+  type: TYPE_PRE
+- en: Experiment setup
+  prefs:
+  - PREF_H4
+  type: TYPE_NORMAL
+- en: 'The `experiment` function takes a list of cardinalities and a splitting criterion—either
+    Gini impurity or mean squared error, depending on the target type. For each categorical
+    feature cardinality in the list, it generates 100 datasets and compares two strategies:
+    exhaustive evaluation of all possible category splits and the restricted, MTE-informed
+    ordering. It measures the runtime of each method and checks whether both approaches
+    produce the same optimal split score. The function returns the number of matching
+    cases along with average runtimes. The pseudocode is given below.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE4]'
+  prefs: []
+  type: TYPE_PRE
+- en: Results
+  prefs:
+  - PREF_H4
+  type: TYPE_NORMAL
+- en: You can take my word for it — or repeat the experiment ([GitHub](https://github.com/Arzik1987/medium/blob/main/mt_encoding/mt_encoding.ipynb)) — but
+    the optimal split scores from both approaches always matched, just as the theory
+    predicts. The figure below shows the time required to evaluate splits as a function
+    of the number of categories; the vertical axis is on a logarithmic scale. The
+    line representing exhaustive evaluation appears linear in these coordinates, meaning
+    the runtime grows exponentially with the number of categories — confirming the
+    theoretical complexity discussed earlier. Already at 12 categories (on a dataset
+    with 1,200 rows), checking all possible splits takes about one second — three
+    orders of magnitude slower than the MTE-based approach, which yields the same
+    optimal split.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/25e1dc574b510a0d5e2622e501bc3b86.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Binary Target — Gini Impurity. Image created by author
+  prefs: []
+  type: TYPE_NORMAL
+- en: Conclusion
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: 'Decision trees can natively handle categorical data, but this ability comes
+    at a computational cost when category counts grow. Mean target encoding offers
+    a principled shortcut — drastically reducing the number of candidate splits without
+    compromising the result. Our experiment confirms the theory: MTE-based ordering
+    finds the same optimal split, but exponentially faster.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: At the time of writing, `scikit-learn` does not support categorical features
+    directly. So what do you think — if you preprocess the data using MTE, will the
+    resulting decision tree match one built by a learner that handles categorical
+    features natively?
+  prefs: []
+  type: TYPE_NORMAL
+- en: References
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: '[1] *A Benchmark and Taxonomy of Categorical Encoders.* Towards Data Science.
+    [https://towardsdatascience.com/a-benchmark-and-taxonomy-of-categorical-encoders-9b7a0dc47a8c/](https://towardsdatascience.com/a-benchmark-and-taxonomy-of-categorical-encoders-9b7a0dc47a8c/)'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[2] *Mining Rules from Data*. Towards Data Science. [https://towardsdatascience.com/mining-rules-from-data](https://towardsdatascience.com/mining-rules-from-data)'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[3] Hastie, Trevor, Tibshirani, Robert, and Friedman, Jerome. *The Elements
+    of Statistical Learning: Data Mining, Inference, and Prediction*. Vol. 2\. New
+    York: Springer, 2009.'
+  prefs: []
+  type: TYPE_NORMAL

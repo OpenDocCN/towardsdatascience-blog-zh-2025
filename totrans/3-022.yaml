@@ -1,0 +1,770 @@
+- en: Fine-Tuning VLMs for Document Understanding
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 原文：[https://towardsdatascience.com/vllm-fine-tuning-for-document-understanding/](https://towardsdatascience.com/vllm-fine-tuning-for-document-understanding/)
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: In this article, I discuss how you can fine<mdspan datatext="el1746374215548"
+    class="mdspan-comment">-tune VLMs</mdspan> (visual language models) like [Qwen
+    2.5 VL 7B.](https://arxiv.org/abs/2502.13923) I will introduce you to a dataset
+    of handwritten digits, which the base version of Qwen 2.5 VL struggles with. We
+    will then inspect the dataset, annotate it, and use it to create a fine-tuned
+    Qwen 2.5 VL, specialized in extracting hand-written text.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Overview
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'The main goal of this article is to fine-tune a VLM on a dataset, an important
+    machine-learning technique in today’s world, where language models revolutionize
+    the way data scientists and ML engineers work and achieve. I will be discussing
+    the following topics:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Motivation and Goal: Why use VLMs for text extraction'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Advantages of VLMs
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: The dataset
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Annotation and fine-tuning
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: SFT technical details
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Results and plots
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'Note: This article is written as part of the work done at [Findable](https://www.findable.ai/).
+    We do not profit financially from this work. It is done to highlight the technical
+    capabilities of modern vision-language models and digitize and share a valuable
+    handwritten phenology dataset, which may have a significant impact on climate
+    research. Furthermore, the topic of this article was covered in a presentation
+    during the [Data & Draft event](https://www.meetup.com/netlight-edge/events/306719173/)
+    by [Netlight](https://www.netlight.com/).'
+  prefs: []
+  type: TYPE_NORMAL
+- en: You can view all the code used for this article [in our GitHub repository](https://github.com/findable-no/phenology-data/tree/main),
+    and [all data is available on HuggingFace](https://huggingface.co/datasets/findableai/phenology).
+    If you’re specifically interested in the extracted phenology data from Norway,
+    including geographical coordinates corresponding to the data, the information
+    is directly available in this [Excel sheet](https://huggingface.co/datasets/findableai/phenology/blob/main/phenology_extracted_data_non_manual_verified.xlsx).
+  prefs: []
+  type: TYPE_NORMAL
+- en: Motivation and Goal
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: The goal of this article is to show you how you can fine-tune a VLM such as
+    Qwen for optimized performance on a particular task. The task we are working on
+    here is extracting handwritten text from a series of images. The work in this
+    article is based on a Norwegian phenology dataset, which you can read more about
+    in [the README in this GitHub repository.](https://github.com/findable-no/phenology-data)
+    The main point is that the information contained in these images is highly valuable
+    and can, for example, be used to conduct climate research. There is also definitive
+    scientific interest in this topic, for example, [this article on analysing long-term
+    changes in when plants flower,](https://link.springer.com/article/10.1134/S1067413609020039)
+    or the [Eastern Pennsylvania Phenology Project.](https://lgnc.org/pdfdocs/phenologyBrochure.pdf)
+  prefs: []
+  type: TYPE_NORMAL
+- en: Note that the data extracted is presented in good faith, and I do not make any
+    claims as to what the data implies. The main goal of this article is to show you
+    how to extract this data and present you with the extracted data, to be used for
+    scientific research.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/636c15654c166a061f58e56556ce3c55.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: In this article, we will extract the text from these kinds of images using Qwen
+    2.5 VL. These cells are extracted from tables like the one in the featured image,
+    using image processing techniques that will be covered in a separate article.
+    Image by the author.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The result model I make in this article can be used to extract the text from
+    all images. This data can then be converted to tables, and you can plot the information
+    as you see in the image below:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/56015ff88b17b056197445c503c5f540.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: This plot shows the tree line numbers extracted from the images, plotted onto
+    a map in Norway. Colder colored hexagons mean a lower tree line, which, as expected,
+    occurs the closer to the ocean you get, and the further north you go. Warmer colors
+    represent higher tree lines, which are expected to occur the further into the
+    country we go. Image by the author, made using [H3 by Uber.](https://www.uber.com/en-NO/blog/h3/)
+  prefs: []
+  type: TYPE_NORMAL
+- en: If you are only interested in viewing the data extracted in this study, you
+    can view it in [this parquet file.](https://huggingface.co/datasets/findableai/phenology/blob/main/df_labels_and_images.parquet)
+  prefs: []
+  type: TYPE_NORMAL
+- en: Why do we need to use VLMs
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: When looking at the images, you may think we should apply traditional OCR to
+    this problem. [OCR](https://aws.amazon.com/what-is/ocr/#:~:text=Optical%20Character%20Recognition%20(OCR)%20is,scan%20as%20an%20image%20file.)
+    is the science of extracting text from images, and in previous years, it has been
+    dominated by engines like [Tesseract](https://github.com/tesseract-ocr/tesseract),
+    [DocTR](https://github.com/mindee/doctr), and [EasyOCR](https://github.com/mindee/doctr).
+  prefs: []
+  type: TYPE_NORMAL
+- en: However, these models are often outperformed by the modern large language models,
+    particularly the ones incorporating vision (typically referred to as VLMs or VLLMs)—the
+    image below highlights why you want to use a VLM instead of traditional OCR engines.
+    The first column shows example images from our dataset, and the two other columns
+    compare EasyOCR vs the fine-tuned Qwen model we will train in this article.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/e6e8bd23bf055e81dbf243a85d21a4d2.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: This figure highlights why you want to use VLMs (such as Qwen2.5 VL) over traditional
+    OCR engines (such as EasyOCR). The first column shows the images we want to extract
+    the text from, and the other two columns show the extracted text using EasyOCR
+    and a fine-tuned Qwen model. In the first image, you can notice two problems.
+    First, EasyOCR does not detect the “2”, which is faintly written. Secondly, EasyOCR
+    also mistakes the cell border for a “1”, another critical mistake. In the second
+    image, you can see that the image has a lot of dots in it (a result of the image
+    processing we did), which makes EasyOCR unable to extract the text from the image.
+    In the last image, EasyOCR mistakes a “1” for a “7”, and again makes the mistake
+    of believing the cell border is the digit “1”.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'This highlights the main reason to use a VLM over a traditional OCR engine,
+    to extract text from images: **VLMs often outperform traditional OCR engines when
+    extracting text from images.**'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Advantages of VLMs
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: There are several advantages to using VLMs when extracting text from images.
+    In the last section, you saw how the output quality from the VLM exceeds the output
+    quality of a traditional OCR engine. Another advantage is that you can provide
+    instructions to VLMs on how you want it to act, which traditional OCR engines
+    cannot provide.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The two main advantages of VLMs are thus:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: VLMs excel at OCR (particularly handwriting)
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: You can provide instructions
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: VLMs are good at OCR because it’s part of the training process for these models.
+    This is, for example, mentioned in [Qwen 2.5 VL Technical report section 2.2.1
+    Pre-Training Data](https://arxiv.org/abs/2502.13923), where they list an OCR dataset
+    as part of their pre-training data.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Handwriting
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: Extracting handwritten text has been notoriously difficult in the past and is
+    still a challenge today. The reason for this is that handwriting is **non-standardized**.
+  prefs: []
+  type: TYPE_NORMAL
+- en: With non-standardized, I refer to the fact that the characters will look vastly
+    different from person to person. As an example of a **standardized** character,
+    if you write a character on a computer, it will consistently look very similar
+    across different computers and people writing it. For instance, the computer character
+    “a” looks very similar no matter which computer it is written on. This makes it
+    simpler for an OCR engine to pick up the character, since the characters it extracts
+    from images, most likely, look quite similar to the characters it encountered
+    in its training set.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Handwritten text, however, is the opposite. Handwriting varies widely from person
+    to person, which is why you sometimes struggle with reading other people’s handwriting.
+    OCR engines also have this exact problem. If characters vary widely, there is
+    a lower chance that it has encountered a specific character variation in its training
+    set, thus making extracting the correct character from an image more difficult.
+  prefs: []
+  type: TYPE_NORMAL
+- en: You can, for example, look at the image below. Imagine only looking at the ones
+    in the image (so mask over the 7). Looking at the image now, the “1” looks quite
+    similar to a “7”. You are, of course, able to separate the two characters because
+    you can see them in context, and think critically that if a seven looks like it
+    does (with a horizontal line), the first two characters in the image must be ones.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Traditional OCR engines, however, don’t have this ability. They don’t look at
+    the entire image, think critically about one character’s look, and use that to
+    determine other characters. They must simply guess which character it is when
+    looking at the isolated digit.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/057de740dc92e699aeb15293a11e4fcb.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: This is an image that highlights the challenge with separating ones from sevens.
+    Looking at all three numbers in the context of each other, you can easily see
+    that the first two digits are ones, while the last digit is a seven. However,
+    if you cover up the last digit and only look at the first two digits, you will
+    notice how the digits could very well be interpreted as a seven as well. Image
+    by the author
+  prefs: []
+  type: TYPE_NORMAL
+- en: How to separate the digit “1” from “7”, ties nicely into the next section, about
+    providing instructions to the VLMs, when extracting text.
+  prefs: []
+  type: TYPE_NORMAL
+- en: I would also like to add that some OCR engines, such as [TrOCR](https://arxiv.org/abs/2109.10282),
+    are made to extract handwritten text. From experience, however, such models are
+    not comparable in performance to state-of-the-art VLMs such as Qwen 2.5 VL.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Providing instructions
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: Another significant advantage of using VLMs for extracting text is that you
+    can provide instructions to the model. This is naturally impossible with traditional
+    OCR engines since they extract all the text in the image. They can only input
+    an image and not separate text instructions for extracting the text from the image.
+    When we want to extract text using Qwen 2.5 VL, we provide a system prompt, such
+    as the one below.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE0]'
+  prefs: []
+  type: TYPE_PRE
+- en: The system prompt sets the outline for how Qwen should extract the text, which
+    gives Qwen a major advantage over traditional OCR engines.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'There are mainly two points that give it an advantage:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: We can tell Qwen which characters to expect in the image
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: We can tell Qwen what characters look like (particularly important for handwritten
+    text.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: You can see point one addressed in the points 1) -> 7), where we inform it that
+    it can only see 1–3 digits, which digits and letters it can see, and so on. This
+    is a significant advantage, since Qwen is aware that if it detects characters
+    out of this range, it is most likely misinterpreting the image, or a particular
+    challenge. It can better predict which character it thinks is in the image.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The second point is particularly relevant for the problem I mentioned earlier
+    of separating “1” from “7,” which look quite similar. Luckily for us, the author
+    of this dataset was consistent with how he wrote 1s and 7s. The 1s were always
+    written diagonally, and 7s always included the horizontal stroke, which clearly
+    separates the “7” from a “1,” at least from a human perspective of looking at
+    the image.
+  prefs: []
+  type: TYPE_NORMAL
+- en: However, providing such detailed prompts and specifications to the model is
+    only possible once you really understand the dataset you are working on and its
+    challenges. This is why you always have to spend time manually inspecting the
+    data when working on a machine-learning problem such as this. In the next section,
+    I will discuss the dataset we are working on.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The dataset
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: Manual inspection of data has probably the highest value-to-prestige ratio of
+    any activity in machine learning.
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: ''
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: — Greg Brockman (@gdb) [February 6, 2023](https://twitter.com/gdb/status/1622683988736479232?ref_src=twsrc%5Etfw)
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: I start this section with a quote from Greg Brockman (President of [OpenAI](https://openai.com/) as
+    of writing this article), highlighting an important point. In his tweet, he refers
+    to the fact that data annotation and inspection are not prestigious work, but
+    nonetheless, it’s one of the most important tasks you can be spending time on
+    when working on a machine-learning project.
+  prefs: []
+  type: TYPE_NORMAL
+- en: At [Findable](https://www.findable.ai/), I started as a data annotator and proceeded
+    to manage the labeling team at Findable before I now work as a data scientist.
+    The work with annotation highlighted the importance of manually inspecting and
+    understanding the data you are working on, and taught me how to do it effectively.
+    Greg Brockman is referring to the fact that this work is not prestigious, which
+    is often correct, since data inspection and annotation can be monotonous. However,
+    you should always spend considerable time inspecting your dataset when working
+    on a machine-learning problem. This time will provide you with insights that you
+    can, for example, use to provide the detailed system prompt I highlighted in the
+    last section.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The dataset we are working on consists of around 82000 images, such as the ones
+    you see below. The cells vary in width from 81 to 93 pixels and in height from
+    48 to 57 pixels, meaning we are working on very small images.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/8658c54280bbba3d5ee83e61a93d5065.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: These images showcase images present in the dataset. Image by the author,
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'When starting this project, I first spent time looking at the different images
+    to understand the variations in the dataset. I, for example, notice:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: The “1”s look similar to the “7”s
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: There is some faint text in some of the images (for example, the “8” in the
+    bottom left image above, and the “6” in the bottom right image
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: From a human perspective, all the images are very readable, so we should be
+    able to extract all the text correctly
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: I then continue by using the base version of Qwen 2.5 VL 7B to predict some
+    of the images and see which areas the model struggles with. I immediately noticed
+    that the model (unsurprisingly) had problems separating “1”s from “7”s.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'After this process of first manually inspecting the data, then predicting a
+    bit with the model to see where it struggles, I note down the following data challenges:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: “1” and “7” look similar
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Dots in the background on some images
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Cell borders can be misinterpreted as characters
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Parentheses and brackets can sometimes be confused
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: The text is faint in some images
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: We have to solve these challenges when fine-tuning the model to extract the
+    text from the images, which I discuss in the next section.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Annotation and fine-tuning
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: After properly inspecting your dataset, it’s time to work on annotation and
+    fine-tuning. Annotation is the process of setting labels to each image, and fine-tuning
+    is using these labels to improve the quality of your model.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The **main goal** when doing the annotation is to **create a dataset efficiently**.
+    This means quickly producing a lot of labels and ensuring the quality of the labels
+    is high. To achieve this goal of rapidly creating a high-quality dataset, I divided
+    the process into three main steps:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Predict
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Review & correct model mistakes
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Retrain
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: You should note that this process works well when you have a model already quite
+    good at performing the task. In this problem, for example, Qwen is already quite
+    good at extracting the text from the images, and only makes mistakes in 5–10%
+    of the cases. If you have a completely new task for the model, this process will
+    not work as well.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/c0fc15b944183aade3bae42178d2ec2e.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: This figure highlights my three-step process for rapidly creating an annotated
+    dataset and fine-tuning Qwen. Step 1 uses the base model to predict on a few hundred
+    samples. I then go through the model predictions and correct mistakes. After this,
+    I train the model on my current set of annotated samples. Continuing, I use this
+    fine-tuned model to predict on a new set of a few hundred samples, review and
+    correct mistakes, and retrain. I continue this process until the model performance
+    starts to converge. This process of creating a dataset is much faster than, for
+    example, looking at each image and writing down the text in the image to create
+    an annotated dataset. Image by the author.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Step 1: Predict
+  prefs:
+  - PREF_H4
+  type: TYPE_NORMAL
+- en: The first step is to predict (extract the text) from a few hundred images using
+    the base model. The specific number of images you predict on does not really matter,
+    but you should try to strike a balance between gathering enough labels so a training
+    run will improve the model enough (step 3) and taking into account the overhead
+    required to train a model.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Step 2: Review & correct model mistakes'
+  prefs:
+  - PREF_H4
+  type: TYPE_NORMAL
+- en: After you have predicted on a few hundred samples, it’s time to review and correct
+    the model mistakes. You should set up your environment to easily display the images
+    and labels and fix the errors. In the image below, you can see my setup for reviewing
+    and correcting mistakes. On the left side, I have a Jupyter notebook where I can
+    run the cell to display the following five samples and the corresponding line
+    to which the label belongs. On the right side, all my labels are listed on the
+    corresponding lines. To review and correct mistakes, I run the Jupyter notebook
+    cell, make sure the labels on the right match the images on the left, and then
+    rerun the cell to get the following five images. I repeat this process until I
+    have looked through all the samples.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/4340f0559b20fac113a626ebc48a6abd.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: This image shows my environment for reviewing and correcting model mistakes.
+    On the left side, I have a Jupyter notebook where I can run the cell to display
+    the next five images, along with the line to which each image’s label belongs.
+    On the right side, I have all my labels on the corresponding lines. This environment
+    makes it easy to look through all the model predictions and correct any mistakes.
+    Image by the author.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Step 3: Retrain:'
+  prefs:
+  - PREF_H4
+  type: TYPE_NORMAL
+- en: Now that you have a few hundred correct samples, it is time to train the model.
+    In my case, I take Qwen 2.5 VL 7B and tune it to my current set of labels. I fine-tune
+    using the Unsloth package, which provides this notebook on fine-tuning Qwen (the
+    notebook is for Qwen 2 VL, but all the code is the same, except changing the naming,
+    as you see in the code below). You can check out the next section to learn more
+    details about the fine-tuning process.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The training creates a fine-tuned version of the model, and I go back to step
+    1 to predict on a few hundred new samples. I repeat this cycle of predicting,
+    correcting, and training until I notice model performance converges.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE1]'
+  prefs: []
+  type: TYPE_PRE
+- en: To determine how well my model is performing, I also create a test set on which
+    I test each fine-tuned model. I never train on this test set to ensure unbiased
+    results. This test set is how I can determine whether the model’s performance
+    is converging.
+  prefs: []
+  type: TYPE_NORMAL
+- en: SFT technical details
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: SFT stands for supervised fine-tuning, which is the process of updating the
+    model’s weights to perform better on the dataset we provide. The problem we are
+    working on here is quite interesting, as the base Qwen 2.5 VL model is already
+    quite good at OCR. This differs from many other tasks we apply VLMs to at Findable,
+    where we typically teach the VLM a completely new task with which it essentially
+    has no prior experience.
+  prefs: []
+  type: TYPE_NORMAL
+- en: When fine-tuning a VLM such as Qwen on a new task, model performance rapidly
+    increases once you start training it. However, the task we are working on here
+    is quite different, since we only want to nudge Qwen to be a little bit better
+    at reading the handwriting for our particular images. As I mentioned, the model’s
+    performance is around 90–95 % accurate (depending on the specific images we test
+    on), on this dataset.
+  prefs: []
+  type: TYPE_NORMAL
+- en: This requirement of only nudging the model makes the model super sensitive to
+    the tuning process parameters. To ensure we nudge the model properly, we do the
+    following
+  prefs: []
+  type: TYPE_NORMAL
+- en: Set a **low learning rate**, to only slightly update the weights
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Set a **low LoRA rank** to only update a small set of the model weights
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Ensure **all labels are correct** (the model is super sensitive to just a few
+    annotation errors)
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Balance the dataset** (there are a lot of blank images, we filter out some
+    of them)'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Tune all layers** of the VLM'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Perform a **hyperparameter search**
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '* * *'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'I will add some additional notes on some of the points:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Label correctness
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: Label correctness is of utmost importance. Just a few labeling errors can have
+    a detrimental effect on model performance. As an example, when I was working on
+    fine-tuning my model, I noticed the model started confusing parentheses “( )”
+    with brackets “[ ]”. This is, of course, a significant error, so I started looking
+    into why this occurred. My first intuition was that this was due to issues with
+    some of my labels (i.e, some images that were in fact parentheses, had received
+    a label with brackets). I started looking into my labels and noticed this error
+    in around 0.5% of them.
+  prefs: []
+  type: TYPE_NORMAL
+- en: This helped me make an interesting observation, however. I had a set of around
+    1000 labels. 99.5% of the labels were correct, while 0.5% (5 labels!) were incorrect.
+    However, after fine-tuning my model, it actually performed worse on the test set.
+    This highlights that just a few incorrect labels can hurt your model’s performance.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/731b6f59460eb6e459919f0af7e6197d.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: This is an example of an image where the label was set to a bracket, while you
+    can clearly see the image contains parentheses. Image by the author.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The reason so few mistakes can have such a large impact is that the model blindly
+    trusts the labels you give it. The model doesn’t look at the image and think *Hmmm,
+    why is this a bracket when the image has a parenthesis?* (like you might do).
+    The model blindly trusts the labels and accepts it as a fact that this image (which
+    is a parenthesis) contains a bracket. This really degrades model performance,
+    as you are giving incorrect information, which it now uses to perform future predictions.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Data balancing
+  prefs:
+  - PREF_H4
+  type: TYPE_NORMAL
+- en: Another detail of the fine-tuning is that I balance out the dataset to limit
+    the number of blank images. Around 70% of the cells contain blank images, and
+    I want to avoid spending too much fine-tuning on those images (the model already
+    manages to ignore those cells really well). Thus, I ensure that a maximum of 30%
+    of the data we fine-tune contains blank images.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Selecting layers to tune
+  prefs:
+  - PREF_H4
+  type: TYPE_NORMAL
+- en: 'The image below shows the general architecture of a VLM:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/5aa15dfe3675e5d0f769c07e7febeb12.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: This image shows the standard architecture layout of a VLM. The image is fed
+    through a ViT (vision transformer), which extracts visual tokens from the image.
+    These tokens are then fed through a VL (vision-language) adapter to ensure image
+    tokens are in the same embedding space as text tokens. Text fed into the model
+    is simply tokenized. Both the text and image tokens are then fed into the decoder,
+    which produces output text.
+  prefs: []
+  type: TYPE_NORMAL
+- en: A consideration to make when fine-tuning VLMs is which layers you fine-tune.
+    Ideally, you want to tune all the layers (marked in green in the image below),
+    which I also did when working on this problem. However, sometimes you will have
+    compute constraints, which makes tuning all layers difficult, and you might not
+    need to tune all layers. An example of this could be if you have a very image-dependent
+    task. At Findable, for example, we classify drawings from architects, civil engineers,
+    etc. This is naturally a very vision-dependent task, and this is an example of
+    a case where you can potentially get away with only tuning the vision layers of
+    the model (the ViT — Vision transformer, and the Vision-Language adapter, sometimes
+    referred to as a projector).
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/42d9a0a8788c6912a2d28f40093f2c72.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: This is an example of an architect’s drawing. The drawing is sourced from the
+    Oslo municipality and is unrelated to the Findable AS customer data. The drawing
+    is found by going to the Oslo municipality website for saksinnsyn (case access
+    in English) ([https://innsyn.pbe.oslo.kommune.no/saksinnsyn/main.asp](https://innsyn.pbe.oslo.kommune.no/saksinnsyn/main.asp)).
+    Searching for Camilla Collects vei (a randomly selected address). Then pressing
+    the button Søk i sak (search in case). Selecting the case with Saksnummer (case
+    number ) 202317562, pressing the tab with tegninger, and selecting the drawing
+    called plan 8 etasje. The figure is used after speaking to City of Oslo Planning
+    and Building Services, who gave permission to use any publicly available drawings
+    on their website. The drawing was accessed on 23.05.2024
+  prefs: []
+  type: TYPE_NORMAL
+- en: Hyperparameter search
+  prefs:
+  - PREF_H4
+  type: TYPE_NORMAL
+- en: I also did a hyperparameter search to find the optimal set of parameters to
+    fine-tune the model. It is worth noting, however, that a hyperparameter search
+    will not always be possible. Some training processes for large language models
+    can take several days, and in such scenarios, performing an extensive hyperparameter
+    search is not feasible, so you will have to work with your intuition to find a
+    good set of parameters.
+  prefs: []
+  type: TYPE_NORMAL
+- en: However, for this problem of extracting handwritten text, I had access to an
+    A100 80 GB GPU. The images are quite small (less than 100px in each direction),
+    and I’m working with the 7B model. This made the training take 10–20 minutes,
+    which makes an overnight hyperparameter search feasible.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/ac89465518f47ef53eaab8d48562343c.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: This is an arbitrary graph I created showing the amount of effort required to
+    improve a model’s accuracy. As you can see in the figure, much less effort is
+    required to go from 80–90% accuracy than the effort required to go from 95–99%
+    accuracy. Image by the author.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Results and plots
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'After repeating the cycle of training the model, creating more labels, retraining,
+    and so on, I have created a high-performing fine-tuned model. Now it’s time to
+    see the final results. I have made four test sets, each consisting of 278 samples.
+    I run EasyOCR, the base [Qwen 2.5 VL 7B model](https://qwenlm.github.io/blog/qwen2.5-vl/)
+    (*Qwen base model*), and the fine-tuned model on the data, and you can see the
+    results in the table below:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/7358a374d1f0414ea4b625be17fd4a3f.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: These are the results from three different models on four test sets. You can
+    see that EasyOCR is not performing well, and its results are so bad that you cannot
+    trust the numbers it provides. The Qwen base model performs quite well, ranging
+    from 93–99%. This could be acceptable performance in some scenarios, but it was
+    not enough for the dataset I was working on and my performance expectations. You
+    can, however, clearly see that the fine-tuning of the model worked well, and it
+    performs better than the base Qwen model on all testsets than number 4, where
+    the two models are equally good. The Qwen base and fine-tuned models are based
+    on Qwen 2.5 VL 7B by Alibaba.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Thus, the results clearly show that the fine-tuning has worked as expected,
+    vastly improving model performance.
+  prefs: []
+  type: TYPE_NORMAL
+- en: To end off, I would also like to share some plots you can make with the data.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/ccc7db2b412592e4a7f9f8940d3fbe16.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: This is tree line data, extracted from the images, and plotted onto a map of
+    Norway using [H3 by Uber](https://www.uber.com/en-NO/blog/h3/). You can see how
+    the tree line gets colder (lower) towards the ocean, and to the north, and it
+    gets warmer (higher), if you look inwards into the country. Image by the author,
+  prefs: []
+  type: TYPE_NORMAL
+- en: If you want to investigate the data further, it is all contained in [this parquet
+    file on HuggingFace](https://huggingface.co/datasets/findableai/phenology/blob/main/df_labels_and_images.parquet).
+  prefs: []
+  type: TYPE_NORMAL
+- en: Conclusion
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: In this article, I have introduced you to a Phenology dataset, consisting of
+    small images with handwritten text. The problem I have addressed in this article
+    is how to extract the handwritten text from these images effectively. First, we
+    inspected the dataset to understand what it looks like, the variance in the data,
+    and the challenges the vision language model faces when extracting the text from
+    the images. I then discussed the three-step pipeline you can use to create a labelled
+    dataset and fine-tune a model to improve performance. Finally, I highlighted some
+    results, showing how fine-tuning Qwen works better than the base Qwen model, and
+    I also showed some plots representing the data we extracted.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The work in this article is performed by [Eivind Kjosbakken](https://www.linkedin.com/in/eivind-kjosbakken/)
+    and [Lars Aurdal](https://www.linkedin.com/in/lars-aurdal-a2582b1b/).
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**👉 My free eBook and Webinar:**'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 📚 [Get my free Vision Language Models ebook](https://eivindkjosbakken.com/ebook)
+  prefs: []
+  type: TYPE_NORMAL
+- en: 💻 [My webinar on Vision Language Models](https://www.eivindkjosbakken.com/webinar)
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**👉 Find me on socials:**'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 📩 [Subscribe to my newsletter](https://eivindkjosbakken.com/newsletter)
+  prefs: []
+  type: TYPE_NORMAL
+- en: 🧑‍💻 [Get in touch](https://eivindkjosbakken.com/)
+  prefs: []
+  type: TYPE_NORMAL
+- en: 🔗 [LinkedIn](https://www.linkedin.com/in/eivind-kjosbakken/)
+  prefs: []
+  type: TYPE_NORMAL
+- en: 🐦 [X / Twitter](https://x.com/EivindKjos)
+  prefs: []
+  type: TYPE_NORMAL
+- en: ✍️ [Medium](https://oieivind.medium.com/)
+  prefs: []
+  type: TYPE_NORMAL

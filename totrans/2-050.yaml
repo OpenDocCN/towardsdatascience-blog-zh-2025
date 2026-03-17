@@ -1,0 +1,460 @@
+- en: 'Estimating from No Data: Deriving a Continuous Score from Categories'
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 原文：[https://towardsdatascience.com/estimating-from-no-data-deriving-a-continuous-score-from-categories/](https://towardsdatascience.com/estimating-from-no-data-deriving-a-continuous-score-from-categories/)
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: '<mdspan datatext="el1754947735246" class="mdspan-comment">Imagine that a country</mdspan>
+    has collected data on the outcomes of patients who have acquired “Pathogen A”
+    responsible for an infectious respiratory illness. Available are 8 features of
+    each patient and the outcome: (a) treated at home and recovered, (b) hospitalized
+    and recovered, or (c) died.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'It has proven trivial to train a neural net to predict one of the three outcomes
+    from the 8 features with almost complete accuracy. However, the health authorities
+    would like to predict something that was not captured: From the patients who can
+    be treated at home, who are the ones who are most at danger of having to go to
+    hospital? And from the patients who are predicted to be hospitalized, who are
+    the ones who are most at danger of not surviving the infection? Can we get a numeric
+    score that represents how serious the infection will be?'
+  prefs: []
+  type: TYPE_NORMAL
+- en: In this note I will cover a neural net with a bottleneck and a special head
+    to learn a scoring system from a few categories, and cover some properties of
+    small neural networks one is likely to encounter. The accompanying code can be
+    found at [https://codeberg.org/csirmaz/category-scoring](https://codeberg.org/csirmaz/category-scoring).
+  prefs: []
+  type: TYPE_NORMAL
+- en: The dataset
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'To be able to illustrate the work, I developed a toy example, which is a non-linear
+    but [deterministic piece of code](https://codeberg.org/csirmaz/category-scoring/src/tag/v1.0/generate_data.py#L56)
+    calculating the outcome from the 8 features. The calculation is for illustration
+    only — it is not supposed to be faithful to the science; the names of the features
+    used were chosen merely to be in keeping with the medical example. The 8 features
+    used in this note are:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Previous infection with Pathogen A (boolean)
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Previous infection with Pathogen B (boolean)
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Acute / current infection with Pathogen B (boolean)
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Cancer diagnosis (boolean)
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Weight deviation from average, arbitrary unit (-100 ≤ x ≤ 100)
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Age, years (0 ≤ x ≤ 100)
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Blood pressure deviation from average, arbitrary unit (0 ≤ x ≤ 100)
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Years smoked (0 ≤ x ≤ ~88)
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: When generating sample data, the features are chosen independently and from
+    a uniform distribution, except for years smoked, which depends on the age, and
+    a cohort of non-smokers (50%) was built in. We checked that with this sampling
+    the three outcomes occur with roughly equal probability, and measured the mean
+    and variance of the number of years smoked so we could normalize all the inputs
+    to zero mean unit variance.
+  prefs: []
+  type: TYPE_NORMAL
+- en: As an illustration of the toy example, below is a plot of the outcomes with
+    the weight on the horizontal axis and age on the vertical axis, and other parameters
+    fixed. “o” stands for hospitalization and “+” for death.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE0]'
+  prefs: []
+  type: TYPE_PRE
+- en: A classic classifier
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: The data is nonlinear but very neat, and so it is no surprise that a small classifier
+    network can learn it to 98-99% validation accuracy. Launch `**train.py --classifier**`
+    to train a simple neural network with 6 layers (each 8 wide) and ReLU activation,
+    defined in `**[ScoringModel.build_classifier_model()](https://codeberg.org/csirmaz/category-scoring/src/tag/v1.0/scoring_model.py#L71)**`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: But how to train a scoring system?
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: Our aim is then to train a system that, given the 8 features as inputs, can
+    produce a score corresponding to the danger the patient is in when infected with
+    Pathogen A. The complication is that we have no scores available in our training
+    data, only the three outcomes (categories). To ensure that the scoring system
+    is meaningful, we would like certain score ranges to correspond to the three main
+    outcomes.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The first thing someone may try is to assign a numeric value to each category,
+    like 0 to home treatment, 1 to hospitalization and 2 to death, and use it as the
+    target. Then set up a neural network with a single output, and train it with e.g.
+    MSE loss.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The problem with this approach is that the model will learn to contort (condense
+    and expand) the projection of the inputs around the three targets, so ultimately
+    the model will always return a value close to 0, 1 or 2\. You can try this by
+    running `**train.py --predict-score**` which trains a model with 2 dense layers
+    with ReLU activations and a final dense layer with a single output, defined in
+    `**[ScoringModel.build_predict_score_model()](https://codeberg.org/csirmaz/category-scoring/src/tag/v1.0/scoring_model.py#L88)**`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Neural network diagram showing two dense layers with ReLU activations and
+    a dense layer with one output](../Images/a1ccf385e5a58f3df06c48e81ce69e1d.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: First attempt at learning a score (see build_predict_score_model). Image by
+    author
+  prefs: []
+  type: TYPE_NORMAL
+- en: As can be seen in the following histogram of the output of the model on a random
+    batch of inputs, it is indeed what is happening – and this is with 2 layers only.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE1]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Step 1: A low-capacity network'
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: To avoid this from happening and get a more continuous score, we want to drastically
+    reduce the capacity of the network to contort the inputs. We will go to the extreme
+    and use a linear regression — in a [previous TDS article](https://medium.com/data-science/linear-and-logistic-regressions-as-degenerate-neural-networks-in-keras-c9b309cbd80a)
+    I already described how to use the components offered by Keras to “train” one.
+    We will reuse that idea here — and build a “degenerate” neural network out of
+    a single dense layer with no activation. This will allow the score to move more
+    in line with the inputs, and also has the advantage that the resulting network
+    is highly interpretable, as it simply provides a weight for each input with the
+    resulting score being their linear combination.
+  prefs: []
+  type: TYPE_NORMAL
+- en: However, with this simplification, the model loses all ability to condense and
+    expand the result to match the target scores for each category. It will try to
+    do so, but especially with more output categories, there is no guarantee that
+    they will occur at regular intervals in any linear combination of the inputs.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We want to enable the model to determine the best thresholds between the categories,
+    that is, to make the thresholds trainable parameters. This is where the “category
+    approximator head” comes in.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Step 2: A category approximator head'
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: In order to be able to train the model using the categories as targets, we add
+    a head that learns to predict the category based on the score. Our aim is to simply
+    establish two thresholds (for our three categories), t0 and t1 such that
+  prefs: []
+  type: TYPE_NORMAL
+- en: if the score < t0, then we predict treatment at home and recovery,
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: if t0 < score < t1, then we predict treatment in hospital and recovery,
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: if t1 < score, then we predict that the patient does not survive.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: The model takes the shape of an encoder-decoder, where the encoder part produces
+    the score, and the decoder part allows comparing and training the score against
+    the categories.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Neural network diagram showing a dense layer with a single output, another
+    dense layer expanding this to three outputs and a softmax layer](../Images/47a538b1bf2075e39d81788cfe9084ac.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'Second attempt: linear regression and decoder. Image by author'
+  prefs: []
+  type: TYPE_NORMAL
+- en: One approach is to add a dense layer on top of the score, with a single input
+    and as many outputs as the categories. This can learn the thresholds, and predict
+    the probabilities of each category via softmax. Training then can happen as usual
+    using a categorical cross-entropy loss.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Clearly, the dense layer won’t learn the thresholds directly; instead, it will
+    learn N weights and N biases given N output categories. So let’s figure out how
+    to get the thresholds from these.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Step 3: Extracting the thresholds'
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: Notice that the output of the softmax layer is the vector of probabilities for
+    each category; the predicted category is the one with the highest probability.
+    Furthermore, [softmax](https://en.wikipedia.org/wiki/Softmax_function) works in
+    a way that it always maps the largest input value to the largest probability.
+    Therefore, the largest output of the dense layer corresponds to the category that
+    it predicts based on the incoming score.
+  prefs: []
+  type: TYPE_NORMAL
+- en: If the dense layer has learnt the weights `[w1, w2, w3]` and the biases `[b1,
+    b2, b3]`, then its outputs are
+  prefs: []
+  type: TYPE_NORMAL
+- en: '`o1 = w1*score + b1 o2 = w2*score + b2 o3 = w3*score + b3`'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'These are all just straight lines as a function of the incoming score (e.g.
+    `y = w1*x + b1`), and whichever is at the top at a given score is the winning
+    category. Here is a quick illustration:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![2D chart showing three lines coloured according to which is the largest at
+    a given x](../Images/e29a0ca127c007b7dc90dff91198f651.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Three linear functions mapping the single score to the raw likelihood of each
+    category. Image by author
+  prefs: []
+  type: TYPE_NORMAL
+- en: The thresholds are then the intersection points between the neighboring lines.
+    Assuming the order of categories to be o1 (home) → o2 (hospital) → o3 (death),
+    we need to solve the o1 = o2 and o2 = o3 equations, yielding
+  prefs: []
+  type: TYPE_NORMAL
+- en: '`t0 = (b2 – b1) / (w1 – w2) t1 = (b3 – b2) / (w2 – w3)`'
+  prefs: []
+  type: TYPE_NORMAL
+- en: This is implemented in `**[ScoringModel.extract_thresholds()](https://codeberg.org/csirmaz/category-scoring/src/tag/v1.0/scoring_model.py#L183)**`
+    (though there is some additional logic there explained below).
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Step 4: Ordering the categories'
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: But how do we know what is the right order of the categories? Clearly we have
+    a preferred order (home → hospital → death), but what will the model say?
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'It is worth noting a couple of things about the lines that represent which
+    category wins at each score. As we are interested in whichever line is the highest,
+    we are talking about the boundary of the region that is above all lines:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![2D chart showing three lines coloured according to which is the largest at
+    a given x](../Images/ef5ff0abc126539f26a76d24028904ab.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: The winning (largest) line segments are the boundaries of the highlighted convex
+    region. Image by author
+  prefs: []
+  type: TYPE_NORMAL
+- en: Since this area is the intersection of all half-planes that are above each line,
+    it is necessarily convex. (Note that no line can be vertical.) This means that
+    each category wins over exactly one range of scores; it cannot get back to the
+    top again later.
+  prefs: []
+  type: TYPE_NORMAL
+- en: It also means that these ranges are necessarily in the order of the slopes of
+    the lines, which are the weights. The biases influence the values of the thresholds,
+    but not the order. We first have negative slopes, followed by small and then big
+    positive slopes.
+  prefs: []
+  type: TYPE_NORMAL
+- en: This is because given any two lines, towards negative infinity the one with
+    the smaller slope (weight) will win, and towards positive infinity, the other.
+    Algebraically speaking, given two lines
+  prefs: []
+  type: TYPE_NORMAL
+- en: '`f1(x) = w1*x + b1` and `f2(x) = w2*x + b2` where `w2 > w1`,'
+  prefs: []
+  type: TYPE_NORMAL
+- en: we already know they intersect at `(b2 – b1) / (w1 – w2)`, and below this, if
+    `x < (b2 – b1) / (w1 – w2)`, then
+  prefs: []
+  type: TYPE_NORMAL
+- en: '`(w1 – w2)x > b2 – b1`   (w1 – w2 is negative!)'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '`w1*x + b1 > w2*x – b2`'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '`f1(x) > f2(x)`,'
+  prefs: []
+  type: TYPE_NORMAL
+- en: and so f1 wins. The same argument holds in the other direction.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Step 4.5: We messed up (propagate-sum)'
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'And here lies a problem: the scoring model is more or less free to decide what
+    order to put the categories in. That’s not good: a score that predicts death at
+    0, home treatment at 10, and hospitalization at 20 is clearly nonsensical. However,
+    with certain inputs (especially if one feature dominates a category) this can
+    happen even with extremely simple scoring models like a linear regression.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'There is a way to protect against this though. Keras allows adding a kernel
+    constraint to a dense layer to force all weights to be non-negative. We could
+    take this code and implement a kernel constraint that forces the weights to be
+    in increasing order (`w1 ≤ w2 ≤ w3`), but it is simpler if we stick to the available
+    tools. Fortunately, Keras tensors support slicing and concatenation, so we can
+    split the outputs of the dense layer into components (say, `d1, d2, d3`) and use
+    the following as the input into the softmax:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '`o1 = d1`'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '`o2 = d1 + d2`'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '`o3 = d1 + d2 + d3`'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: In the code, this is referred to as “propagate sum.”
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Neural network diagram showing two dense layers in an encoder-decoder relationship
+    followed by porpagate-sum and softmax operations](../Images/c6f8b3d5c525f0175699e73f0e4d6c6c.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'Final model: linear regression and a category approximator head enforcing increasing
+    order of weights (see build_linear_bottleneck_model). Image by author'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Substituting the weights and biases into the above we get
+  prefs: []
+  type: TYPE_NORMAL
+- en: '`o1 = w1*score + b1`'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '`o2 = (w1+w2)*score + b1+b2`'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '`o3 = (w1+w2+w3)*score + b1+b2+b3`'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Since `w1, w2, w3` are all non-negative, we have now ensured that the effective
+    weights used to decide the winning category are in increasing order.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Step 5: Training and evaluating'
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: All the components are now together to train the linear regression. The model
+    is implemented in `**[ScoringModel.build_linear_bottleneck_model()](https://codeberg.org/csirmaz/category-scoring/src/tag/v1.0/scoring_model.py#L38)**`
+    and can be trained by running `**train.py --linear-bottleneck**`. The code also
+    automatically extracts the thresholds and the weights of the linear combination
+    after each epoch. Note that as a final calculation, we need to shift each threshold
+    by the bias in the encoder layer.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE2]'
+  prefs: []
+  type: TYPE_PRE
+- en: The linear regression can approximate the toy example with an accuracy of 80%,
+    which is pretty good. Naturally, the maximum achievable accuracy depends on whether
+    the system to be modeled is close to linear or not. If not, one can consider using
+    a more capable network as the encoder; for example, a few dense layers with nonlinear
+    activations. The network should still not have enough capacity to condense the
+    projected score too much.
+  prefs: []
+  type: TYPE_NORMAL
+- en: It is also worth noting that with the linear combination, the dimensionality
+    of the weight space the training happens in is minuscule compared to regular neural
+    networks (just N where N is the number of input features, compared to millions,
+    billions or more). There is a frequently described intuition that on high-dimensional
+    error surfaces, genuine local minima and maxima are very rare – there is almost
+    always a direction in which training can continue to reduce loss. That is, most
+    areas of zero gradient are saddle points. We do not have this luxury in our 8-dimensional
+    weight space, and indeed, training can get stuck in local extrema even with optimizers
+    like Adam. Training is extremely fast though, and running multiple training sessions
+    can solve this problem.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'To illustrate how the learnt linear model functions, `**[ScoringModel.try_linear_model()](https://codeberg.org/csirmaz/category-scoring/src/tag/v1.0/scoring_model.py#L234)**`
+    tries it on a set of random inputs. In the output, the target and predicted outcomes
+    are noted by their index number (0: treatment at home, 1: hospitalized, 2: death):'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE3]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'And `**[ScoringModel.visualize_linear_model()](https://codeberg.org/csirmaz/category-scoring/src/tag/v1.0/scoring_model.py#L245)**`
+    generates a histogram of the score from a batch of random inputs. As above, “.”
+    notes home treatment, “o” stands for hospitalization, and “+” death. For example:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE4]'
+  prefs: []
+  type: TYPE_PRE
+- en: The histogram is spiky due to the boolean inputs, which (before normalization)
+    are either 0 or 1 in the linear combination, but the overall histogram is still
+    much smoother than the results we got with the 2-layer neural network above. Many
+    input vectors are mapped to scores that are at the thresholds between the outcomes,
+    allowing us to predict if a patient is dangerously close to getting hospitalized,
+    or should be admitted to intensive care as a precaution.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Conclusion
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: Simple models like linear regressions and other low-capacity networks have desirable
+    properties in a number of applications. They are highly interpretable and verifiable
+    by humans – for example, from the results of the toy example above we can clearly
+    see that previous infections protect patients from worse outcomes, and that age
+    is the most important factor in determining the severity of an ongoing infection.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Another property of linear regressions is that their output moves roughly in
+    line with their inputs. It is this feature that we used to acquire a relatively
+    smooth, continuous score from just a few anchor points offered by the limited
+    information available in the training data. Moreover, we did so based on well-known
+    network components available in major frameworks including Keras. Finally, we
+    used a bit of math to extract the information we need from the trainable parameters
+    in the model, and to ensure that the score learnt is meaningful, that is, that
+    it covers the outcomes (categories) in the desired order.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Small, low-capacity models are still powerful tools to solve the right problems.
+    With quick and cheap training, they can also be implemented, tested and iterated
+    over extremely quickly, fitting nicely into agile approaches to development and
+    engineering.
+  prefs: []
+  type: TYPE_NORMAL

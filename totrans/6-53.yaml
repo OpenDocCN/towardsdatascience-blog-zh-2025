@@ -1,0 +1,324 @@
+- en: Harnessing Polars and Geopandas to Generate Millions of Transects in Seconds
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 原文：[https://towardsdatascience.com/harnessing-polars-and-geopandas-to-generate-millions-of-transects-in-seconds-d37b176a0b57/](https://towardsdatascience.com/harnessing-polars-and-geopandas-to-generate-millions-of-transects-in-seconds-d37b176a0b57/)
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: '![Manhattan with transects spaced every 100ft. If you can transect here you
+    can transect anywhere!](../Images/758c4905543e33dc68605cde73d11f05.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Manhattan with transects spaced every 100ft. If you can transect here you can
+    transect anywhere!
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**The Problem:**'
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: I needed to generate a transect every 10 feet across every street in New York
+    City, and I had to do it in a New York Minute. The Generate Transects Along Lines
+    tool built into ArcGIS Pro was going to take multiple days to run, so I had to
+    come up with something at least slightly faster.
+  prefs: []
+  type: TYPE_NORMAL
+- en: To solve this problem, I turned to two of my favorite bears, Geopandas and Polars,
+    to use spatial algorithms and a dash of linear algebra to make 4.2 million transects
+    in around 60 seconds.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Why Transects?** In this circumstance, I would go on to use these transects
+    to split up roadway lines into equal intervals for storm damage analysis. It is
+    easier to split a line with another line than it is to split a line with a point,
+    since you can guarantee they will intersect and you don’t have to worry about
+    floating point imprecision. But, transects are super-useful for lots of application,
+    such as sampling river depth profiles and creating a regular grid from a curvilinear
+    line.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**The Process:**'
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: First, I generated points along each line at 10 ft intervals using Geopandas
+    built-in interpolate function. Once I had those points, I swapped them over to
+    Polars, where I was able to take advantage of Polars’ built-in parallelism and
+    intuitive syntax to quickly convert those points into (roughly) perpendicular
+    transects. Finally, I put the transects into a GeoDataFrame for further spatial
+    fun.
+  prefs: []
+  type: TYPE_NORMAL
+- en: It may sound annoying to go back and forth between Geopandas and Polars, but
+    each has its own advantages – GeoPandas has spatial operations, and Polars is
+    wicked fast and I strongly prefer the syntax. The Polars .to_pandas() and .from_pandas()
+    methods work so well that I barely notice the switch. While putting a panda bear
+    and a polar bear into the same zoo enclosure may have disasterous consequences,
+    in this circumstance they are able to play together quite nicely.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Requirements:** This code was developed in a mamba environment with the following
+    packages and has not been tested with other versions'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE0]'
+  prefs: []
+  type: TYPE_PRE
+- en: The data used in this article comes from NYC Open Data, and is available for
+    download [here](https://data.cityofnewyork.us/City-Government/NYC-Street-Centerline-CSCL-/inkn-q76z/about_data).
+    In this example, I am using the December 24, 2024 release of the NYC Street Centerlines.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Step 1: Generate points along lines every 10 feet with Geopandas**'
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: In order to create transects along each line, we first need to find the centerpoint
+    of each transect. Since we want a transect every 10 ft, we will grab a point every
+    10 ft along every linestring in the dataset. We are also grab an additional point
+    slightly offset from each transect point; this will allow us to findthe orientation
+    needed to make the transect perpendicular to the original line. Before we get
+    to all that, we need to load the data.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE1]'
+  prefs: []
+  type: TYPE_PRE
+- en: In addition to loading the data, we also assign a unique_id to each road based
+    on its index, and ensure the GeoDataFrame is in a projected coordinate system
+    with feet as its base unit – since these road lines are in New York City, we use
+    [New York – Long Island State Plane](https://spatialreference.org/ref/epsg/6539/)
+    as the coordinate reference system. The unique_id column will allow us to link
+    our generated transects back to the original road segment.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Once the data has been loaded, we need to sample along every line at 10 ft
+    intervals. We can accomplish this using the GeoPandas interpolate function, as
+    below:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE2]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The function get_road_points() loops through all the segment distances in the
+    roads GeoDataFrame, given a segment length *s*. Every iteration *i*, we select
+    only roads which are longer than *s * i*. We sample a point along each line at
+    *s * i* distance. These points will be the centerpoints of our new transects.
+    Since we want to orient our new transects perpendicular to the line from which
+    they spawned, we also sample a point at distance *(s * i) -1.* This gives us the
+    approximate orientation of the line, which we will use later on when constructing
+    the transects. As this method outputs a GeoSeries, we build a new GeoDataFrame,
+    keeping the distance of the point along the line, whether the point will be used
+    as a transect, and our previously created unique_id column. Finally, we concatenate
+    all these GeoDataframes together, giving us something that looks like this:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Points sampled for transect generation along NYC roadway lines](../Images/44c18619be5e7887a5fc533e485fa5fa.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Points sampled for transect generation along NYC roadway lines
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Lets try it out with our roads dataset and see if it works:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE3]'
+  prefs: []
+  type: TYPE_PRE
+- en: '![Points sampled every 10 ft along Beaver St.](../Images/7257bd16e79b241504a653c4622086c6.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Points sampled every 10 ft along Beaver St.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Step 2: Use Polars and rotation matrices to turn those points into transects**'
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: Now that we have the points we need, we can use Polar’s from_pandas() function
+    to convert our GeoDataFrame to Polars. Before we do that, we want to save the
+    information from the geometry column – our x and y locations – and drop the geometry
+    column.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE4]'
+  prefs: []
+  type: TYPE_PRE
+- en: Finally, we have everything we need to construct our transects. In essence,
+    all we have to do is find the angle of each transect, construct a transect of
+    the requested length, and rotate and translate the transect so it is properly
+    positioned in space. That may sound like a doozy, but if we break it down into
+    steps we are not doing anything overly complicated.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Align each transect point with the point prior to it. This will allow us to
+    orient each transect perpendicular to the original line by pivoting around the
+    prior point. In fact, lets call the prior point the ‘pivot point’ to make this
+    more clear.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Translate the transect point/pivot point pair so that the pivot point is at
+    0, 0\. By doing this, we can easily rotate the transect point so that it sits
+    at y = 0.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Rotate the transect point so that it sits at y = 0\. By doing this, the math
+    to construct new points which will form our transect becomes simple addition.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Construct new points above and below the rotated transect point so that we have
+    a new line with distance equal to line length.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Rotate the new points back to the original orientation relative to the pivot
+    point.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Translate the new points so that the pivot point returns to its original position.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '![Graphical representation of transect-construction algorithm](../Images/50b3406103355b5cdee1404c83ea48e1.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Graphical representation of transect-construction algorithm
+  prefs: []
+  type: TYPE_NORMAL
+- en: Lets take a look at the code to do this. On my old laptop this code takes about
+    3 seconds to generate 4.2 million transects.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE5]'
+  prefs: []
+  type: TYPE_PRE
+- en: '**How are we actually accomplishing the rotation?**'
+  prefs: []
+  type: TYPE_NORMAL
+- en: We rotate the transect point about the origin using a rotation matrix. This
+    is a 2×2 matrix which, when applied to a point in a 2d-plane, rotates the point
+    θ degrees around the origin (0, 0).
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![A counter-clockwise rotation matrix, courtesy of https://en.wikipedia.org/wiki/Rotation_matrix](../Images/fa4bd4b92e5ab98c7d1b7aa452ac65f8.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: A counter-clockwise rotation matrix, courtesy of [https://en.wikipedia.org/wiki/Rotation_matrix](https://en.wikipedia.org/wiki/Rotation_matrix)
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'To use it, all we need to do is calculate θ, then [multiply](https://en.wikipedia.org/wiki/Matrix_multiplication)
+    the point (x, y) and the rotation matrix. This gives us the formula _new_x = x*cos(θ)-y*sin(θ),
+    new*y = x*sin(θ) + y*cos(θ)*. We calculate the result using this code:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE6]'
+  prefs: []
+  type: TYPE_PRE
+- en: We are able to simplify the calculation, since we know that x is always 1 for
+    our points (x, y). Instead of calculating *x*cos(θ)-y*sin(θ)* to find the x value
+    of a rotated point, we can just do *cos(θ)-y*sin(θ)*, saving us a little bit of
+    computation. Of course, this won’t work if your pivot point and transect point
+    are not 1 unit apart, but for our purposes it is just fine. Once we have the rotation
+    completed, all we have to do is translate the newly rotated points by the distance
+    between the pivot point and (0,0), and boom, we are done. If you are interested
+    in learning more about linear algebra and affine transformations, I highly reccomend
+    the 3Blue1Brown series [Essence of Linear Algebra](https://www.youtube.com/watch?v=fNk_zzaMoSs&list=PLZHQObOWTQDPD3MizzM2xVFitgF8hE_ab).
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Using the above functions, we can take our GeoDataFrame, convert it to Polars,
+    and calculate new transects like so:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE7]'
+  prefs: []
+  type: TYPE_PRE
+- en: '![Polars DataFrame with WKT Linestrings for our newly generated transects](../Images/070013ab517ebcd8b457d77552dba552.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Polars DataFrame with WKT Linestrings for our newly generated transects
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Step 3: Convert the transects back to Geopandas**'
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: 'Finally! We have the geometric coordinates of the transects we need, but we
+    want them in a GeoDataFrame so we can go back to the comfort of GIS operations.
+    Since we constructed our new transects as [WKT Linestrings](https://libgeos.org/specifications/wkt/)
+    at the end of the make_lines() function, the code to do so is simple:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE8]'
+  prefs: []
+  type: TYPE_PRE
+- en: And thats it! We now have a GeoDataFrame with 4.2 million transects, each linked
+    to their original roadway using the unique_id column.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Lets check out our new geometry:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE9]'
+  prefs: []
+  type: TYPE_PRE
+- en: '![Transects spaced 10ft apart along a pedestrian path](../Images/ca06cca30a3ebadf483f38d92860ad99.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Transects spaced 10ft apart along a pedestrian path
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Transects along Rockaway Beach Blvd (unique_id = 99199)](../Images/901018d66903d32115efb6daa8bd2abe.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Transects along Rockaway Beach Blvd (unique_id = 99199)
+  prefs: []
+  type: TYPE_NORMAL
+- en: Transects spaced 10ft apart along a pedestrian pathLooks good! We are losing
+    a little bit of precision with the WKT conversion, so there is probably a better
+    way to do that, but it works well enough for me.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Putting it all Together**'
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: For your convenience, I have combined the code to generate the transects below.
+    This will only work with data projected to a planar coordinate system, and if
+    you want to use a pivot point that is further than 1 unit from a transect point,
+    you will need to modify the code.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE10]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE11]'
+  prefs: []
+  type: TYPE_PRE
+- en: Thanks for reading! There are probably a lot more ways this code could be optimized
+    or made more flexible, but it solved a huge problem for me and cut down compute
+    time from days to seconds. With a little bit of theory and knowing when to use
+    what tool, problems that previously seem insurmountable become shockingly easy.
+    It only took me about 30 minutes and a little wikipedia linear algebra referesher
+    to write the code for this post, saving me tons of time and, more importantly,
+    protecting me from having to explain to a client why a project was pointlessly
+    delayed. Let me know if this was helpful to you!
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Bartel-Pritchard Square/Prospect Park West with transects spaced every 10ft.
+    I later used the unique_id field to ensure roads were only split using transects
+    belonging to that road.](../Images/dfede077eea86fe352766c4ddce0ce04.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Bartel-Pritchard Square/Prospect Park West with transects spaced every 10ft.
+    I later used the unique_id field to ensure roads were only split using transects
+    belonging to that road.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Unless otherwise noted, all images are by the author.
+  prefs: []
+  type: TYPE_NORMAL

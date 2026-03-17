@@ -1,0 +1,370 @@
+- en: Exploring DeepSeek’s R1 Training Process
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 原文：[https://towardsdatascience.com/exploring-deepseeks-r1-training-process-5036c42deeb1/](https://towardsdatascience.com/exploring-deepseeks-r1-training-process-5036c42deeb1/)
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: '![Image by Author - Flux.1 Schnell](../Images/f4e021065acf895801258f636f4d537e.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Image by Author – Flux.1 Schnell
+  prefs: []
+  type: TYPE_NORMAL
+- en: One of the most powerful AI models in the world today was released open-source.
+    Based off both metrics and user interactions, it is as good – if not better –
+    than OpenAI’s ChatGPT. The authors were kind enough to release a paper outlining
+    how they trained such a model. DeepSeek-R1 is a big deal in the tech world right
+    now, so I wanted to break down my understanding of the insights from their paper.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In this blog post, we’ll dive deep into how they formulated their policy optimization
+    equations to allow for Reinforcement Learning. After that, I’ll go through the
+    different stages they put their models through to get deeply impressive performance.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Let’s dive in!
+  prefs: []
+  type: TYPE_NORMAL
+- en: Group Relative Policy Optimization (GRPO)
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'When we are looking to create a better model, we say we are optimizing our
+    model’s policy (basically just the data it uses to explain stuff). Historically,
+    the industry has relied on two forms of policy optimization: Proximal Policy Optimization
+    (PPO) and Direct Policy Optimization (DPO). [You can learn more about them in
+    my previous blog post here](https://towardsdatascience.com/understanding-the-implications-of-direct-preference-optimization-a4bbd2d85841),
+    for this entry all you need to understand is that GRPO is another mathematical
+    way we are going to figure out how best to update our policy.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Before I dive into the formulation, I’ll briefly explain some key concepts.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Key Concepts
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: A **policy** is a function (defined by a model’s weights and biases) that determines
+    the probability of different **outputs** (o) for a given **query** (q). A **group**
+    is a set of outputs produced by the model for the same query, sampled from an
+    older version of the policy. We sample our outputs from the older version because
+    it isn’t being updated, making its outputs consistent. We will use the probabilities
+    given by the new policy for the outputs of the old policy to guide our updates.
+    Importantly, **advantage** (A) is where reinforcement learning comes into GRPO.
+    Advantage tells us how much better a specific output is than the rest of the group.
+    We use this value to weight responses and directly influence the score we’ll train
+    our model on.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Equation 1 from the paper](../Images/e17e3e8412b1a90ab262abb1cb09fa33.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Equation 1 [from the paper](https://github.com/deepseek-ai/DeepSeek-R1/blob/main/DeepSeek_R1.pdf)
+  prefs: []
+  type: TYPE_NORMAL
+- en: Our model tries to maximize the value output by the above equation
+  prefs: []
+  type: TYPE_NORMAL
+- en: Left-Hand Part of Equation
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: The above formula is how we calculate the score for a certain policy based on
+    the group and the last used policy. If the model is doing much better now, we
+    should keep the new policy. If the change is incremental, our next policy will
+    not be a major shift towards the new one. From this high-level, we can now drill
+    deeper.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Zooming into the Left-Hand Part of Equation 1 from the Paper](../Images/89cd31fef4742abd37737f8fe8c20d9d.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Zooming into the Left-Hand Part of Equation 1 [from the Paper](https://github.com/deepseek-ai/DeepSeek-R1/blob/main/DeepSeek_R1.pdf)
+  prefs: []
+  type: TYPE_NORMAL
+- en: The above section of the equation is how we determine if the data is correct.
+    I’m going to go left to right explaining each parameter of the min function. At
+    the beginning, we take the ratio between the new policy output given a certain
+    query over the old policy output given the same query. This ratio is used to tell
+    us how much the new policy deviates from the old policy. This ratio doesn’t tell
+    us if the change is good or bad, so we need the Advantage value to determine if
+    the change is good (positive) or bad (negative). To keep stability in our training
+    run, we also calculate a clipped version of this number – with values bounded
+    between 1-ε and 1+ε. We then choose the smaller between the bounded and unbounded
+    values, as this will be the more stable update. Because the model’s goal is to
+    maximize the value min returns, if we choose the smaller version always we reduce
+    the odds of giant overcorrections through the run.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Reward Modeling
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: '![Equation 3 from the paper](../Images/1f40643d637ef81d56c2bfd20072352e.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Equation 3 [from the paper](https://github.com/deepseek-ai/DeepSeek-R1/blob/main/DeepSeek_R1.pdf)
+  prefs: []
+  type: TYPE_NORMAL
+- en: Now let’s cover Advantage – or how we know whether an update is good or not.
+    For reinforcement learning, we do not have a ‘ground truth’ to compare answers
+    to. Consequently, we need a good way to figure out, absent of human interaction,
+    if the response is good. To solve for this, DeepSeek decided to use a rules based
+    system to determine what made for a good answer.
+  prefs: []
+  type: TYPE_NORMAL
+- en: First, each answer was checked to see if it was accurate – for example by checking
+    the final computation value or by compiling and checking its output. Second, they
+    checked to see if the response was in the right format (shown below). The paper
+    leads me to believe they used models for each of these, but rather than having
+    it give a subjective score it instead took complex input and gave an objective
+    output.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Table 1 from the paper](../Images/579b216e94b39913c079efb0833a9dab.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Table 1 [from the paper](https://github.com/deepseek-ai/DeepSeek-R1/blob/main/DeepSeek_R1.pdf)
+  prefs: []
+  type: TYPE_NORMAL
+- en: Right-Hand Part of Equation
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: For the final part of our equation, we are going to take the Kullback-Leibler
+    Divergence between the new policy and our reference policy. Like we had discussed
+    before in my blog post on Direct Preference Optimization, this is a way to measure
+    the difference between two continuous probability distributions.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Zooming in on the Right-Hand part of Equation 1 from the paper](../Images/fa711f5887c339d362a054fbac4ac153.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Zooming in on the Right-Hand part of Equation 1 [from the paper](https://github.com/deepseek-ai/DeepSeek-R1/blob/main/DeepSeek_R1.pdf)
+  prefs: []
+  type: TYPE_NORMAL
+- en: While the Left-Hand part of the equation uses min to reduce dramatic changes
+    to the policy, it apparently isn’t enough, as we have this subtraction to ensure
+    the policy doesn’t deviate too radically from a reference policy. The paper doesn’t
+    specify what the reference policy is, but likely this is a previous policy that
+    had performed well, which we are benchmarking off to ensure similar or better
+    performance.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '* * *'
+  prefs: []
+  type: TYPE_NORMAL
+- en: With the reinforcement modeling out of the way, let’s go through how they were
+    actually training!
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The researchers trained two models in different ways: DeepSeek-R1-Zero and
+    DeepSeek-R1'
+  prefs: []
+  type: TYPE_NORMAL
+- en: DeepSeek-R1-Zero
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: Here, we are beginning with a base model and then using reinforcement learning
+    to have the model develop reasoning capabilities. One might reasonably ask why
+    avoid using supervised fine-tuning (SFT) to train the model? Well, to do fine-tuning
+    where you enhance the model’s capability, you typically need a lot of good data.
+    As this is hard to come by, finding ways around this requirement is useful. Additionally,
+    it’s possible with reinforcement learning to find better ways of solving problems
+    than supervised models.
+  prefs: []
+  type: TYPE_NORMAL
+- en: While the authors don’t say what problems they were giving the model to test
+    its reasoning ability, it’s reasonable to assume that these were a fairly large
+    dataset. They would run the model to get the answer to a group of queries, and
+    then use the GRPO equation from above to determine the loss. The loss was then
+    used to perform backwards gradient updates and improve the model.
+  prefs: []
+  type: TYPE_NORMAL
+- en: There were a number of really interesting takeaways from this session. The most
+    immediate one is that the researchers were able to effectively recreate the accuracy
+    of OpenAI’s o1 model using this approach. This alone signals that many other labs
+    will likely follow this approach.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Figure 2 from the paper](../Images/ad1b75a8b7a38d325ceb85cb10107e62.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Figure 2 [from the paper](https://github.com/deepseek-ai/DeepSeek-R1/blob/main/DeepSeek_R1.pdf)
+  prefs: []
+  type: TYPE_NORMAL
+- en: Interestingly, we also see that DeepSeek-R1-Zero learns on its own to create
+    longer responses. The graph below shows how long its average response tends to
+    be as the training run continues. Note that neither the questions asked nor GRPO
+    give any bonus points for length. This result gives strong evidence that Chain
+    Of Thought reasoning is the way to boost accuracy for these models.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Figure 3 from the paper](../Images/fa9c4083f8bc185b626e71ac1ea22639.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Figure 3 [from the paper](https://github.com/deepseek-ai/DeepSeek-R1/blob/main/DeepSeek_R1.pdf)
+  prefs: []
+  type: TYPE_NORMAL
+- en: Finally, the authors also saw the model begin to develop reflective tendencies.
+    Similar to how prompt engineers would ask the model to reflect on its answers,
+    here we can see the model appears to develop this tendency on its own. One of
+    the fascinating things here is seeing the model use reinforcement learning to
+    discover many of the prompting techniques we’ve been using.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Table 3 from the paper](../Images/e065de9c230ecd2ba375efebff89c919.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Table 3 [from the paper](https://github.com/deepseek-ai/DeepSeek-R1/blob/main/DeepSeek_R1.pdf)
+  prefs: []
+  type: TYPE_NORMAL
+- en: Nevertheless, R1-Zero had some issues after its training run. For one thing,
+    it would occasionally mix languages – meaning it would splice in words from different
+    languages. Additionally, the researchers found R1-Zero would occasionally have
+    responses with poor readability. To address these issues while maintaining their
+    gains, the researchers began work on an improved methodology.
+  prefs: []
+  type: TYPE_NORMAL
+- en: DeepSeek-R1
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'From here, the authors once again began with a base model, but this time went
+    through 4 distinct steps to train the model: Cold Start, Reasoning-oriented Reinforcement
+    Learning, Rejection Sampling and Supervised Fine-Tuning, Reinforcement Learning
+    for all Scenarios.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Stage 1: Cold Start'
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: Unlike R1-Zero, the authors wanted to avoid having the model begin the training
+    run going in a bad direction (a cold start problem). They began by using their
+    DeepSeek-V3 model to generate thousands of examples of Chain Of Thought Reasoning.
+    By having it begin with supervised fine-tuning, the authors could ensure that
+    the `<think>` tokens were always understandable to the user (something R1-Zero
+    struggled with, either mixing languages, or having unintelligible responses).
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Stage 2: Reasoning-oriented Reinforcement Learning'
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: Once the fine-tune was completed, they began a reinforcement learning run focused
+    entirely on reasoning-oriented questions. This would involve coding, mathematics,
+    science, and logical reasoning skills. All of these are precise problems with
+    correct answers.
+  prefs: []
+  type: TYPE_NORMAL
+- en: While training, they noticed that the model would often begin language-mixing
+    in its `<think>` tokens. To avoid this, they introduced a language-consistency
+    reward into their Advantage calculation, ensuring the model would steer towards
+    using just one language. The authors note that this alignment does degrade performance
+    slightly. Once the model converges on all its reasoning tasks, they stop the run.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Stage 3: Rejection Sampling and Supervised Fine-Tuning'
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: The researchers now expand the type of questions they are curating for their
+    fine-tuning. They create both reasoning and non-reasoning questions to improve
+    the model’s performance.
+  prefs: []
+  type: TYPE_NORMAL
+- en: For reasoning questions, they no longer require that the question have an objective
+    answer. Instead to determine correctness, they use DeepSeek-V3 as their judge.
+    After filtering out for wrong answers, mixed language use, long paragraphs, and
+    code blocks, they had roughly 600 thousand samples to train on.
+  prefs: []
+  type: TYPE_NORMAL
+- en: For the non-reasoning questions (think writing, translation, story-telling),
+    the authors reused their data pipeline from DeepSeek-V3\. For some of the data,
+    the authors required the full Chain-of-Thought reasoning, but when they felt the
+    question was simple enough (for example "hi"), they did not generate the full
+    Chain-of-Thought. They ended up with roughly 200 thousand samples here.
+  prefs: []
+  type: TYPE_NORMAL
+- en: They took this data and fine-tuned for two epochs.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Stage 4: Reinforcement Learning for all Scenarios'
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: They end with a final reinforcement learning run. They adjusted their Advantage
+    calculation so that they could capture both proper reasoning (they used the same
+    rules-based approach as before) and human preferences for helpfulness and harmlessness.
+    For the latter, they seem to have fallen back to using external reward models
+    to estimate human preferences. They used a similar data corpus to build this reward
+    model as they did for DeepSeek-V3’s pipeline. Note, for helpfulness the final
+    summary was what they focused the reward model on, but for harmlessness they took
+    into account the thinking tokens as well.
+  prefs: []
+  type: TYPE_NORMAL
+- en: With this final step, they were able to get incredible performance from DeepSeek-R1.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Results
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: As the table below shows, the model is directly comparable to some of the best
+    models from Anthropic and OpenAI. Even more so, in a few benchmarks DeepSeek R1
+    is decidedly better.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Table 4 from the paper](../Images/5eac6c78296919fb590bc37c798900e0.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Table 4 from [the paper](https://github.com/deepseek-ai/DeepSeek-R1/blob/main/DeepSeek_R1.pdf)
+  prefs: []
+  type: TYPE_NORMAL
+- en: Perhaps the most interesting gauge of performance has been the public’s reaction.
+    On Chatbot Arena DeepSeek-R1 ranks very high, being the only model with an MIT
+    license in the top 10.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Image by Author - Screen Capture of Chatbot Arena from 1/27/2025](../Images/dc94ea577704d470c16d697ce826a08e.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Image by Author – Screen Capture of Chatbot Arena from 1/27/2025
+  prefs: []
+  type: TYPE_NORMAL
+- en: Additionally, many in the tech community have also weighed in on how impressed
+    they are with this.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Additionally, the authors also shared with us the other methods they tried (including
+    using a Process Reward Model, [which I explain here](https://medium.com/towards-data-science/how-to-improve-model-quality-without-building-larger-models-d6c8e76a86fe)).
+    It is worth going through to their analysis to see why they walked away from other
+    methods.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Conclusion
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: This paper is a great way to see how the most cutting-edge labs are training
+    foundation models. Given the success seen here, I think it is only a matter of
+    time until people switch to reinforcement learning for a lot of (if not all) fine-tuning.
+    I think it’s fair to say this is a seminal moment in the history of AI.
+  prefs: []
+  type: TYPE_NORMAL
+- en: It is an exciting time to be building!
+  prefs: []
+  type: TYPE_NORMAL
+- en: '* * *'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[1] DeepSeek Research, ["DeepSeek-R1: Incentivizing Reasoning Capability in
+    LLMs via Reinforcement Learning"](https://github.com/deepseek-ai/DeepSeek-R1/blob/main/DeepSeek_R1.pdf)
+    (2025), GitHub'
+  prefs: []
+  type: TYPE_NORMAL

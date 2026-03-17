@@ -1,0 +1,278 @@
+- en: Are You Still Using LoRA to Fine-Tune Your LLM?
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 原文：[https://towardsdatascience.com/are-you-still-using-lora-to-fine-tune-your-llm/](https://towardsdatascience.com/are-you-still-using-lora-to-fine-tune-your-llm/)
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: 'LoRA ([Low Rank Adaptation – arxiv.org/abs/2106.09685](https://arxiv.org/abs/2106.09685))
+    is a popular technique for fine-tuning Large Language Models (LLMs) on the cheap.
+    But 2024 has seen an explosion of new parameter-efficient fine-tuning techniques,
+    an alphabet soup of LoRA alternatives: SVF, SVFT, MiLoRA, PiSSA, LoRA-XS 🤯… And
+    most are based on a matrix technique I like a lot: the SVD (Singular Value Decomposition).
+    Let’s dive in.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: LoRA
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: The original LoRA insight is that fine-tuning all the weights of a model is
+    overkill. Instead, LoRA freezes the model and only trains a small pair of low-rank
+    “adapter” matrices. See the illustrations below (where W is any matrix of weights
+    in a transformer LLM).
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/9aff2594965f5839725ca0ff8c19a3c8.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'This saves memory and compute cycles since far fewer gradients have to be computed
+    and stored. For example, [here is a Gemma 8B model](https://colab.research.google.com/drive/14X1spciHDxCYd5c_L8ZtRLrwbU0Hh9y9?usp=sharing)
+    fine-tuned to speak like a pirate using LoRA: only 22M parameters are trainable,
+    8.5B parameters remain frozen.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/e4f486f5546d323095a7b2c9c161bdcc.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'LoRA is very popular. It has even made it as a single-line API into mainstream
+    ML frameworks like Keras:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE0]'
+  prefs: []
+  type: TYPE_PRE
+- en: But is LoRA the best? Researchers have been trying hard to improve on the formula.
+    Indeed, there are many ways of selecting smaller “adapter” matrices. And since
+    most of them make clever use of the singular value decomposition (SVD) of a matrix,
+    let’s pause for a bit of math.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'SVD: the simple math'
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'The SVD is a great tool for understanding the structure of matrices. The technique
+    splits a matrix into three: W = USV^T where U and V are orthogonal (i.e., base
+    changes), and S is the diagonal matrix of sorted singular values. This decomposition
+    always exists.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/6b8e82c8f91837b546e7e5aa3b72c5be.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: In “textbook” SVD, U and V are square, while S is a rectangle with singular
+    values on the diagonal and a tail of zeros. In practice, you can work with a square
+    S and a rectangular U or V – see the picture – the chopped-off pieces are just
+    multiplications by zero. This “economy-sized” SVD is what is used in common libraries,
+    for example, [numpy.linalg.svd](https://numpy.org/doc/2.2/reference/generated/numpy.linalg.svd.html).
+  prefs: []
+  type: TYPE_NORMAL
+- en: So how can we use this to more efficiently select the weights to train? Let’s
+    quickly go through five recent SVD-based low-rank fine-tuning techniques, with
+    commented illustrations.
+  prefs: []
+  type: TYPE_NORMAL
+- en: SVF
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: The simplest alternative to LoRA is to use the SVD on the model’s weight matrices
+    and then fine-tune the singular values directly. Oddly, this is the most recent
+    technique, called SVF, published in the Transformers² paper ([arxiv.org/abs/2501.06252v2](https://arxiv.org/abs/2501.06252v2)).
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/e5592c450d0282da3a7af344a1c595d0.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'SVF is much more economical in parameters than LoRA. And as a bonus, it makes
+    tuned models composable. For more info on that, see my Transformers² explainer
+    [here,](https://bsky.app/profile/martin-gorner.bsky.social/post/3lhu5lkrqvd2s)
+    but composing two SVF fine-tuned models is just an addition:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/779e1a32942f6d0fa3bacd1e019184aa.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: SVFT
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: Should you need more trainable parameters, the SVFT paper ([arxiv.org/abs/2405.19597](https://arxiv.org/abs/2405.19597))
+    explores multiple ways of doing that, starting by adding more trainable weights
+    on the diagonal.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/8aa42a3e926429479024ff83155970c1.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: It also evaluates multiple alternatives like spreading them randomly through
+    the “M” matrix.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/d8b529ae1ceeea2903f10ccc3c5a5e98.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: More importantly, the SVFT paper confirms that having more trainable values
+    than just the diagonal is useful. See their fine-tuning results below.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/f64392ce1d6efc699bc1ad0f73e3fb1f.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Next come several techniques that split singular values in two sets, “large”
+    and “small”. But before we proceed, let’s pause for a bit more SVD math.
+  prefs: []
+  type: TYPE_NORMAL
+- en: More SVD math
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'The SVD is usually seen as a decomposition into three matrices W=USV^T but
+    it can also be thought of as a weighted sum of many rank-1 matrices, weighted
+    by the singular values:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/ed508f2c00944828136f37300263000d.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Should you want to prove it, express individual matrix elements W[jk] using
+    the **USV^T** form and the formula for matrix multiplication on one hand, the
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Σ s[i]u[i]v[i]^T** form, on the other, simplify using the fact that S is
+    diagonal and notice that it’s the same thing.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: In this representation, it’s easy to see that you can split the sum in two.
+    And as you can always sort the singular values, you can make this a split between
+    “large” and “small” singular values.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Going back to the tree-matrix form **W=USV****^T**, this is what the split
+    looks like:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/7d21d1a9d34d0e4e51ebb8622adcc2b6.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Based on this formula, two papers have explored what happens if you tune only
+    the large singular values or only the small ones, PiSSA and MiLoRA.
+  prefs: []
+  type: TYPE_NORMAL
+- en: PiSSA
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'PiSSA (Principal Singular values and Singular Vectors Adaptation, [arxiv.org/abs/2404.02948](https://arxiv.org/abs/2404.02948))
+    claims that you should only tune the large principal values. The mechanism is
+    illustrated below:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/740bb3bc14321e8f794ed978c90f7c15.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'From the paper: “PiSSA is designed to approximate full finetuning by adapting
+    the principal singular components, which are believed to capture the essence of
+    the weight matrices. In contrast, MiLoRA aims to adapt to new tasks while maximally
+    retaining the base model’s knowledge.”'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The PiSSA paper also has an interesting finding: full fine-tuning is prone
+    to over-fitting. You might get better results in the absolute with a low-rank
+    fine-tuning technique.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/aeb168db6a70d3bc1ba9c887d031f900.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: MiLoRA
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'MiLoRA (Minor singular component LoRA [arxiv.org/abs/2406.09044](https://arxiv.org/abs/2406.09044)),
+    on the other hand, claims that you should only tune the small principal values.
+    It uses a similar mechanism to PiSSA:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/88df9f3b6794d4c564f48318c84a7d35.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Surprisingly, MiLoRA seems to have the upper hand, at least when tuning on math
+    datasets which are probably fairly aligned with the original pre-training. Arguably,
+    PiSSA should be better for bending the behavior of the LLM further from its pre-training.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/366e66679fe7a57a0ebb78cd8a88c83c.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: LoRA-XS
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: Finally, I’d like to mention LoRA-XS ([arxiv.org/abs/2405.17604](https://arxiv.org/abs/2405.17604)).
+    Very similar to PiSSA but slightly different mechanism. It also shows good results
+    with significantly fewer params than LoRA.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/d39815687f164a45eb27d8b7ac57a7c1.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'The paper offers a mathematical explanation of why this setup is “ideal’ under
+    two conditions:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: that truncating the bottom principal values from the SVD still offers a good
+    approximation of the weights matrices
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: that the fine-tuning data distribution is close to the pre-training one
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'Both are questionable IMHO, so I won’t detail the math. Some results:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/2545af80ddfd8d8e81fcfba601a9b20c.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'The underlying assumption seems to be that singular values come in “large”
+    and “small” varieties but is it true? I made a [quick Colab](https://colab.research.google.com/drive/1IgzfW7l2P4aytSaNuOa7QIjIVzKg4aIQ?usp=sharing)
+    to check this on Gemma2 9B. Bottom line: 99% of the singular values are in the
+    0.1 – 1.1 range.  I’m not sure partitioning them into “large” and “small” makes
+    that much sense.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/256503f5ad4099f710f98633c7bd3b07.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Conclusion
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'There are many more parameter-efficient fine-tuning techniques. Worth mentioning:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: DoRA ([arxiv.org/abs/2402.09353](https://arxiv.org/abs/2402.09353)) which splits
+    weights into magnitudes and directions then tunes those.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: AdaLoRA ([arxiv.org/abs/2303.10512](https://arxiv.org/abs/2303.10512)) with
+    a complex mechanism for finding the best tuning rank for a given budget of trainable
+    weights.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'My conclusion: to go beyond the LoRA standard with 10x fewer params, I like
+    the simplicity of Transformers²’s SVF. And if you need more trainable weights,
+    SVFT is an easy extension. Both use all singular values (full rank, no singular
+    value pruning) and are still cheap 😁. Happy tuning!'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Note: All illustrations are either created by the author or extracted from
+    arxiv.org papers for comment and discussion purposes.'
+  prefs: []
+  type: TYPE_NORMAL

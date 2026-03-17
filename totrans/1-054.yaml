@@ -1,0 +1,492 @@
+- en: Why CrewAI’s Manager-Worker Architecture Fails — and How to Fix It
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 原文：[https://towardsdatascience.com/why-crewais-manager-worker-architecture-fails-and-how-to-fix-it/](https://towardsdatascience.com/why-crewais-manager-worker-architecture-fails-and-how-to-fix-it/)
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: <mdspan datatext="el1764096085630" class="mdspan-comment">Multi-agent orchestration</mdspan>
+    is one of the most promising applications of LLMs, and CrewAI has quickly become
+    a popular framework for building agent teams. But one of its most important features—the
+    hierarchical *manager-worker* process—simply does not function as [documented](https://docs.crewai.com/en/learn/hierarchical-process).
+    In real workflows, the manager does not effectively coordinate agents; instead,
+    CrewAI executes tasks sequentially, leading to incorrect reasoning, unnecessary
+    tool calls, and extremely high latency. This issue has been highlighted in several
+    online forums with no clear resolution.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In this article, I demonstrate *why* CrewAI’s hierarchical process fails, show
+    the evidence from actual Langfuse traces, and provide a reproducible pathway to
+    make the manager-worker pattern work reliably using custom prompting.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Multi-agent Orchestration
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: Before we get into the details, let us understand what orchestration means in
+    an agentic context. In simple terms, orchestration is managing and coordinating
+    multiple inter-dependent tasks in a workflow. But have’nt workflow management
+    tools (eg; RPA) been available forever to do just that? So what changed with LLMs?
+  prefs: []
+  type: TYPE_NORMAL
+- en: The answer is the ability of LLMs to understand meaning and intent from natural
+    language instructions, just as people in a team would. While earlier workflow
+    tools were rule-based and rigid, with LLMs functioning as agents, the expectation
+    is that they will be able to understand the intent of the user’s query, use reasoning
+    to create a multi-step plan, infer the tools to be used, derive their inputs in
+    the correct formats, and synthesize all the different intermediate results in
+    a precise response to the user’s query. And the orchestration frameworks are meant
+    to guide the LLM with appropriate prompts for planning, tool-calling, generating
+    response etc.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Among the orchestration frameworks, CrewAI, with its natural language based
+    definition of tasks, agents and crews depends the most on the LLM’s ability to
+    understand language and manage workflows. While not as deterministic as LangGraph
+    (since LLM outputs cannot be fully deterministic), it abstracts away most of the
+    complexity of routing, error handling etc into simple, user-friendly constructs
+    with parameters, which the user can tune for appropriate behavior. So it is a
+    good framework for creating prototypes by product teams and even non-developers.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '*Except that the manager-worker pattern does not work as intended…*'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'To illustrate, let’s take a use-case to work with. And also evaluate the response
+    based on the following criteria:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Quality of orchestration
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Quality of final response
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Explainability
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Latency and usage cost
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Use Case
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: Take the case where a team of customer support agents resolve technical or billing
+    tickets. When a ticket comes, a triage agent categorizes the ticket, then assigns
+    to the technical or billing support specialist for resolution. There is a Customer
+    Support Manager who coordinates the team, delegates tasks and validates quality
+    of response.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Together they will be solving queries such as:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Why is my laptop overheating?
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Why was I charged twice last month?
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: My laptop is overheating and also, I was charged twice last month?
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: My invoice amount is incorrect after system glitch?
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: The first query is purely technical, so only the technical support agent should
+    be invoked by the manager, the second one is Billing only and the third and fourth
+    ones require answers from both technical and billing agents.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Let’s build this team of CrewAI agents and see how well it works.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/fdd0fa319183cd4c0b8608503c810668.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Crew of Customer Support Agents
+  prefs: []
+  type: TYPE_NORMAL
+- en: Hierarchical Process
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: According to CrewAI documentation ,“*adopting a hierarchical approach allows
+    for a clear hierarchy in task management, where a ‘manager’ agent coordinates
+    the workflow, delegates tasks, and validates outcomes for streamlined and effective
+    execution*. “ Also, the manager agent can be created in two ways, automatically
+    by CrewAI or explicitly set by the user. In the latter case, you have more control
+    over instructions to the manager agent. We will try both ways for our use case.
+  prefs: []
+  type: TYPE_NORMAL
+- en: CrewAI Code
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: <details class="wp-block-details is-layout-flow wp-block-details-is-layout-flow"><summary>Following
+    is the code for the use case. I have used gpt-4o as the LLM and Langfuse for observability.</summary>
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE0]</details>'
+  prefs: []
+  type: TYPE_NORMAL
+- en: As is evident, the program reflects the team of human agents. Not only is there
+    a manger, triage agent, technical and billing support agent, but the CrewAI objects
+    such as Agent, Task and Crew are self-evident in their meaning and easy to visualise.
+    Another observation is that there is very little python code and most of the reasoning,
+    planning and behavior is natural language based which depends upon the ability
+    of the LLM to derive meaning and intent from language, then reason and plan for
+    the goal.
+  prefs: []
+  type: TYPE_NORMAL
+- en: A CrewAI code therefore, scores high on ease of development. It is a low-code
+    way of creating a flow quickly with most of the heavy-lifting of the workflow
+    being done by the orchestration framework rather than the developer.
+  prefs: []
+  type: TYPE_NORMAL
+- en: How well does it work?
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'As we are testing the hierarchical process, the process parameter is set to
+    *Process.hierarchical* in the Crew definition. We shall try different features
+    of CrewAI as follows and measure performance:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Manager agent auto-created by CrewAI
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Using our custom manager agent
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: 1\. Auto-created manager agent
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: '*Input query: Why is my laptop overheating?*'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Here is the Langfuse trace:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/72047a6be8032046b3db08d31e6f4756.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Why is my laptop overheating?
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The key observations are as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: First the output is *“Based on the provided context, it seems there is a misalignment
+    between the nature of the issue (laptop overheating) and its categorization as
+    a billing concern. To clarify the connection, it would be important to determine
+    if the customer is requesting a refund for the laptop due to the overheating issue,
+    disputing a charge related to the purchase or repair of the laptop, or seeking
+    compensation for repair costs incurred due to the overheating…”* **For a query
+    that was obviously a technical issue, this is a poor response.**
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: 'Why does it happen? The left panel shows that the execution first went to triage
+    specialist, then to technical support and then strangely, to billing support specialist
+    as well. The following graphic depicts this as well:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '![](../Images/e2850ecb0fb741c67c0f4d13eb98e047.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Langfuse trace graph
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Looking closely, we find that the triage specialist correctly identified the
+    ticket as “Technical” and the technical support agent gave a great reply as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/9eef9067e0d2974abe40d083b1112dd6.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Technical support agent response
+  prefs: []
+  type: TYPE_NORMAL
+- en: But then, instead of stopping and replying with the above as the response, the
+    Crew Manager went to the Billing support specialist and tried to *find a non-existent
+    billing issue in the purely technical user query.*
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/5b9345547ceb9318bd84505939cb879c.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Billing support agent response
+  prefs: []
+  type: TYPE_NORMAL
+- en: This resulted in the Billing agent’s response overwriting the Technical agent’s
+    response, with the Crew Manager doing a sub-optimal job of validating the quality
+    of the final response against the user’s query.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Why did it happen?
+  prefs: []
+  type: TYPE_NORMAL
+- en: '*Because in the Crew task definition, I specified the tasks as categorize_tickets,
+    resolve_technical_issues, resolve_billing_issues and although the process is supposed
+    to be hierarchical, the Crew Manager does not perform any orchestration, instead
+    simply executing all the tasks sequentially.*'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE1]'
+  prefs: []
+  type: TYPE_PRE
+- en: If you now ask a billing-related query, it will appear to give a correct answer
+    simply because the *resolve_billing_issues* is the last task in the sequence.
+  prefs: []
+  type: TYPE_NORMAL
+- en: What about a query that requires both technical and billing support, such as
+    *“My laptop is overheating and also I was charged twice last month*?” In this
+    case also, the triage agent correctly categorizes the ticket type as “Both”, and
+    the technical and billing agents give correct answers to their individual queries,
+    but the manager is unable to combine all the responses into a coherent reply to
+    user’s query. Instead, the final response only considers the billing response
+    since that is the last task to be called in sequence.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/5dd544309f2ad08adddc9258e29d9b8e.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Response to a combined query
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Latency and Usage**: As can be seen from the above image, the Crew execution
+    took almost 38 secs and spent 15759 tokens. The final output is only about 200
+    tokens. The rest of the tokens were spent in all the thinking, agent calling,
+    generating intermediate responses etc – all to generate an unsatisfactory response
+    at the end. The performance can be categorised as “**Poor**”.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Evaluation of this approach
+  prefs:
+  - PREF_H4
+  type: TYPE_NORMAL
+- en: 'Quality of orchestration: *Poor*'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'Quality of final output: *Poor*'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'Explainability: *Poor*'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'Latency and Usage: *Poor*'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: But perhaps, the above result is due to the fact that we relied on CrewAI’s
+    built-in manager, which did not have our custom instructions. Therefore, in our
+    next approach we replace the CrewAI automated manager with our custom Manager
+    agent, which has detailed instructions on what to do in case of Technical, Billing
+    or Both tickets.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 2\. Using Custom Manager Agent
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: Our Customer Support Manager is defined with the following *very specific* instructions.
+    Note that this requires some experimentation to get it working, and a generic
+    manager prompt such as that mentioned in the CrewAI documentation will give the
+    same erroneous results as the built-in manager agent above.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE2]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'And in the Crew definition, we use the custom manager instead of the built-in
+    one:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE3]'
+  prefs: []
+  type: TYPE_PRE
+- en: Let’s repeat the test cases
+  prefs:
+  - PREF_H4
+  type: TYPE_NORMAL
+- en: '*Input query: Why is my laptop overheating?*'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The trace is the following:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/587a92dcd1f26204f037810f4fa7e23a.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Why is my laptop overheating?
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/6c2444b6077a1559bfa4ee5eff177fcd.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Graph of Why is my laptop overheating?
+  prefs: []
+  type: TYPE_NORMAL
+- en: The most important observation is that now for this technical query, the flow
+    did not go to the Billing support specialist agent. The manager correctly followed
+    instructions, classified the query as technical and stopped execution once the
+    Technical Support Specialist had generated its response. From the response preview
+    displayed, it is evident that it is a good response for the user query. Also,
+    the latency is 24 secs and token usage is 10k.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '*Input query: Why was I charged twice last month?*'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The trace is as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/e2d48dfa5063a0d03d8c1911faef6186.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Response to ‘Why was I charged twice last month?’
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/6507a29fd821b12d38e6f525e4dbdd84.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Graph of Why was I charged twice last month?
+  prefs: []
+  type: TYPE_NORMAL
+- en: As can be seen, the manager correctly skipped executing the Technical Support
+    Specialist, although that was before the Billing agent in the Crew definition.
+    Instead the response generated is of good quality from the Billing Support Specialist
+    only. Latency is 16 secs and token usage *7,700 only*
+  prefs: []
+  type: TYPE_NORMAL
+- en: '*Input query: My laptop is overheating and also, I was charged twice last month?*'
+  prefs: []
+  type: TYPE_NORMAL
+- en: The trace shows the Manager executed both Technical and Billing support agents
+    and provided a combined response.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/bc53f745915f0526b313274c91f4ccd0.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Response to multi-agent query
+  prefs: []
+  type: TYPE_NORMAL
+- en: <details class="wp-block-details is-layout-flow wp-block-details-is-layout-flow"><summary>The
+    response preview in the figure above does not show the full response, which is
+    as follows, and combines responses from both support agents. Latency is 38 secs
+    and token usage is 20k, which is commensurate with the multiple agents orchestration
+    and the detailed response generated.</summary>
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE4]</details>'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'And our final, more nuanced query is as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '*Input query: My invoice amount is incorrect after system glitch*?'
+  prefs: []
+  type: TYPE_NORMAL
+- en: The trace shows that the query was correctly categorised as ‘Both’, requiring
+    responses from Technical and Billing agents and a combined response was provided.
+    Latency is 24 secs and tokens used are 12k.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/9e15ede422d796f2bef4b79e323181ec.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Response to multi-agent query
+  prefs: []
+  type: TYPE_NORMAL
+- en: <details class="wp-block-details is-layout-flow wp-block-details-is-layout-flow"><summary>The
+    full response is included here:</summary>
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE5]</details>'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Evaluation of this approach
+  prefs:
+  - PREF_H4
+  type: TYPE_NORMAL
+- en: 'Quality of orchestration: **Good**'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'Quality of final output: **Good**'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'Explainability: **Good** (we understand why it did what it did)'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'Latency and Usage: **Fair** (commensurate with the complexity of the output)'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Takeaway
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'In summary, the hierarchical Manager–Worker pattern in CrewAI does not function
+    as documented. The core orchestration logic is weak; instead of allowing the manager
+    to selectively delegate tasks, CrewAI executes all tasks sequentially, causing
+    incorrect agent invocation, overwritten outputs, and inflated latency/token usage.
+    Why it failed comes down to the framework’s internal routing—hierarchical mode
+    does not enforce conditional branching or true delegation, so the final response
+    is effectively determined by whichever task happens to run last. The fix is introducing
+    a custom manager agent with explicit, step-wise instructions: it uses the triage
+    result, conditionally calls only the required agents, synthesizes their outputs,
+    and terminates execution at the right point—restoring correct routing, improving
+    output quality, and significantly optimising token costs.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Conclusion
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: CrewAI, in the spirit of keeping the LLM at the center of orchestration, depends
+    upon it for most of the heavy-lifting of orchestration, utilising user prompts
+    combined with detailed scaffolding prompts embedded in the framework. Unlike LangGraph
+    and AutoGen, this approach sacrifices determinism for developer-friendliness.
+    And sometimes results in unexpected behavior for critical features such as the
+    manager-worker pattern, crucial for many real-life use cases. This article attempts
+    to demonstrate a pathway for achieving the desired orchestration for this pattern
+    using careful prompting. In future articles, I intend to explore more features
+    for CrewAI, LangGraph and others for their applicability in practical use cases.
+  prefs: []
+  type: TYPE_NORMAL
+- en: You can use CrewAI to design an interactive conversational assistant on a document
+    store and further make the responses truly multimodal. Refer my articles on **[GraphRAG
+    Design](https://towardsdatascience.com/do-you-really-need-graphrag-a-practitioners-guide-beyond-the-hype/)
+    and [Multimodal RAG](https://towardsdatascience.com/building-a-multimodal-rag-with-text-images-tables-from-sources-in-response/).**
+  prefs: []
+  type: TYPE_NORMAL
+- en: '*Connect with me and share your comments at [www.linkedin.com/in/partha-sarkar-lets-talk-AI](http://www.linkedin.com/in/partha-sarkar-lets-talk-AI)*'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[All images in this article drawn by me or generated using Copilot or Langfuse.
+    Code shared is written by me.]'
+  prefs: []
+  type: TYPE_NORMAL

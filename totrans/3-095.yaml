@@ -1,0 +1,358 @@
+- en: 'Sesame  Speech Model:  How This Viral AI Model Generates Human-Like Speech'
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 原文：[https://towardsdatascience.com/sesame-speech-model-how-this-viral-ai-model-generates-human-like-speech/](https://towardsdatascience.com/sesame-speech-model-how-this-viral-ai-model-generates-human-like-speech/)
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: <mdspan datatext="el1744400684138" class="mdspan-comment">Recently, **Sesame
+    AI**</mdspan> published a demo of their latest Speech-to-Speech model. A conversational
+    AI agent who is *really* good at speaking, they provide relevant answers, they
+    speak with expressions, and honestly, they are just very fun and interactive to
+    play with.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '*Note that a technical paper is not out yet, but they do have a* [*short blog
+    post*](https://www.sesame.com/research/crossing_the_uncanny_valley_of_voice) *that
+    provides a lot of information about the techniques they used and previous algorithms
+    they built upon.*'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Thankfully, they provided enough information for me to write this article and
+    make a [YouTube video](https://youtu.be/ThG9EBbMhP8) out of it. Read on!
+  prefs: []
+  type: TYPE_NORMAL
+- en: Training a Conversational Speech Model
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: Sesame is a **Conversational Speech Model**, or a CSM. It inputs both text and
+    audio, and generates speech as audio. While they haven’t revealed their training
+    data sources in the articles, we can still try to take a solid guess. The *blog
+    post* heavily cites another CSM, [2024’s Moshi](https://moshi.chat/), and fortunately,
+    the creators of Moshi did reveal their data sources in their [paper](https://arxiv.org/abs/2410.00037).
+    Moshi uses *7 million hours* of unsupervised speech data, *170 hours* of natural
+    and scripted conversations (for multi-stream training), and *2000 more hours*
+    of telephone conversations (The Fischer Dataset).
+  prefs: []
+  type: TYPE_NORMAL
+- en: '* * *'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/9da1d3df6a3685ddd9bfa4b235516f20.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Sesame builds upon the [Moshi Paper](https://arxiv.org/abs/2410.00037) (2024)
+  prefs: []
+  type: TYPE_NORMAL
+- en: But what does it really take to generate audio?
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: '**In raw form, audio is just a long sequence of amplitude values** — a waveform.
+    For example, if you’re sampling audio at 24 kHz, you are capturing 24,000 float
+    values every second.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/15c35434da8c31b30ed6010ea071bb2c.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: There are 24000 values here to represent 1 second of speech! (Image generated
+    by author)
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Of course, it is quite resource-intensive to process 24000 float values for
+    just one second of data**, especially because transformer computations scale quadratically
+    with sequence length. It would be great if we could compress this signal and reduce
+    the number of samples required to process the audio.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: We will take a deep dive into the **Mimi encoder** and specifically **Residual
+    Vector Quantizers (RVQ)**, which are the backbone of Audio/Speech modeling in
+    Deep Learning today. We will end the article by learning about how Sesame generates
+    audio using its special dual-transformer architecture.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Preprocessing audio
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: Compression and feature extraction are where convolution helps us. Sesame uses
+    the Mimi speech encoder to process audio. **Mimi was introduced in the aforementioned**
+    [**Moshi paper**](https://arxiv.org/pdf/2410.00037) **as well**. Mimi is a self-supervised
+    audio encoder-decoder model that converts audio waveforms into discrete “latent”
+    tokens first, and then reconstructs the original signal. Sesame only uses the
+    encoder section of Mimi to tokenize the input audio tokens. Let’s learn how.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Mimi inputs the raw speech waveform at 24Khz, passes them through several strided
+    convolution layers to downsample the signal, with a stride factor of 4, 5, 6,
+    8, and 2\. This means that the first CNN block downsamples the audio by 4x, then
+    5x, then 6x, and so on. In the end, it downsamples by a factor of 1920, reducing
+    it to just 12.5 frames per second.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The convolution blocks also project the original float values to an embedding
+    dimension of 512\. Each embedding aggregates the local features of the original
+    1D waveform. 1 second of audio is now represented as around 12 vectors of size
+    512\. This way, Mimi reduces the sequence length from 24000 to just 12 and converts
+    them into dense continuous vectors.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/70e0db446eba6337aa8cd7c2daab9b95.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Before applying any quantization, the Mimi Encoder downsamples the input 24KHz
+    audio by 1920 times, and embeds it into 512 dimensions. In other words, you get
+    12.5 frames per second with each frame as a 512-dimensional vector. [(Image from
+    author’s video)](https://youtu.be/ThG9EBbMhP8)
+  prefs: []
+  type: TYPE_NORMAL
+- en: What is Audio Quantization?
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: Given the continuous embeddings obtained after the convolution layer, we want
+    to tokenize the input speech. **If we can represent speech as a sequence of tokens,
+    we can apply standard language learning transformers to train generative models.**
+  prefs: []
+  type: TYPE_NORMAL
+- en: Mimi uses a **Residual Vector Quantizer or RVQ tokenizer** to achieve this.
+    We will talk about the residual part soon, but first, let’s look at what a simple
+    vanilla Vector quantizer does.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Vector Quantization
+  prefs:
+  - PREF_H4
+  type: TYPE_NORMAL
+- en: 'The idea behind Vector Quantization is simple: you train a codebook , which
+    is a collection of, say, 1000 random vector codes all of size 512 (same as your
+    embedding dimension).'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/12adddaee0ddbb08b0e702d1444dcc6d.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: A Vanilla Vector Quantizer. A codebook of embeddings is trained. Given an input
+    embedding, we map/quantize it to the nearest codebook entry. [(Screenshot from
+    author’s video)](https://youtu.be/ThG9EBbMhP8)
+  prefs: []
+  type: TYPE_NORMAL
+- en: Then, given the input vector, we will map it to the closest vector in our codebook — basically
+    snapping a point to its nearest cluster center. This means we have effectively
+    created a fixed vocabulary of tokens to represent each audio frame, because whatever
+    the input frame embedding may be, we will represent it with the nearest cluster
+    centroid. If you want to learn more about Vector Quantization, check out my video
+    on this topic where I go much deeper with this.
+  prefs: []
+  type: TYPE_NORMAL
+- en: More about Vector Quantization! (Video by author)
+  prefs: []
+  type: TYPE_NORMAL
+- en: Residual Vector Quantization
+  prefs:
+  - PREF_H4
+  type: TYPE_NORMAL
+- en: The problem with simple vector quantization is that the loss of information
+    may be too high because we are mapping each vector to its cluster’s centroid.
+    This *“snap”* is rarely perfect, so there is always an error between the original
+    embedding and the nearest codebook.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The big idea of Residual Vector Quantization is that it doesn’t stop at having
+    just one codebook. Instead, it tries to use multiple codebooks to represent the
+    input vector.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**First**, you quantize the original vector using the first codebook.'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '**Then**, you subtract that centroid from your original vector. What you’re
+    left with is the **residual** — the error that wasn’t captured in the first quantization.'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Now take this residual, and **quantize it again**, using a **second codebook
+    full of brand new code vectors **— again by snapping it to the nearest centroid.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Subtract *that* too, and you get a smaller residual. Quantize again with a third
+    codebook… and you can keep doing this for as many codebooks as you want.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '![](../Images/959df4bbf74e2b40b9d6ab7a6cd5337d.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Residual Vector Quantizers (RVQ) hierarchically encode the input embeddings
+    by using a new codebook and VQ layer to represent the previous codebook’s error.
+    (Illustration by the author)
+  prefs: []
+  type: TYPE_NORMAL
+- en: Each step hierarchically captures a little more detail that was missed in the
+    previous round. If you repeat this for, let’s say, N codebooks, you get a collection
+    of N discrete tokens from each stage of quantization to represent one audio frame.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The coolest thing about RVQs is that they are designed to have a high inductive
+    bias towards capturing the most essential content in the very first quantizer.
+    In the subsequent quantizers, they learn more and more fine-grained features.
+  prefs: []
+  type: TYPE_NORMAL
+- en: If you’re familiar with PCA, you can think of the first codebook as containing
+    the primary principal components, capturing the most critical information. The
+    subsequent codebooks represent higher-order components, containing information
+    that adds more details.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/a60068cf5f88c5f3f9acbded261e06de.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Residual Vector Quantizers (RVQ) uses multiple codebooks to encode the input
+    vector — one entry from each codebook. [(Screenshot from author’s video)](https://youtu.be/ThG9EBbMhP8)
+  prefs: []
+  type: TYPE_NORMAL
+- en: Acoustic vs Semantic Codebooks
+  prefs:
+  - PREF_H4
+  type: TYPE_NORMAL
+- en: Since Mimi is trained on the task of audio reconstruction, the encoder compresses
+    the signal to the discretized latent space, and the decoder reconstructs it back
+    from the latent space. When optimizing for this task, the RVQ codebooks learn
+    to capture the essential acoustic content of the input audio inside the compressed
+    latent space.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Mimi also separately trains a single codebook (vanilla VQ) that only focuses
+    on embedding the semantic content of the audio. This is why **Mimi is called a
+    split-RVQ tokenizer** – it divides the quantization process into two independent
+    parallel paths: one for semantic information and another for acoustic information.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/907a53e962892fb376262525635d9dd6.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'The Mimi Architecture (Source: Moshi paper) License: Free'
+  prefs: []
+  type: TYPE_NORMAL
+- en: To train semantic representations, Mimi used knowledge distillation with an
+    existing speech model called WavLM as a semantic teacher. Basically, Mimi introduces
+    an additional loss function that decreases the cosine distance between the semantic
+    RVQ code and the WavLM-generated embedding.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '* * *'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Audio Decoder
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: Given a conversation containing text and audio, we first convert them into a
+    sequence of token embeddings using the text and audio tokenizers. This token sequence
+    is then input into a transformer model as a time series. In the blog post, this
+    model is referred to as the Autoregressive Backbone Transformer. Its task is to
+    process this time series and output the “zeroth” codebook token.
+  prefs: []
+  type: TYPE_NORMAL
+- en: A lighterweight transformer called the audio decoder then reconstructs the next
+    codebook tokens conditioned on this zeroth code generated by the backbone transformer.
+    Note that the zeroth code already contains a lot of information about the history
+    of the conversation since the backbone transformer has visibility of the entire
+    past sequence. **The lightweight audio decoder only operates on the zeroth token
+    and generates the other N-1** codes. These codes are generated by using N-1 distinct
+    linear layers that output the probability of choosing each code from their corresponding
+    codebooks.
+  prefs: []
+  type: TYPE_NORMAL
+- en: You can imagine this process as predicting a text token from the vocabulary
+    in a text-only LLM. Just that a text-based LLM has a single vocabulary, but the
+    RVQ-tokenizer has multiple vocabularies in the form of the N codebooks, so you
+    need to train a separate linear layer to model the codes for each.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/f7a3ca827e8ecd9196b2c059070f50f5.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: The Sesame Architecture (Illustration by the author)
+  prefs: []
+  type: TYPE_NORMAL
+- en: Finally, after the codewords are all generated, we aggregate them to form the
+    combined continuous audio embedding. The final job is to convert this audio back
+    to a waveform. For this, we apply transposed convolutional layers to upscale the
+    embedding back from 12.5 Hz back to KHz waveform audio. Basically, reversing the
+    transforms we had applied originally during audio preprocessing.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In Summary
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: Check out the accompanying video on this article! (Video by author)
+  prefs: []
+  type: TYPE_NORMAL
+- en: So, here is the overall summary of the Sesame model in some bullet points.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Sesame is built on a multimodal Conversation Speech Model or a CSM.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Text and audio are tokenized together to form a sequence of tokens and input
+    into the backbone transformer that autoregressively processes the sequence.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: While the text is processed like any other text-based LLM, the audio is processed
+    directly from its waveform representation. They use the Mimi encoder to convert
+    the waveform into latent codes using a split RVQ tokenizer.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: The multimodal backbone transformers consume a sequence of tokens and predict
+    the next zeroth codeword.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Another lightweight transformer called the Audio Decoder predicts the next codewords
+    from the zeroth codeword.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: The final audio frame representation is generated from combining all the generated
+    codewords and upsampled back to the waveform representation.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Thanks for reading!
+  prefs: []
+  type: TYPE_NORMAL
+- en: References and Must-read papers
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: '**[Check out my ML YouTube Channel](https://www.youtube.com/@avb_fj)**'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**[Sesame Blogpost and Demo](https://www.sesame.com/research/crossing_the_uncanny_valley_of_voice)**'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Relevant papers:** Moshi: [https://arxiv.org/abs/2410.00037](https://arxiv.org/abs/2410.00037)'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'SoundStream: [https://arxiv.org/abs/2107.03312](https://arxiv.org/abs/2107.03312)'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'HuBert: [https://arxiv.org/abs/2106.07447](https://arxiv.org/abs/2106.07447)'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Speech Tokenizer: [https://arxiv.org/abs/2308.16692](https://arxiv.org/abs/2308.16692)'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '* * *'
+  prefs: []
+  type: TYPE_NORMAL

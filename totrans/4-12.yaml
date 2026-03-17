@@ -1,0 +1,617 @@
+- en: Align Your Data Architecture for Universal Data Supply
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 原文：[https://towardsdatascience.com/align-your-data-architecture-for-universal-data-supply-656349c9ae66/](https://towardsdatascience.com/align-your-data-architecture-for-universal-data-supply-656349c9ae66/)
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: '![Photo by Simone Hutsch on Unsplash](../Images/e31fde14fad3ba0117ea1098fba99d11.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Photo by [Simone Hutsch](https://unsplash.com/@heysupersimi?utm_source=medium&utm_medium=referral)
+    on [Unsplash](https://unsplash.com?utm_source=medium&utm_medium=referral)
+  prefs: []
+  type: TYPE_NORMAL
+- en: Now that we understand the business requirements, we need to check if the current
+    data architecture supports them.
+  prefs: []
+  type: TYPE_NORMAL
+- en: If you’re wondering what to assess in our data architecture and what the current
+    setup looks like, check the [business case description](https://medium.com/towards-data-science/universal-data-supply-know-your-business-9ed8a80a0224).
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: · [Assessing against short-term requirements](#7f9d) ∘ [Initial alignment approach](#ce10)
+    · [Medium-term requirements and long-term vision](#2594) · [Step-by-step conversion](#6f61)
+    ∘ [Agility requires some foresight](#32e6) ∘ [Build your business process and
+    information model](#ca6c) ∘ [Holistically challenge your architecture](#af14)
+    ∘ [Decouple and evolve](#fe30)
+  prefs: []
+  type: TYPE_NORMAL
+- en: Assessing against short-term requirements
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'Let’s recap the short-term requirements:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Immediate feedback with automated compliance monitors**: Providing timely
+    feedback to staff on compliance to reinforce hand hygiene practices effectively.
+    Calculate the compliance rates in near real time and show them on ward monitors
+    using a simple traffic light visualization.'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '**Device availability and maintenance**: Ensuring dispensers are always functional,
+    with near real-time tracking for refills to avoid compliance failures due to empty
+    dispensers.'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: The current weekly batch ETL process is obviously not able to deliver immediate
+    feedback.
+  prefs: []
+  type: TYPE_NORMAL
+- en: However, we could try to reduce the batch runtime as much as possible and loop
+    it continuously. For near real-time feedback, we would also need to run the query
+    continuously to get the latest compliance rate report.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Both of these technical requirements are challenging. The weekly batch process
+    from the HIS handles large data volumes and can’t be adjusted to run in seconds.
+    Continuous monitoring would also put a heavy load on the data warehouse if we
+    keep the current model, which is optimized for tracking history.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Before we dig deeper to solve this, let’s also examine the second requirement.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The smart dispenser can be loaded with bottles of various sizes, tracked in
+    the *Dispenser Master Data*. To calculate the current fill level, we subtract
+    the total amount dispensed from the initial volume. Each time the bottle is replaced,
+    the fill level should reset to the initial volume. To support this, the dispenser
+    manufacturer has announced two new events to be implemented in a future release:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: The dispenser will automatically track its fill level and send a *refill warning*
+    when it reaches a configurable low point. This threshold is based on the estimated
+    time until the bottle is empty (*remaining time to failure*).
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: When the dispenser’s bottle is replaced, it will send a *bottle exchange event*.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: However, these improved devices won’t be available for about 12 months. As a
+    workaround, the current ETL process needs to be updated to perform the required
+    calculations and generate the events.
+  prefs: []
+  type: TYPE_NORMAL
+- en: A new report is needed based on these events to inform support staff about dispensers
+    requiring timely bottle replacement. In medium-sized hospitals with 200–500 dispensers,
+    intensive care units use about two 1-liter bottles of disinfectant per month.
+    This means around 19 dispensers need refilling in the support staff’s weekly exchange
+    plan.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Since dispenser usage varies widely across wards, the locations needing bottle
+    replacements are spread throughout the hospital. Support staff would like to receive
+    the bottle exchange list organized in an optimal route through the building.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Initial alignment approach
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: Following the principle "Never change a running system," we could try to reuse
+    as many components as possible to minimize changes.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Initial idea to implement short-term requirements— Image by author](../Images/1fb64607893909e6e0fca64ecdccaf9a.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Initial idea to implement short-term requirements— Image by author
+  prefs: []
+  type: TYPE_NORMAL
+- en: We would have to build NEW components (in green) and CHANGE existing components
+    (in dark blue) to support the new requirements.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We know the batch needs to be replaced with stream processing for near real-time
+    feedback. We consider using [Change Data Capture (CDC)](https://en.wikipedia.org/wiki/Change_data_capture)a
+    technology to get updates on dispenser usage from the internal relational database.
+    However, tests on the *Dispenser Monitoring System* showed that the *Dispenser
+    Usage Data Collector* only updates the database every 5 minutes. To keep things
+    simple, we decide to reschedule the weekly batch extraction process to sync with
+    the monitoring system’s 5-minute update cycle.
+  prefs: []
+  type: TYPE_NORMAL
+- en: By reducing the batch runtime and continuously looping over it, we effectively
+    create a microbatch that supports stream processing. For more details, see my
+    article on [how to unify batch and stream processing](https://towardsdatascience.com/batch-and-streaming-demystified-for-unification-dee0b48f921d).
+  prefs: []
+  type: TYPE_NORMAL
+- en: Reducing the runtime of the *HIS Data* ETL batch process is a major challenge
+    due to the large amount of data involved. We could decouple patient and occupancy
+    data from the rest of the *HIS data*, but the *HIS database* extraction process
+    is a complex, long-neglected COBOL program that no one dares to modify. The extraction
+    logic is buried deep within the COBOL monolith, and there is limited knowledge
+    of the source systems. Therefore, we consider implementing near real-time extraction
+    of patient and occupancy data from HIS as "not feasible."
+  prefs: []
+  type: TYPE_NORMAL
+- en: Instead, we plan to adjust the *Compliance Rate Calculation* to allow near real-time
+    *Dispenser Usage Data* to be combined with the still-weekly updated *HIS data*.
+    After discussing this with the hygiene specialists, we agree that the low rates
+    of change in patient treatment and occupancy suggest the situation will remain
+    fairly stable throughout the week.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The *Continuous Compliance Rate On Ward Level* will be stored in a real-time
+    partition associated to the ward entity of the data warehouse. It will support
+    short runtimes of the new *Traffic Light Monitor Query* that is scheduled as successor
+    to the respective ETL batch process.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Consequently, the monitor will be updated every 5 minutes, which seems close
+    enough to near real-time. The new *Exchange List Query* will be scheduled weekly
+    to create the *Weekly Bottle-Exchange Plan* to be sent by email to the support
+    staff.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We feel confident that this will adequately address the short-term requirements.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Medium-term requirements and long-term vision
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'However, before we start sprinting ahead with the short-term solution, we should
+    also examine the medium and long-term vision. Let’s recap the identified requirements:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Granular data insights**: Moving beyond aggregate reports to gain insight
+    into compliance at more specific levels (e.g., by shift or even person).'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '**Actionable alerts for non-compliance**: Leveraging historical data with near
+    real-time extended monitoring data to enable systems to notify staff immediately
+    of missed hygiene actions, ideally personalized by healthcare worker.'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '**Personalized compliance dashboards**: Creating personalized dashboards that
+    show each worker’s compliance history, improvement opportunities, and benchmarks.'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '**Integration with smart wearables**: Utilizing wearable technology to give
+    real-time and discrete feedback directly to healthcare workers, supporting compliance
+    at the point of care.'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: These long-term visions highlight the need to significantly improve real-time
+    processing capabilities. They also emphasize the importance of processing data
+    at a more granular level and using intelligent processing to derive individualized
+    insights. Processing personalized information raises security concerns that must
+    be properly addressed as well. Finally, we need to seamlessly integrate advanced
+    monitoring devices and smart wearables to receive personalized information in
+    a secure, discreet, and timely manner.
+  prefs: []
+  type: TYPE_NORMAL
+- en: That leads to a whole chain of additional challenges for our current architecture.
+  prefs: []
+  type: TYPE_NORMAL
+- en: But it’s not only the requirements of the hygiene monitoring that are challenging;
+    the hospital is also about to be taken over by a large private hospital operator.
+  prefs: []
+  type: TYPE_NORMAL
+- en: This means the current HIS must be integrated into a larger system that will
+    cover 30 hospitals. The goal is to extend the advanced monitoring functionality
+    for hygiene dispensers so that other hospitals in the new operator’s network can
+    also benefit. As a long-term vision, they want the monitoring functionality to
+    be seamlessly integrated into their global HIS.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Another challenge is planning for the announced innovations from the dispenser
+    manufacturer. Through ongoing discussions about remaining time to failure, refill
+    warnings, and bottle exchange events, we know the manufacturer is open to enabling
+    real-time streaming for *Dispenser Usage Data*. This would allow data to be sent
+    directly to consumers, bypassing the current 5-minute batch process through the
+    relational database.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Step-by-step conversion
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: We want to counter the enormous challenges facing our architecture with a gradual
+    transformation.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Since we’ve learned that working agile is beneficial, we want to start with
+    the initial idea and then refine the system in subsequent steps.
+  prefs: []
+  type: TYPE_NORMAL
+- en: But is this really agile working?
+  prefs: []
+  type: TYPE_NORMAL
+- en: Agility requires some foresight
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: What I often encounter is that people equate "acting in small incremental steps"
+    with working agile. While it’s true that we want to evolve our architecture progressively,
+    each step should aim at the long-term target.
+  prefs: []
+  type: TYPE_NORMAL
+- en: If we constrain our evolution to what the current IT architecture can deliver,
+    we might not be moving toward what is truly needed.
+  prefs: []
+  type: TYPE_NORMAL
+- en: When we developed our initial alignment, we just reasoned on how to implement
+    the first step within the existing architecture’s constraints. However, this approach
+    narrows our view to what’s ‘feasible’ within the current setup.
+  prefs: []
+  type: TYPE_NORMAL
+- en: So, let’s try the opposite and clearly address what’s needed including the long-term
+    requirements. Only then we can target the next steps to move the architecture
+    in the right direction.
+  prefs: []
+  type: TYPE_NORMAL
+- en: For architecture decisions, we don’t need to detail every aspect of the business
+    processes using standards like Business Process Model and Notation (BPMN). We
+    just need a high-level understanding of the process and information flow.
+  prefs: []
+  type: TYPE_NORMAL
+- en: But what’s the right level of detail that allows us to make evolutionary architecture
+    decisions?
+  prefs: []
+  type: TYPE_NORMAL
+- en: Build your business process and information model
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: Let’s start very high to find out about the right level.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In [part 3 of my series on Challenges and Solutions in Data Mesh](https://medium.com/towards-data-science/challenges-and-solutions-in-data-mesh-part-3-dacb917f3c91)
+    I have outlined an approach based on **modeling patterns** to model an ontology
+    or enterprise data model. Let’s apply this approach to our example.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '***Note:*** We can’t create a complete ontology for the healthcare industry
+    in this article. However, we can apply this approach to the small sub-topic relevant
+    to our example.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '* * *'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Let’s identify the obvious **modeling patterns** relevant for our example:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '*Party & Role:* The parties acting in our healthcare example include patients,
+    medical device suppliers, healthcare professionals (doctors, nurses, hygiene specialists,
+    etc.), the hospital operator, support staff and the hospital as an organizational
+    unit.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '*Location:* The hospital building address, patient rooms, floors, laboratories,
+    operating rooms, etc.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '*Ressource / Asset:* The hospital as a building, medical devices like our intelligent
+    dispensers, etc.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '*Document:* All kinds of files representing patient information like diagnosis,
+    written agreements, treatment plans, etc.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '*Event:* We have identified dispenser-related events, such as bottle exchange
+    and refill warnings, as well as healthcare practitioner-related events, like an
+    identified hand hygiene opportunity or moment.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '*Task:* From the doctor’s patient treatment plan, we can directly derive procedures
+    or activities that healthcare workers need to perform. Monitoring these procedures
+    is one of the many information requirements for delivering healthcare services.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '* * *'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The following high-level modeling patterns my not be as obvious for the healthcare
+    setup in our example at first sight:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '*Product:* Although we might not think of hospitals of being product-oriented,
+    they certainly provide services like diagnoses or patient treatments. If pharmaceuticals,
+    supplies, and medical equipment are offered, we even can talk about typical products.
+    A better overall term would probably be a "health care offering".'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '*Agreement:* Not only agreements between provider networks and supplier agreements
+    for the purchase of medical products and medicines but also agreements between
+    patients and doctors.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '*Account:* Our use case is mainly concerned with upholding best hygiene practices
+    by closely monitoring and educating staff. We just don’t focus on accounting aspects
+    here. However, accounting in general as well as claims management and payment
+    settlement are very important healthcare business processes. A large part of the
+    Hospital Information System (HIS) therefore deals with accounting.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Let’s visualize our use case with this high-level modeling patterns and their
+    relationships.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Our example from the healthcare sector, illustrated with high-level modeling
+    patterns - Image by author](../Images/5b51953dad94a446ea7b397ffd832bbd.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Our example from the healthcare sector, illustrated with high-level modeling
+    patterns – Image by author
+  prefs: []
+  type: TYPE_NORMAL
+- en: What does this buy us?
+  prefs: []
+  type: TYPE_NORMAL
+- en: With this high-level model we can identify ‘hygiene monitoring’ as an overall
+    business process to observe patient care and take appropriate action so that infections
+    associated with care are prevented in the best possible way.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We recognize ‘patient management’ as an overall process to manage and track
+    all the patient care activities related to the healthcare plan prepared by the
+    doctors.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We recognize ‘hospital management’ that organizes assets like hospital buildings
+    with patient bedrooms as well as all medical devices and instrumentation inside.
+    Patients and staff occupy and use these assets over time and this usage needs
+    to be managed.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Let’s describe some of the processes:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: A *Doctor* documents the *Diagnosis* derived from the examination of the *Patient*
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: A *Doctor* discusses the derived *Diagnosis* with the *Patient* and documents
+    everything that has been agreed with the *Patient* about the recommended treatment
+    in a *Patient Treatment Plan*.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: The *Agreement* on the treatment triggers the *Treatment Procedure* and reflects
+    the responsibility of the *Doctor* and *Nurses* for the patient’s treatment.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: A *Nurse* responsible for *Patient Bed Occupancy* will assign a patient bed
+    at the ward, which triggers a *Patient Bed Allocation*.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: A *Nurse* responsible for the patient’s treatment takes a blood sample from
+    the patient and triggers several *Hand Hygiene Opportunities* and *Dispenser Hygiene
+    Actions* detected by *Hygiene Monitoring*.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: The *Hygiene Monitoring* calculates compliance from *Dispenser Hygiene Action,
+    Hand Hygiene Opportunity,* and *Patient Bed Allocation* information and documents
+    it for the *Continuous Compliance Monitor*.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: During the week ongoing *Dispenser Hygiene Actions* cause the *Hygiene Monitoring*
+    to trigger *Dispenser Refill Warnings*.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: A *Hygiene Specialist* responsible for the *Hygiene Monitoring* compiles a weekly
+    *Bottle Exchange Plan* from accumulated *Dispenser Refill Warnings*.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '*Support Staff* responsible for the weekly *Exchange Bottle Tour* receives
+    the *Bottle Exchange Plan* and triggers *Dispenser Bottle Exchange* events when
+    replacing empty bottles for the affected dispensers.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: and so on …
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: This way we get an overall functional view of our business. The view is completely
+    independent of the architectural style we’ll choose to actually implement the
+    business requirements.
+  prefs: []
+  type: TYPE_NORMAL
+- en: A high-level business process and information model is therefore a perfect artifact
+    to discuss any use case with healthcare practitioners.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Holistically challenge your architecture
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: With such a thorough understanding of our business, we can challenge our architecture
+    more holistically. Everything we already understand and know today can and should
+    be used to drive our next step toward the target architecture.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Let’s examine why our initial architecture approach falls short to properly
+    support all identified requirements:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Near real-time processing is only partly addressed**'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: A traditional data warehouse architecture is not the ideal architectural approach
+    for near real-time processing. In our example, the long-running *HIS data* extraction
+    process is a batch-oriented monolith that cannot be tuned to support low-latency
+    requirements.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We can split the monolith into independent extraction processes, but to really
+    enable all involved applications for near real-time processing, we need to rethink
+    the way we share data across applications.
+  prefs: []
+  type: TYPE_NORMAL
+- en: As data engineers, we should create abstractions that relieve the application
+    developer from low-level data processing decisions. They should neither have to
+    reason about whether batch or stream processing style needs to be chosen nor need
+    to know how to actually implement this technically.
+  prefs: []
+  type: TYPE_NORMAL
+- en: If we allow the application developers to implement the required business logic
+    independent of these technical data details, it would greatly simplify their job.
+  prefs: []
+  type: TYPE_NORMAL
+- en: You can get more details on how to practically implement this in my article
+    on [unifying batch and stream processing](https://towardsdatascience.com/batch-and-streaming-demystified-for-unification-dee0b48f921d).
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**The initial alignment is driven by technology, not by business**'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Business requirements should drive the IT architecture decisions. If we turn
+    a blind eye and soften the requirements to such an extent that it becomes ‘feasible’,
+    we allow technology to drive the process.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The discussion with the hygiene specialists about the low rates of change in
+    patient treatment and occupancy are such a softening of requirements. We know
+    that there will be situations where the state will change during the week, but
+    we accept the assumption of stability to keep the current IT architecture.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Even if we won’t be able to immediately change the complete architecture, we
+    should take steps into the right direction. Even if we cannot enable all applications
+    at once to support near real-time processing, we should take action to create
+    support for it.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Smart devices, standard operational systems (HIS) and advanced monitoring
+    need to be seamlessly integrated**'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: The long-term vision is to seamlessly integrate the monitoring functionality
+    with available HIS features. This includes the integration of various new (sub-)systems
+    and new technical devices that are essential for operating the hospital.
+  prefs: []
+  type: TYPE_NORMAL
+- en: With an architecture that focuses one-sidedly on analytical processing, we cannot
+    adequately address these cross-cutting needs. We need to find ways to enable flexible
+    data flow between all future participants in the system. Every application or
+    system component requires to be connected to our mesh of data without having to
+    change the component itself.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Overall, we can state that the initial architecture change plan won’t be a targeted
+    step towards such a flexible integration approach.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Decouple and evolve
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: To ensure that each and every step is effective in moving towards our target
+    architecture, we need a balanced decoupling of our current architecture components.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Universal data supply therefore defines the abstraction *data as a product*
+    for the exchange of data between applications of any kind. To enable current applications
+    to create *data as a product* without having to completely redesign them, we use
+    *data agents* to (re-)direct data flow from the application to the mesh.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[**Modern Data And Application Engineering Breaks the Loss of Business Context**](https://towardsdatascience.com/modern-data-and-application-engineering-breaks-the-loss-of-business-context-7d0bca755adb)'
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: By using these abstractions, any application can also become near real-time
+    capable. Because it doesn’t matter if the application is part of the operational
+    or the analytical plane, the intended integration of the operational HIS with
+    hygiene monitoring components is significantly simplified.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[**Operational and Analytical Data**](https://towardsdatascience.com/operational-and-analytical-data-54fc9de05330)'
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: Let’s examine how the decoupling helps, for instance, to integrate the current
+    data warehouse to the mesh.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The data warehouse can be [redefined to act like one among many applications
+    in the mesh](https://medium.com/towards-data-science/data-warehouse-redefined-f65609454a01).
+    We can, for instance, re-design the ETL component *Continuous Compliance Rate
+    on Ward Level* as an independent application producing the *data as a product*
+    abstraction. If we don’t want or can’t touch the ETL logic itself, we can instead
+    use the *data agent* abstraction to transform data to the target structure.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We can do the same for *Dispenser Exchange Events* or any other ETL or query
+    / reporting component identified. The COBOL monolith *HIS Data* can be decoupled
+    by implementing a data agent that separates the *data products HIS occupancy data*
+    and *HIS patient data*. This allows to evolve the data delivering components completely
+    independent of the consumers.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Whenever the dispenser vendor is ready to deliver advanced functionalities to
+    directly create the required exchange events, we would just have to change the
+    *Dispenser Exchange Events* component. Either the vendor can deliver the *data
+    as a product* abstraction directly, or we can convert the dispenser’s proprietary
+    data output by adapting *Dispenser Exchange Event data agent and logic*.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Aligned Architecture as an Adapted Data Mesh enabling universal data supply
+    - Image by author](../Images/aa021c094ad21417ee7c358c50230c95.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Aligned Architecture as an Adapted Data Mesh enabling universal data supply
+    – Image by author
+  prefs: []
+  type: TYPE_NORMAL
+- en: Whenever we are able to directly create *HIS patient* data or *HIS occupancy*
+    data from the HIS, we can partly or completely decommission the *HIS Data* component
+    without affecting the rest of the system.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '* * *'
+  prefs: []
+  type: TYPE_NORMAL
+- en: We need to assess our architecture holistically, considering all known business
+    requirements. A technology-constrained approach can lead to intermediate steps
+    that are not geared towards what’s needed but just towards what seems feasible.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Dive deep into your business and derive technology-agnostic processes and information
+    models. These models will foster your business understanding and at the same time
+    allow your business to drive your architecture.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '* * *'
+  prefs: []
+  type: TYPE_NORMAL
+- en: In subsequent steps, we will look at more technical details on how to design
+    *data as a product* and *data agents* based on these ideas. Stay tuned for more
+    insights!
+  prefs: []
+  type: TYPE_NORMAL

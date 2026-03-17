@@ -1,0 +1,359 @@
+- en: Change-Aware Data Validation with Column-Level Lineage
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 原文：[https://towardsdatascience.com/change-aware-data-validation-with-column-level-lineage/](https://towardsdatascience.com/change-aware-data-validation-with-column-level-lineage/)
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: <mdspan datatext="el1751565216662" class="mdspan-comment">Data transformation</mdspan>
+    tools like dbt make constructing SQL data pipelines easy and systematic. But even
+    with the added structure and clearly defined data models, pipelines can still
+    become complex, which makes debugging issues and validating changes to data models
+    difficult.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The increasing complexity of data transformation logic gives rise to the following
+    issues:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Traditional code review processes** only look at *code* changes and exclude
+    the data impact of those changes.'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '**Data impact resulting from code changes is hard to trace**. In sprawling
+    DAGs with nested dependencies, discovering how and where data impact occurs is
+    extremely time-consuming, or near impossible.'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Gitlab’s [dbt DAG](https://dbt.gitlabdata.com/#!/overview?g_v=1) (shown in the
+    featured image above) is the perfect example of a data project that’s already
+    a house-of-cards. Imagine trying to follow a simple SQL logic change to a column
+    through this entire lineage DAG. Reviewing a data model update would be a daunting
+    task.
+  prefs: []
+  type: TYPE_NORMAL
+- en: How would you approach this type of review?
+  prefs: []
+  type: TYPE_NORMAL
+- en: What is data validation?
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: Data validation refers to the process used to determine that the data is correct
+    in terms of real-world requirements. This means ensuring that theSQL logic in
+    a data model behaves as intended by verifying that the data is correct. Validation
+    is usually performed after modifying a data model, such as accommodating new requirements,
+    or as part of a refactor.
+  prefs: []
+  type: TYPE_NORMAL
+- en: A unique review challenge
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: Data has states and is directly affected by the transformation used to generate
+    it. This is why reviewing data model changes is a unique challenge, because both
+    the code *and* the data needs to be reviewed.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Due to this, data model updates should be reviewed not only for completeness,
+    but also context. In other words, that the data is correct and existing data and
+    metrics were not unintentionally altered.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Two extremes of data validation
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: In most data teams, the person making the change relies on institutional knowledge,
+    intuition, or past experience to assess the impact and validate the change.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '*“I’ve made a change to X, I think I know what the impact should be. I’ll check
+    it by running Y”*'
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: 'The validation method usually falls into one of two extremes, neither of which
+    is ideal:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Spot-checking** with queries and some high-level checks like row count and
+    schema. It’s fast but risks missing actual impact. Critical and silent errors
+    can go unnoticed.'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '**Exhaustive checking** of every single downstream model. It’s slow and resource
+    intensive, and can be costly as the pipeline grows.'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: This results in a data review process that is unstructured, hard to repeat,
+    and often introduces silent errors. A new method is required that helps the engineer
+    to perform precise and targeted data validation.
+  prefs: []
+  type: TYPE_NORMAL
+- en: A better approach through understanding data model dependencies
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: To validate a change to a data project, it’s important to understand the relationship
+    between models and how data flows through the project. These dependencies between
+    models inform us how data is passed and transformed from one model to another.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Analyze the relationship between models
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: As we’ve seen, data project DAGs can be huge, but a data model change only affects
+    a subset of models. By isolating this subset and then analyzing the relationship
+    between the models, you can peel back the layers of complexity and focus just
+    on the models that actually need validating, given a specific SQL logic change.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The types of dependencies in a data project are:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Model-to model**'
+  prefs: []
+  type: TYPE_NORMAL
+- en: A structural dependency in which columns are selected from an upstream model.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE0]'
+  prefs: []
+  type: TYPE_PRE
+- en: '**Column-to-column**'
+  prefs: []
+  type: TYPE_NORMAL
+- en: A projection dependency that selects, renames, or transforms an upstream column.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE1]'
+  prefs: []
+  type: TYPE_PRE
+- en: '**Model-to-column**'
+  prefs: []
+  type: TYPE_NORMAL
+- en: A filter dependency in which a downstream model uses an upstream model in a
+    where, join, or other conditional clause.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE2]'
+  prefs: []
+  type: TYPE_PRE
+- en: Understanding the dependencies between models helps us to define the impact
+    radius of a data model logic change.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Identify the impact radius
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: When making changes to a data model’s SQL, it’s important to understand which
+    other models might be affected (the models you must check). At the high level,
+    this is done by model-to-model relationships.This subset of DAG nodes is known
+    as the impact radius.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In the DAG below, the impact radius includes nodes B (the modified model) and
+    D (the downstream model). In dbt, these models can be identified using the modified+
+    selector.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![DAG showing modified model B and downstream dependency D. Upstream model
+    A and unrelated model C are not impacted.](../Images/47e9eed16561b7a9f4bc488c6997ea42.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: DAG showing modified model B and downstream dependency D. Upstream model A and
+    unrelated model C are not impacted (Image by author)
+  prefs: []
+  type: TYPE_NORMAL
+- en: Identifying modified nodes and downstream is a great start, and by isolating
+    changes like this you will reduce the potential data validation area. However,
+    this could still result in a large number of downstream models.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Classifying the *types* of SQL changes can further help you to prioritize which
+    models actually require validation by understanding the severity of the change,
+    eliminating branches with changes that are known to be safe.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Classify the SQL change
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: Not all SQL changes carry the same level of risk to downstream data, and so
+    should be categorized accordingly. By classifying SQL changes this way, you can
+    add a systematic approach to your data review process.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'A SQL change to a data model can be classified as one of the following:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Non-breaking change
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: Changes that do not impact the data in downstream models such as adding new
+    columns, adjustments to SQL formatting, or adding comments etc.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE3]'
+  prefs: []
+  type: TYPE_PRE
+- en: Partial-breaking change
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: Changes that only impact downstream models that reference certain columns such
+    as removing or renaming a column; or modifying a column definition.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE4]'
+  prefs: []
+  type: TYPE_PRE
+- en: Breaking change
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: Changes that impact all downstream models such as filtering, sorting, or otherwise
+    changing the structure or meaning of the transformed data.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE5]'
+  prefs: []
+  type: TYPE_PRE
+- en: Apply classification to reduce scope
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: After applying these classifications the impact radius, and the number of models
+    that need to be validated, can be significantly reduced.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![DAG showing three categories of change: non-breaking, partial-breaking, and
+    breaking](../Images/c14a7ba826a84db0cb926e7b45be495c.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'DAG showing three categories of change: non-breaking, partial-breaking, and
+    breaking (Image by author)'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'In the above DAG, nodes B, C and F have been modified, resulting in potentially
+    7 nodes that need to be validated (C to E). However, not each branch contains
+    SQL changes that actually require validation. Let’s take a look at each branch:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Node C: Non-breaking change'
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: C is classified as a non-breaking change. Therefore both C and H do not need
+    to be checked, they can be eliminated.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Node B: Partial-breaking change'
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: B is classified as a partial-breaking change due to change to the column B.C1\.
+    Therefore, D and E need to be checked *only* if they reference column B.C1.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Node F: Breaking change'
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: The modification to model F is classified as a breaking-change. Therefore, all
+    downstream nodes (G and E) need to be checked for impact. For instance, model
+    g might aggregate data from the modified upstream column
+  prefs: []
+  type: TYPE_NORMAL
+- en: The initial 7 nodes have already been reduced to 5 that need to be checked for
+    data impact (B, D, E, F, G). Now, by inspecting the SQL changes at the column
+    level, we can reduce that number even further.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Narrowing the scope further with column-level lineage
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: Breaking and non-breaking changes are easy to classify but, when it comes to
+    inspecting partial-breaking changes, the models need to be analyzed at the column
+    level.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Let’s take a closer look at the partial-breaking change in model B, in which
+    the logic of column c1 has been modified. This modification could potentially
+    result in 4 impacted downstream nodes: D, E, K, and J. After tracking column usage
+    downstream, this subset can be further reduced.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![DAG showing the column-level lineage used to trace the downstream impact
+    of a change to column B.c1](../Images/78e471f0cbed487a7a0355c808b0f5db.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: '*DAG showing the column-level lineage used to trace the downstream impact of
+    a change to column B.c1* (Image by author)'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Following column B.c1 downstream we can see that:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: B.c1 → D.c1 is a column-to-column (projection) dependency.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: D.c1 → E is a model-to-column dependency.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: D → K is a model-to-model dependency. However, as D.c1 is not used in K, this
+    model can be eliminated.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Therefore, the models that need to be validated in this branch are B, D, and
+    E. Together with the breaking change F and downstream G, the total models to be
+    validated in this diagram are F, G, B, D, and E, or just 5 out of a total of 9
+    potentially impacted models.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Conclusion
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: Data validation after a model change is difficult, especially in large and complex
+    DAGs. It’s easy to miss silent errors and performing validation becomes a daunting
+    task, with data models often feeling like black boxes when it comes to downstream
+    impact.
+  prefs: []
+  type: TYPE_NORMAL
+- en: A structured and repeatable process
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: By using this change-aware data validation technique, you can bring structure
+    and precision to the review process, making it systematic and repeatable. This
+    reduces the number of models that need to be checked, simplifies the review process,
+    and lowers costs by only validating models that actually require it.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Before you go…
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: Dave is a senior technical advocate at [Recce](https://reccehq.com), where we’re
+    building a toolkit to enable advanced data validation workflows. He’s always happy
+    to chat about SQL, data engineering, or helping teams navigate their data validation
+    challenges. Connect with Dave on [LinkedIn](https://www.linkedin.com/in/daveflynn81/).
+  prefs: []
+  type: TYPE_NORMAL
+- en: Research for this article was made possible by my colleague Chen En Lu ([Popcorny](https://github.com/popcornylu)).
+  prefs: []
+  type: TYPE_NORMAL

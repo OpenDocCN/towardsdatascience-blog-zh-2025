@@ -1,0 +1,196 @@
+- en: 'Scaling Statistics: Incremental Standard Deviation in SQL with dbt'
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 原文：[https://towardsdatascience.com/scaling-statistics-incremental-standard-deviation-in-sql-with-dbt-2eb0505aad2b/](https://towardsdatascience.com/scaling-statistics-incremental-standard-deviation-in-sql-with-dbt-2eb0505aad2b/)
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: 'SQL aggregation functions can be computationally expensive when applied to
+    large datasets. As datasets grow, recalculating metrics over the entire dataset
+    repeatedly becomes inefficient. To address this challenge, **incremental aggregation**
+    is often employed – a method that involves maintaining a previous state and updating
+    it with new incoming data. While this approach is straightforward for aggregations
+    like COUNT or SUM, the question arises: how can it be applied to more complex
+    metrics like standard deviation?'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[Standard deviation](https://en.wikipedia.org/wiki/Standard_deviation) is a
+    statistical metric that measures the extent of variation or dispersion in a variable’s
+    values relative to its mean. It is derived by taking the square root of the [variance](https://en.wikipedia.org/wiki/Variance).
+    The formula for calculating the variance of a sample is as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Sample variance formula](../Images/a740f71788ea7a1d8d6d0c0d0f50e3cb.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Sample variance formula
+  prefs: []
+  type: TYPE_NORMAL
+- en: Calculating standard deviation can be complex, as it involves updating both
+    the mean and the sum of squared differences across all data points. However, with
+    algebraic manipulation, we can derive a formula for incremental computation –
+    enabling updates using an existing dataset and incorporating new data seamlessly.
+    This approach avoids recalculating from scratch whenever new data is added, making
+    the process much more efficient (A detailed derivation is available [on my GitHub](https://github.com/YuvalGorch/math_proofs/blob/main/incremental_stddev_proof.pdf)).
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Derived sample variance formula](../Images/4fca54cd3a23b2c9bb93c97533c98baa.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Derived sample variance formula
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The formula was basically broken into 3 parts:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: The existing’s set weighted variance
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: The new set’s weighted variance
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: The mean difference variance, accounting for between-group variance.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: This method enables incremental variance computation by retaining the COUNT
+    (k), AVG (µk), and VAR (Sk) of the existing set, and combining them with the COUNT
+    (n), AVG (µn), and VAR (Sn) of the new set. As a result, the updated standard
+    deviation can be calculated efficiently without rescanning the entire dataset.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Now that we’ve wrapped our heads around the math behind incremental standard
+    deviation (or at least caught the gist of it), let’s dive into the dbt SQL implementation.
+    In the following example, we’ll walk through how to set up an incremental model
+    to calculate and update these statistics for a user’s transaction data.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Consider a transactions table named **stg__transactions**, which tracks user
+    transactions (events). Our goal is to create a time-static table, **int__user_tx_state**,
+    that aggregates the ‘state’ of user transactions. The column details for both
+    tables are provided in the picture below.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Image by the author](../Images/56200361ee96923ee490c50dd75af9e8.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Image by the author
+  prefs: []
+  type: TYPE_NORMAL
+- en: To make the process efficient, we aim to update the state table incrementally
+    by combining the new incoming transactions data with the existing aggregated data
+    (i.e. the current user state). This approach allows us to calculate the updated
+    user state without scanning through all historical data.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Image by the author](../Images/16bce03be1aff0e1acb238599dabe6e5.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Image by the author
+  prefs: []
+  type: TYPE_NORMAL
+- en: The code below assumes understanding of some dbt concepts, if you’re unfamiliar
+    with it, you may still be able to understand the code, although I strongly encourage
+    going through [dbt’s incremental guide](https://docs.getdbt.com/docs/build/incremental-models-overview)
+    or read [this awesome post](https://towardsdatascience.com/dbt-incremental-the-right-way-63f931263f4a).
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: We’ll construct a full dbt SQL step by step, aiming to calculate incremental
+    aggregations efficiently without repeatedly scanning the entire table. The process
+    begins by defining the model as incremental in dbt and using `unique_key` to update
+    existing rows rather than inserting new ones.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE0]'
+  prefs: []
+  type: TYPE_PRE
+- en: Next, we fetch records from the _**stg__transactions**_ table. The `is_incremental`
+    block filters transactions with timestamps later than the latest user update,
+    effectively including "only new transactions".
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE1]'
+  prefs: []
+  type: TYPE_PRE
+- en: After retrieving the new transaction records, we aggregate them by user, allowing
+    us to incrementally update each user’s state in the following CTEs.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE2]'
+  prefs: []
+  type: TYPE_PRE
+- en: Now we get to the heavy part where we need to actually calculate the aggregations.
+    When we’re not in incremental mode (i.e. we don’t have any "state" rows yet) we
+    simply select the new aggregations
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE3]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'But when we’re in incremental mode, we need to join past data and combine it
+    with the new data we created in the `INCREMENTAL_USER_TX_DATA` CTE based on the
+    formula described above. We start by calculating the new SUM, COUNT and AVG:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE4]'
+  prefs: []
+  type: TYPE_PRE
+- en: We then calculate the variance formula’s three parts
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The existing weighted variance, which is truncated to 0 if the previous set
+    is composed of one or less items:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE5]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The incremental weighted variance in the same way:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE6]'
+  prefs: []
+  type: TYPE_PRE
+- en: The mean difference variance, as outlined earlier, along with SQL join terms
+    to include past data.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE7]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Finally, we select the table’s columns, accounting for both incremental and
+    non-incremental cases:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE8]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'By combining all these steps, we arrive at the final SQL model:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE9]'
+  prefs: []
+  type: TYPE_PRE
+- en: Throughout this process, we demonstrated how to handle both non-incremental
+    and incremental modes effectively, leveraging mathematical techniques to update
+    metrics like variance and standard deviation efficiently. By combining historical
+    and new data seamlessly, we achieved an optimized, scalable approach for real-time
+    data aggregation.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In this article, we explored the mathematical technique for incrementally calculating
+    standard deviation and how to implement it using dbt’s incremental models. This
+    approach proves to be highly efficient, enabling the processing of large datasets
+    without the need to re-scan the entire dataset. In practice, this leads to faster,
+    more scalable systems that can handle real-time updates efficiently. If you’d
+    like to discuss this further or share your thoughts, feel free to reach out –
+    I’d love to hear your thoughts!
+  prefs: []
+  type: TYPE_NORMAL

@@ -1,0 +1,575 @@
+- en: Deploy a Streamlit App to AWS
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 原文：[https://towardsdatascience.com/deploy-a-streamlit-app-to-aws/](https://towardsdatascience.com/deploy-a-streamlit-app-to-aws/)
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: <mdspan datatext="el1752603054976" class="mdspan-comment">OK, so you’ve developed</mdspan>
+    a fantastic Streamlit app, and now it’s time to let the world see and use it.
+  prefs: []
+  type: TYPE_NORMAL
+- en: What options do you have?
+  prefs: []
+  type: TYPE_NORMAL
+- en: The easiest way is to use the Streamlit Community Cloud service. That method
+    lets anyone online access your Streamlit app, provided they have the required
+    URL. It’s a relatively straightforward process, but it’s a publicly available
+    endpoint and, due to potential security issues and scalability options, it isn’t
+    an option for most organisations.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Since Streamlit was acquired by Snowflake, deploying to that platform is now
+    a viable option as well.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The third option is to deploy to one of the many cloud services, such as Heroku,
+    Google Cloud, or Azure.
+  prefs: []
+  type: TYPE_NORMAL
+- en: As an AWS user, I wanted to see how easy it would be to deploy a streamlit app
+    to AWS, and this is what this article is about. If you refer to the official Streamlit
+    documentation online (link at the end of the article), you’ll notice that there
+    is no information or guidance on how to do this. So this is the “missing manual”.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The deployment process is relatively straightforward. The challenging part is
+    ensuring that the AWS networking configuration is set up correctly. By that, I
+    mean your VPC, security groups, subnets, route tables, subnet associations, Nat
+    Gateways, Elastic IPS, etc…
+  prefs: []
+  type: TYPE_NORMAL
+- en: Because every organisation’s networking setup is different, I will assume that
+    you or someone in your organisation can resolve this aspect. However, I include
+    some troubleshooting tips at the end of the article for the most common reasons
+    for deployment issues. If you follow my steps to the letter, you ***should*** have
+    a working, deployed app by the end of it.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In my sample deployment, I’ll be using a VPC with a Public subnet and an Internet
+    gateway. By contrast, in real-life scenarios, you’ll probably want to use a mix
+    of all or some of elastic load balancers, private subnets, NAT gateways and Cognito
+    for user authentication and enhanced security. Later on, I will discuss some options
+    for securing your app.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The app we will deploy is the dashboard I wrote using Streamlit. TDS published
+    that article a while back, and you can find a link to it at the end of this article.
+    In that case, I retrieved my dashboard data from a PostgreSQL database running
+    locally. However, to avoid the costs and hassle of setting up an RDS Postgres
+    database on AWS, I will convert my dashboard code to retrieve its data from a
+    CSV file on S3 — Amazon’s mass storage service.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Once that’s done, it’s only a matter of copying over a CSV to AWS S3 storage,
+    and the dashboard should work just as it did when running locally using Postgres.
+  prefs: []
+  type: TYPE_NORMAL
+- en: I assume you have an AWS account with access to the AWS console. Additionally,
+    if you are opting for the S3 route as your data source, you’ll need to set up
+    AWS credentials. Once you have them, either create an .aws/credentials file in
+    your HOME directory (as I have done), or you can pass your credential key information
+    directly in the code.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Assuming all these prerequisites are met, we can look at the deployment using
+    AWS’s Elastic Beanstalk service.
+  prefs: []
+  type: TYPE_NORMAL
+- en: What is AWS Elastic Beanstalk (EB)?
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: AWS Elastic Beanstalk (EB) is a fully managed service that simplifies the deployment,
+    scaling, and management of applications in the AWS Cloud. It allows you to upload
+    your application code in popular languages like Python, Java, .NET, Node.js, and
+    more. It automatically handles the provisioning of the underlying infrastructure,
+    such as servers, load balancers, and networking. With Elastic Beanstalk, you can
+    focus on writing and maintaining your application rather than configuring servers
+    or managing capacity because the service seamlessly scales resources as your application’s
+    traffic fluctuates.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In addition to provisioning your EC2 servers, etc., EB will install any required
+    external libraries on your behalf, depending on the deployment type. It can also
+    be configured to run OS commands on server startup.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The code
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: Before deploying, let’s review the changes I made to my original code to accommodate
+    the change in data source from Postgres to S3\. It boils down to replacing calls
+    to read a Postgres table with calls to read an S3 object to feed data into the
+    dashboard. I also put the main graphical component creation and display inside
+    a **main()** module, which I call at the end of the code. Here is a full listing.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE0]'
+  prefs: []
+  type: TYPE_PRE
+- en: Although it’s a pretty chunky piece of code, I won’t explain exactly what it
+    does, as I have already covered that in some detail in my previously referenced
+    TDS article. I have included a link to the article at the end of this one for
+    those who would like to learn more.
+  prefs: []
+  type: TYPE_NORMAL
+- en: So, assuming you have a working Streamlit app that runs locally without issues,
+    here are the steps you need to take to deploy it to AWS.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Preparing our code for deployment
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 1/ Create a new folder on your local system to hold your code.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 2/ In that folder, you’ll need three files and a sub-folder containing two more
+    files
+  prefs: []
+  type: TYPE_NORMAL
+- en: File 1 is **app.py — ** this is your main Streamlit code file
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: File 2 is **requirements.txt —** this lists all external libraries your code
+    needs to function. Depending on what your code does, it will have at least one
+    record referencing the Streamlit library. For my code, the file contained this,
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '[PRE1]'
+  prefs: []
+  type: TYPE_PRE
+- en: File 3 is called **Procfile **— this tells EB how to run your code. It’s contents
+    should look like this
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '[PRE2]'
+  prefs: []
+  type: TYPE_PRE
+- en: .**ebextensions** — this is a subfolder which holds additional files (see below)
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 3/ The .ebextensions subfolder has these two files.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**nginx.config**'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'It should have this content:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE3]'
+  prefs: []
+  type: TYPE_PRE
+- en: '**python.config**'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '[PRE4]'
+  prefs: []
+  type: TYPE_PRE
+- en: Note, although I didn’t need it for what I was doing, for completenes, you can
+    optionally add one or more packages.config files under the .ebextensions subfolder
+    that can contain operating system commands that are run when the EC2 server starts
+    up. For example,
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: '[PRE5]'
+  prefs: []
+  type: TYPE_PRE
+- en: Once you have all the necessary files, the next step is to zip them into an
+    archive, preserving the folder and subfolder structure. You can use any tool you
+    like, but I use 7-Zip.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Deploying our code
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: Deployment is a multi-stage process. First, log in to the AWS console, search
+    for “Elastic Beanstalk” in the services search bar, and click on the link. From
+    there, you can click the large orange** “Create Application”** button. You’ll
+    see the first of around six screens, for which you must fill in the details. In
+    the following sections, I’ll describe the fields you must input. Leave everything
+    else as it is.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 1/ Creating the application
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'This is easy: fill in the name of your application and, optionally, its description.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 2/ Configure Environment
+  prefs: []
+  type: TYPE_NORMAL
+- en: The environment tier should be set to Web Server.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Fill in the application name.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: For Platform type, choose **Managed;** for Platform, choose **Python,** then
+    decide which version of Python you want to use. I used Python version 3.11.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: In the **Application Code** section, click the **Upload your code** option and
+    follow the instructions. Type in a version label, then click ‘Local File’ or ‘S3
+    Upload’, depending on where your source files are located. You want to upload
+    the single **zip file** we created earlier.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Choose your instance type in the **Presets** section. I went for the **Single
+    instance (free tier eligible).** Then hit the **Next** button.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 3/ Configure Service Access
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/9c89c9f49da8a23179031612590e7f10.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Image from AWS website
+  prefs: []
+  type: TYPE_NORMAL
+- en: For the Service role, you can use an existing one if you have it, or AWS will
+    create one for you.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: For the instance profile role, you’ll probably need to create this. It just
+    needs to have the **AWSElasticBeanstalkWebTier** and **AmazonS3ReadOnlyAccess**
+    policies attached. Hit the **Next** button.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: I would also advise setting up an EC2 key pair at this stage, as you’ll need
+    it to log in to the EC2 server that EB creates on your behalf. This can be invaluable
+    for investigating potential server issues.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 4/ Set up networking, database and tags
+  prefs: []
+  type: TYPE_NORMAL
+- en: Choose your VPC. I had only one default VPC set up. You also have the option
+    to create one here if you don’t already have one. Make sure your VPC has at least
+    one public subnet.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: In Instance Settings, I checked the Public IP Address option, and I chose to
+    use my public subnets. Click the **Next** button.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 5/ Configure the instance and scaling
+  prefs: []
+  type: TYPE_NORMAL
+- en: Under the EC2 Security Groups section, I chose my default security group. Under
+    Instance Type, I opted for the t3.micro. Hit the **Nex**t button.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 6/ Monitoring
+  prefs: []
+  type: TYPE_NORMAL
+- en: Select basic system health monitoring
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Uncheck the Managed Updates checkbox
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Click **Next**
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 7/ Review
+  prefs: []
+  type: TYPE_NORMAL
+- en: Click **Create** if all is OK
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: After this, you should see a screen like this,
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/7af443d81229246083d0d3e698a6d2e1.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Image from AWS website
+  prefs: []
+  type: TYPE_NORMAL
+- en: Keep an eye on the Events tab, as this will notify you if any issues arise.
+    If you encounter problems, you can use the Logs tab to retrieve either a full
+    set of logs or the last 100 lines of the deployment log, which can help you debug
+    any issues.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'After a few minutes, if all has gone well, the Health label will switch from
+    grey to green and your screen will look something like this:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/cf961fafc1bf45a719c6d912b5950e03.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Image from AWS website
+  prefs: []
+  type: TYPE_NORMAL
+- en: Now, you should be able to click on the Domain URL (circled in red above), and
+    your dashboard should appear.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/ec686b509b2f7a9b4097d383ebb1746d.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Image by Author
+  prefs: []
+  type: TYPE_NORMAL
+- en: Troubleshooting
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: The first thing to check if you encounter problems when running your dashboard
+    is that your source data is in the correct location and is referenced correctly
+    in your Streamlit app source code file. If you rule that out as an issue, then
+    you will more than likely have hit a networking setup problem, and you’ll probably
+    see a screen like this.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/74ed37e62528379f1e8d76edc5cd6223.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Image by Author
+  prefs: []
+  type: TYPE_NORMAL
+- en: If that’s the case, here are a few things you can check out. You may need to
+    log in to your EC2 instance and review the logs. In my case, I encountered an
+    issue with my pip install command, which ran out of space to install all the necessary
+    packages. To solve that, I had to add extra Elastic Block storage to my instance.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The more likely cause will be a networking issue. In that case, try some or
+    all of the suggestions below.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**VPC Configuration**'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Ensure your Elastic Beanstalk environment is deployed in a VPC with at least
+    one public subnet.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Verify that the VPC has an Internet Gateway attached.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Subnet Configuration**'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Confirm that the subnet used by your Elastic Beanstalk environment is public.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Check that the “Auto-assign public IPv4 address” setting is enabled for this
+    subnet.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Route Table**'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Verify that the route table associated with your public subnet has a route to
+    the Internet Gateway (0.0.0.0/0 -> igw-xxxxxxxx).
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Security Group**'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Review the inbound rules of the security group attached to your Elastic Beanstalk
+    instances.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Ensure it allows incoming traffic on port 80 (HTTP) and/or 443 (HTTPS) from
+    the appropriate sources.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Check that outbound rules allow necessary outgoing traffic.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Network Access Control Lists (NACLS)**'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Review the Network ACLS associated with your subnet.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Ensure they allow both inbound and outbound traffic on the necessary ports.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Elastic Beanstalk Environment Configuration**'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Verify that your environment is using the correct VPC and public subnet in the
+    Elastic Beanstalk console.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**EC2 Instance Configuration**'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Verify that the EC2 instances launched by Elastic Beanstalk have public IP addresses
+    assigned.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Load Balancer Configuration (if applicable)**'
+  prefs: []
+  type: TYPE_NORMAL
+- en: If you use a load balancer, ensure it’s configured correctly in the public subnet.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Check that the load balancer security group allows incoming traffic and can
+    communicate with the EC2 instances.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Securing your app
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: As it stands, your deployed app is visible to anyone on the internet who knows
+    your deployed EB domain name. This is ***probably*** not what you want. So, what
+    are your options for securing your app on AWS infrastructure?
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**1/ Lock the security group to trusted CIDRs**'
+  prefs: []
+  type: TYPE_NORMAL
+- en: In the console, find the security group associated with your EB deployment and
+    click on it. It should look like this,
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/4c3db049fb25641406b1515d4b17a6b9.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Image from AWS website
+  prefs: []
+  type: TYPE_NORMAL
+- en: Make sure you’re on the Inbound Rules TAB, choose Edit Inbound Rules, and change
+    the source IP ranges to your corporate IP ranges or another set of IP addresses.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**2/ Use private subnets, internal load balancers and NAT Gateways**'
+  prefs: []
+  type: TYPE_NORMAL
+- en: This is a more challenging option to implement and likely requires the expertise
+    of your AWS network administrator or deployment specialist.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**3/ Using AWS Cognito and an application load balancer**'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Again, this is a more complex setup that you’ll probably need assistance with
+    if you’re not an AWS network guru, but it is perhaps the most robust of them all.
+    The flow is this:-
+  prefs: []
+  type: TYPE_NORMAL
+- en: A user navigates to your public Streamlit URL.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The ALB intercepts the request. It sees that the user is either not already
+    logged in or not authenticated.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The ALB automatically redirects the user to Cognito to sign in or create an
+    account. Upon successful login, Cognito redirects the user back to your application
+    URL. The ALB now recognises a valid session and allows the request to proceed
+    to your Streamlit app.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Your Streamlit app only ever receives traffic from authenticated users.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '* * *'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Summary
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: In this article, I discussed deploying a Streamlit dashboard application I had
+    previously written to AWS. The original app utilised PostgreSQL as its data source,
+    and I demonstrated how to switch to using AWS S3 in preparation for deploying
+    the app to AWS.
+  prefs: []
+  type: TYPE_NORMAL
+- en: I discussed deploying the app to AWS using their Elastic Beanstalk service.
+    I described and explained all the extra files required before deployment, including
+    the need for them to be contained in a zip archive.
+  prefs: []
+  type: TYPE_NORMAL
+- en: I then briefly explained the Elastic Beanstalk service and described the detailed
+    steps required to use it to deploy our Streamlit app to AWS infrastructure. I
+    described the multiple input screens that needed to be navigated and showed what
+    inputs to use at various stages.
+  prefs: []
+  type: TYPE_NORMAL
+- en: I highlighted some troubleshooting methods if the app deployment doesn’t go
+    as expected.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Finally, I provided some suggestions on how to protect your app from unauthorised
+    access.
+  prefs: []
+  type: TYPE_NORMAL
+- en: For more information on Streamlit, check out their online documention using
+    the link below.
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: ''
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: '[https://docs.streamlit.io](https://docs.streamlit.io)'
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: ''
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: To find out more about developing with Streamlit I show how to develop a modern
+    data dashboard with it in the article linked below.
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: '[Building a Data Dashboard](https://towardsdatascience.com/building-a-data-dashboard-9441db646697/)'
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL

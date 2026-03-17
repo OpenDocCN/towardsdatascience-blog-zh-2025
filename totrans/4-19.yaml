@@ -1,0 +1,474 @@
+- en: 'DeepSeek-V3 Explained 1: Multi-head Latent Attention'
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 原文：[https://towardsdatascience.com/deepseek-v3-explained-1-multi-head-latent-attention-ed6bee2a67c4/](https://towardsdatascience.com/deepseek-v3-explained-1-multi-head-latent-attention-ed6bee2a67c4/)
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: '![Image created by author using ChatGPT.](../Images/ad2009e8d1ad71c5a9fa31cca69a689c.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Image created by author using ChatGPT.
+  prefs: []
+  type: TYPE_NORMAL
+- en: This is the first article of our new series "DeepSeek-V3 Explained", where we
+    will try to demystify DeepSeek-V3 [1, 2], the latest model open-sourced by DeepSeek.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'In this series, we aim to cover two major topics:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Major architecture innovations in DeepSeek-V3, including MLA (Multi-head Latent
+    Attention) [3], DeepSeekMoE [4], auxiliary-loss-free load balancing [5], and multi-token
+    prediction training.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Training of DeepSeek-V3, including pre-training, finetuning and RL alignment
+    phases.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: This article mainly focuses on **Multi-head Latent Attention**, which was first
+    proposed in the development of DeepSeek-V2 and then used in DeepSeek-V3 as well.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Table of contents:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Background**: we start from the standard MHA, explain why we need Key-Value
+    cache at inference stage, how MQA and GQA try to optimize it, and how RoPE works,
+    etc.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Multi-head Latent Attention**: An in-depth introduction to MLA, including
+    its motivations, why decoupled RoPE is needed, and its performance.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**References.**'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '* * *'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Background
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: To better understand MLA and also make this article self-contained, we will
+    revisit several related concepts in this section before diving into the details
+    of MLA.
+  prefs: []
+  type: TYPE_NORMAL
+- en: MHA in Decoder-only Transformers
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: Note that MLA is developed to speedup inference speed in autoregressive text
+    generation, so the MHA we are talking about under this context is for decoder-only
+    Transformer.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The figure below compares three Transformer architectures used for decoding,
+    where (a) shows both the encoder and decoder proposed in the original "Attention
+    is All You Need" paper. Its decoder part is then simplified by [6], leading to
+    a decoder-only Transformer model shown in (b), which is later used in many generation
+    models like GPT [8].
+  prefs: []
+  type: TYPE_NORMAL
+- en: Nowadays, LLMs are more commonly to choose the structure shown in (c) for more
+    stable training, with normalization applied on the input rather then output, and
+    LayerNorm upgraded to RMS Norm. This will serve as the baseline architecture we
+    will discuss in this article.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Figure 1\. Transformer architectures. (a) encoder-decoder proposed in [6].
+    (b) Decoder-only Transformer proposed in [7] and used in GPT [8]. (c) An optimized
+    version of (b) with RMS Norm before attention. [3]](../Images/f6fb7dfc3dcf057c9de8a6ebf1c838dd.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Figure 1\. Transformer architectures. (a) encoder-decoder proposed in [6]. (b)
+    Decoder-only Transformer proposed in [7] and used in GPT [8]. (c) An optimized
+    version of (b) with RMS Norm before attention. [3]
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Within this context, MHA calculation largely follows the process in [6], as
+    shown in the figure below:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Figure 2\. Scaled dot-product attention vs. Multi-Head Attention. Image from
+    [6].](../Images/d984c4fe15272c1101f53997d21b596a.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Figure 2\. Scaled dot-product attention vs. Multi-Head Attention. Image from
+    [6].
+  prefs: []
+  type: TYPE_NORMAL
+- en: Assume we have **n_h** attention heads, and the dimension for each attention
+    head is represented as **d_h**, so that the concatenated dimension will be (**h_n**
+    · **d_h**).
+  prefs: []
+  type: TYPE_NORMAL
+- en: Given a model with **l** layers, if we denote the input for the t-th token in
+    that layer as **h_t** with dimension **d**, we need to map the dimension of **h_t**
+    from **d** to (**h_n** · **d_h**) using the linear mapping matrices.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'More formally, we have (equations from [3]):'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/61d7ac07b4c9ca7baf56ddfa011f6190.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'where **W^Q**, **W^K** and **W^V** are the linear mapping matrices:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/7db9e5492a6b3ff012a19e1769a6d1df.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'After such mapping, **q_t**, **k_t** and **v_t** will be split into **n_h**
+    heads to calculate the scaled dot-product attention:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/389a41ecfda850dae6223c47b766203e.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'where **W^O** is another projection matrix to map the dimension inversely from
+    (**h_n** · **d_h**) to **d**:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/567b8a0d5ea3ac3ed2d97f062159be75.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Note that the process described by Eqn.(1) to (8) above is just for a single
+    token. During inference, we need to repeat this process for each newly generated
+    token, which involves a lot of repeated calculation. This leads to a technique
+    called Key-Value cache.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Key-Value Cache
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: As suggested by its name, Key-Value cache is a technique designed to speedup
+    the autoregressive process by caching and reusing the previous keys and values,
+    rather than re-computing them at each decoding step.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Note that KV cache is typically used only during the inference stage, since
+    in training we still need to process the entire input sequence in parallel.
+  prefs: []
+  type: TYPE_NORMAL
+- en: KV cache is commonly implemented as a rolling buffer. At each decoding step,
+    only the new query Q is computed, while the K and V stored in the cache will be
+    reused, so that the attention will be computed using the new Q and reused K, V.
+    Meanwhile, the new token’s K and V will also be appended to the cache for later
+    use.
+  prefs: []
+  type: TYPE_NORMAL
+- en: However, the speedup achieved by KV cache comes at a cost of memory, since KV
+    cache often scales with **batch size × sequence length × hidden size × number
+    of heads**, leading to a memory bottleneck when we have larger batch size or longer
+    sequences.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'That further leads to two techniques aiming at addressing this limitation:
+    Multi-Query Attention and Grouped-Query Attention.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Multi-Query Attention (MQA) vs Grouped-Query Attention (GQA)
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: The figure below shows the comparison between the original MHA, Grouped-Query
+    Attention (GQA) [10] and Multi-Query Attention (MQA) [9].
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Figure 3\. MHA [6], GQA [10] AND MQA [9]. Image from [10].](../Images/029cc14fb22ca90a88961eb7faa9c16b.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Figure 3\. MHA [6], GQA [10] AND MQA [9]. Image from [10].
+  prefs: []
+  type: TYPE_NORMAL
+- en: The basic idea of MQA is to share a single key and a single value head across
+    all query heads, which can significantly reduce memory usage but will also impact
+    the accuracy of attention.
+  prefs: []
+  type: TYPE_NORMAL
+- en: GQA can be seen as an interpolating method between MHA and MQA, where a single
+    pair of key and value heads will be shared only by a group of query heads, not
+    all queries. But still this will lead to inferior results compared to MHA.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In the later sections, we will see how MLA manages to seek a balance between
+    memory efficiency and modeling accuracy.
+  prefs: []
+  type: TYPE_NORMAL
+- en: RoPE (Rotary Positional Embeddings)
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: One last piece of background we need to mention is RoPE [11], which encodes
+    positional information directly into the attention mechanism by rotating the query
+    and key vectors in multi-head attention using sinusoidal functions.
+  prefs: []
+  type: TYPE_NORMAL
+- en: More specifically, RoPE applies a **position-dependent rotation matrix** to
+    the query and key vectors at each token, and uses sine and cosine functions for
+    its basis but applies them in a unique way to achieve rotation.
+  prefs: []
+  type: TYPE_NORMAL
+- en: To see what makes it position-dependent, consider a toy embedding vector with
+    only 4 elements, i.e., (x_1, x_2, x_3, x_4).
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'To apply RoPE, we firstly group consecutive dimensions into pairs:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: (x_1, x_2) -> position 1
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: (x_3, x_4) -> position 2
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'Then, we apply a rotation matrix to rotate each pair:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Figure 4\. Illustration of the rotation matrix applied to a pair of tokens.
+    Image by author.](../Images/c4f08154371e28d0f377c7e0545604fb.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Figure 4\. Illustration of the rotation matrix applied to a pair of tokens.
+    Image by author.
+  prefs: []
+  type: TYPE_NORMAL
+- en: where θ = θ(p) = p ⋅ θ_0​, and θ_0​ is a **base frequency**. In our 4-d toy
+    example, this means that (x_1, x_2) will be rotated by θ_0​, and (x_3, x_4) will
+    be rotated by 2 ⋅ θ_0.
+  prefs: []
+  type: TYPE_NORMAL
+- en: This is why we call this rotation matrix as **position-dependent:** at each
+    position (or each pair), we will apply a different rotation matrix where the rotation
+    angle is determined by position.
+  prefs: []
+  type: TYPE_NORMAL
+- en: RoPE is widely used in modern LLMs due to its efficiency in encoding long sequences,
+    but as we can see from the above formula, it is position-sensitive to both Q and
+    K, making it incompatible with MLA in some ways.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '* * *'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Multi-head Latent Attention
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: Finally we can move on to the MLA part. In this section we will first layout
+    the high-level idea of MLA, and then dive deeper into why it needs to modify RoPE.
+    Finally, we present the detailed algorithm of MLA as well as it performance.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'MLA: High-level Idea'
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: The basic idea of MLA is to compress the attention input **h_t** into a low-dimensional
+    latent vector with dimension **d_c**, where **d_c** is much lower than the original
+    (**h_n** · **d_h**). Later when we need to calculate attention, we can map this
+    latent vector back to the high-dimensional space to recover the keys and values.
+    As a result, only the latent vector needs to be stored, leading to significant
+    memory reduction.
+  prefs: []
+  type: TYPE_NORMAL
+- en: This process can be more formally described with the following equations, where
+    **c^{KV}_t** is the latent vector, **W^{DKV}** is the compressing matrix that
+    maps **h_t**‘s dimension from (**h_n** · **d_h**) to **d_c** (here D in the superscript
+    stands for "down-projection", meaning compressing the dimension), while **W^{UK}**
+    and **W^{UV}** are both up-projection matrices that map the shared latent vector
+    back to the high-dimensional space.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/360a4164ea1dcdebc4003211a40ccc01.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'Similarly, we can also map the queries into a latent, low-dimensional vector
+    and then map it back to the original, high-dimensional space:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/67b59b515d99b0ef9ddb0024fb0babaa.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Why Decoupled RoPE is Needed
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: As we mentioned before, RoPE is a common choice for training generation models
+    to handle long sequences. If we directly apply the above MLA strategy, that will
+    be incompatible with RoPE.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'To see this more clearly, consider what happens when we calculate attention
+    using Eqn. (7): when we multiply the transposed **q** with **k**, the matrices
+    **W^Q** and **W^{UK}** will appear in the middle, and their combination equivalents
+    to a single mapping dimension from **d_c** to **d**.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: In the original paper [3], the authors describe this as **W^{UK}** can be "**absorbed"**
+    into **W^Q**, as a result we do not need to store **W^{UK}** in the cache, further
+    reducing memory usage.
+  prefs: []
+  type: TYPE_NORMAL
+- en: However, this will not be the case when we take the rotation matrix in Figure
+    (4) into consideration, as RoPE will apply a rotation matrix on the left of **W^{UK}**,
+    and this rotation matrix will end up in between the transposed **W^Q** and **W^{UK}.**
+  prefs: []
+  type: TYPE_NORMAL
+- en: As we have explained in the background part, this rotation matrix is position-dependent,
+    meaning the rotation matrix for each position is different. As a result, **W^{UK}**
+    **can no longer be** **absorbed by W^Q.**
+  prefs: []
+  type: TYPE_NORMAL
+- en: To address this conflict, the authors propose what they call "**a decoupled
+    RoPE**", by introducing additional query vectors along with a shared key vector,
+    and use these additional vectors in the RoPE process only, while keeping the original
+    keys kind of **isolated with the rotation matrix**.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The entire process of MLA can be summarized as below (equation numbers reused
+    from Appendix C in [3]):'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Figure 5\. MLA process. Image edited by author based on equations in [3].](../Images/5b3f39114c5faa19fbd84136686b7a4c.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Figure 5\. MLA process. Image edited by author based on equations in [3].
+  prefs: []
+  type: TYPE_NORMAL
+- en: where
+  prefs: []
+  type: TYPE_NORMAL
+- en: Eqn. (37) to (40) describe how to process query tokens.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Eqn. (41) and (42) describe how to process key tokens.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Eqn. (43) and (44) describe how to use the additional shared key for RoPE, be
+    aware that the output of (42) is **not involved in RoPE**.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Eqn. (45) describes how to process value tokens.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'During this process, only the blue variables with boxes need to be cached.
+    This process can be illustrated more clearly with the flowchart blow:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Figure 6\. Flowchart of MLA. Image from [3].](../Images/c6813845b33e3950fe5b63261ef6432d.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Figure 6\. Flowchart of MLA. Image from [3].
+  prefs: []
+  type: TYPE_NORMAL
+- en: Performance of MLA
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: The table below compares the number of elements needed for KV cache (per token)
+    as well as the modeling capacity between MHA, GQA, MQA and MLA, demonstrating
+    that MLA could indeed achieve a better balance between memory efficiency vs. modeling
+    capacity.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Interestingly, the modeling capacity for MLA even surpass that of the original
+    MHA.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Table 1 from [3].](../Images/fa326bda9d50a996f8c6dd9c278a9d7e.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Table 1 from [3].
+  prefs: []
+  type: TYPE_NORMAL
+- en: More specifically, the table below shows the performance of MHA, GQA and MQA
+    on 7B models, where MHA significantly outperforms both MQA and GQA.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Table 8 from [3].](../Images/1d57346522aa3a5f93de3b112a7362d9.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Table 8 from [3].
+  prefs: []
+  type: TYPE_NORMAL
+- en: The authors of [3] also conduct analysis between MHA vs. MLA, and results are
+    summarized in the table below, where MLA achieves better results overall.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Table 9 in [3].](../Images/297634a9effb141fb064b058a03a1d9f.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Table 9 in [3].
+  prefs: []
+  type: TYPE_NORMAL
+- en: References
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: '[1] [DeepSeek](https://www.deepseek.com/)'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '[2] [DeepSeek-V3 Technical Report](https://github.com/deepseek-ai/DeepSeek-V3/blob/main/DeepSeek_V3.pdf)'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '[3] [DeepSeek-V2: A Strong, Economical, and Efficient Mixture-of-Experts Language
+    Model](https://arxiv.org/abs/2405.04434)'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '[4] [DeepSeekMoE: Towards Ultimate Expert Specialization in Mixture-of-Experts
+    Language Models](https://arxiv.org/abs/2401.06066)'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '[5] [Auxiliary-Loss-Free Load Balancing Strategy for Mixture-of-Experts](https://arxiv.org/abs/2408.15664)'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '[6] [Attention Is All You Need](https://arxiv.org/abs/1706.03762)'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '[7] [Generating Wikipedia by Summarizing Long Sequences](https://arxiv.org/pdf/1801.10198)'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '[8] [Improving Language Understanding by Generative Pre-Training](https://cdn.openai.com/research-covers/language-unsupervised/language_understanding_paper.pdf)'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '[9] [Fast Transformer Decoding: One Write-Head is All You Need](https://arxiv.org/pdf/1911.02150)'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '[10] [GQA: Training Generalized Multi-Query Transformer Models from Multi-Head
+    Checkpoints](https://arxiv.org/abs/2305.13245)'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '[11] [RoFormer: Enhanced Transformer with Rotary Position Embedding](https://arxiv.org/abs/2104.09864)'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL

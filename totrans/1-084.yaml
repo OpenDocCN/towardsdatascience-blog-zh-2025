@@ -1,0 +1,569 @@
+- en: 'Javascript Fatigue: HTMX Is All You Need to Build ChatGPT — Part 2'
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 原文：[https://towardsdatascience.com/javascript-fatigue-you-dont-need-js-to-build-chatgpt-part-2/](https://towardsdatascience.com/javascript-fatigue-you-dont-need-js-to-build-chatgpt-part-2/)
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: '[<mdspan datatext="el1763407016641" class="mdspan-comment">In part</mdspan>
+    1](https://towardsdatascience.com/javascript-fatigue-you-dont-need-js-to-build-chatgpt/),
+    we showed how we could leverage HTMX to add interactivity to our HTML elements.
+    In other words, Javascript without Javascript. To illustrate that, we began building
+    a simple chat that would return a simulated LLM response. In this article, we
+    will extend the capabilities of our chatbot and add several features, among which
+    streaming, which is a significant enhancement in terms of user experience compared
+    to the synchronous chat built previously.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: ✅ Real-time streaming with SSE
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: ✅ Session-based architecture for multiple users
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: ✅ Async coordination with asyncio.Queue
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: ✅ Clean HTMX patterns with dedicated SSE handling
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: ✅ A Google Search Agent to answer queries with fresh data
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: ✅ Almost Zero JavaScript
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'Here is what we will build today:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/f4bed04299913ad165c787a79beb60a9.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: From sync communication to async
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: What we built previously leveraged very basic web functionalities leveraging
+    forms. Our communication was synchronous, meaning we don’t get anything until
+    the server is done. We issue a request, we wait for the full response, and we
+    display it. Between the two, we just…wait.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'But modern chatbots work differently, by providing asynchronous communication
+    capabilities. This is done using streaming: we get updates and partial responses
+    instead of waiting for the full response. This is particularly helpful when the
+    response process takes time, which is typically the case for LLMs when the answer
+    is large.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: SSE vs Websockets
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: '*SSE (Server-sent Events)* and *Websockets* are two real-time data exchanges
+    protocols between a client and a server.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '*Websockets* allows for full-duplex connections: this means the browser and
+    the server can both send and receive data simultaneously. This is typically used
+    in online gaming, chat applications, and collaborative tools (think Google Sheets).'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '*SSE* are unidirectional and only allow for a one-way conversation, from server
+    to client. This means that the client cannot send anything to the server via this
+    protocol. If websockets is a two-way phone conversation where people can speak
+    and listen at the same time, SSE is like listening to the radio. SSE are typically
+    used to send notifications, update charts in finance applications, or newsfeeds.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'So why do we choose SSE? Well because in our use case we don’t need full duplex,
+    and that simple HTTP (which is not how Websockets work) is enough for our use
+    case : we send data, we receive data. SSE means that we will receive data in a
+    stream, nothing more is needed.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Overview
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'Here is the flow we will build:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Browser adds this piece of information to the DOM
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: User inputs a query
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Server receives the query and sends it to the LLM
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: LLM starts producing content
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: For each piece of content, the server returns it immediately
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Backend
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'The backend will proceed in 2 steps:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: A POST endpoint that will receive the message, and return nothing
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: A GET endpoint that will read a queue and produce an output stream.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: In our demo, to begin with, we will create a fake LLM response by repeating
+    the user input, meaning that the words of the stream will be exactly the same
+    as the user input.
+  prefs: []
+  type: TYPE_NORMAL
+- en: To keep things clean, we need to separate the message streams (the queues) by
+    user session, otherwise we would end up mixing up conversations. We will therefore
+    create a session dictionary to host our queues.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Next, we need to tell the backend to wait before the queue is filled before
+    streaming our response. If we don’t, we will encounter concurrency run or timing
+    issues: SSE starts on client side, queue is empty, SSE closes, user inputs a message
+    but…it’s too late!'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The solution: async queues! Using asynchronous queues has several advantages:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'If queue has data: Returns immediately'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'If queue is empty: Suspends execution until queue.put() is called'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'Multiple consumers: Each gets their own data'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'Thread-safe: No race conditions'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'I know you are burning to know more, so here is the code below:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE0]'
+  prefs: []
+  type: TYPE_PRE
+- en: Let’s explain a couple of key concepts here.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Session isolation
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: It is important that each user gets their own message queue, so as not to mix
+    up conversations. We will handle that by using a sessions dictionary.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '*Note: For this demo, we store sessions in a global dictionary. In production,
+    we would use Redis or a database, otherwise, our server memory will fill up indefinitely.*'
+  prefs: []
+  type: TYPE_NORMAL
+- en: In the code below, we see that a new session id is created on page load, and
+    stored in the sessions dictionary. Reloading the page will start a new session,
+    we are not persisting the message queues but we could via a database for example.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE1]'
+  prefs: []
+  type: TYPE_PRE
+- en: Blocking coordination
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: 'We need to control the order in which SSE are sent and the user query is received.
+    The order is, on the backend side:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Receive user message
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Create a message queue and populate it
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Send messages from the queue in a Streaming Response
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Failure to do so may lead to unwanted behavior, ie. first reading the (empty)
+    message queue, then populating it with the user’s query.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The solution to control the order is to use `asyncio.Queue`. This object will
+    be used twice:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: When we insert new messages in the queue. Inserting messages will “wake up”
+    the polling in the SSE endpoint
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '[PRE2]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'When we pull messages from the queue. In this line, the code is blocked until
+    a signal from the queue arrives saying “hey, i have new data!”:'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '[PRE3]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'This pattern offers several advantages:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Each user has its own queue
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: There is no risk of race conditions
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Streaming simulation
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: In this article, we will simulate a LLM response by splitting the user’s query
+    in words and return those words one by one. In part 3, we will actually plug a
+    real LLM to that.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The streaming is handled via the `StreamingResponse` object from FastAPI. This
+    object expects an asynchronous generator that will yield data until the generator
+    is over. We have to use the `yield` keyword instead of the `return` keyword, otherwise
+    our generator would just stop after the first iteration.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Let’s decompose our streaming function:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'First, we need to ensure we have a queue for the current session from which
+    we will pull messages:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE4]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Next, once we have the queue, we will pull messages from the queue if it contains
+    any, otherwise the code pauses and waits for messages to arrive. This is the most
+    important part of our function:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE5]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'To simulate stream, we will now chunk the message in words (called `tokens`
+    here), and add some time sleeps to simulate the text generation process from a
+    LLM (the `asyncio.sleep` parts). Notice how the data we *yield* is actually HTML
+    strings, encapsulated in a string starting with “data:”. This is how SSE messages
+    are sent. You can also choose to flag your messages with the “event:” metadata.
+    An example would be:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE6]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Let’s see how we implement it in Python (for the purists, use Jinja templates
+    to render the HTML instead of a string:) ):'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE7]'
+  prefs: []
+  type: TYPE_PRE
+- en: Frontend
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'Our frontend has 2 jobs: send user queries to the backend, and listen for SSE
+    message on a specific channel (the session_id). To do that, we apply a concept
+    called “Separation of concepts”, meaning each HTMX element is responsible for
+    a single job only.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: the form sends a user input
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: the sse listener handles the streaming
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: the ul chat displays the message
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'To send messages, we will use a standard `textarea` input in a form. The HTMX
+    magic is just below:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE8]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'If you remember the article from [part 1](https://towardsdatascience.com/javascript-fatigue-you-dont-need-js-to-build-chatgpt/),
+    we have several HTMX attributes which deserve explanations:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '`hx-post`: The endpoint the form data will be submitted.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '`hx-swap`: Set to none, because in our case the endpoint does not return any
+    data.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '`hx-trigger`: Specifies which event will trigger the request'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '`hx-on::before-request`: A very light part with javascript to add some snappiness
+    to the app. We will append the user’s request to the list in the chat, and display
+    a “Thinking” message to the user while we are waiting for the SSE messages to
+    stream. This is nicer that having to stare at a blank page.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'It is worth nothing that we actually send 2 parameters to the backend: the
+    user’s input and the session id. This way, the message will be inserted in the
+    right queue on the backend side.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Then, we define another component that is specifically dedicated to listening
+    to SSE messages.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE9]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'This component will listen to the `/stream` endpoint and pass its session id
+    to listen for messages for this session only. The `hx-target` tells the browser
+    to add the data to the last li element of the chat. The `hx-swap` specifies that
+    the data is actually meant to replace the entire current li element. This is how
+    our streaming effect will work: replacing current message with the latest one.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '*Note: other methods could have been used to replace specific elements of the
+    DOM, such as out-of-band (OOB) swaps. They work a little bit differently since
+    they require a specific id to look for in the DOM. In our case, we chose on purpose
+    not to assign ids to each written list elements*'
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: An Agentic Chatbot using Google Agent Development Kit
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: Now is the time to replace our dummy streaming endpoint with a real LLM. To
+    achieve that, we will build an agent using Google ADK, equipped with tools and
+    memory to fetch information and remember conversation details.
+  prefs: []
+  type: TYPE_NORMAL
+- en: A very short introduction to agents
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: 'You probably already know what a LLM is, at least I assume you do. The main
+    drawback of LLMs as of today is that LLMs alone cannot access real time information:
+    their knowledge is frozen at the moment they were trained. The other drawback
+    is their inability to access information that is outside their training scope
+    (eg, your company’s internal data),'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Agents are a type of AI applications that can reason, act and observe. The
+    reasoning part is handled by the LLM, the “brain”. The “hands” of the agents are
+    what we call “tools”, and can take several forms:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: a Python function, for example to fetch an API
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: a MCP server, which is a standard that allows agents to connect to APIs through
+    a standardized interface (eg accessing all the Gsuite tools without having to
+    write yourself the API connectors)
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: other agents (in that case, this pattern is called agent delegation were a router
+    or master agents controls different sub-agents)
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'In our demo, to make things very simple, we will use a very simple agent that
+    can use one tool: Google Search. This will allow us to get fresh information and
+    ensure it is reliable (at least we hope that the Google Search results are…)'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'In the Google ADK world, agents need basic information:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: name and description, for documentation purposes mostly
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'instructions: the prompt that defines the behavior of the agent (tools use,
+    output format, steps to follow, etc)'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'tools: the functions / MCP servers / agents the agent can use to fulfill its
+    objective'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: There are also other concepts around memory and session management, but that
+    are out of scope.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Without further ado, let’s define our agent!
+  prefs: []
+  type: TYPE_NORMAL
+- en: A Streaming Google Search Agent
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: '[PRE10]'
+  prefs: []
+  type: TYPE_PRE
+- en: The `Runner` object acts as the orchestrator between you and the agent.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Next, we (re)define our `/stream` endpoint. We first check the session for
+    the agent exists, otherwise we create it:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE11]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Then, we take the user query, pass it to the agent in an async fashion to get
+    a stream back:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE12]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'There is a subtlety next. When generating a response, the agent might output
+    a double linebreak “\n\n”. This is problematic because SSE events end with this
+    symbol. Having a double linebreak in your string therefore means:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: your current message will be truncated
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: your next message will be incorrectly formatted and the SSE stream will stop
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'You can try it by yourself. To fix this, we will use a little hack, along with
+    another little hack to format list elements (I use Tailwind CSS which overrides
+    certain CSS rules). The hack is:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE13]'
+  prefs: []
+  type: TYPE_PRE
+- en: This way, we ensure that no double linebreaks will break our SSE stream.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Full code for the route is below:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE14]'
+  prefs: []
+  type: TYPE_PRE
+- en: And that’s it! You will be able to converse with your chat!
+  prefs: []
+  type: TYPE_NORMAL
+- en: '*Bonus : Below is a little CSS snippet to format code blocks to format code
+    snippets provided by the LLM. Here is the HTML:*'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE15]'
+  prefs: []
+  type: TYPE_PRE
+- en: '*And here is what the formatted code snippets will look like:*'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/e834356af0c1a8b5dd209dfecc987af1.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Conclusion
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: With less that 200 LoC, we were able to write a chat with the following worflow,
+    stream a response from the server and display it very nicely by playing with SSE
+    and HTMX.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Above all, we showed how easy it could be to develop a chatbot app with very
+    little vanilla javascript and mostly, without heavy JS frameworks, just by using
+    Python and HTML. We covered topics such as
+  prefs: []
+  type: TYPE_NORMAL
+- en: Server-Side Rendering
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Server-sent Events (SSE)
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Asynchronous streaming
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Agents
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: with the help of a magical library, HTMX.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The main purpose of this article was also to show that the world of web applications
+    is not inaccessible to non-Javascript developers ! There is actually a very strong
+    and valid reason not to use Javascript frameworks everytime for web development,
+    and although Javascript is a powerful language, my feeling today is that it is
+    sometimes overused in place of simpler, yet robust approaches. The server-side
+    vs client-side applications debate is long-standing and not over yet, but I hope
+    this reading may act as an eye-opener to some of you and open new perspectives.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Find out more on [https://htmx.org/](https://htmx.org/)
+  prefs: []
+  type: TYPE_NORMAL
+- en: Happy coding.
+  prefs: []
+  type: TYPE_NORMAL

@@ -1,0 +1,215 @@
+- en: Zero-Shot Player Tracking in Tennis with Kalman Filtering
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 原文：[https://towardsdatascience.com/zero-shot-player-tracking-in-tennis-with-kalman-filtering-80bba73a4247/](https://towardsdatascience.com/zero-shot-player-tracking-in-tennis-with-kalman-filtering-80bba73a4247/)
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: 'With the recent surge in sports tracking projects, many inspired by [Skalski’s
+    popular soccer tracking project](https://x.com/skalskip92/status/1816162584049168389),
+    there’s been a notable shift towards using automated player tracking for sport
+    hobbyists. Most of these approaches follow a familiar workflow: collect labeled
+    data, train a YOLO model, project player coordinates onto an overhead view of
+    the field or court, and use this tracking data to generate advanced analytics
+    for potential competitive insights. However, in this project, we provide the tools
+    to bypass the need for labeled data, relying instead on GroundingDINO’s zero-shot
+    tracking capabilities in combination with a Kalman filter implementation to overcome
+    noisy outputs from GroundingDino.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Our dataset originates from a set of [broadcast videos](https://github.com/HaydenFaulkner/Tennis),
+    publicly available under an MIT License thanks to Hayden Faulkner and team.¹ This
+    data includes footage from various tennis matches during the 2012 Olympics at
+    Wimbledon, we focus on a match between Serena Williams and Victoria Azarenka.
+  prefs: []
+  type: TYPE_NORMAL
+- en: GroundingDINO, for those not familiar, merges object detection with language
+    allowing users to supply a prompt like "a tennis player" which then leads the
+    model to return candidate object detection boxes that fit the description. RoboFlow
+    has a great tutorial [here](https://colab.research.google.com/github/roboflow-ai/notebooks/blob/main/notebooks/zero-shot-object-detection-with-grounding-dino.ipynb)
+    for those interested in using it – but I have pasted some very basic code below
+    as well. As seen below you can prompt the model to identify objects that would
+    very rarely if ever be tagged in an object detection dataset like a dog’s tongue!
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE0]'
+  prefs: []
+  type: TYPE_PRE
+- en: '![GroundingDino output when prompted with "Dog" and "Dog tongue." Picture is
+    owned by the author.](../Images/a10428ed7d51d2607ffbe6b4ae19c041.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: GroundingDino output when prompted with "Dog" and "Dog tongue." Picture is owned
+    by the author.
+  prefs: []
+  type: TYPE_NORMAL
+- en: However, distinguishing players on a professional tennis court isn’t as simple
+    as prompting for "tennis players." The model often misidentifies other individuals
+    on the court, such as line judges, ball people, and other umpires, causing jumpy
+    and inconsistent annotations. Additionally, the model sometimes fails to even
+    detect the players in certain frames, leading to gaps and non-persistent boxes
+    that don’t reliably appear in each frame.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Tracking picks up a lines person in the first example and a ball person in
+    the second. Image made by the author.](../Images/c25aace1cda7d62da0e1e099c003b52d.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Tracking picks up a lines person in the first example and a ball person in the
+    second. Image made by the author.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'To address these challenges, we apply a few targeted methods. First, we narrow
+    down the detection boxes to just the top three probabilities from all possible
+    boxes. Often, line judges have a higher probability score than players, which
+    is why we don’t filter to only two boxes. However, this raises a new question:
+    how can we automatically distinguish players from line judges in each frame?'
+  prefs: []
+  type: TYPE_NORMAL
+- en: We observed that detection boxes for line and ball personnel typically have
+    shorter time spans, often lasting just a few frames. Based on this, we hypothesize
+    that by associating boxes across consecutive frames, we could filter out people
+    that only appear briefly, thereby isolating the players.
+  prefs: []
+  type: TYPE_NORMAL
+- en: So how do we achieve this kind of association between objects across frames?
+    Fortunately, the field of multi-object tracking has extensively studied this problem.
+    Kalman filters are a mainstay in multi-object tracking, often combined with other
+    identification metrics, such as color. For our purposes, a basic Kalman filter
+    implementation is sufficient. In simple terms (for a deeper dive, check this [article](https://towardsdatascience.com/what-i-was-missing-while-using-the-kalman-filter-for-object-tracking-8e4c29f6b795)
+    out), a Kalman filter is a method for probabilistically estimating an object’s
+    position based on previous measurements. It’s particularly effective with noisy
+    data but also works well associating objects across time in videos, even when
+    detections are inconsistent such as when a player is not tracked every frame.
+    We implement an entire Kalman filter [here](https://github.com/dcaustin33/kalman_filter_object_detection)
+    but will walk through some of the main steps in the following paragraphs.
+  prefs: []
+  type: TYPE_NORMAL
+- en: A Kalman filter state for 2 dimensions is quite simple as shown below. All we
+    have to do is keep track of the x and y location as well as the objects velocity
+    in both directions (we ignore acceleration).
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE1]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The Kalman filter operates in two steps: it first predicts an object’s location
+    in the next frame, then updates this prediction based on a new measurement – in
+    our case, from the object detector. However, in our example a new frame could
+    have multiple new objects, or it could even drop objects that were present in
+    the previous frame leading to the question of how we can associate boxes we have
+    seen previously with those seen currently.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: We choose to do this by using the Mahalanobis distance, coupled with a chi-squared
+    test, to assess the probability that a current detection matches a past object.
+    Additionally, we keep a queue of past objects so we have a longer ‘memory’ than
+    just one frame. Specifically, our memory stores the trajectory of any object seen
+    over the last 30 frames. Then for each object we find in a new frame we iterate
+    over our memory and find the previous object most likely to be a match with the
+    current given by the probability given from the Mahalanbois distance. However,
+    it’s possible we are seeing an entirely new object as well, in which case we should
+    add a new object to our memory. If any object has <30% probability of being associated
+    with any box in our memory we add it to our memory as a new object.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We provide our full Kalman filter below for those preferring code.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE2]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Having tracked every detected object over the past 30 frames, we can now devise
+    heuristics to pinpoint which boxes most likely represent our players. We tested
+    two approaches: selecting the boxes nearest the center of the baseline, and picking
+    those with the longest observed history in our memory. Empirically, the first
+    strategy often flagged line judges as players whenever the actual player moved
+    away from the baseline, making it less reliable. Meanwhile, we noticed that GroundingDino
+    tends to "flicker" between different line judges and ball people, while genuine
+    players maintain a somewhat stable presence. As a result, our final rule is to
+    pick the boxes in our memory with the longest tracking history as the true players.
+    As you can see in the initial video, it’s surprisingly effective for such a simple
+    rule!'
+  prefs: []
+  type: TYPE_NORMAL
+- en: With our tracking system now established on the image, we can move toward a
+    more traditional analysis by tracking players from a bird’s-eye perspective. This
+    viewpoint enables the evaluation of key metrics, such as total distance traveled,
+    player speed, and court positioning trends. For example, we could analyze whether
+    a player frequently targets their opponent’s backhand based on location during
+    a point. To accomplish this, we need to project the player coordinates from the
+    image onto a standardized court template viewed from above, aligning the perspective
+    for spatial analysis.
+  prefs: []
+  type: TYPE_NORMAL
+- en: This is where homography comes into play. Homography describes the mapping between
+    two surfaces, which, in our case, means mapping the points on our original image
+    to an overhead court view. By identifying a few keypoints in the original image
+    – such as line intersections on a court – we can calculate a homography matrix
+    that translates any point to a bird’s-eye view. To create this homography matrix,
+    we first need to identify these ‘keypoints.’ Various open-source, permissively
+    licensed models on platforms like RoboFlow can help detect these points, or we
+    can label them ourselves on a reference image to use in the transformation.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![As you can see the predicted keypoints are not perfect but we find small
+    errors do not affect the final transformation matrix much.](../Images/c6f9145810f96eb8fb7ac5caf9209792.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: As you can see the predicted keypoints are not perfect but we find small errors
+    do not affect the final transformation matrix much.
+  prefs: []
+  type: TYPE_NORMAL
+- en: After labeling these keypoints, the next step is to match them with corresponding
+    points on a reference court image to generate a homography matrix. Using OpenCV,
+    we can then create this transformation matrix with a few simple lines of code!
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE3]'
+  prefs: []
+  type: TYPE_PRE
+- en: With the homography matrix in hand, we can map any point from our image onto
+    the reference court. For this project, our focus is on the player’s position on
+    the court. To determine this, we take the midpoint at the base of each player’s
+    bounding box, using it as their location on the court in the bird’s-eye view.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![We use the middle point at the bottom of the box to map to where each player
+    is on the court. The illustration shows the keypoint translated to the tennis
+    court seen from a birds eye view with our homography matrix.](../Images/8842ff167e498c7bc6de98cd89da931f.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: We use the middle point at the bottom of the box to map to where each player
+    is on the court. The illustration shows the keypoint translated to the tennis
+    court seen from a birds eye view with our homography matrix.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In summary, this project demonstrates how we can use GroundingDINO’s zero-shot
+    capabilities to track tennis players without relying on labeled data, transforming
+    complex object detection into actionable player tracking. By tackling key challenges
+    – such as distinguishing players from other on-court personnel, ensuring consistent
+    tracking across frames, and mapping player movements to a bird’s-eye view of the
+    court – we’ve laid the groundwork for a robust tracking pipeline all without the
+    need for explicit labels.
+  prefs: []
+  type: TYPE_NORMAL
+- en: This approach doesn’t just unlock insights like distance traveled, speed, and
+    positioning but also opens the door to deeper match analytics, such as shot targeting
+    and strategic court coverage. With further refinement, including distilling a
+    YOLO or RT-DETR model from GroundingDINO outputs, we could even develop a real-time
+    tracking system that rivals existing commercial solutions, providing a powerful
+    tool for both coaching and fan engagement in the world of tennis.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '* * *'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[@inproceedings](http://twitter.com/inproceedings){faulkner2017tenniset, title={TenniSet:
+    A Dataset for Dense Fine-Grained Event Recognition, Localisation and Description},
+    author={Faulkner, Hayden and Dick, Anthony}, booktitle={2017 International Conference
+    on Digital Image Computing: Techniques and Applications (DICTA)}, pages={1–8},
+    organization={IEEE} }'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL

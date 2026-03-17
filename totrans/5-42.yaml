@@ -1,0 +1,385 @@
+- en: 'Understanding Flash Attention: Writing the Algorithm from Scratch in Triton'
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 原文：[https://towardsdatascience.com/understanding-flash-attention-writing-the-algorithm-from-scratch-in-triton-5609f0b143ea/](https://towardsdatascience.com/understanding-flash-attention-writing-the-algorithm-from-scratch-in-triton-5609f0b143ea/)
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: Read for free at [alexdremov.me](https://alexdremov.me/understanding-flash-attention-writing-the-algorithm-from-scratch-in-triton?utm_source=medium)
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: Flash Attention is a revolutionary technique that dramatically accelerates the
+    attention mechanism in transformer-based models, delivering processing speeds
+    many times faster than naive methods. By cleverly tiling data and minimizing memory
+    transfers, it tackles the notorious GPU memory bottleneck that large language
+    models often struggle with.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In this post, we’ll dive into how Flash Attention leverages efficient *I/O-awareness*
+    to reduce overhead, then take it a step further by crafting a **block-sparse attention
+    kernel** in Triton.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 💥 I will provide a simple explanation of how Flash Attention works. We will
+    then implement the explained algorithm in Triton!
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: What is Attention?
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: The attention mechanism (or scaled dot-product attention) is a core element
+    of transformer models, which is a leading architecture for solving the problem
+    of language modeling. All popular models, like GPT, LLaMA, and BERT, rely on attention.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The formula is pretty simple:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/568abba54eaaf8d8d6f84b9ae0a6f18f.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: The rest is history.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Even though the formula looks simple, its computation involves multiplications
+    of large tensors and a lot of data movement. Considering that this is a core part
+    of the transformer architecture, optimizing the algorithm greatly improves the
+    performance of the model in general.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In the naive implementation, attention requires **O(n²)** additional memory
+    and **O(n²)** compute time complexity, where **n** is the sequence length. **That’s
+    a lot!**
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Flash Attention**'
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: '**Core Idea**'
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: 'The main idea of Flash attention can be summarized in a simple quote from [the
+    original paper](https://arxiv.org/pdf/2205.14135?ref=alexdremov.me):'
+  prefs: []
+  type: TYPE_NORMAL
+- en: We argue that a missing principle is making attention algorithms IO-aware –
+    accounting for reads and writes between levels of GPU memory.
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: 'That is, modern GPUs have several types of memory:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**SRAM** – fast, on-chip, small'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**HBM –** slower than SRAM, large size. That’s what we usually address as GPU
+    memory.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Check out the memory hierarchy in the image below to see the differences in
+    bandwidth and sizes of different memory types.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Image from FlashAttention: Fast and Memory-Efficient Exact Attention with
+    IO-Awareness by Tri Dao et al.](../Images/465d679c122c059d74a6fd1d7c1a04a4.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'Image from FlashAttention: Fast and Memory-Efficient Exact Attention with IO-Awareness
+    by Tri Dao et al.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 💡 To conduct computation, data must be transferred from HBM to SRAM, and this
+    transfer is not overhead-free!
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: 'The Flash Attention algorithm proposes a method of **computing attention in
+    tiles**, without explicitly materializing the attention scores tensor:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/9b4d492b14be6c8cef5db7fffcc8e2c9.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 💥 **Not materializing a matrix** means that at any given time, the matrix does
+    not exist in its full shape in memory.
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: It’s easy to see that this matrix requires **O(n²)** of memory to store. For
+    large sequence lengths, **that’s a lot of data!** So, if we manage to avoid explicitly
+    materializing this matrix, we can save lots of memory.
+  prefs: []
+  type: TYPE_NORMAL
+- en: However, this matrix is necessary for transformer training as it is a part of
+    backpropagation and gradient calculation. The authors propose that it’s better
+    to recalculate this matrix during the backward pass (again without explicit materialization).
+    Not only does this saves lots of memory, but it also provides huge speedups as
+    we don’t need to transfer this enormous matrix between different GPU memory types.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Overall, such an approach did not only speed up calculations by taking GPU I/O
+    specifics into account, but also allowed processing huge sequence lengths as memory
+    complexity drops to **O(n)**.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Tiled Attention Calculation
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: The last thing to understand is how to compute attention **in tiles**. Basically,
+    this means that we will calculate attention over the full sequence by processing
+    incoming tokens in small portions.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Well, it’s easy to calculate **QK^T** in tiles. Considering that attention dimension
+    is not high, we can load full matrix rows and columns and conduct multiplication
+    in tiles.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 😡 Yes, if we want to have an enormous attention dimension, Flash Attention will
+    not work without algorithm modifications.
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: As dimensions are usually quite small even for enormous models, this limitation
+    is fair.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Tiled QK^T | Image by the author](../Images/7ba9ca6f82a416f46eeeee1bcf38178d.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Tiled QK^T | Image by the author
+  prefs: []
+  type: TYPE_NORMAL
+- en: So, we have **QK^T** calculated in SRAM. All that’s left is to apply softmax,
+    multiply by **V**, and that’s it!
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/f5359b6ef738dac38cd587e0f4ea2eaf.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: That’s where the trick is.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The problem is that the softmax denominator requires aggregation over the sequence
+    length to normalize scores, and we do not have access to the whole length as we
+    load data in tiles.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'To address it, we can implement a concatenated softmax algorithm. Using it,
+    we can calculate softmax "in batch" mode: by adjusting computed values with the
+    new incoming data.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Taking the algorithm from the original article, we can define rules to compute
+    the softmax over data concatenation. Having two vectors **x1** and **x2**, we
+    need to calculate the softmax denominator **l(x)** over those vectors’ concatenation
+    **[x1, x2]**. If the vector’s maximum is **m(x)**, we can easily derive the softmax
+    denominator of the concatenation:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/253f0901a46f6e1a72edd795432385f1.png)![](../Images/e15b8a29e6bc73c128bf035ea3d92ab0.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: The last equivalence can be easily verified as
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/ebc9456a6c92bc7855aefd200a49e1c4.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: So, now we have what we want – we can calculate softmax per-tile and then, by
+    doing re-normalization from the formula above, compute the global softmax. The
+    last thing to do is to incorporate the tile of the **V** tensor and keep doing
+    the same re-normalization (as matrix multiplication is a linear operation).
+  prefs: []
+  type: TYPE_NORMAL
+- en: And all of this without loading the full sequence into memory or materializing
+    **QK^T**!
+  prefs: []
+  type: TYPE_NORMAL
+- en: 💥 Notice that we calculate **Softmax(QK^T)** in tiles only, without needing
+    to have the whole matrix at any moment.
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: Also, in the actual algorithm for numerical stability, we will compute not **Softmax(x)**
+    but **Softmax(x – max(x))**. We can do that as softmax is invariant to constant
+    shifts.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Triton Implementation
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: Now, we can easily implement the outlined algorithm in Triton, which is a tool
+    that allows us to write efficient GPU kernels with the ease of Python.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 💡 To learn more about Triton, check out their official guides.
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: ''
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: '[**Tutorials – Triton documentation**](https://triton-lang.org/main/getting-started/tutorials/index.html?ref=alexdremov.me)'
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: Outlining the Algorithm
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: The first step is to decide how we will assign jobs and what data each job will
+    load. By the algorithm of tiled softmax, each job must have access to **K, V**
+    over the whole sequence length. So, each job will iterate over **K, V** in tiles.
+    We don’t have any algorithmic restriction on the number of **Q** tiles processed.
+    Therefore, each job will load just one **Q** tile and work with it only – this
+    way we will maximize job parallelism.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Kernel jobs data management | Image by the author](../Images/c65237ed01b4a8de4c3c3d288b10fee7.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Kernel jobs data management | Image by the author
+  prefs: []
+  type: TYPE_NORMAL
+- en: In summary, each job will load a single **Q** tile, iterate over all tiles in
+    **K** and **V**, and store one tile of result corresponding to the **Q** tile.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The Kernel
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: What’s left is to write the actual code. Let’s focus on the core part first,
+    and only then we’ll add Triton-specific boilerplates.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Below is a Triton pseudocode with every line explained.
+  prefs: []
+  type: TYPE_NORMAL
+- en: See? Easy!
+  prefs: []
+  type: TYPE_NORMAL
+- en: What’s important is that you can see how simple it is to write such a thing
+    as soon as we understand the idea of tiled softmax. Apart from that, there’s nothing
+    complicated from the algorithm perspective.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 💥 This kernel can be made even faster by implementing triton optimizations.
+    However, this is out of the scope of this article.
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: This pseudocode is pretty close to the actual code. You may find it in my GitHub
+    by following the link. All that I added is just data management and PyTorch wrappers.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[**kernels/src/self_attention/kernel.py at main · alexdremov/kernels**](https://github.com/alexdremov/kernels/blob/main/src/self_attention/kernel.py)'
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: ''
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: ❗Don’t hesitate to ask if something isn’t clear. I’m here in the comments 😁
+    .
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: The code above [was extensively tested](https://github.com/alexdremov/kernels/blob/main/tests/test_self_attention.py?ref=alexdremov.me)
+    to match PyTorch’s `scaled_dot_product_attention`. You can also check out the
+    tests to see how to use the written kernel.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Benchmarking
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: While we wrote the kernel in Triton to improve the algorithm understanding,
+    it’s interesting to compare the performance with a naive implementation and PyTorch’s
+    `scaled_dot_product_attention`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Benchmarking implementations for different sequence lengths | Image by the
+    author](../Images/eb53b5011b54b3046455c88e16f202bd.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Benchmarking implementations for different sequence lengths | Image by the author
+  prefs: []
+  type: TYPE_NORMAL
+- en: As expected, the Flash Attention algorithm completely outperforms the naive
+    implementation performance-wise. Also, I’ve marked with a dashed line the range
+    of lengths for which the naive implementation causes a CUDA out-of-memory error.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We see that our Triton implementation is slightly worse than PyTorch SDPA. But
+    the difference is not too large Considering the fact that PyTorch SDPA is a well-optimized
+    CUDA kernel, that’s a nice result.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Benchmarking code is also available in the repository.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[**kernels/benchmark/benchmark_self_attention.py at main · alexdremov/kernels**](https://github.com/alexdremov/kernels/blob/main/benchmark/benchmark_self_attention.py)'
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: ''
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: This story was originally published on [alexdremov.me](https://alexdremov.me/understanding-flash-attention-writing-the-algorithm-from-scratch-in-triton?utm_source=medium)
+    Check it out! (at least, TEX looks better there)
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: Conclusions
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: In the post, I covered the motivation of the Flash Attention algorithm as well
+    as its algorithm details. Finally, we were able to implement it from scratch in
+    Triton, reproducing the speedups from the paper.
+  prefs: []
+  type: TYPE_NORMAL
+- en: I hope this post improved your understanding of Flash Attention. Feel free to
+    leave a comment below if you have any questions.
+  prefs: []
+  type: TYPE_NORMAL
+- en: References
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: '[**FlashAttention: Fast and Memory-Efficient Exact Attention with IO-Awareness**](https://arxiv.org/abs/2205.14135?ref=alexdremov.me)'
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: ''
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: '[**Tutorials – Triton documentation**](https://triton-lang.org/main/getting-started/tutorials/index.html?ref=alexdremov.me)'
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: ''
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: '[**GitHub – alexdremov/kernels: Collection of useful kernels**](https://github.com/alexdremov/kernels/tree/main?ref=alexdremov.me)'
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL

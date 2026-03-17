@@ -1,0 +1,485 @@
+- en: Bootstrap a Data Lakehouse in an Afternoon
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 原文：[https://towardsdatascience.com/bootstrap-a-data-lakehouse-in-an-afternoon/](https://towardsdatascience.com/bootstrap-a-data-lakehouse-in-an-afternoon/)
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: '<mdspan datatext="el1764701792928" class="mdspan-comment">Building a data lakehouse</mdspan>
+    doesn’t need to be ***that*** complicated. In this article, I’ll show you how
+    to develop a basic, “starter” one that uses an Iceberg table on AWS S3 storage.
+    Once the table is registered using AWS Glue, you’ll be able to query and mutate
+    it from Amazon Athena, including using:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Time travel queries**,'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Merging, updating and deleting data**'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Optimising and vacuuming your tables.**'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: I’ll also show you how to inspect *the same tables locally* from **DuckDB,**
+    and we’ll also see how to use **Glue/Spark** to insert more table data.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Our example might be basic, but it’ll showcase the setup, the different tools
+    and the processes you can put in place to build up a more extensive data store.
+    All modern cloud providers have equivalents of the AWS services I’m discussing
+    in this article, so it should be fairly straightforward to replicate what I discuss
+    here on Azure, Google Cloud, and others.
+  prefs: []
+  type: TYPE_NORMAL
+- en: To make sure we’re all on the same page, here is a brief explanation of some
+    of the key technologies we’ll be using.
+  prefs: []
+  type: TYPE_NORMAL
+- en: AWS Glue/Spark
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: AWS Glue is a fully managed, serverless ETL service from Amazon that streamlines
+    data preparation and integration for analytics and machine learning. It automatically
+    detects and catalogues metadata from various sources, such as S3, into a centralised
+    Data Store. Additionally, it can create customisable Python-based Spark ETL scripts
+    to execute these tasks on a scalable, serverless Apache Spark platform. This makes
+    it great for building data lakes on Amazon S3, loading data into data warehouses
+    like Amazon Redshift, and performing data cleaning and transformation. all without
+    managing infrastructure.
+  prefs: []
+  type: TYPE_NORMAL
+- en: AWS Athena
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: AWS Athena is an interactive query service that simplifies data analysis directly
+    in Amazon S3 using standard SQL. As a serverless platform, there’s no need to
+    manage or provision servers; just point Athena at your S3 data, define your schema
+    (usually with AWS Glue), and begin running SQL queries. It’s frequently utilised
+    for ad hoc analysis, reporting, and exploration of large datasets in formats such
+    as CSV, JSON, ORC, or Parquet.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Iceberg tables
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: Iceberg tables are an open table format for datasets that provide database-like
+    capabilities for data stored in data lakes, such as Amazon S3 object storage.
+    Traditionally, on S3, you can create, read, and delete objects(files), but updating
+    them is not possible. The Iceberg format addresses that limitation while also
+    offering other benefits, including ACID transactions, schema evolution, hidden
+    partitioning, and time-travel features.
+  prefs: []
+  type: TYPE_NORMAL
+- en: DuckDB
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: DuckDB is an in-memory analytical database written in C++ and designed for analytical
+    SQL workloads. Since its release a couple of years ago, it has grown in popularity
+    and is now one of the premier data processing tools used by data engineers and
+    scientists, thanks to its grounding in SQL, performance, and versatility.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Scenario overview
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: 'Let’s say you have been tasked with building a small “warehouse-lite” analytics
+    table for order events, but you don’t want to adopt a heavyweight platform just
+    yet. You need:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Safe writes** (no broken readers, no partial commits)'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Row-level** changes (UPDATE/DELETE/MERGE, not only append)'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Point-in-time reads** (for audits and debugging)'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Local analytics** against production-accurate data for quick checks'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: What we’ll build
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: Create an Iceberg table in **Glue** & **S3** via **Athena**
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Load and mutate rows (**INSERT/UPDATE/DELETE/MERGE**)
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '**Time travel** to prior snapshots (by timestamp and by snapshot ID)'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Keep it fast with **OPTIMIZE** and **VACUUM**
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Read *the same table* locally from **DuckDB** (S3 access via DuckDB Secrets)
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: See how to add new records to our table using Glue Spark code
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: So, in a nutshell, we’ll be using:-
+  prefs: []
+  type: TYPE_NORMAL
+- en: S3 for data storage
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Glue Catalogue for table metadata/discovery
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Athena for serverless SQL reads *and* writes
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: DuckDB for cheap, local analytics against the same Iceberg table
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Sparkfor processing grunt
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: The key takeaway from our perspective is that by using the above technologies,
+    we will be able to perform database-like queries on object storage.
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: Setting up our development environment
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: I prefer to isolate local tooling in a separate environment. Use any tool you
+    like to do this; I’ll show using conda since that’s what I usually do. For demo
+    purposes, I’ll be running all the code within a Jupyter Notebook environment.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE0]'
+  prefs: []
+  type: TYPE_PRE
+- en: Prerequisites
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: As we’ll be using AWS services, you’ll need an AWS account. Also,
+  prefs: []
+  type: TYPE_NORMAL
+- en: An S3 bucket for the data lake (e.g., `s3://my-demo-lake/warehouse/`)
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: A Glue database (we’ll create one)
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Athena Engine Version 3 **i**n your workgroup
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: An IAM role or user for Athena with S3 + Glue permissions
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 1/ Athena setup
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: Once you’ve signed into AWS, open Athena in the console and set your workgroup,
+    engine version and S3 output location (for query results). To do this, look for
+    a hamburger-style menu icon on the top left of the Athena home screen. Click on
+    it to bring up a new menu block on the left. In there, you should see an Administration->
+    Workgroups link. You will automatically be assigned to the primary workgroup.
+    You can stick with this or create a new one if you like. Whichever option you
+    choose, edit it and ensure that the following options are selected.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Analytics Engine — Athena SQL. Manually set the engine version to 3.0.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Select customer-managed query result configuration and enter the required bucket
+    and account information.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 2/ Create an Iceberg table in Athena
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: We’ll store order events and let Iceberg manage partitioning transparently.
+    I’ll use a “hidden” partition on the day of the timestamp to spread writes/reads.
+    Go back to the Athena home page and launch the Trino SQL query editor. Your screen
+    should look like this.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/2327f76f87feff5ceb30e7d6896fd0e3.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Image from AWS website
+  prefs: []
+  type: TYPE_NORMAL
+- en: Type in and run the following SQL. Change bucket/table names to suit.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE1]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE2]'
+  prefs: []
+  type: TYPE_PRE
+- en: 3) Load and mutate data (INSERT / UPDATE / DELETE / MERGE)
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: Athena supports real Iceberg DML, allowing you to insert rows, update and delete
+    records, and upsert using the MERGE statement. Under the hood, Iceberg uses snapshot-based
+    ACID with delete files; readers stay consistent while writers work in parallel.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Seed a few rows.**'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE3]'
+  prefs: []
+  type: TYPE_PRE
+- en: A quick sanity check.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE4]'
+  prefs: []
+  type: TYPE_PRE
+- en: '**Update and delete.**'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE5]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE6]'
+  prefs: []
+  type: TYPE_PRE
+- en: '**Idempotent upserts with MERGE**'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Let’s treat order 104 as refunded and create a new order 105.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE7]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'You can now re-query to see: 101/102 → **paid**, 103 deleted, 104 → **refunded**,
+    and 105 → **created.** (If you’re running this in a “real” account, you’ll notice
+    the S3 object count ticking up — more on maintenance shortly.)'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE8]'
+  prefs: []
+  type: TYPE_PRE
+- en: 4) Time travel (and version travel)
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: This is where the real value of using Iceberg shines. You can query the table
+    as it looked at a moment in time **or** by a specific snapshot ID. In Athena,
+    use this syntax,
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE9]'
+  prefs: []
+  type: TYPE_PRE
+- en: To get the various version (snapshot) IDs associated with a particular table,
+    use this query.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE10]'
+  prefs: []
+  type: TYPE_PRE
+- en: '5) Keeping your data healthy: OPTIMIZE and VACUUM'
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: 'Row-level writes (UPDATE/DELETE/MERGE) create many **delete files** and can
+    fragment data. Two statements keep things fast and storage-friendly:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**OPTIMIZE … REWRITE DATA USING BIN_PACK** — compacts small/fragmented files
+    and folds deletes into data'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**VACUUM** — expires old snapshots + cleans **orphan** files'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '[PRE11]'
+  prefs: []
+  type: TYPE_PRE
+- en: 6) Local analytics with DuckDB (read-only)
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: It’s great to be able to sanity-check production tables from a laptop without
+    having to run a cluster. DuckDB’s **httpfs** + **iceberg** extensions make this
+    simple.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 6.1 Install & load extensions
+  prefs:
+  - PREF_H4
+  type: TYPE_NORMAL
+- en: Open your Jupyter notebook and type in the following.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE12]'
+  prefs: []
+  type: TYPE_PRE
+- en: 6.2 Provide S3 credentials to DuckDB the “right” way (Secrets)
+  prefs:
+  - PREF_H4
+  type: TYPE_NORMAL
+- en: DuckDB has a small but powerful secrets manager. The most robust setup in AWS
+    is the **credential chain** provider, which reuses whatever the AWS SDK can find
+    (environment variables, IAM role, etc.). Therefore, you will need to ensure that,
+    for instance, your AWS CLI credentials are configured.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE13]'
+  prefs: []
+  type: TYPE_PRE
+- en: After that, any **s3://…** reads in this DuckDB session will use the secret
+    data.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 6.3 Point DuckDB at the Iceberg table’s metadata
+  prefs:
+  - PREF_H4
+  type: TYPE_NORMAL
+- en: The most explicit way is to reference a concrete metadata file (e.g., the latest
+    one in your table’s `metadata/` folder:)
+  prefs: []
+  type: TYPE_NORMAL
+- en: To get a list of those, use this query
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE14]'
+  prefs: []
+  type: TYPE_PRE
+- en: Look for the metadata.json file with **the highest numbered start to the file
+    name**, 00004 in my case. Then, you can use that in a query like this to retrieve
+    the latest position of your underlying table.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE15]'
+  prefs: []
+  type: TYPE_PRE
+- en: Want a specific snapshot? Use this to get a list.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE16]'
+  prefs: []
+  type: TYPE_PRE
+- en: '7) Optional extra: Writing from Spark/Glue'
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: If you prefer Spark for larger batch writes, Glue can read/write Iceberg tables
+    registered in the Glue Catalogue. You’ll probably still want to use Athena for
+    ad-hoc SQL, time travel, and maintenance, but large CTAS/ETL can come via Glue
+    jobs. (Just be aware that version compatibility and AWS LakeFormation permissions
+    can bite, as Glue and Athena may lag slightly on Iceberg versions.)
+  prefs: []
+  type: TYPE_NORMAL
+- en: Here’s an example of some Glue Spark code that inserts a few new data rows,
+    starting at order_id = 110, into our existing table. Before running this, you
+    should add the following Glue job parameter (under Glue Job Details-> Advanced
+    Parameters-> Job parameters.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE17]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE18]'
+  prefs: []
+  type: TYPE_PRE
+- en: Double-check with Athena.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE19]'
+  prefs: []
+  type: TYPE_PRE
+- en: Future Steps
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'From here, you could:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Create more tables with data.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Add schema evolution’
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Experiment with partition evolution (e.g., change table partition from day →
+    hour as volumes grow),
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Add scheduled maintenance. For example, EventBridge, Step, and Lambdas could
+    be used to run **OPTIMIZE/VACUUM** on a scheduled cadence.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Summary
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: In this article, I’ve tried to provide a clear path for building an **Iceberg
+    data lakehouse** on AWS. It should serve as a guide for data engineers who want
+    to connect simple object storage with complex enterprise data warehouses.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Hopefully, I’ve shown that building a Data Lakehouse—a system that combines
+    the low cost of data lakes with the transactional integrity of warehouses—doesn’t
+    necessarily require extensive infrastructure deployment. And while creating a
+    full lakehouse is something that evolves over a long time, I hope I’ve convinced
+    you that you really can make the bones of one in an afternoon.
+  prefs: []
+  type: TYPE_NORMAL
+- en: By leveraging **Apache Iceberg** on a cloud storage system like **Amazon S3**,
+    I demonstrated how to transform static files into dynamic, managed tables capable
+    of ACID transactions, row-level mutations (MERGE, UPDATE, DELETE), and time travel,
+    all without provisioning a single server.
+  prefs: []
+  type: TYPE_NORMAL
+- en: I also showed that by using new analytic tools such as **DuckDB**, it’s possible
+    to read small to medium data lakes locally. And when your data volumes grow and
+    get too big for local processing, I showed how easy it was to step up to an enterprise
+    class data processing platform like **Spark**.
+  prefs: []
+  type: TYPE_NORMAL

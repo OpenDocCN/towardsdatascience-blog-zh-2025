@@ -1,0 +1,752 @@
+- en: 'The Greedy Boruta Algorithm: Faster Feature Selection Without Sacrificing Recall'
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 原文：[https://towardsdatascience.com/the-greedy-boruta-algorithm-faster-feature-selection-without-sacrificing-recall/](https://towardsdatascience.com/the-greedy-boruta-algorithm-faster-feature-selection-without-sacrificing-recall/)
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: '*This article was a collaborative effort. A special thank you to [Estevão Prado](https://www.linkedin.com/in/estev%C3%A3o-prado-998097238/),
+    whose expertise helped refine both the technical concepts and the narrative flow.*'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Code availability
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: The complete implementation of Greedy Boruta is available at [GreedyBorutaPy](https://www.google.com/url?sa=E&q=https%3A%2F%2Fgithub.com%2FNicolas-Vana%2FGreedyBorutaPy).
+  prefs: []
+  type: TYPE_NORMAL
+- en: Greedy Boruta is also available as a PyPI package at [greedyboruta.](https://pypi.org/project/greedyboruta/)
+  prefs: []
+  type: TYPE_NORMAL
+- en: <mdspan datatext="el1764269343707" class="mdspan-comment">Introduction</mdspan>
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: Feature selection remains one of the most critical yet computationally expensive
+    steps in the machine learning pipeline. When working with high-dimensional datasets,
+    identifying which features truly contribute to predictive power can mean the difference
+    between an interpretable, efficient model and an overfit, sluggish one.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In this article, I present the Greedy Boruta algorithm—a modification to the
+    Boruta algorithm [1] that, in our tests, reduces computation time by 5-40× while
+    mathematically provably maintaining or improving recall. Through theoretical analysis
+    and simulation experiments, I demonstrate how a simple relaxation of the confirmation
+    criterion provides guaranteed convergence in *O(-log α)* iterations, where *α* is
+    the significance level of the binomial tests, compared to the vanilla algorithm’s
+    unbounded runtime.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The Boruta algorithm has long been a favorite among data scientists for its
+    “all-relevant” approach to feature selection and its statistical framework. Unlike
+    minimal-optimal methods, such as [Minimum Redundancy Maximum Relevance](https://www.google.com/url?sa=E&q=https%3A%2F%2Fgithub.com%2Fsmazzanti%2Fmrmr) (mRMR)
+    and recursive feature elimination (RFE), that seek the smallest set of features
+    for prediction, Boruta aims to identify all features that carry useful information.
+    This philosophical difference matters tremendously when the goal is understanding
+    a phenomenon rather than merely making predictions, for instance.
+  prefs: []
+  type: TYPE_NORMAL
+- en: However, Boruta’s thoroughness comes at a high computational cost. In real-world
+    applications with hundreds or thousands of features, the algorithm can take prohibitively
+    long to converge. This is where the Greedy Boruta Algorithm enters the picture.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Understanding the vanilla Boruta algorithm
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: Before examining the modification, let’s recap how the vanilla Boruta algorithm
+    works.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Boruta’s genius lies in its elegant approach to determining feature importance.
+    Rather than relying on arbitrary thresholds or p-values directly from a model,
+    it creates a competitive benchmark using shadow features.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Here’s the process:**'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Shadow feature creation:** For each feature in the dataset, Boruta creates
+    a “shadow” copy by randomly shuffling its values. This destroys any relationship
+    the original feature has with the response (or target) variable while preserving
+    its distribution.'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '**Importance computation:** A Random Forest is trained on the combined dataset
+    and feature importances are calculated for all features. Although Boruta was initially
+    proposed for Random Forest estimators, the algorithm can work with any other tree-based
+    ensemble that provides feature importance scores (e.g., [Extra Trees](https://www.google.com/url?sa=E&q=https%3A%2F%2Flink.springer.com%2Farticle%2F10.1007%2Fs10994-006-6226-1) [2], [XGBoost](https://www.google.com/url?sa=E&q=https%3A%2F%2Fdl.acm.org%2Fdoi%2F10.1145%2F2939672.2939785) [3],
+    [LightGBM](https://lightgbm.readthedocs.io/en/stable/) [4]).'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '**Hit registration:** For each non-shadow feature, Boruta checks whether the
+    importance of the feature is greater than the maximum importance of the shadows.
+    Non-shadow features that are more important than the most important shadow are
+    assigned a “hit” and the ones that are less important are assigned “no-hit”.'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '**Statistical testing:** Based on the lists of hits and no-hits for each of
+    the non-shadow features, Boruta performs a binomial test to determine whether
+    its importance is significantly greater than the maximum importance among shadow
+    features across multiple iterations.'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '**Decision making:** Features that consistently outperform the best shadow
+    feature are marked as “confirmed.” Features that consistently underperform are
+    “rejected.” Features in the middle (those that are not statistically significantly
+    different from the best shadow) remain “tentative”.'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '**Iteration:** Steps 2–5 repeat until all features are classified as confirmed
+    or rejected. In this article, I say that the Boruta algorithm “has converged”
+    when all features are either confirmed or rejected or when a maximum number of
+    iterations has been reached.'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: 'The binomial test: Boruta’s decision criterion'
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: 'The vanilla Boruta uses a rigorous statistical framework. After multiple iterations,
+    the algorithm performs a binomial test on the hits for each of the non-shadow
+    features:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Null hypothesis:** The feature **is no better** than the best shadow feature
+    (50% chance of beating shadows by random chance).'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Alternative hypothesis:** The feature is better than the best shadow feature.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Confirmation criterion:** If the binomial test p-value is below *α* (typically
+    between 0.05–0.01), the feature is confirmed.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'This same process is also done to reject features:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Null hypothesis:** The feature **is better** than the best shadow (50% chance
+    of not beating shadows by random chance).'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Alternative hypothesis:** The feature is no better than the best shadow feature.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Rejection criterion:** If the binomial test p-value is below *α*, the feature
+    is rejected.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: This approach is statistically sound and conservative; however, it requires
+    many iterations to accumulate sufficient evidence, especially for features that
+    are relevant but only marginally better than noise.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The convergence issue
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: 'The vanilla Boruta algorithm faces two major convergence issues:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Long runtime:** Because the binomial test requires many iterations to reach
+    statistical significance, the algorithm might require hundreds of iterations to
+    classify all features, especially when using small *α* values for high confidence. **Furthermore,
+    there are no guarantees or estimates for convergence, that is, there is no way
+    to determine how many iterations will be required for all the features to be categorized
+    into “confirmed” or “rejected”.**'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Tentative features:** Even after reaching a maximum number of iterations,
+    some features may remain in the “tentative” category, leaving the analyst with
+    incomplete information.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: These challenges motivated the development of the Greedy Boruta Algorithm.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The Greedy Boruta algorithm
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: The Greedy Boruta Algorithm introduces a fundamental change to the confirmation
+    criterion that dramatically improves convergence speed while maintaining high
+    recall.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The name comes from the algorithm’s eager approach to confirmation. Like greedy
+    algorithms that make locally optimal choices, Greedy Boruta immediately accepts
+    any feature that shows promise, without waiting to accumulate statistical evidence.
+    This trade-off favors speed and sensitivity over specificity.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Relaxed confirmation
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: Instead of requiring statistical significance through a binomial test, the Greedy
+    Boruta confirms any feature that has beaten the maximum shadow importance **at
+    least once** across all iterations, while keeping the same rejection criterion.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The rationale behind this relaxation is that in “all-relevant” feature selection,
+    as the name suggests, we typically prioritize retaining all relevant features
+    over eliminating all irrelevant features. The further removal of the non-relevant
+    features can be done with “minimal-optimal” feature selection algorithms downstream
+    in the machine learning pipeline. Therefore, this relaxation is practically sound
+    and produces the expected results from an “all-relevant” feature selection algorithm.
+  prefs: []
+  type: TYPE_NORMAL
+- en: This seemingly simple change **has several important implications:**
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Maintained recall:** Because we are relaxing the confirmation criterion (making
+    it easier to confirm features), we can never have lower recall than the vanilla
+    Boruta. Any feature that is confirmed by the vanilla method will also be confirmed
+    by the greedy version. This can be easily proven since it is impossible for a
+    feature to be deemed more important than the best shadow in the binomial test
+    without a single hit.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Guaranteed Convergence in K iterations:** As will be shown below, this change
+    makes it so that it is possible to compute how many iterations are required until
+    all features are either confirmed or rejected.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Faster convergence:** As a direct consequence of the point above, the Greedy
+    Boruta algorithm needs far less iterations than the vanilla Boruta for all features
+    to be sorted. More specifically, the minimum number of iterations for the vanilla
+    algorithm to sort its “first batch” of features is the same at which the greedy
+    version finishes running.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Hyperparameter Simplification:** Another consequence of the guaranteed convergence
+    is that some of the parameters used in the vanilla Boruta algorithm, such as max_iter (maximum
+    number of iterations), early_stopping (boolean determining whether the algorithm
+    should stop earlier if no change is seen across a number of iterations) and n_iter_no_change (minimum
+    number of iterations with no change before early stopping is triggered), can be
+    entirely removed without loss in flexibility. This simplification improves the
+    algorithm’s usability and makes the feature selection process easier to manage.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: The modified algorithm
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: 'The Greedy Boruta algorithm follows this process:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Shadow feature creation:** Exactly the same as the vanilla Boruta. Shadow
+    features are created based on each of the features of the dataset.'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '**Importance computation:** Exactly the same as the vanilla Boruta. Feature
+    importance scores are computed based on any tree-based ensemble machine learning
+    algorithm.'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '**Hit registration:** Exactly the same as the vanilla Boruta. Assigns hits
+    to non-shadow features that are more important than the most important shadow
+    feature.'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '**Statistical testing:** Based on the lists of **no-hits** for each of the
+    non-shadow feature, Greedy Boruta performs a binomial test to determine whether
+    its importance is not significantly greater than the maximum importance among
+    shadow features across multiple iterations.'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '**Decision making [Modified]:** **Features with at least one hit are confirmed.** Features
+    that consistently underperform in relation to the best shadow are “rejected.” **Features
+    with zero hits remain “tentative”.**'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '**Iteration:** Steps 2–5 repeat until all features are classified as confirmed
+    or rejected.'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: This greedy version is based on the original *boruta_py* [5] implementation
+    with a few tweaks, so most things are kept the same as this implementation, except
+    for the changes mentioned above.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Statistical insight on convergence guarantee
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: One of the most elegant properties of the Greedy Boruta Algorithm is its guaranteed
+    convergence within a specified number of iterations that depends on the chosen *α* value.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Because of the relaxed confirmation criterion, we know that any feature with
+    one or more hits is confirmed and we do not need to run binomial tests for confirmation.
+    Conversely, **we know that every tentative feature has zero hits**. This fact
+    greatly simplifies the equation representing the binomial test required to reject
+    features.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'More specifically, the binomial test is simplified as follows. Considering
+    the one-sided binomial test described above for rejection in the vanilla Boruta
+    algorithm, with *H₀* being *p = p₀* and *H₁* being *p < p₀*, the *p-value* is
+    calculated as:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/985749eaae1baaeedbac528c21991840.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'This formula sums the probabilities of observing k successes for all values
+    from k = 0 up to the observed x. Now, given the known values in this scenario
+    (*p₀* = 0.5 and x = 0), the formula simplifies to:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/6bc5aaceb32f28ffa9de3fa11a1a1025.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'To reject *H₀* at significance level *α*, we need:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/007a49ab6ad4e6c5fcb811e5846a35f9.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'Substituting our simplified *p-value*:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/24e8a4155f0269e6aef77740b0c5aa5a.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'Taking the reciprocal (and reversing the inequality):'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/5bd80ac9b9765d289180bd99f821267c.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'Taking logarithms base 2 of both sides:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/eaa60da9f6e7786f69fd538fa1c2769a.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'Therefore, the **sample size** required is:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/f363c46baea4a0432aec36911df91235.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: '**This implies that at most *⌈ log₂(1/α)⌉* iterations of the Greedy Boruta
+    algorithm are run until all features are sorted into either “confirmed” or “rejected”
+    and convergence has been achieved.** This means that the Greedy Boruta algorithm
+    has *O(-log α)* complexity.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Another consequence of all tentative features having 0 hits is the fact that
+    we can further optimize the algorithm by not running any statistical tests across
+    iterations.
+  prefs: []
+  type: TYPE_NORMAL
+- en: More specifically, given *α*, it is possible to determine the maximum number
+    of iterations *K* required to reject a variable. Therefore, for every iteration *<
+    K*, if a variable has a hit, it is confirmed, and if it does not, it is tentative
+    (since the p-value for all iterations *< K* will be greater than *α*). Then, at
+    exactly iteration *K*, all variables that have 0 hits can be moved into the rejected
+    category with no binomial tests being run, since we know that the *p-values* will
+    all be smaller than *α* at this point.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**This also means that, for a given *α*, the total number of iterations run
+    by the Greedy Boruta algorithm is equal to the minimum number of iterations it
+    takes for the vanilla implementation to either confirm or reject any feature!**'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Finally, it is important to note that the *boruta_py* implementation uses **False
+    Discovery Rate (FDR)** correction to account for the increased chance of false
+    positives when performing multiple hypothesis tests. In practice, the required
+    value of *K* is not exactly as shown in the equation above, but the complexity
+    in relation to *α* is still logarithmic.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The table below contains the number of required iterations for different *α* values
+    with the correction applied:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/80b140255e3332dc373cb8da37312047.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Simulation experiments
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: To empirically evaluate the Greedy Boruta Algorithm, I conducted experiments
+    using synthetic datasets where the ground truth is known. This approach allows
+    precise measurement of the algorithm’s performance.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Methodology
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: '**Synthetic data generation:** I created datasets with a known set of important
+    and unimportant features using sklearn’s [make_classification](https://www.google.com/url?sa=E&q=https%3A%2F%2Fscikit-learn.org%2Fstable%2Fmodules%2Fgenerated%2Fsklearn.datasets.make_classification.html) function,
+    allowing for direct computation of selection performance metrics. Furthermore,
+    these datasets include ‘redundant features’—linear combinations of informative
+    features that carry predictive information but are not strictly necessary for
+    prediction. In the ‘all-relevant’ paradigm, these features should ideally be identified
+    as important since they do contain signal, even if that signal is redundant. The
+    evaluation therefore considers informative features and redundant features together
+    as the ‘ground truth relevant set’ when computing recall.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Metrics:** Both algorithms are evaluated on:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Recall (Sensitivity):** What proportion of truly important features were
+    correctly identified?'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Specificity:** What proportion of truly unimportant features were correctly
+    rejected?'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**F1 Score:** The harmonic mean of precision and recall, balancing the trade-off
+    between correctly identifying important features and avoiding false positives'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Computational time:** Wall-clock time to completion'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Experiment 1 – Varying α
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: '**Dataset characteristics**'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE0]'
+  prefs: []
+  type: TYPE_PRE
+- en: This constitutes a “hard” feature selection problem because of the high dimensionality
+    (500 variables), with a small sample size (1000 samples), small number of relevant
+    features (sparse problem, with around 10% of the features being relevant in any
+    way) and fairly high label noise. It is important to create such a “hard” problem
+    to effectively compare the performances of the methods, otherwise, both methods
+    would achieve near-perfect results after only a few iterations.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Hyperparameters used**'
+  prefs: []
+  type: TYPE_NORMAL
+- en: In this experiment, we assess how the algorithms perform with different *α*,
+    so we evaluated both methods using *α* from the list [0.00001, 0.0001, 0.001,
+    0.01, 0.1, 0.2].
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Regarding the hyperparameters of the Boruta and Greedy Boruta algorithms, both
+    use an sklearn ExtraTreesClassifier as the estimator with the following parameters:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE1]'
+  prefs: []
+  type: TYPE_PRE
+- en: The Extra Trees classifier was chosen as the estimator because of its fast fitting
+    time and the fact that it is more stable when considering feature importance estimation
+    tasks [2].
+  prefs: []
+  type: TYPE_NORMAL
+- en: Finally, the vanilla Boruta uses no early stopping (this parameter makes no
+    sense in the context of Greedy Boruta).
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Number of trials**'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The vanilla Boruta algorithm is configured to run at most 512 iterations but
+    with an early stopping condition. This means that if no changes are seen in X
+    iterations (n_iter_no_change), the run stops. For each *α*, a value of n_iter_no_change is
+    defined as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/d25a06dcde4a573f6e8d98257055f9c2.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Early stopping is enabled because a careful user of the vanilla Boruta algorithm
+    would set this if the wall-clock time of the algorithm run is high-enough, and
+    is a more sensible use of the algorithm overall.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'These early stopping thresholds were chosen to balance computational cost with
+    convergence likelihood: smaller thresholds for larger *α* values (where convergence
+    is faster) and larger thresholds for smaller *α* values (where statistical significance
+    takes more iterations to accumulate). This reflects how a practical user would
+    configure the algorithm to avoid unnecessarily long runtimes.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Results: performance comparison'
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: '![](../Images/4db5f04bf837db5ade05661e8add5a18.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: '*Figure 1: Recall, specificity and F1 for both methods with 6 different α values
+    ([0.00001, 0.0001, 0.001, 0.01, 0.1, 0.2]), with wall-clock times increasing as
+    α decreases, monotonically.*'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Key finding:** As presented in the left-most panel of Figure 1, Greedy Boruta
+    achieves recall that is greater than or equal to that of the vanilla Boruta across
+    all experimental conditions. For the two smallest *α* values, the recall is equal
+    and for the others, the Greedy Boruta implementation has slightly greater recall,
+    confirming that the relaxed confirmation criterion does not miss features that
+    the vanilla method would catch.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Observed trade-off:** Greedy Boruta shows modestly lower specificity in some
+    settings, confirming that the relaxed criterion does result in more false positives.
+    However, the magnitude of this effect is smaller than expected, resulting in only
+    2-6 additional features being selected on this dataset with 500 variables. This
+    increased false-positive rate is acceptable in most downstream pipelines for two
+    reasons: (1) the absolute number of additional features is small (2-6 features
+    in this 500-feature dataset), and (2) subsequent modeling steps (e.g., regularization,
+    cross-validation, or minimal-optimal feature selection) can filter these features
+    if they do not contribute to predictive performance.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Speedup:** Greedy Boruta consistently requires 5-15× less time when compared
+    to the vanilla implementation, with the speedup increasing for more conservative *α* values.
+    For *α* = 0.00001, the improvement approaches 15x. It is also expected that even
+    smaller *α* values would lead to increasingly larger speedups. It is important
+    to note that for most scenarios with *α* < 0.001, the vanilla Boruta implementation
+    “does not converge” (not all features are confirmed or rejected) and without early-stopping,
+    they would run for much longer than this.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Convergence:** We can also evaluate how fast each of the methods “converge”
+    by analysing the status of the variables at each iteration, as shown in Figure
+    2:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/606ca67e744e33253b33aa876674bb57.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: '*Figure 2: Percentage of confirmed and rejected features across the number
+    of iterations.*'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'In this scenario, using *α* = 0.00001, we can observe the behavior mentioned
+    above: the first confirmation/rejection of the vanilla algorithm occurs at the
+    last iteration of the greedy counterpart (hence the complete overlap of the lines
+    in the rejection plot).'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Because of the logarithmic growth of the maximum number of iterations by the
+    Greedy Boruta in terms of *α*, we can also explore **extreme** values for *α* when
+    using the greedy version:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/2052af3690c2c54d67e3adf6e2613dac.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: '*Figure 3: Run time of the Greedy Boruta algorithm across different α, on a
+    log scale, clearly showing the logarithmic growth in complexity in terms of α
+    (linear on the log scale).*'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Experiment 2 – Exploring maximum number of iterations
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: '**Parameters**'
+  prefs: []
+  type: TYPE_NORMAL
+- en: In this experiment, the same dataset and hyperparameters as described in the
+    last experiment were used, except for *α* which was fixed at *α = 0.00001*, and
+    the maximum number of iterations (for the vanilla algorithm) changed across runs.
+    The maximum numbers of iterations analyzed are [16, 32, 64, 128, 256, 512]. Also,
+    early stopping was disabled for this experiment in order to showcase one of the
+    weaknesses of the vanilla Boruta algorithm.
+  prefs: []
+  type: TYPE_NORMAL
+- en: It is important to note that for this experiment there is only one data point
+    for the Greedy Boruta method since the maximum number of iterations is not a parameter
+    by itself on the modified version, as it is uniquely defined by the *α* used.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Results: Performance comparison'
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: '![](../Images/012febe53b9c3a856c2e1e16f2ee4265.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: '*Figure 4: Recall, specificity and F1 for both methods with 6 different maximum
+    numbers of iterations ([16, 32, 64, 128, 256, 512]).*'
+  prefs: []
+  type: TYPE_NORMAL
+- en: In Figure 4, once again, we observe that the Greedy Boruta achieves higher recall
+    than the vanilla Boruta algorithm while having slightly decreased specificity,
+    across all the number of iterations considered. In this scenario, we also observe
+    that the Greedy Boruta achieves recall levels similar to those of the vanilla
+    algorithm in ~4x less time.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Furthermore, because in the vanilla algorithm there is no “guarantee of convergence”
+    in a given number of iterations, the user must define a maximum number of iterations
+    for which the algorithm will run. In practice, it is difficult to determine this
+    number without knowing the ground truth for important features and the possible
+    accompanying number of iterations to trigger early stopping. Considering this
+    difficulty, an overly conservative user may run the algorithm for far too many
+    iterations without a significant improvement in the feature selection quality.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In this specific case, using a maximum number of iterations equal to 512 iterations,
+    without early stopping, achieves a recall very similar to that achieved with 64,
+    128 and 256 iterations. When comparing the greedy version to the 512 iterations
+    of the vanilla algorithm, we see that a 40x speedup is achieved, while having
+    a slightly greater recall.
+  prefs: []
+  type: TYPE_NORMAL
+- en: When to use Greedy Boruta?
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'The Greedy Boruta Algorithm is particularly valuable in specific scenarios:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**High-dimensional data with limited time:** When working with datasets that
+    contain hundreds or thousands of features, the computational cost of the vanilla
+    Boruta can be prohibitive. If quick results are required for exploratory analysis
+    or rapid prototyping, Greedy Boruta offers a compelling speed-accuracy trade-off.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**All-relevant feature selection goals:** If your objective aligns with Boruta’s
+    original “all-relevant” philosophy—finding every feature that contributes with
+    some information rather than the minimal optimal set—then Greedy Boruta’s high
+    recall is exactly what you need. The algorithm favors inclusion, which is appropriate
+    when feature removal is costly (e.g., in scientific discovery or causal inference
+    tasks).'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Iterative analysis workflows:** In practice, feature selection is rarely
+    a one-shot decision. Data scientists often iterate, experimenting with different
+    feature sets and models. Greedy Boruta enables rapid iteration by providing fast
+    initial results that can be refined in subsequent analyses. Additionally, other
+    feature selection methods can be used to further reduce the dimensionality of
+    the feature set.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**A few extra features are OK:** The vanilla Boruta’s strict statistical testing
+    is valuable when false positives are particularly costly. However, in many applications,
+    including a few extra features is preferable to missing important ones. Greedy
+    Boruta is ideal when the downstream pipeline can handle slightly larger feature
+    sets but benefits from faster processing.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Conclusion
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'The Greedy Boruta algorithm is an extension/modification to a well-established
+    feature selection method, with significantly different properties. By relaxing
+    the confirmation criterion from statistical significance to a single hit, we achieve:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**5-40x faster run times** compared to standard Boruta, for the scenarios explored.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Equal or greater recall**, ensuring no relevant features are missed.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Guaranteed convergence** with all features classified, either as confirmed
+    or rejected..'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Maintained interpretability** and theoretical grounding.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: The trade-off—a modest increase in the false positive rate—is acceptable in
+    many real-world applications, particularly when working with high-dimensional
+    data under time constraints.
+  prefs: []
+  type: TYPE_NORMAL
+- en: For practitioners, the Greedy Boruta algorithm offers a valuable tool for rapid,
+    high-recall feature selection in exploratory analysis, with the option to follow
+    up with more conservative methods if needed. For researchers, it demonstrates
+    how thoughtful modifications to established algorithms can yield significant practical
+    benefits by carefully considering the actual requirements of real-world applications.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The algorithm is most appropriate when your philosophy aligns with finding “all
+    relevant” features rather than a minimal set, when speed matters, and when false
+    positives can be tolerated or filtered in downstream analysis. In these common
+    scenarios, Greedy Boruta provides a compelling alternative to the vanilla algorithm.
+  prefs: []
+  type: TYPE_NORMAL
+- en: References
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: '[1] Kursa, M. B., & Rudnicki, W. R. (2010). Feature Selection with the Boruta
+    Package. *Journal of Statistical Software*, 36(11), 1–13.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[2] Geurts, P., Ernst, D., & Wehenkel, L. (2006). Extremely randomized trees. *Machine
+    Learning*, 63(1), 3–42.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[3] Chen, T., & Guestrin, C. (2016). XGBoost: A scalable tree boosting system. *Proceedings
+    of the 22nd ACM SIGKDD International Conference on Knowledge Discovery and Data
+    Mining*, 785–794.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[4] Ke, G., Meng, Q., Finley, T., Wang, T., Chen, W., Ma, W., Ye, Q., & Liu,
+    T.-Y. (2017). LightGBM: A highly efficient gradient boosting decision tree. *Advances
+    in Neural Information Processing Systems 30 (NIPS 2017)*, 3146–3154.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[5] BorutaPy implementation: [https://github.com/scikit-learn-contrib/boruta_py](https://www.google.com/url?sa=E&q=https%3A%2F%2Fgithub.com%2Fscikit-learn-contrib%2Fboruta_py)'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '* * *'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '*Thanks for reading! If you found this article helpful, please consider following
+    for more content on feature selection, machine learning algorithms, and practical
+    data science.*'
+  prefs: []
+  type: TYPE_NORMAL

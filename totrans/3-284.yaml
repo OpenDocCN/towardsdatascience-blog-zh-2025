@@ -1,0 +1,420 @@
+- en: Supercharge Your RAG with Multi-Agent Self-RAG
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 原文：[https://towardsdatascience.com/supercharge-your-rag-with-multi-agent-self-rag/](https://towardsdatascience.com/supercharge-your-rag-with-multi-agent-self-rag/)
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: '**Introduction**'
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: Many of us might have tried to build a RAG application and noticed it falls
+    significantly short of addressing real-life needs. Why is that? It’s because many
+    real-world problems require multiple steps of information retrieval and reasoning.
+    We need our agent to perform those as humans normally do, yet most RAG applications
+    fall short of this.
+  prefs: []
+  type: TYPE_NORMAL
+- en: This article explores how to supercharge your RAG application by making its
+    data retrieval and reasoning process similar to how a human would, under a multi-agent
+    framework. The framework presented here is based on the [Self-RAG strategy](https://langchain-ai.github.io/langgraph/tutorials/rag/langgraph_self_rag/) but
+    has been significantly modified to enhance its capabilities. Prior knowledge of
+    the original strategy is not necessary for reading this article.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Real-life Case**'
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'Consider this: I was going to fly from Delhi to Munich (let’s assume I am taking
+    the flight from an EU airline), but I was denied boarding somehow. Now I want
+    to know what the compensation should be.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: These two webpages contain relevant information, I go ahead adding them to my
+    vector store, trying to have my agent answer this for me by retrieving the right
+    information.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[Flight compensation policy](https://www.eu-startups.com/2024/04/comparative-analysis-eu-vs-us-flight-compensation-policies-sponsored/)'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '[Distance between Munich and other major cities in the world](https://www.geodatos.net/en/distances/cities/germany/bavaria/munich) (note:
+    it does not reflect the distance between airports, but it serves the purpose for
+    our demonstration)'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Now, I pass this question to the vector store: ***“how much can I receive if
+    I am denied boarding, for flights from Delhi to Munich?”***.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE0]'
+  prefs: []
+  type: TYPE_PRE
+- en: Unfortunately, they contain only generic flight compensation policies, without
+    telling me how much I can expect when denied boarding from Delhi to Munich specifically.
+    If the RAG agent takes these as the sole context, it can only provide a generic
+    answer about flight compensation policy, without giving the answer we want.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'However, while the documents are not immediately useful, there is an important
+    insight contained in the 2nd piece of context: ***compensation varies according
+    to flight distance***. If the RAG agent thinks more like human, it should follow
+    these steps to provide an answer:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Based on the retrieved context, reason that compensation varies with flight
+    distance
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Next, retrieve the flight distance between Delhi and Munich
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Given the distance (which is around 5900km), classify the flight as a long-distance
+    one
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Combined with the previously retrieved context, figure out I am due 600 EUR,
+    assuming other conditions are fulfilled
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: 'This example demonstrates how a simple RAG, in which a single retrieval is
+    made, fall short for several reasons:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Complex Queries**: Users often have questions that a simple search can’t
+    fully address. For example, “What’s the best smartphone for gaming under $500?”
+    requires consideration of multiple factors like performance, price, and features,
+    which a single retrieval step might miss.'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '**Deep Information**: Some information lies across documents. For example,
+    research papers, medical records, or legal documents often include references
+    that need to be made sense of, before one can fully understand the content of
+    a given article. Multiple retrieval steps help dig deeper into the content.'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Multiple retrievals supplemented with human-like reasoning allow for a more
+    nuanced, comprehensive, and accurate response, adapting to the complexity and
+    depth of user queries.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Multi-Agent Self-RAG
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: Here I explain the reasoning process behind this strategy, afterwards I will
+    provide the code to show you how to achieve this!
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Note: For readers interested in knowing how my approach differs from the [original
+    Self-RAG](https://langchain-ai.github.io/langgraph/tutorials/rag/langgraph_self_rag/),
+    I will describe the discrepancies in quotation boxes like this. But general readers
+    who are unfamiliar with the original Self-RAG can skip them.'
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: In the below graphs, each circle represents a step (aka **Node**), which is
+    performed by a dedicated agent working on the specific problem. We orchestrate
+    them to form a multi-agent RAG application.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '1st iteration: Simple RAG'
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: '![](../Images/3e93d3aa6427236f7cb1697453d4cdef.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: A simple RAG chain
+  prefs: []
+  type: TYPE_NORMAL
+- en: This is just the vanilla RAG approach I described in “Real-life Case”, represented
+    as a graph. After `Retrieve documents`, the `new_documents` will be used as input
+    for `Generate Answer`. Nothing special, but it serves as our starting point.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '2nd iteration: Digest documents with “Grade documents”'
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: '![](../Images/b7f1c9640452c0a5a8354cb4d2fd7d54.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Reasoning like human do
+  prefs: []
+  type: TYPE_NORMAL
+- en: Remember I said in the “Real-life Case” section, that as a next step, the agent
+    should ***“reason that compensation varies with flight distance”***? The `Grade
+    documents` step is exactly for this purpose.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Given the `new_documents`, the agent will try to output two items:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '`useful_documents`: Comparing the question asked, it determines if the documents
+    are useful, and retain a memory for those deemed useful for future reference.
+    As an example, since our question does not concern compensation policies for US,
+    documents describing those are discarded, leaving only those for EU'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '`hypothesis`: Based on the documents, the agent forms a hypothesis about how
+    the question can be answered, that is, flight distance needs to be identified'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Notice how the above reasoning resembles human thinking! But still, while these
+    outputs are useful, we need to instruct the agent to use them as input for performing
+    the next document retrieval. Without this, the answer provided in `Generate answer` is
+    still not useful.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '`useful_documents` are appended for each document retrieval loop, instead of
+    being overwritten, to keep a memory of documents that are previously deemed useful. `hypothesis` is
+    formed from `useful_documents` and `new_documents` to provide an “abstract reasoning”
+    to inform how query is to be transformed subsequently.'
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: ''
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: The `hypothesis` is especially useful when no useful documents can be identified
+    initially, as the agent can still form hypothesis from documents not immediately
+    deemed as useful / only bearing indirect relationship to the question at hand,
+    for informing what questions to ask next
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: '3rd iteration: Brainstorm new questions to ask'
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: '![](../Images/e10e387b4e93a2f996674eeedb99da62.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Suggest questions for additional information retrieval
+  prefs: []
+  type: TYPE_NORMAL
+- en: We have the agent reflect upon whether the answer is useful and grounded in
+    context. If not, it should proceed to `Transform query` to ask further questions.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The output `new_queries` will be a list of new questions that the agent consider
+    useful for obtaining extra information. Given the `useful_documents` (compensation
+    policies for EU), and `hypothesis` (need to identify flight distance between Delhi
+    and Munich), it asks questions like **“What is the distance between Delhi and
+    Munich?”**
+  prefs: []
+  type: TYPE_NORMAL
+- en: Now we are ready to use the `new_queries` for further retrieval!
+  prefs: []
+  type: TYPE_NORMAL
+- en: The `transform_query` node will use `useful_documents` (which are accumulated
+    per iteration, instead of being overwritten) and `hypothesis` as input for providing
+    the agent directions to ask new questions.
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: ''
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: The new questions will be a list of questions (instead of a single question)
+    separated from the original `question`, so that the original question is kept
+    in state, otherwise the agent could lose track of the original question after
+    multiple iterations.
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: 'Final iteration: Further retrieval with new questions'
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: '![](../Images/1f4824fc416826a22d6095aaec8d7db3.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Issuing new queries to retrieve extra documents
+  prefs: []
+  type: TYPE_NORMAL
+- en: The output `new_queries` from `Transform query` will be passed to the `Retrieve
+    documents` step, forming a retrieval loop.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Since the question ***“What is the distance between Delhi and Munich?”***is
+    asked, we can expect the flight distance is then retrieved as `new_documents`,
+    and subsequently graded as `useful_documents`, further used as an input for `Generate
+    answer`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The *`grade_documents`* node will compare the documents against both the original *`question`* and *`new_questions`* list,
+    so that documents that are considered useful for *`new_questions`*, even if not
+    so for the original *`question`*, are kept.
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: ''
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: This is because those documents might help answer the original *`question`* indirectly,
+    by being relevant to *`new_questions` (like “*What is the distance between Delhi
+    and Munich?”)
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: '![](../Images/a4599bfbe5c468cb77be822740654429.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Final answer!
+  prefs: []
+  type: TYPE_NORMAL
+- en: Equipped with this new context about flight distance, the agent is now ready
+    to provide the right answer: **600 EUR**!
+  prefs: []
+  type: TYPE_NORMAL
+- en: Next, let us now dive into the code to see how this multi-agent RAG application
+    is created.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Implementation
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: The source code can be found [here](https://github.com/yip-kl/enhanced-self-rag).
+    Our multi-agent RAG application involves iterations and loops, and LangGraph is
+    a great library for building such complex multi-agent application. If you are
+    not familiar with LangGraph, you are strongly suggested to have a look at [LangGraph’s
+    Quickstart guide](https://langchain-ai.github.io/langgraph/tutorials/introduction/) to
+    understand more about it!
+  prefs: []
+  type: TYPE_NORMAL
+- en: To keep this article concise, I will focus on the key code snippets only.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Important note**: I am using OpenRouter as the [Llm](https://towardsdatascience.com/tag/llm/) interface,
+    but the code can be easily adapted for other LLM interfaces. Also, while in my
+    code I am using Claude 3.5 Sonnet as model, you can use any LLM as long as it
+    support `tools` as parameter (check this list [here](https://openrouter.ai/models?fmt=cards&order=newest&supported_parameters=tools)),
+    so you can also run this with other models, like DeepSeek V3 and OpenAI o1!'
+  prefs: []
+  type: TYPE_NORMAL
+- en: State definition
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: In the previous section, I have defined various elements e.g. `new_documents`, `hypothesis` that
+    are to be passed to each step (aka **Nodes**), in LangGraph’s terminology these
+    elements are called **State**.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We define the State formally with the following snippet.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE1]'
+  prefs: []
+  type: TYPE_PRE
+- en: Graph definition
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: This is where we combine the different steps to form a “**Graph**”, which is
+    a representation of our multi-agent application. The definitions of various steps
+    (e.g. `grade_documents`) are represented by their respective functions.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE2]'
+  prefs: []
+  type: TYPE_PRE
+- en: Running the above code, you should see this graphical representation of our
+    RAG application. Notice how it is essentially equivalent to the graph I have shown
+    in the final iteration of “Enhanced Self-RAG Strategy”!
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/99ab0d879d190453a2a3b3a254c62213.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Visualizing the multi-agent RAG graph
+  prefs: []
+  type: TYPE_NORMAL
+- en: After `generate`, if the answer is considered “not supported”, the agent will
+    proceed to `transform_query` intead of to `generate` again, so that the agent
+    will look for additional information rather than trying to regenerate answers
+    based on existing context, which might not suffice for providing a “supported”
+    answer
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: Now we are ready to put the multi-agent application to test! With the below
+    code snippet, we ask this question `how much can I receive if I am denied boarding,
+    for flights from Delhi to Munich?`
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE3]'
+  prefs: []
+  type: TYPE_PRE
+- en: While output might vary (sometimes the application provides the answer without
+    any iterations, because it “guessed” the distance between Delhi and Munich), it
+    should look something like this, which shows the application went through multiple
+    rounds of data retrieval for RAG.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE4]'
+  prefs: []
+  type: TYPE_PRE
+- en: And the final answer is what we aimed for!
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE5]'
+  prefs: []
+  type: TYPE_PRE
+- en: Inspecting the State, we see how the `hypothesis` and `new_queries` enhance
+    the effectiveness of our multi-agent RAG application by mimicking human thinking
+    process.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Hypothesis**'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE6]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE7]'
+  prefs: []
+  type: TYPE_PRE
+- en: '**New Queries**'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE8]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE9]'
+  prefs: []
+  type: TYPE_PRE
+- en: Conclusion
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: Simple RAG, while easy to build, might fall short in tackling real-life questions.
+    By incorporating human thinking process into a multi-agent RAG framework, we are
+    making RAG applications much more practical.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Unless otherwise noted, all images are by the author*'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '* * *'
+  prefs: []
+  type: TYPE_NORMAL

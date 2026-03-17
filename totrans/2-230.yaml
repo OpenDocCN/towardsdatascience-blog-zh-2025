@@ -1,0 +1,294 @@
+- en: What PyTorch Really Means by a Leaf Tensor and Its Grad
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 原文：[https://towardsdatascience.com/what-pytorch-really-means-by-a-leaf-tensor-2/](https://towardsdatascience.com/what-pytorch-really-means-by-a-leaf-tensor-2/)
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: <mdspan datatext="el1750293464837" class="mdspan-comment">This post</mdspan>
+    isn’t yet another explanation of the chain rule. It’s a tour through the bizarre
+    side of autograd — where gradients serve physics, not just weights
+  prefs: []
+  type: TYPE_NORMAL
+- en: I originally wrote this tutorial for myself during the first year of my PhD,
+    while navigating the intricacies of gradient calculations in PyTorch. Most of
+    it is clearly designed with standard backpropagation in mind — and that’s fine,
+    since that’s what most people need.
+  prefs: []
+  type: TYPE_NORMAL
+- en: But Physics-Informed Neural Network (PINN) is a moody beast and it needs a different
+    kind of gradient logic. I spent some time feeding it and I figured it might be
+    worth sharing the findings with the community, especially with fellow PINN practitioners
+    — maybe it’ll save someone a few headaches. But if you have never heard of PINNs,
+    don’t worry! This post is still for you — especially if you’re into things like
+    gradients of gradients and all that fun stuff.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Basics terms
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: '**Tensor** in the computer world means simply a multidimensional array, i.e.
+    a bunch of numbers indexed by one or more integers. To be precise, there exist
+    also zero-dimensional tensors, which are just single numbers. Some people say
+    that tensors are a generalization of matrices to more than two dimensions.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: If you have studied general relativity before, you may have heard that mathematical
+    tensors have such things as covariant and contravariant indices. But forget about
+    it — in PyTorch tensors are just multidimensional arrays. No finesse here.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Leaf tensor** is a tensor that is a leaf (in the sense of a graph theory)
+    of a computation graph. We will look at those below, so this definition will make
+    a bit more sense.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: The `requires_grad` property of a tensor tells PyTorch whether it should remember
+    how this tensor is used in further computations. For now, think of tensors with
+    `requires_grad=True`as variables, while tensors with `requires_grad=False`as constants.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Leaf tensors
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: Let’s start by creating a few tensors and checking their properties `requires_grad`
+    and `is_leaf`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE0]'
+  prefs: []
+  type: TYPE_PRE
+- en: '`a`is a leaf as expected, and `b`is not because it is a result of a multiplication.
+    `a`is set to require grad, so naturally `b`inherits this property.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '`c`is a leaf obviously, but why `d`is a leaf? The reason `d.is_leaf`is True
+    stems from a specific convention: all tensors with `requires_grad`set to False
+    are considered leaf tensors, as per [PyTorch’s documentation](https://pytorch.org/docs/stable/generated/torch.Tensor.is_leaf.html):'
+  prefs: []
+  type: TYPE_NORMAL
+- en: All Tensors that have [`requires_grad`](https://docs.pytorch.org/docs/stable/generated/torch.Tensor.requires_grad.html#torch.Tensor.requires_grad) which
+    is `False` will be leaf Tensors by convention.
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: While mathematically, `d`is not a leaf (since it results from another operation,
+    `c * c`), gradient computation will never extend beyond it. In other words, there
+    won’t be any derivative with respect to `c`. This allows`d`to be treated as a
+    leaf.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'In a nutshell, in PyTorch, leaf tensors are either:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Directly inputted (i.e. not calculated from other tensors) and have `requires_grad=True`.
+    Example: neural network weights that are randomly initialized.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'Do not require gradients at all, regardless of whether they are directly inputted
+    or computed. In the eyes of autograd, these are just constants. Examples:'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: any neural network input data,
+  prefs:
+  - PREF_IND
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: an input image after mean removal or other operations, which involves only non-gradient-requiring
+    tensors.
+  prefs:
+  - PREF_IND
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'A small remark for those who want to know more. The `requires_grad`property
+    is inherited as illustrated here:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE1]'
+  prefs: []
+  type: TYPE_PRE
+- en: '*Code remark: all code snippets should be self-contained except for imports
+    that I include only when they appear first time. I drop them in order to minimize
+    boilerplate code. I trust that the reader will be able to take care of those easily.*'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Grad retention
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'A separate issue is gradient retention. All nodes in the computation graph,
+    meaning all tensors used, have gradients computed if they require grad. However,
+    only leaf tensors retain these gradients. This makes sense because gradients are
+    typically used to update tensors, and only leaf tensors are subject to updates
+    during training. Non-leaf tensors, like `b`in the first example, are not directly
+    updated; they change as a result of changes in `a`, so their gradients can be
+    discarded. However, there are scenarios, especially in Physics-Informed Neural
+    Networks (PINNs), where you might want to retain the gradients of these intermediate
+    tensors. In such cases, you will need to explicitly mark non-leaf tensors to retain
+    their gradients. Let’s see:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE2]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'You probably have just seen a warning:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE3]'
+  prefs: []
+  type: TYPE_PRE
+- en: So let’s fix it by forcing `b`to retain its gradient
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE4]'
+  prefs: []
+  type: TYPE_PRE
+- en: Mysteries of grad
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: Now let’s look at the famous grad itself. What is it? Is it a tensor? If so,
+    is it a leaf tensor? Does it require or retain grad?
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE5]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Apparently:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**–** grad itself is a tensor,'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**–** grad is a leaf tensor,'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**–** grad does not require grad.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Does it retain grad? This question does not make sense because it does not require
+    grad in the first place. We will come back to the question of the grad being a
+    leaf tensor in a second, but now we will test a few things.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Multiple backwards and `retain_graph`
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: What will happen when we calculate the same grad twice?
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE6]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The error message explains it all. This should work:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE7]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Side (but important) note: you can also observe, how the gradient accumulates
+    in `a`: with every iteration it is added.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Powerful `create_graph` argument
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: How to make grad require grad?
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE8]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The above is very useful: `a.grad`which mathematically is \[\frac{\partial
+    b}{\partial a}\] is not a constant (leaf) anymore, but a regular member of the
+    computation graph that can be further used. We will use that fact in Part 2.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Why the `b.grad`does not require grad? Because derivative of `b` with respect
+    to `b`is simply 1.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'If the `backward` feels counterintuitive for you now, don’t worry. We will
+    soon switch to another method called nomen omen `grad` that allows to precisely
+    choose ingredients of the derivatives. Before, two side notes:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Side note 1**: If you set `create_graph`to True, it also sets `retain_graph`
+    to True (if not explicitly set). In the pytorch code it looks exactly like'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'this:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE9]'
+  prefs: []
+  type: TYPE_PRE
+- en: '**Side note 2**: You probably saw a warning like this:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE10]'
+  prefs: []
+  type: TYPE_PRE
+- en: And we will follow the advice and use `autograd.grad`now.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Taking derivatives with `autograd.grad` function
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: Now let’s move from the somehow high-level `.backward()`method to lower level
+    `grad` method that explicitly calculates derivative of one tensor with respect
+    to another.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE11]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Similarly, as with `backward`, the derivative of `b`with respect to `a`can
+    be treated as a function and differentiated further. So in other words, the `create_graph`flag
+    can be understood as: *when calculating gradients, keep the history of how they
+    were calculated, so we can treat them as non-leaf tensors that require grad, and
+    use further.*'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'In particular, we can calculate second-order derivative:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE12]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'As said before: this is actually the key property that allows us to do PINN
+    with pytorch.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Wrapping up
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: Most tutorials about PyTorch gradients focus on backpropagation in classical
+    supervised learning. This one explored a different perspective — one shaped by
+    the needs of PINNs and other gradient-hungry beasts.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We learnt what leaves are in the PyTorch jungle, why gradients are retained
+    by default only for leaf nodes, and how to retain them when needed for other tensors.
+    We saw how `create_graph` turns gradients into differentiable citizens of the
+    autograd world.
+  prefs: []
+  type: TYPE_NORMAL
+- en: But there are still many things to uncover — especially why gradients of non-scalar
+    functions require extra care, how to compute second-order derivatives without
+    using your whole RAM, and why slicing your input tensor is a bad idea when you
+    need an *elementwise* gradient.
+  prefs: []
+  type: TYPE_NORMAL
+- en: So let’s meet in Part 2, where we’ll take a closer look at `grad` 👋
+  prefs: []
+  type: TYPE_NORMAL

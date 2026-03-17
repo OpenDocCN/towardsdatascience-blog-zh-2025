@@ -1,0 +1,251 @@
+- en: 'Multi-Agent SQL Assistant, Part 2: Building a RAG Manager'
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 原文：[https://towardsdatascience.com/multi-agent-sql-assistant-part-2-building-a-rag-manager/](https://towardsdatascience.com/multi-agent-sql-assistant-part-2-building-a-rag-manager/)
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: <mdspan datatext="el1762405237828" class="mdspan-comment">Previously</mdspan>
+    in my [blog post](https://towardsdatascience.com/a-multi-agent-sql-assistant-you-can-trust-with-human-in-loop-checkpoint-llm-cost-control/),
+    I had explored how to build a Multi-agent SQL assistant using CrewAI & Streamlit.
+    The user could query a SQLite database in natural language. The AI agents would
+    generate a SQL query based on user input, review it, and check for compliance
+    before running it against the database to get results. I also implemented a human-in-the-loop
+    checkpoint to maintain control and displayed the LLM costs associated with every
+    query for transparency and cost control. While the prototype was great and generated
+    good results for my small demo database, I knew this would not be enough for real-life
+    databases. In the previous setup, I was sending the whole database schema as context
+    along with the user input. As database schemas grow larger, passing the full schema
+    to the LLM increases token usage, slows down response times, and makes hallucination
+    more likely. I needed a way to feed only relevant schema snippets to the LLM.
+    This is where **RAG (Retrieval Augmented Generation)** comes in.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'In this blog post, I build a RAG manager and add **multiple** **RAG strategies**
+    to my SQL assistant to compare their performance on metrics like response time
+    and token usage. The assistant now supports four RAG strategies:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**No RAG:** Passes the full schema (baseline for comparison)'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Keyword RAG:** Uses domain-specific keyword matching to select relevant tables'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**FAISS RAG:** Leverages semantic vector similarity via FAISS with `all-MiniLM-L6-v2`
+    embeddings'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Chroma RAG:** A persistent vector store solution with ChromaDB for scalable
+    production-grade search'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: For this project, I only focused on RAG techniques that are practical, lightweight,
+    and cost-efficient (free). You can add any number of implementations on top and
+    choose the best one for your case. To facilitate experimentation and analysis,
+    I built an interactive performance comparison tool that evaluates token reduction,
+    table count, response time, and query accuracy across all four strategies.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/89165eab7b855a51cf062cdc1e79c9fd.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Screenshot of App, by Author
+  prefs: []
+  type: TYPE_NORMAL
+- en: Building a RAG Manager
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'The `rag_manager.py` file contains the entire implementation for the RAG manager.
+    First, I created a `BaseRAG` class – a template that I use for all my different
+    RAG strategies. It makes sure every RAG approach follows the same structure. Any
+    new strategy will have two things: a method to fetch the relevant schema based
+    on the user query, and another method that explains what the approach is about.
+    By using the **abstract base class** (ABC), I keep the code clean, modular, and
+    easy to extend later.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE0]'
+  prefs: []
+  type: TYPE_PRE
+- en: No RAG Strategy
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: This is basically the same approach that I used previously, where I sent in
+    the entire database schema as context to the LLM without any filtering or optimization.
+    This approach is best for very small schemas (preferably less than 10 tables).
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE1]'
+  prefs: []
+  type: TYPE_PRE
+- en: Keyword RAG Strategy
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: In the keyword RAG approach, I use a bunch of predefined keywords mapped to
+    each table in the schema. When a user asks something, the system checks for keyword
+    matches in the query and picks out only the most relevant tables. This way, I
+    don’t send the entire schema to the LLM – saving tokens and speeding things up.
+    It works well when your schema is familiar and your queries are business-related
+    or follow common patterns.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The `_build_table_keywords(self)` method is the core of how the keyword matching
+    logic works. It contains a hardcoded keyword mapping for each table in the schema.
+    It helps to associate user query terms (like “sales”, “brand”, “customer”) with
+    the most likely relevant tables.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE2]'
+  prefs: []
+  type: TYPE_PRE
+- en: FAISS RAG Approach
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: The **FAISS RAG** strategy is where things start getting smarter. Instead of
+    dumping the whole schema, I embed each table’s metadata (columns, relationships,
+    business context) into vectors using a sentence transformer. When the user asks
+    a question, it is embedded into that query too and uses FAISS to do a semantic
+    search matching on the “meaning” instead of just keywords. It’s perfect for queries
+    where users aren’t being very specific or when tables have related terms. I like
+    FAISS because it’s free, runs locally, and gives pretty accurate results while
+    saving tokens.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The only catch is that setting it up takes some extra steps, and it uses more
+    memory than basic approaches. LLMs and embedding models don’t know what your tables
+    mean unless you explain it to them. In the `_get_business_context()` method, we
+    need to manually write a short description of what each table represents in the
+    business.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In the `_extract_table_info()` method, I pull in table names, column names,
+    and foreign key relationships from SQLite’s PRAGMA queries to build a dictionary
+    with structured info about each table. Finally, in the `_create_table_description()`
+    method, comprehensive descriptions for each table are built to be embedded by
+    a SentenceTransformer.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE3]'
+  prefs: []
+  type: TYPE_PRE
+- en: Chroma RAG Strategy
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: Chroma RAG is a more production-friendly version of FAISS because it offers
+    persistent storage. Instead of keeping embeddings in memory, Chroma stores them
+    locally, so even if I restart the app, the vector index is still there. Just like
+    in FAISS, I still need to manually describe what each table does in business terms
+    (in `_get_business_context()`). I embed my schema descriptions and store them
+    in ChromaDB. Upon initialization, sentence-transformer (MiniLM) is loaded. If
+    the vector already exists, it is loaded. If not, I extract info + descriptions
+    and call `_populate_collection()` to generate and store vectors. This process
+    only needs to be done once or when the schema changes.
+  prefs: []
+  type: TYPE_NORMAL
+- en: It’s fast, consistent across sessions, and easy to set up. I chose it because
+    it’s free, doesn’t need external services, and works well for real-world use cases
+    where you want to scale without worrying about losing the vector index or reprocessing
+    everything every time.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE4]'
+  prefs: []
+  type: TYPE_PRE
+- en: Comparing the different RAG Strategies
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: This `RAGManager` class is the control center for switching between different
+    RAG strategies. Based on the user query, it picks the right approach, fetches
+    the most relevant part of the schema, and tracks performance like response time,
+    token savings, and table count. It also has a compare function to benchmark all
+    RAGs side-by-side, and stores historical metrics so you can analyze how each one
+    is doing over time. Super handy for testing what works best and keeping things
+    optimized.
+  prefs: []
+  type: TYPE_NORMAL
+- en: All the different RAG strategy classes are initialized and stored in `self.approaches`.
+    Each RAG approach is a class that inherits from `BaseRAG`, so all of them have
+    a consistent interface (`get_relevant_schema()` and `get_approach_info()`). This
+    means you can easily plug in a new strategy (say Pinecone or Weaviate) as long
+    as it extends `BaseRAG`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The method `get_relevant_schema()` returns the schema relevant to that query
+    based on the chosen strategy. If an invalid strategy is passed or there’s a failure
+    for some reason, it smartly falls back to the `'Keyword RAG'` strategy.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The method `compare_approaches()` runs the same query through all the RAG strategies.
+    It measures:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Length of resulting schema
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '% Token reduction vs full schema'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Response time
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Number of tables returned
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: This is really useful to **benchmark strategies** side-by-side and pick the
+    one best suited for your use case.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE5]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The Streamlit app is fully integrated with this manager, so users can choose
+    the strategy they want and see real-time results. You can check out the complete
+    code on GitHub [here](https://github.com/sravz3/SQL-Assistant-Crew). Here’s a
+    working demo of the new App in action:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/c202a37c57d0ca867a00b6824e4f1bf3.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: RAG Implementation In Action, by Author
+  prefs: []
+  type: TYPE_NORMAL
+- en: Final Thoughts
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: This is not the end; there is still a lot to improve. I need to stress test
+    against a variety of attacks and reinforce guardrails to reduce hallucinations
+    and ensure data safety. It will be nice to build a role-based access system for
+    data governance. Maybe replacing Streamlit with a frontend framework like React
+    could make the app more scalable for real-world deployments. All this, for next
+    time.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '* * *'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Before you go…**'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '*Follow me so you don’t miss any new posts I write in future; you will find
+    more of my articles on [my profile page](https://towardsdatascience.com/author/alle-sravani/). You
+    can also connect with me on *[*LinkedIn*](https://www.linkedin.com/in/alle-sravani/)* or *[*X*](https://x.com/sravani_alle)*!*'
+  prefs: []
+  type: TYPE_NORMAL

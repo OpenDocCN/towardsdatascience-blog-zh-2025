@@ -1,0 +1,440 @@
+- en: 'How to Evaluate Retrieval Quality in RAG Pipelines: Precision@k, Recall@k,
+    and F1@k'
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 原文：[https://towardsdatascience.com/how-to-evaluate-retrieval-quality-in-rag-pipelines-precisionk-recallk-and-f1k/](https://towardsdatascience.com/how-to-evaluate-retrieval-quality-in-rag-pipelines-precisionk-recallk-and-f1k/)
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: <mdspan datatext="el1760576831852" class="mdspan-comment">In my previous posts</mdspan>,
+    I have walked you through [putting together a very basic RAG pipeline in Python](https://towardsdatascience.com/hitchhikers-guide-to-rag-with-chatgpt-api-and-langchain/),
+    as well as [chunking large text documents](https://towardsdatascience.com/hitchhikers-guide-to-rag-from-tiny-files-to-tolstoy-with-openais-api-and-langchain/).
+    We’ve also looked into [how documents are transformed into embeddings](https://towardsdatascience.com/rag-explained-understanding-embeddings-similarity-and-retrieval/),
+    allowing us to quickly search for similar documents within a vector database,
+    along with [how reranking is used](https://towardsdatascience.com/rag-explained-reranking-for-better-answers/)
+    to identify the most appropriate documents for answering the user’s query.
+  prefs: []
+  type: TYPE_NORMAL
+- en: So, now that we’ve retrieved the relevant documents, it’s time to pass them
+    into the LLM for the generation step. But before that, it is important to be able
+    to tell if the retrieval mechanism works well and can successfully identify relevant
+    results. After all, retrieving the chunks that contain the answer to the user’s
+    query is the very first step for being able to generate a meaningful answer.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Therefore, this is exactly what we are going to explore in today’s post. In
+    particular, we are going to take a look at some of the most popular metrics for
+    evaluating retrieval and reranking performance.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 🍨*[**DataCream**](https://datacream.substack.com/) is a newsletter offering
+    stories and tutorials on AI, data, tech. If you are interested in these topics,
+    **[subscribe here](https://datacream.substack.com/).***
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: '**. . .**'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Why care about measuring retrieval performance
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: So, our goal is to evaluate how well our embedding model and vector database
+    bring back candidate text chunks. Essentially, what we are trying to find out
+    here is “*Are the right documents somewhere in the top-k retrieved set*?”, or
+    does our vector search return complete garbage? 🙃 There are several different
+    measures we can utilize to answer this question. Most of them originate from the
+    [Information Retrieval](https://en.wikipedia.org/wiki/Information_retrieval) field.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Before we begin, it’s useful to distinguish between two types of measures —
+    these are **binary** and **graded** relevance measures. More specifically, binary
+    measures characterize a retrieved text chunk either as relevant or irrelevant
+    for answering the user’s query — there is no in between. On the contrary, graded
+    measures assign a relevance value to each text chunk that is retrieved, somewhere
+    in a spectrum ranging from complete irrelevance to complete relevance.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'In general, binary measures characterize each chunk as relevant or irrelevant,
+    a hit or a miss, a positive or a negative. As a result, when considering binary
+    retrieval measures, we can end up in one of the following situations:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: True Positive ➔ A result is retrieved in the top k and is indeed relevant to
+    the user’s query; it is correctly retrieved.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: False Positive ➔ A result is retrieved in the top k, but is in fact irrelevant;
+    it is wrongly retrieved.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: True Negative ➔ A result is not retrieved in the top k and is indeed not relevant
+    to the user’s query; it is correctly not retrieved.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: False Negative ➔ A result is not retrieved in the top k, but it was in fact
+    relevant; it is wrongly not retrieved.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '![](../Images/78febed1d9c027fa054d631acfea325f.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Image by author
+  prefs: []
+  type: TYPE_NORMAL
+- en: As you can imagine, True situations — True Positive and True Negative — are
+    what we are looking for. On the flip side, False situations — False Negative and
+    False Positive — are what we are trying to minimize, but this is a rather conflicting
+    goal. More specifically, in order to include all relevant results that exist (that
+    is, minimize the False Negatives), we need to make our search more inclusive,
+    but by making the search more inclusive, we also risk increasing the False Positives.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Another distinction we can make is between order-unaware and order-aware relevance
+    measures. As their names indicate, order-unaware measures only express whether
+    a relevant result exists in the top k retrieved text chunks, or not. On the flip
+    side, order-aware measures also take into account the ranking in which a text
+    chunk appears, apart from whether it just makes an appearance on the top k chunks.
+  prefs: []
+  type: TYPE_NORMAL
+- en: All retrieval evaluation measures can be calculated for different values of
+    k, thus, we denote them as ‘*some measure’@k*, like HitRate@k or Precision@k (duh!).
+    Anyways, in the rest of this post, I’ll be exploring some basic binary, order-unaware,
+    retrieval evaluation metrics.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**. . .**'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Some order-unaware, binary measures
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: Binary order-unaware measures for evaluating retrieval are the most straightforward
+    and intuitive to understand. Thus, they are a great starting point for getting
+    our heads around what exactly we are trying to measure and evaluate. Some common
+    and useful binary, order-unaware measures are **HitRate@k,** **Recall@k**, **Precision@k,
+    and F1@k**. But let’s see all these in some more detail.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 🎯 HitRate@K
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: 'HitRate@K is the simplest of all measures for evaluating the retrieval evaluation.
+    It is a binary measure indicating whether there is at least one relevant result
+    in the top k retrieved chunks, or not. Thus, it can only take two values: either
+    1 (if at least one relevant doc exists in the retrieved set), or 0 (if none of
+    the retrieved documents is in reality relevant). It really is the most basic measure
+    of success one can imagine — at least hitting the target with something. For a
+    single query and the respective retrieved set of results, HitRate@k can be calculated
+    as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/d180b049d761e2f5426b40417aab1e88.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Image by author
+  prefs: []
+  type: TYPE_NORMAL
+- en: In this way, we can calculate different Hit Rates for all queries and retrieved
+    results in a test set, and finally, calculate the average HitRate@K of the entire
+    test set.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/d6b8ee69c9df96a5ed24c5c9b966064c.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Image by author
+  prefs: []
+  type: TYPE_NORMAL
+- en: Arguably, Hit Rate is the simplest, most straightforward, and easiest to calculate
+    retrieval metric; thus, it provides a good starting point for evaluating the retrieval
+    step of our RAG pipeline.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 🎯 Recall@K
+  prefs:
+  - PREF_H4
+  type: TYPE_NORMAL
+- en: 'Recall@K expresses how often the *relevant* documents appear within the top
+    k retrieved documents. In essence, it evaluates how good we did with avoiding
+    False Negatives. Recall@k is calculated as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/898f9ef1c8f2a9895ef055ebb24ed962.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Image by author
+  prefs: []
+  type: TYPE_NORMAL
+- en: Thus, it can range from 0 to 1, with 0 indicating that we only retrieved irrelevant
+    results, and 1 indicating that we only retrieved relevant results (no False Negatives).
+    It is like asking ‘*Out of all the items that existed, how many did we get?*‘.
+    It indicates how many out of the top k results are truly relevant.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Recall focuses on the quantity of the retrieved results — how many out of all
+    the relevant results did we manage to find? Thus, it functions well as a retrieval
+    measure for scenarios where we need to find as many relevant results as possible,
+    even by retrieving some irrelevant ones along with them.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Thus, the higher a Recall@k we achieve, the more relevant documents we have
+    retrieved with the vector search, out of all the relevant documents that truly
+    exist. On the contrary, retrieving documents with a bad Recall@k score is a rather
+    bad start for the retrieval step of our RAG pipeline — if the appropriate relevant
+    documents and relevant information aren’t there in the first place, no magical
+    reranking or LLM model is going to fix the situation.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 🎯 Precision@k
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: 'Precision@k indicates how many of the top k retrieved documents are indeed
+    relevant. In essence, it evaluates how good we did with not including False Positives.
+    Precision@k can be calculated as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/f478f0f6db5e8828f31ccb0c37d4448a.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Image by author
+  prefs: []
+  type: TYPE_NORMAL
+- en: In other words, precision is the answer to the question “*Out of the items that
+    we retrieved, how many are correct?*“. It indicates how many of all the truly
+    relevant results were successfully retrieved in the top k. As a result, it can
+    range from 0 to 1, with 0 indicating that we only retrieved irrelevant results,
+    and 1 indicating that we only retrieved relevant results (no irrelevant results
+    retrieved — no False Positives).
+  prefs: []
+  type: TYPE_NORMAL
+- en: Thereby, Precision@k largely emphasizes each retrieved result being valid, rather
+    than exhaustively finding each and every result. In other words, Precision@k can
+    serve well as a retrieval measure for scenarios valuing the quality of retrieved
+    results over quantity. That is, retrieving results that we are sure are relevant,
+    even if this means we mistakenly reject some relevant results.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 🎯 F1@K
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: 'But what if we need both correct and complete results — what if we need the
+    retrieved set to score high both in Recall and Precision? To achieve this, Recall@K
+    and Precision@K can be combined into a single measure called F1@K, allowing us
+    to create a score that simultaneously balances the validity and completeness of
+    the retrieved results. In particular, F1@k can be calculated as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/754486d299c504610f1eb942ab454838.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Image by author
+  prefs: []
+  type: TYPE_NORMAL
+- en: Again, F1@k can range from 0 to 1\. An F1@k value close to 1 means that both
+    Precision@k and Recall@k are high, meaning the retrieved results are both accurate
+    and comprehensive. On the flip side, an F1@k value close to zero means that either
+    Recall@k or Recall@k is low, or even both. In this way, F1@k serves as an effective
+    single metric to evaluate balanced retrieval, since it will only be high when
+    both precision and recall are high.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '****. . .****'
+  prefs: []
+  type: TYPE_NORMAL
+- en: So, is our vector search any good?
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'So now let’s see how all these play out in the *‘War and Peace’* example by
+    answering one more time my favorite question — ‘*Who is Anna Pávlovna*?’. As in
+    my previous posts, I will once again be using the *[War and Peace](https://www.gutenberg.org/cache/epub/2600/pg2600.txt)* text
+    as an example, licensed as Public Domain and easily accessible through [Project
+    Gutenberg](https://www.gutenberg.org/). Our code thus far looks like this:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE0]'
+  prefs: []
+  type: TYPE_PRE
+- en: Let’s tweak it a little bit to calculate some retrieval measures.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'First of all, we can add the following section at the beginning of our script,
+    in order to define the retrieval evaluation metrics we want to calculate:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE1]'
+  prefs: []
+  type: TYPE_PRE
+- en: In order to calculate any of those evaluation metrics, we need to first define
+    a set of queries and the respective truly relevant chunks. This is a rather copious
+    exercise; thus, I will be only demonstrating the process for one query — ‘*Who
+    is Anna Pávlovna*? — and the respective relevant text chunks that should ideally
+    be retrieved. In any case, this information — either for just one query or for
+    a real-life evaluation set — can be defined in the form of a ***ground truth dictionary***,
+    allowing us to map various test queries to the expected relevant text chunks.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'In particular, we can consider that the relevant chunks that should be included
+    in the ground truth dictionary for our query ‘*Who is Anna Pávlovna*?’ are the
+    following:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '“It was in July 1805, and the speaker was the well-known Anna Pávlovna Schérer,
+    maid of honor and favorite of the Empress Márya Fëdorovna. With these words, she
+    greeted Prince Vasíli Kurágin, a man of high rank and importance, who was the
+    first to arrive at her reception. Anna Pávlovna had had a cough for some days.
+    She was, as she said, suffering from la grippe; grippe being then a new word in
+    St. Petersburg, used only by the elite. All her invitations without exception,
+    written in French, and delivered by a scarlet-liveried footman that morning, ran
+    as follows: “If you have nothing better to do, Count (or Prince), and if the prospect
+    of spending an evening with a poor invalid is not too terrible, I shall be very
+    charmed to see you tonight between 7 and 10—Annette Schérer.” “'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: “Anna Pávlovna’s “At Home” was like the former one, only the novelty she offered
+    her guests this time was not Mortemart, but a diplomatist fresh from Berlin with
+    the very latest details of the Emperor Alexander’s visit to Potsdam, and of how
+    the two august friends had pledged themselves in an indissoluble alliance to uphold
+    the cause of justice against the enemy of the human race. Anna Pávlovna received
+    Pierre with a shade of melancholy, evidently relating to the young man’s recent
+    loss by the death of Count Bezúkhov (everyone constantly considered it a duty
+    to assure Pierre that he was greatly afflicted by the death of the father he had
+    hardly known), and her melancholy was just like the august melancholy she showed
+    at the mention of her most august Majesty the Empress Márya Fëdorovna. Pierre
+    felt flattered by this. Anna Pávlovna arranged the different groups in her drawing
+    room with her habitual skill. The large group, in which were”
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: “drawing room with her habitual skill. The large group, in which were Prince
+    Vasíli and the generals, had the benefit of the diplomat. Another group was at
+    the tea table. Pierre wished to join the former, but Anna Pávlovna—who was in
+    the excited condition of a commander on a battlefield to whom thousands of new
+    and brilliant ideas occur which there is hardly time to put in action—seeing Pierre,
+    touched his sleeve with her finger, saying:”
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: 'In this way, we can define the ground truth for this one query and the respective
+    chunks that contain the information that can answer the question as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE2]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Finally, we can also add the following section to our `main()` function in
+    order to appropriately calculate and display the evaluation metrics:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE3]'
+  prefs: []
+  type: TYPE_PRE
+- en: Notice that we run the evaluation **after reranking**. Since the metrics we
+    calculate— like Precision@K, Recall@K, and F1@K — **are order-unaware, evaluating
+    them on the top k retrieved chunks before or after reranking yields the same results,
+    as long as the set of top k items remains the same.**
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'So, for our question ‘*Who is Anna Pávlovna*?’ and @k = 10, we get the following
+    scores:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/7478c61297f65ef77c31465220eb39ce.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Image by author
+  prefs: []
+  type: TYPE_NORMAL
+- en: But what is the meaning of this?
+  prefs: []
+  type: TYPE_NORMAL
+- en: '@k = 10, meaning that we calculate all evaluation metrics on the top 10 retrieved
+    chunks.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Hit@10 = True, meaning that at least one of the correct (ground truth) chunks
+    was found in the top 10 retrieved chunks.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Precision@10 = 0.20, meaning that out of the 10 retrieved chunks, only 2 were
+    correct (0.20 = 2/10). In other words, the retriever also brought back irrelevant
+    information; only 20% of what it retrieved was actually useful.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Recall@10 = 0.67, meaning that we retrieved 67% of all relevant chunks available
+    in the ground truth within the top 10 documents.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: F1@10 = 0.31, indicating the overall retrieval quality combining both precision
+    and recall. An F1 score of 0.31 indicates moderate performance, and we know that
+    this is due to decent recall but low precision.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: As mentioned earlier, we can calculate those metrics for any k — it makes sense
+    to calculate only for values of k larger than the number of chunks per query in
+    the ground truth. In this way, we can experiment with different values of k and
+    understand how our retrieval system performs as we expand or narrow the scope
+    of retrieved results.
+  prefs: []
+  type: TYPE_NORMAL
+- en: On my mind
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: While metrics like Precision@K, Recall@K, and F1@K can be computed for asingle
+    query and its corresponding set of retrieved chunks (like wedid here), in a real-world
+    evaluation, they are typically evaluated over a collection of queries, known as
+    the test set. More precisely, each query in the test set is associated with its
+    own set of ground truth relevant chunks. We then calculate the retrieval metrics
+    individually for each query, and then average the results across all queries.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Ultimately, understanding the meaning of various retrieval metrics that can
+    be calculated is really important for effectively evaluating and fine-tuning a
+    RAG pipeline. Most importantly, an effective retrieval mechanism — finding the
+    appropriate documents — is the foundation for generating meaningful answers with
+    a RAG setup.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**. . .**'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '*Loved this post? Let’s be friends! Join me on:*'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 📰***[Substack](https://datacream.substack.com/)*** 💌* **[Medium](https://medium.com/@m.mouschoutzi)***
+    💼***[LinkedIn](https://www.linkedin.com/in/mariamouschoutzi/)*** ☕***[Buy me a
+    coffee](http://buymeacoffee.com/mmouschoutzi)!***
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**. . .**'
+  prefs: []
+  type: TYPE_NORMAL
+- en: What about pialgorithms?
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: Looking to bring the power of RAG into your organization?
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[**pialgorithms**](https://pialgorithms.com/) can do it for you ***👉 ***[***book
+    a demo***](https://pialgorithms.com/#contact)*** today***'
+  prefs: []
+  type: TYPE_NORMAL

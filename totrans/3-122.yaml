@@ -1,0 +1,502 @@
+- en: The Case for Centralized AI Model Inference Serving
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 原文：[https://towardsdatascience.com/the-case-for-centralized-ai-model-inference-serving/](https://towardsdatascience.com/the-case-for-centralized-ai-model-inference-serving/)
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: <mdspan datatext="el1743558270096" class="mdspan-comment">As AI</mdspan> models
+    continue to increase in scope and accuracy, even tasks once dominated by traditional
+    algorithms are gradually being replaced by deep learning models. Algorithmic pipelines
+    — workflows that take an input, process it through a series of algorithms, and
+    produce an output — increasingly rely on one or more AI-based components. These
+    AI models often have significantly different resource requirements than their
+    classical counterparts, such as higher memory usage, reliance on specialized hardware
+    accelerators, and increased computational demands.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'In this post, we address a common challenge: efficiently processing large-scale
+    inputs through algorithmic pipelines that include deep learning models. A typical
+    solution is to run multiple independent jobs, each responsible for processing
+    a single input. This setup is often managed with job orchestration frameworks
+    (e.g., [Kubernetes](https://kubernetes.io/)). However, when deep learning models
+    are involved, this approach can become inefficient as loading and executing the
+    same model in each individual process can lead to resource contention and scaling
+    limitations. As AI models become increasingly prevalent in algorithmic pipelines,
+    it is crucial that we revisit the design of such solutions.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'In this post we evaluate the benefits of centralized inference serving, where
+    a dedicated inference server handles prediction requests from multiple parallel
+    jobs. We define a toy experiment in which we run an image-processing pipeline
+    based on a [ResNet-152](https://pytorch.org/vision/0.20/models/generated/torchvision.models.resnet152.html) image
+    classifier on 1,000 individual images. We compare the runtime performance and
+    resource utilization of the following two implementations:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Decentralized inference** — each job loads and runs the model independently.'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '**Centralized inference** — all jobs send inference requests to a dedicated
+    inference server.'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: 'To keep the experiment focused, we make several simplifying assumptions:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Instead of using a full-fledged job orchestrator (like [Kubernetes](https://kubernetes.io/)),
+    we implement parallel process execution using Python’s multiprocessing module.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: While real-world workloads often span multiple nodes, we run everything on a
+    single node.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Real-world workloads typically include multiple algorithmic components. We limit
+    our experiment to a single component — a ResNet-152 classifier running on a single
+    input image.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: In a real-world use case, each job would process a unique input image. To simplify
+    our experiment setup, each job will process the same [kitty.jpg](https://github.com/pytorch/serve/blob/master/examples/image_classifier/kitten.jpg) image.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: We will use a minimal deployment of a [TorchServe](https://pytorch.org/serve/) inference
+    server, relying mostly on its default settings. Similar results are expected with
+    alternative inference server solutions such as [NVIDIA Triton Inference Server](https://developer.nvidia.com/triton-inference-server) or [LitServe](https://lightning.ai/docs/litserve/home).
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: The code is shared for demonstrative purposes only. Please do not interpret
+    our choice of TorchServe — or any other component of our demonstration — as an
+    endorsement of its use.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Toy Experiment
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'We conduct our experiments on an [Amazon EC2 c5.2xlarge](https://aws.amazon.com/ec2/instance-types/c5/) instance,
+    with 8 vCPUs and 16 GiB of memory, running a [PyTorch Deep Learning AMI](https://aws.amazon.com/releasenotes/aws-deep-learning-ami-gpu-pytorch-2-6-ubuntu-22-04/) (DLAMI).
+    We activate the PyTorch environment using the following command:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE0]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Step 1: Creating a TorchScript Model Checkpoint'
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: 'We begin by creating a ResNet-152 model checkpoint. Using [TorchScript](https://pytorch.org/docs/stable/jit.html),
+    we serialize both the model definition and its weights into a single file:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE1]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Step 2: Model Inference Function'
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: 'Our inference function performs the following steps:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Load the ResNet-152 model.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Load an input image.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Preprocess the image to match the input format expected by the model, following
+    the implementation defined [here](https://github.com/pytorch/serve/blob/master/ts/torch_handler/image_classifier.py).
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Run inference to classify the image.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Post-process the model output to return the top five label predictions, following
+    the implementation defined [here](https://github.com/pytorch/serve/blob/master/ts/torch_handler/image_classifier.py).
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: We define a constant MAX_THREADS hyperparameter that we use to restrict the
+    number of threads used for model inference in each process. This is to prevent
+    resource contention between the multiple jobs.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE2]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Step 3: Running Parallel Inference Jobs'
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: 'We define a function that spawns parallel processes, each processing a single
+    image input. This function:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Accepts the total number of images to process and the maximum number of concurrent
+    jobs.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Dynamically launches new processes when slots become available.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Monitors CPU and memory usage throughout execution.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '[PRE3]'
+  prefs: []
+  type: TYPE_PRE
+- en: Estimating the Maximum Number of Processes
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: While the optimal number of maximum concurrent processes is best determined
+    empirically, we can estimate an upper bound based on the 16 GiB of system memory
+    and the size of the resnet-152.pt file, 231 MB.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The table below summarizes the runtime results for several configurations:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/3327b35d5a2b79e61e7a228dc43951a2.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: '**Decentralized Inference Results (by Author)**'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Although memory becomes fully saturated at 50 concurrent processes, we observe
+    that maximum throughput is achieved at 8 concurrent jobs — one per vCPU. This
+    indicates that beyond this point, resource contention outweighs any potential
+    gains from additional parallelism.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The Inefficiencies of Independent Model Execution
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'Running parallel jobs that each load and execute the model independently introduces
+    significant inefficiencies and waste:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Each process needs to allocate the appropriate memory resources for storing
+    its own copy of the AI model.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: AI models are compute-intensive. Executing them in many processes in parallel
+    can lead to resource contention and reduced throughput.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Loading the model checkpoint file and initializing the model in each process
+    adds overhead and can further increase latency. In the case of our toy experiment,
+    model initialization makes up for roughly 30%(!!) of the overall inference processing
+    time.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: A more efficient alternative is to centralize inference execution using a dedicated
+    model inference server. This approach would eliminate redundant model loading
+    and reduce overall system resource utilization.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In the next section we will set up an AI model inference server and assess its
+    impact on resource utilization and runtime performance.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Note:** We could have modified our multiprocessing-based approach to share
+    a single model across processes (e.g., using [torch.multiprocessing](https://pytorch.org/docs/stable/multiprocessing.html) or
+    another solution based on [shared memory](https://docs.python.org/3/library/multiprocessing.shared_memory.html)).
+    However, the inference server demonstration better aligns with real-world production
+    environments, where jobs often run in isolated containers.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: TorchServe Setup
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: The TorchServe setup described in this section loosely follows the [resnet tutorial](https://github.com/pytorch/serve/tree/master/examples/image_classifier/resnet_18).
+    Please refer to the official [TorchServe](https://pytorch.org/serve/) documentation
+    for more in-depth guidelines.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Installation
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: 'The PyTorch environment of our DLAMI comes preinstalled with TorchServe executables.
+    If you are running in a different environment run the following installation command:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE4]'
+  prefs: []
+  type: TYPE_PRE
+- en: Creating a Model Archive
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: 'The TorchServe Model Archiver packages the model and its associated files into
+    a “*.mar*” file archive, the format required for deployment on TorchServe. We
+    create a TorchServe model archive file based on our model checkpoint file and
+    using the [default image_classifier handler](https://pytorch.org/serve/default_handlers.html):'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE5]'
+  prefs: []
+  type: TYPE_PRE
+- en: TorchServe Configuration
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: 'We create a TorchServe config.properties file to define how TorchServe should
+    operate:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE6]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'After completing these steps, our working directory should look like this:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE7]'
+  prefs: []
+  type: TYPE_PRE
+- en: Starting TorchServe
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: 'In a separate shell we start our TorchServe inference server:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE8]'
+  prefs: []
+  type: TYPE_PRE
+- en: Inference Request Implementation
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: 'We define an alternative prediction function that calls our inference service:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE9]'
+  prefs: []
+  type: TYPE_PRE
+- en: Scaling Up the Number of Concurrent Jobs
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: 'Now that inference requests are being processed by a central server, we can
+    scale up parallel processing. Unlike the earlier approach where each process loaded
+    and executed its own model, we have sufficient CPU resources to allow for many
+    more concurrent processes. Here we choose 100 processes in accordance with the
+    default *job_queue_size *capacity of the inference server:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE10]'
+  prefs: []
+  type: TYPE_PRE
+- en: Results
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: The performance results are captured in the table below. Keep in mind that the
+    comparative results can vary greatly based on the details of the AI model and
+    the runtime environment.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/88e4e858660ec7ac5f070649123dd52c.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: '**Inference Server Results (by Author)**'
+  prefs: []
+  type: TYPE_NORMAL
+- en: By using a centralized inference server, not only have we have increased overall
+    throughput by more than 2X, but we have freed significant CPU resources for other
+    computation tasks.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Next Steps
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: Now that we have effectively demonstrated the benefits of a centralized inference
+    serving solution, we can explore several ways to enhance and optimize the setup.
+    Recall that our experiment was intentionally simplified to focus on demonstrating
+    the utility of inference serving. In real-world deployments, additional enhancements
+    may be required to tailor the solution to your specific needs.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Custom Inference Handlers**: While we used TorchServe’s built-in [image_classifier](https://pytorch.org/serve/default_handlers.html#image-classifier) handler,
+    defining a [custom handler](https://pytorch.org/serve/custom_service.html#custom-handlers) provides
+    much greater control over the details of the inference implementation.'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '**Advanced Inference Server Configuration**: Inference server solutions will
+    typically include many features for tuning the service behavior according to the
+    workload requirements. In the next sections we will explore some of the features
+    supported by TorchServe.'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '**Expanding the Pipeline**: Real world models will typically include more algorithm
+    blocks and more sophisticated AI models than we used in our experiment.'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '**Multi-Node Deployment**: While we ran our experiments on a single compute
+    instance, production setups will typically include multiple nodes.'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '**Alternative Inference Servers**: While TorchServe is a popular choice and
+    relatively easy to set up, there are many alternative inference server solutions
+    that may provide additional benefits and may better suit your needs. Importantly,
+    it was recently announced that TorchServe would no longer be actively maintained.
+    See the [documentation](https://pytorch.org/serve/index.html) for details.'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '**Alternative Orchestration Frameworks**: In our experiment we use Python multiprocessing.
+    Real-world workloads will typically use more advanced orchestration solutions.'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '**Utilizing Inference Accelerators**: While we executed our model on a CPU,
+    using an AI accelerator (e.g., an NVIDIA GPU, a Google Cloud TPU, or an AWS Inferentia)
+    can drastically improve throughput.'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '**Model Optimization**: [Optimizing](https://pytorch.org/serve/performance_checklist.html) your
+    AI models can greatly increase efficiency and throughput.'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '**Auto-Scaling for Inference Load**: In some use cases inference traffic will
+    fluctuate, requiring an inference server solution that can scale its capacity
+    accordingly.'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: In the next sections we explore two simple ways to enhance our TorchServe-based
+    inference server implementation. We leave the discussion on other enhancements
+    to future posts.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Batch Inference with TorchServe
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: Many model inference service solutions support the option of grouping inference
+    requests into batches. This usually results in increased throughput, especially
+    when the model is running on a GPU.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We extend our TorchServe *config.properties* file to support batch inference
+    with a batch size of up to 8 samples. Please see the [official documentation](https://pytorch.org/serve/batch_inference_with_ts.html) for
+    details on batch inference with TorchServe.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE11]'
+  prefs: []
+  type: TYPE_PRE
+- en: Results
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: 'We append the results in the table below:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/4604902f6c9f2bd08e6c838c09746aac.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: '**Batch Inference Server Results (by Author)**'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Enabling batched inference increases the throughput by an additional 26.5%.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Multi-Worker Inference with TorchServe
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: Many model inference service solutions will support creating multiple inference
+    workers for each AI model. This enables fine-tuning the number of inference workers
+    based on expected load. Some solutions support auto-scaling of the number of inference
+    workers.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We extend our own TorchServe setup by increasing the `default_workers_per_model` setting
+    that controls the number of inference workers assigned to our image classification
+    model.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Importantly, we must limit the number of threads allocated to each worker to
+    prevent resource contention. This is controlled by the `number_of_netty_threads`setting
+    and by the `OMP_NUM_THREADS` and `MKL_NUM_THREADS` environment variables. Here
+    we have set the number of threads to equal the number of vCPUs (8) divided by
+    the number of workers.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE12]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The modified TorchServe startup sequence appears below:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE13]'
+  prefs: []
+  type: TYPE_PRE
+- en: Results
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: 'In the table below we append the results of running with 2, 4, and 8 inference
+    workers:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/d3a986f0c0cee8086b34dcf86ead52b8.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: '**Multi-Worker Inference Server Results (by Author)**'
+  prefs: []
+  type: TYPE_NORMAL
+- en: By configuring TorchServe to use multiple inference workers, we are able to
+    increase the throughput by an additional 36%. This amounts to a 3.75X improvement
+    over the baseline experiment.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Summary
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: This experiment highlights the potential impact of inference server deployment
+    on multi-job deep learning workloads. Our findings suggest that using an inference
+    server can improve system resource utilization, enable higher concurrency, and
+    significantly increase overall throughput. Keep in mind that the precise benefits
+    will greatly depend on the details of the workload and the runtime environment.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Designing the inference serving architecture is just one part of optimizing
+    AI model execution. Please see some of our [many posts](https://towardsdatascience.com/author/chaimrand/) covering
+    a wide range AI model optimization techniques.
+  prefs: []
+  type: TYPE_NORMAL

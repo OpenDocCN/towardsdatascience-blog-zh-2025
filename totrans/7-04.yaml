@@ -1,0 +1,407 @@
+- en: Apollo and Design Choices of Video Large Multimodal Models (LMMs)
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 原文：[https://towardsdatascience.com/apollo-and-design-choices-of-video-large-multimodal-models-lmms-0e672c618cf0/](https://towardsdatascience.com/apollo-and-design-choices-of-video-large-multimodal-models-lmms-0e672c618cf0/)
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: '![Image by Author - Flux.1 Schnell](../Images/5f566f2425a4c5c217992fdfb2a74e6b.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Image by Author – Flux.1 Schnell
+  prefs: []
+  type: TYPE_NORMAL
+- en: As we’ve been anticipating, models are becoming increasingly capable of understanding
+    different types of inputs. We’ve seen image transformer models (see my blogs on
+    [fine-tuning Flux](https://medium.com/@mgunton7/step-by-step-lets-fine-tune-flux-1-822f92c07c15)
+    and the [research behind MM1](https://medium.com/towards-data-science/multimodal-large-language-models-apples-mm1-c1e94d87a161))
+    and now we’re beginning to see video models hit the scene.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In December of 2024, Meta unveiled their new Apollo family of models. When they
+    unveiled these, they also published a paper detailing their research and work
+    around Large Multimodal Models (LMMs). The paper is full of great details, so
+    rather than try to cover it all I’ll be focusing on the 4 major design choices
+    they highlighted when making their model.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Let’s dive in!
+  prefs: []
+  type: TYPE_NORMAL
+- en: Background
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: Embedding
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: Let’s first layout some quick ideas that are important to understand what’s
+    going on here. Every Transformer relies on embeddings for its input. However,
+    user input is typically first converted from something user-understood (text,
+    videos) to tokens and then embeddings. To convert to embeddings, we use an embedding
+    model. For multi-modal inputs, we typically use a different encoder for each input
+    type.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Figure 1 from the paper](../Images/0d958b8dbaa7b7c4ef8e19c528575312.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Figure 1 from [the paper](https://arxiv.org/pdf/2412.10360)
+  prefs: []
+  type: TYPE_NORMAL
+- en: While it’s easy to see how we can use this to set up an image encoder, it is
+    not as straight forward to see how we should adapt this process for video.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We’ll see the authors explored how best to choose the encoder.
+  prefs: []
+  type: TYPE_NORMAL
+- en: ApolloBench Dataset
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: The authors began by doing an analysis of the existing video benchmarks. Benchmarks
+    need to be analyzed so that we know high-scores on them actually correlate with
+    better performance. The authors however found that some of these benchmarks can
+    be gamed by having the model only understand part of the data fed in. For instance,
+    if the model only understands one frame of the video, it shouldn’t score well
+    – and yet it was able to do just that in a surprising number of benchmarks (shown
+    by the red box and whiskers plot). The authors found that a significant portion
+    can be answered solely relying on text and image understanding alone – making
+    them more guides for video understanding. Moreover, when comparing different models
+    on the benchmarks, they found that many of the models’ performances were clustered,
+    resulting in a less useful benchmark.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Figure 2 from the paper](../Images/c363277ac92e1e682cb1e27fb4fff3c3.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Figure 2 from [the paper](https://arxiv.org/pdf/2412.10360)
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Based on these findings, the authors decided to create a new benchmark that
+    would more clearly test video understanding and distinguish model performance.
+    The authors chose only multi-choice answers to avoid the need for additional analysis
+    from outside models to finish answering questions. They removed all questions
+    that were answered correctly by more than 50% of the models, as well as those
+    that did not require any video understanding. With the remaining questions, the
+    authors segmented them into 5 categories based off the skill they tested: Temporal
+    OCR, Egocentric, Spatial, Perception, and Reasoning. From each categories only
+    the top 400 questions that clearly drove different results between models were
+    kept in the benchmark.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: We’ll see they used their new dataset to inform almost all of their design choices.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Video Sampling
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: The first design choice we have is how much of the data to pull in. For an image,
+    we only have 1 frame, so that frame should be processed. However for video, we
+    are often running at 30 frames-per-second. While each frame is slightly different,
+    they typically are not so radically different that missing one is an issue ([see
+    the Phi Phenomenon as an example](https://en.wikipedia.org/wiki/Phi_phenomenon))
+  prefs: []
+  type: TYPE_NORMAL
+- en: Uniform Sampling vs Frames Per Second
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: In the paper, they compared Uniform Sampling and Frames-per-Second Sampling
+    (FPS sampling). Uniform sampling means that we will be randomly taking a frame
+    from the video. So let’s say we have a 10 second clip with 30 frames per second.
+    If we want to do uniform sampling of size 5, we will randomly pick 5 of the 300
+    possible frames and pass that through our embedder. While this guarantees that
+    even for longer videos we will always have enough memory, there are a few notable
+    distortions here that make this less desirable. Most importantly, by picking them
+    randomly, we are losing the time element between the frames, potentially leading
+    the model to have a false idea of how fast things happen. By comparison, sampling
+    at a per-second basis will maintain the time information between frames, but it
+    will require far more tokens to be sent through the model, thus being more expensive
+    in terms of memory.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Performance Comparison
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: To compare the sampling options, they trained five different models that were
+    trained either with uniform sampling at a set rate (8, 16, 32, and 64) or FPS
+    sampling. They then evaluated them during test time. The graph on the left shows
+    when the models are tested based on their corresponding training method. As you
+    can see, across all 5 categories in the ApolloBench dataset, FPS sampling did
+    better (see Figure 4 Left).
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Figure 4 (Left and Middle) from the paper](../Images/13f98aa30753ae5bf254bbad86b31765.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Figure 4 (Left and Middle) from [the paper](https://arxiv.org/pdf/2412.10360)
+  prefs: []
+  type: TYPE_NORMAL
+- en: To remove doubt that the training was the difference here, the authors also
+    ran the experiment using frames-per-second inference sampling for all the models.
+    We saw again that the FPS trained model performed best. Nevertheless, given the
+    major improvement seen for the uniform sampling models (especially the ones with
+    fewer frames sampled), it’s worth noting how powerful FPS sampling seems to be
+    on its own.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Given the success of FPS sampling, the authors wanted to see how best to use
+    the additional tokens it requires. The graph below shows the authors varying how
+    many tokens are sent to the model from each frame via the token resampler (more
+    on that below). The color in the graph shows the accuracy, the x-axis is the frames
+    per second, y-axis is the tokens per second, and the number near the dotted red
+    line shows the tokens per frame.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Figure 4 (right) from the paper](../Images/6a56f7aed8518abaa9ba7c06a257dd1b.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Figure 4 (right) from [the paper](https://arxiv.org/pdf/2412.10360)
+  prefs: []
+  type: TYPE_NORMAL
+- en: The highest consistent accuracy seems to be found between 8 and 32 tokens per
+    frame. The fact that we see less accuracy with higher and lower tokens per frame
+    suggests a trade off happening here with more (or less) data to attend to. It’s
+    also worth pointing out that the frames per second didn’t matter nearly as much
+    as the tokens per second and tokens per frame. To me, this suggests that certain
+    key moments need to be highly sampled, and as we cannot currently predict these
+    moments, the best bet is to have multiple connections at play.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Video Representation
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: Before we had talked about how we use a different encoder for different kinds
+    of inputs. For text we may use something like [tiktoken](https://github.com/openai/tiktoken),
+    while for more complex input the industry hasn’t coalesced behind one form yet.
+    This means that when we’re looking to represent our video as a token, we should
+    consider a number of different encoding strategies based on what has worked well
+    for other modals (especially image).
+  prefs: []
+  type: TYPE_NORMAL
+- en: Image Encoders
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: 'Image encoders typically come in two kinds: language-supervised and self-supervised
+    encodings. The two are used the same way (image in, embedding out), but the training
+    is different. For language-supervised encoding models (like CLIP), we have both
+    an image and a descriptive text as inputs. We embed both separately and try to
+    make the two embeddings similar. Moreover, with every image-text pair within a
+    batch, we do our best to make the embeddings distinct from other image-text pair’s
+    embeddings (this is the contrastive part of CLIP). On the other hand, self-supervised
+    encodings only take in an image as an input for training. The model learns to
+    create the right embedding by playing games like predicting the angle of a rotated
+    image, or predicting the relative position of image patches (you’ve seen these
+    in reCAPTCHAs). The goal here is to drive the model to learn useful parts of an
+    image without labels.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Figure 1 from Learning Transferable Visual Models From Natural Language Supervision](../Images/7a577367404b137c6c7904244fe7fc2b.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Figure 1 from [Learning Transferable Visual Models From Natural Language Supervision](https://arxiv.org/pdf/2103.00020.pdf)
+  prefs: []
+  type: TYPE_NORMAL
+- en: Video Encoders
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: As video has both image and sound, encoding strategies here can be more complex
+    than image. What many of the leading video encoders do is build off of the strategies
+    from image, such as masking and language-supervision, to drive our video encoders
+    to learn key features. Likewise, building off the contrastive loss we use in CLIP,
+    we can use contrastive loss to get the embedder to align video and audio data
+    together. Let’s go deeper into masking and contrastive loss strategies, explaining
+    how they work through an example.
+  prefs: []
+  type: TYPE_NORMAL
+- en: For masking, imagine you have a video where a bear walks through the woods.
+    We generally see people mask a few randomly chosen part of the video. This masked
+    input is then processed by the embedder and the embedder’s goal is to correctly
+    predict the token at the end. Once we see a satisfactory aggregate loss, we simply
+    adjust our model at the end to output the final logits rather than the probabilities
+    of the next token. We use these logits as the embeddings
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'For multimodal contrastive loss, I’m going to explain this using an example.
+    Let’s say we have 3 videos each with audio. We start off by embedding all of the
+    videos with the video embedder and all the audio with the audio embedder. This
+    gives us 3 pairs of embedding logits: (V1, A1), (V2, A2), (V3, A3). We now do
+    cosine similarity on all 3 so we can teach the model to distinguish between all
+    of the pairs. The goal is that our cosine similarity for the correct pair (V1,
+    A1) is higher than for the wrong pairs (V1,A2) and (V1, A3). Once we do this enough,
+    the model will learn how to generate similar embeddings for audio-video pairs.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Image by Author - Example calculation of Contrastive Loss](../Images/b5653c41c34b8c3ec1bed0bd1e0c0328.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Image by Author – Example calculation of Contrastive Loss
+  prefs: []
+  type: TYPE_NORMAL
+- en: Combining Image & Video Encoders
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: At this point, you’re likely wondering why we discussed image encoders at all
+    when there are video encoders out there. After testing a number of different video
+    encoders, the authors found that they do not perform categorically better than
+    image encoders on video data. While image encoders won’t have any time information
+    explicit in their embeddings, they appear to provide higher-quality embeddings
+    generally, allowing for better model performance.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The authors trained several models using different encoders (both video and
+    image) and then compared their performance in the graph below. You can see that
+    generally speaking the language-supervised models outperformed the self-supervised
+    ones. Importantly, the best performing one, [SigLIP SO400M](https://huggingface.co/google/siglip-so400m-patch14-384),
+    is an image embedder.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Figure 5 (left) from the paper](../Images/e0e06c7a5e98a118fc87aca8d042e8a8.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Figure 5 (left) from [the paper](https://arxiv.org/pdf/2412.10360)
+  prefs: []
+  type: TYPE_NORMAL
+- en: They then tested if accuracy would improve by pairing the encoders together.
+    The hypothesis was that while image encoders have bad temporal understanding,
+    they have good spatial. On the other hand, video encoders have good temporal understanding
+    and bad spatial. The below graph shows performance for certain pairs of image
+    encoders and video encoders. Interestingly, combining the best performing image
+    encoder ([SigLIP SO400M](https://huggingface.co/google/siglip-so400m-patch14-384))
+    with the best-performing video encoder ([InternVideo2](https://huggingface.co/collections/OpenGVLab/internvideo2-6618ccb574bd2f91410df5cd))
+    did indeed raise accuracy above what each could do on their own (an increase of
+    ~ 4%).
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Figure 5 (right) from the paper— note the Y-axis is the same here as in Figure
+    5 (left)](../Images/34ef2b416ddc4846c607d40bf5ea81f7.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Figure 5 (right) from [the paper](https://arxiv.org/pdf/2412.10360)— note the
+    Y-axis is the same here as in Figure 5 (left)
+  prefs: []
+  type: TYPE_NORMAL
+- en: Video Token Sampling
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: Our video encodings output their embeddings in a lower dimension than our model’s
+    hidden layer expects. The typical solution to this problem is to upsample so we
+    project up 2–4x. Naturally, this added information is not as high-signal as our
+    regular embeddings, so it is a place we can look to fix. One solution is resampling
+    – where we combine multiple tokens into one. This was tried with image models
+    and there was no degradation in performance. There are a number of different ways
+    to combine the tokens (using QFormer, average pooling), but previous papers had
+    found channel concatenation to be the best, so this is what the authors tested.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Figure 1 from "Perceiver: General Perception with Iterative Attention"](../Images/4869533004a6d23e3ac3ba6b3ec701ca.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'Figure 1 from "[Perceiver: General Perception with Iterative Attention](https://arxiv.org/abs/2103.03206)"'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The authors tried 3 techniques: `mlp up-projection + average pooling`, `2D
+    conv + average pooling`, and `perceiver resampling`. MLP up-projection is using
+    multilayer perceptrons to handle our upscaling and then average pooling all of
+    the now expanded tensors. 2D Convolution is using a convolution operation to combine
+    the 2 tensors and then using average pooling from there to output the result.
+    Finally, we have Perceiver resampling which uses the Perceiver architecture (shown
+    above) to determine how best to combine the tokens.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: As you can see from the below, using the Perceiver Resampler to combine tokens
+    led to the greatest overall score.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Table 1 from the paper](../Images/3747e9c31b8ff3466d316c27060b016e.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Table 1 from [the paper](https://arxiv.org/pdf/2412.10360)
+  prefs: []
+  type: TYPE_NORMAL
+- en: Video Token Integration
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: As with other multimodal models, a critical design choice is how to combine
+    different token types. Initially, these tokens were simply directly concatenated
+    and sent through the model, however, recent work has been done to explicitly distinguish
+    the two. This is done either with new special tokens or with text.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The authors experimented with 4 different ways to separate. One had no distinction
+    (`<vid_token>`), the other had 2 special tokens on either side of the vid_token
+    (`<vid_start>...<vid_end>`). The last two used a timestamp to directly encode
+    time information. They either put this time information right before the video
+    token, or right before our first special token.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Running these 4 methods through ApolloBench showed that the timestamp at the
+    beginning with no special tokens was most effective. The theory was that by adding
+    new vocabulary we were increasing the cognitive load of the model, requiring more
+    training to learn these weights without a significant improvement. Meanwhile,
+    by adding in timing information, we were using the original vocabulary and giving
+    the model needed context.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Table 2 from the paper](../Images/3093ae8017f9532183ca4955ace6192b.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Table 2 from [the paper](https://arxiv.org/pdf/2412.10360)
+  prefs: []
+  type: TYPE_NORMAL
+- en: Conclusion
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: We’ve now gone through 4 of the critical design choices Meta made in their LMM.
+    As the research here improves, it seems like the ideal encoder (or encoder pair)
+    will unlock major performance gains. Today, we are broadly seeing models handle
+    ever larger context lengths with more types of inputs. I would expect that once
+    we have a powerful encoder for video, we would see an explosion in data that can
+    then be used to train these models.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[With my MM1 blog](https://towardsdatascience.com/multimodal-large-language-models-apples-mm1-c1e94d87a161),
+    I had said we were going to start seeing more multimodal models coming out. It’s
+    been really cool to see not only has that come true, but that the encoder way
+    of thinking has been applicable to multiple domains.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: It’s an exciting time to be building!
+  prefs: []
+  type: TYPE_NORMAL
+- en: '* * *'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[1] Zohar, O., et al., ["Apollo: An Exploration of Video Understanding in Large
+    Multimodal Models"](https://arxiv.org/pdf/2412.10360) (2024), arXiv'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[2] Jaegle, A., et al., ["Perceiver: General Perception with Iterative Attention"](https://arxiv.org/abs/2103.03206)
+    (2021), arXiv'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[3] McKinzie, B., et al. ["MM1: Methods, Analysis & Insights from Multimodal
+    LLM Pre-training" (2024)](https://arxiv.org/pdf/2403.09611.pdf), arXiv'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[4] Radford, A., et al. ["Learning Transferable Visual Models From Natural
+    Language Supervision"](https://arxiv.org/pdf/2103.00020.pdf) (2021), arXiv'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[5] WikiMedia Foundation, et al., "[Phi phenomenon](https://en.wikipedia.org/wiki/Phi_phenomenon)"
+    (2024), Wikipedia'
+  prefs: []
+  type: TYPE_NORMAL

@@ -1,0 +1,154 @@
+- en: 'Preventing Context Overload: Controlled Neo4j MCP Cypher Responses for LLMs'
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 原文：[https://towardsdatascience.com/preventing-context-overload-controlled-neo4j-mcp-cypher-responses-for-llms/](https://towardsdatascience.com/preventing-context-overload-controlled-neo4j-mcp-cypher-responses-for-llms/)
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: '<mdspan datatext="el1757105358537" class="mdspan-comment">Large language</mdspan>
+    models connected to your Neo4j graph gain incredible flexibility: they can generate
+    any Cypher queries through the Neo4j MCP Cypher server. This makes it possible
+    to dynamically generate complex queries, explore database structure, and even
+    chain multi-step agent workflows.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'To generate meaningful queries, the LLM needs the graph schema as input: the
+    node labels, relationship types, and properties that define the data model. With
+    this context, the model can translate natural language into precise Cypher, discover
+    connections, and chain together multi-hop reasoning.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/606e8106de0f9a89c4703533e725eba0.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Image created by the author.
+  prefs: []
+  type: TYPE_NORMAL
+- en: For example, if it knows about `(Person)-[:ACTED_IN]->(Movie)` and `(Person)-[:DIRECTED]->(Movie)`
+    patterns in the graph, it can turn *“Which movies feature actors who also directed?”*
+    into a valid query. The schema gives it the grounding needed to adapt to any graph
+    and produce Cypher statements that are both correct and relevant.
+  prefs: []
+  type: TYPE_NORMAL
+- en: But this freedom comes at a cost. When left unchecked, an LLM can produce Cypher
+    that runs far longer than intended, or returns enormous datasets with deeply nested
+    structures. The result is not just wasted computation but also a serious risk
+    of overwhelming the model itself. At the moment, every tool invocation returns
+    its output back through the LLM’s context. That means when you chain tools together,
+    all of the intermediate results must flow back through the model. Returning thousands
+    of rows or embedding-like values into that loop quickly turns into noise, bloating
+    the context window and reducing the quality of the reasoning that follows.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/36e735cf7361f9a3feda81196e31a554.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Generated using Gemini
+  prefs: []
+  type: TYPE_NORMAL
+- en: This is why throttling responses matters. Without controls, the same power that
+    makes the Neo4j MCP Cypher server so compelling also makes it fragile. By introducing
+    timeouts, output sanitization, row limits, and token-aware truncation, we can
+    keep the system responsive and ensure that query results stay useful to the LLM
+    instead of drowning it in irrelevant detail.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '***Disclaimer:** I work at Neo4j, and this reflects my exploration of potential
+    future improvements to the current implementation.*'
+  prefs: []
+  type: TYPE_NORMAL
+- en: The server is available on [GitHub](https://github.com/tomasonjo-labs/neo4j-mcp-experiments/tree/main/servers/mcp-neo4j-cypher-throttle).
+  prefs: []
+  type: TYPE_NORMAL
+- en: Controlled outputs
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'So how do we prevent runaway queries and oversized responses from overwhelming
+    our LLM? The answer is not to limit what kinds of Cypher an agent can write as
+    the whole point of the Neo4j MCP server is to expose the full expressive power
+    of the graph. Instead, we place smart constraints on *how much* comes back and
+    *how long* a query is allowed to run. In practice, that means introducing three
+    layers of protection: timeouts, result sanitization, and token-aware truncation.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Query timeouts
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: 'The first safeguard is simple: every query gets a time budget. If the LLM generates
+    something expensive, like a giant Cartesian product or a traversal across millions
+    of nodes, it will fail fast instead of hanging the whole workflow.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: We expose this as an environment variable, `QUERY_TIMEOUT`, which defaults to
+    ten seconds. Internally, queries are wrapped in `neo4j.Query` with the timeout
+    applied. This way, both reads and writes respect the same bound. This change alone
+    makes the server much more robust.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Sanitizing noisy values
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: Modern graphs often attach **embedding vectors** to nodes and relationships.
+    These vectors can be hundreds or even thousands of floating-point numbers per
+    entity. They’re essential for similarity search, but when passed into an LLM context,
+    they’re pure noise. The model can’t reason over them directly, and they consume
+    a huge amount of tokens.
+  prefs: []
+  type: TYPE_NORMAL
+- en: To solve this, we recursively sanitize results with a simple Python function.
+    Oversized lists are dropped, nested dicts are pruned, and only values that fit
+    within a reasonable bound (by default, lists under 52 items) are preserved.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Token-aware truncation
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: Finally, even sanitized results can be verbose. To guarantee they’ll always
+    fit, we run them through a tokenizer and slice down to a maximum of 2048 tokens,
+    using OpenAI’s `tiktoken` library.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE0]'
+  prefs: []
+  type: TYPE_PRE
+- en: This final step ensures compatibility with any LLM you connect, regardless of
+    how big the intermediate data might be. It’s like a safety net that catches anything
+    the earlier layers didn’t filter to avoid overwhelming the context.
+  prefs: []
+  type: TYPE_NORMAL
+- en: YAML response format
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: Additionally, we can reduce the context size further by using YAML responses.
+    At the moment, Neo4j Cypher MCP responses are returned as JSON, which introduce
+    some extra overhead. By converting these dictionaries to YAML, we can reduce the
+    number of tokens in our prompts, lowering costs and improving latency.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE1]'
+  prefs: []
+  type: TYPE_PRE
+- en: Tying it together
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: With these layers combined — timeouts, sanitization, and truncation — the Neo4j
+    MCP Cypher server remains fully capable but far more disciplined. The LLM can
+    still attempt any query, but the responses are always bounded and context-friendly
+    to an LLM. Using YAML as response format also helps lower the token count.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Instead of flooding the model with large amounts of data, you return just enough
+    structure to keep it smart. And that, in the end, is the difference between a
+    server that feels brittle and one that feels purpose-built for LLMs.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The code for the server is available on [GitHub](https://github.com/tomasonjo-labs/neo4j-mcp-experiments/tree/main/servers/mcp-neo4j-cypher-throttle).
+  prefs: []
+  type: TYPE_NORMAL

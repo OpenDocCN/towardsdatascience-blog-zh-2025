@@ -1,0 +1,805 @@
+- en: How to Fine-Tune Small Language Models to Think with Reinforcement Learning
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 原文：[https://towardsdatascience.com/how-to-finetune-small-language-models-to-think-with-reinforcement-learning/](https://towardsdatascience.com/how-to-finetune-small-language-models-to-think-with-reinforcement-learning/)
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: <mdspan datatext="el1752026182070" class="mdspan-comment">**Reasoning models**
+    are currently</mdspan> in fashion. DeepSeek-R1, Gemini-2.5-Pro, OpenAI’s O-series
+    models, Anthropic’s Claude, Magistral, and Qwen3 — there is a new one every month.
+    When you ask these models a question, they go into a *chain of thought* before
+    generating an answer.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/087ac2c24d57b01fb658fb688c143358.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: A simple demonstration of what reasoning looks like. When asked a question,
+    the Language Model (LM) generates a chain of thought first, followed by the answer.
+    (Illustration by the Author)
+  prefs: []
+  type: TYPE_NORMAL
+- en: I recently asked myself the question, “Hmm… I wonder if I should write a Reinforcement
+    Learning loop from scratch that teaches this ‘thinking’ behaviour to *really*
+    small models — *like only 135 million* *parameters*“. It should be easy, right?
+  prefs: []
+  type: TYPE_NORMAL
+- en: Well, it wasn’t.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Small models simply do not have the world knowledge that large models do.
+    This makes < 1B parameter model lack the “common sense” to easily reason through
+    complex logical tasks. Therefore, you cannot just rely on compute to train them
+    to reason.'
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: ''
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: You need additional tricks up your sleeve.**
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: In this article, I won’t just cover tricks though. I will cover the major ideas
+    behind training reasoning behaviours into language models, share some simple code
+    snippets, and some practical tips to fine-tune Small Language Models (SLMs) with
+    RL.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**This article is divided into 5 sections:**'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Intro to RLVR (Reinforcement Learning with Verifiable Rewards) and why it is
+    uber cool
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: A visual overview of the GRPO algorithm and the clipped surrogate PPO loss.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: A code walkthrough!
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Supervised fine-tuning and practical tips to train reasoning models
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Results!
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '*Unless otherwise mentioned, all images used in this article are illustrations
+    produced by the author.*'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '*At the end of this article, I will link to the 50-minute companion YouTube
+    video of this article. If you have any queries, that video likely has the answers/clarification
+    you need. You can also reach out to me on X ([@neural_avb](https://x.com/neural_avb)).*'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 1\. Reinforcement Learning with Verifiable Rewards (RLVR)
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: Before diving into specific challenges with Small models, let’s first introduce
+    some terms.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Group Relative Policy Optimization, or GRPO, is a (rather new) Reinforcement
+    Learning (RL) technique that researchers are using to fine-tune Large Language
+    Models (LLMs) on logical and analytical tasks. Since its inception, a new term
+    has been circulating in the LLM research space: **RLVR**, or **R**einforcement
+    **L**earning with **V**erifiable **R**ewards.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'To understand what makes RLVR unique, it’s helpful to contrast it with the
+    most common application of RL in language models: RLHF (**R**einforcement **L**earning
+    with **H**uman **F**eedback). In RLHF, an RL module is trained to maximize scores
+    from a separate reward model, which acts as a proxy for human preferences. This
+    reward model is trained on a dataset where humans have ranked or rated different
+    model responses.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**In other words, RLHF is trained so LLMs can output responses that are more
+    aligned with human preferences. It tries to make models follow instructions more
+    closely.**'
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: ''
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: '**RLVR tries to solve a different problem. RLVR teaches a model to be verifiably
+    correct, often by learning to generate it’s own chain of thought.**'
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: Where RLHF had a *subjective* reward model, RLVR uses an *objective* verifier.
+    The core idea is to provide rewards based on whether an answer is demonstrably
+    correct, not on a prediction of what a human might prefer.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/5ecb9b684b696a3cc64ce8c11aa46653.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: An illustration of how RLVR works (Illustrated by the Author)
+  prefs: []
+  type: TYPE_NORMAL
+- en: This is exactly why this system is called ‘RL with *verifiable rewards*‘. Not
+    every question’s answer can be verified easily. Especially open-ended questions
+    like *“What iPhone should I buy?*” or “*Where should I go to college?”*. Some
+    use cases, however, do fit easily in the “verifiable rewards” paradigm, like math,
+    logical tasks, and code-writing, to name a few. In the `reasoning-gym` section
+    below, we will look into how exactly these tasks can be simulated and how the
+    rewards can be generated.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '*But before that, you might ask: well where does “reasoning” fit into all of
+    this?*'
+  prefs: []
+  type: TYPE_NORMAL
+- en: We will train the LLM to generate arbitrarily long chain of thought reasoning
+    texts before generating the final answer. We instruct the model to wrap its thinking
+    process in `<think>` tags and its final conclusion in `<answer>` tags.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The full language model response will look something like this:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE0]'
+  prefs: []
+  type: TYPE_PRE
+- en: This structure allows us to easily extract just the final answer and check if
+    it’s correct. The verifier is a single source of truth, and can be a simple piece
+    of code that (literally) counts alphabets.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE1]'
+  prefs: []
+  type: TYPE_PRE
+- en: We will keep a record of the model’s experiences — its responses and the corresponding
+    rewards received from the verifier. The RL algorithm will then train to promote
+    behaviours that increase the likelihood of correct final answers.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**By consistently rewarding correct answers and good formatting, we would increase
+    the likelihood of reasoning tokens that lead to correct answers.**'
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: ''
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: '**Get this: we don’t *need* to directly evaluate the intermediate reasoning
+    tokens. By simply rewarding the final answer, we will indirectly elicit reasoning
+    steps into the LLM’s chain of thought that lead to correct answers!**'
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: '![](../Images/25245ee7cb973f62d6735243eefc8e2e.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'Source: Some exercepts from the [DeepSeek-R1](https://arxiv.org/pdf/2501.12948)
+    paper (License: Free)'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 2\. GRPO (Group Relative Policy Optimization)
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: I am going to skip the usual *Reinforcement Learning 101* intro here, I expect
+    most of you who read this far to understand the basics of RL. There is an agent
+    who observes states from the environment and takes an action — the environment
+    rewards the agent depending on how good the action was — the agent stores these
+    experiences and trains to take better actions in the future that lead to higher
+    rewards. *RL 101* class dismissed.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '*But how do we transfer the RL paradigm to language?*'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Let’s talk about our algorithm of choice — **G**roup **R**elative **P**olicy
+    **O**ptimization to understand how. GRPO works in two iteratively self-repeating
+    phases — an experience collection phase where the Language Model (LM) accumulates
+    experiences in the environment with its current weights. And a training phase
+    where it uses the collected memories to update its weights to improve. After training,
+    it once again goes into an experience collection step with the updated weights.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Experience Collection
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: Let’s dissect each step in the experience collection phase now.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Step 1:** The environment is a black box that generates questions about logical
+    or math tasks. We will discuss this in an upcoming section with the `reasoning-gym`
+    library.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Step 2:** We tokenize the input questions into a sequence of integer tokens.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '![](../Images/a747a2a82a684936812da40a7a4e90bf.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Sample questions, tokenized them, forward pass through LM, and generate multiple
+    responses for each question! (Illustrated by the Author)
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Step 3:** The “agent” or the “policy” is the current SLM we are training.
+    It observes the environment’s tokenized questions and generates responses. The
+    LLM response gets converted into text and returned to the environment. The environment
+    rewards each response.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '![](../Images/e6a9e8ce29f35542b1c7c9da9430b651.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: The Environment acts as the verifier and assigns a reward to the agent. (Illustrated
+    by the Author)
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Step 4:** From the rewards, we calculate the **advantage** of each response.
+    In GRPO, the advantage is the relative goodness of each response in the group.
+    Importantly, advantages are calculated per group, i.e. we do not standardize rewards
+    *across* different questions.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '![](../Images/8fcec6bef4426956d814f27bf6ed4357.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Advantages define how favourable a specific response is relative to other responses
+    to the same question
+  prefs: []
+  type: TYPE_NORMAL
+- en: (Illustrated by the Author)
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Step 5:** The original question, the log probabilities for each LM-generated
+    token, and the advantages are all accumulated inside a memory buffer.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Steps 1-5 are repeated till the buffer size reaches the desired threshold.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '![](../Images/2c134917bf1255cbc0714e9df6983b93.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Saving experiences in the buffer! (Illustrated by the Author)
+  prefs: []
+  type: TYPE_NORMAL
+- en: Training Phase
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: 'After the end of the experience collection phase, our goal is to enter the
+    training phase. Here, we will learn from the reward patterns the LLM observed
+    and use RL to improve its weights. Here is how that works:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Randomly sample a minibatch of memories. Remember, each memory already contained
+    its group-relative-advantage (Step 5 from the experience collection phase). Randomly
+    sampling question-answer pairs improves the robustness of the training as the
+    gradients are calculated as an average of a diverse set of experiences, preventing
+    over-fitting on any single question.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: For each minibatch, we want to maximize this term following the standard PPO
+    (Proximal Policy Optimization) formulation. **The major difference with GRPO is
+    that we do not need an additional reward model or a value network to calculate
+    advantages. Instead, GRPO samples multiple responses to the same question to calculate
+    the relative advantage of each response.** The memory footprint is significantly
+    reduced since we won’t need to train those additional models!
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Repeat the above steps.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '![](../Images/39b6b05aa20e6bdd0acf7f285667b80a.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: GRPO operates in 2 repeating phases — collect experiences, train on experiences,
+    repeat. (Illustrated by the Author)
+  prefs: []
+  type: TYPE_NORMAL
+- en: What the PPO Loss means
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: Let me explain the PPO Loss in an intuitive step-by-step fashion. The PPO Loss
+    looks like this.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/77f510fd74429913fdd55a700d725eb2.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: '[The PPO Loss Function](https://arxiv.org/abs/1707.06347). Let me break it
+    down for you. (Illustration by the Author)'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Here, `pi_old` is the old-policy neural network that we used during the data
+    collection phase.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '`π` is the current policy neural network we are training. Since the weights
+    of `π` change after each gradient update, `π` and `π_old` do not remain the same
+    during the training phase — hence the distinction.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '`G` is the number of generated responses for a single question. `|o_i|` is
+    the length of the i-th response in the group. Therefore, those summation and normalization
+    operation computes a mean over all the tokens over all responses. What does it
+    compute the mean of? Well it is `π/π_old * A_{it}`. What does that mean?'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '![](../Images/e84065125e8d65a159c5775694c1019d.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: The simplest way to assign an advantage to each token is by copying the advantage
+    of the entire response (Illustrated by the Author)
+  prefs: []
+  type: TYPE_NORMAL
+- en: '`A_it` is the advantage of the t-th token in the i-th response. Remember when
+    we calculated the advantage of each response in Step 5 during experience collection?
+    The easiest way to assign an advantage to each token is by simply duplicating
+    the same advantage to each token — this means we are saying that every token is
+    equally responsible for generating the correct answer.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Lastly, what is `π(o_it | q, o_i < t)`? It means what is the probability of
+    the `t-th` token in the `i-th` response? Meaning, how *likely* was that token
+    when it was generated?
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: The importance sampling ratio reweights the advantages between the current updating
+    policy and the old exploration policy.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: The clipping term ensures that the updates to the network do not become too
+    large and the weights do not move too far away from the old policy. This adds
+    more stability to the training process by keeping the model updates close to “a
+    trust region” from the data-collection policy.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '![](../Images/25865bcc2ba7b469312e933f2cfbb264.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: The PPO objective broken down into individual components. (Illustrated by the
+    Author)
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**When we are maximizing the PPO objective, we are effectively asking the LLM
+    to *increase* the log-probability of the tokens that led to a high advantage,
+    while *decreasing* the log-probability of tokens that had a low advantage.**'
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: ''
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: 'In other words: make tokens that generate good advantages more likely and tokens
+    that generate low advantages less likely.'
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: Understanding the PPO Loss with an example
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: Let’s forget about the clipping term and the `π_old` for now, and let’s just
+    see what maximizing `𝜋(𝑜_i) * A_i` means. To remind you, this part of the equation
+    simply means, “the product of the probability of the i-th token (o_i) and the
+    advantage of the i-th token (A_i)
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Let’s say for a question, the LLM generated these two sequences: “A B C” and
+    “D E F”, and it got an advantage of +1 for the former and -1 for the latter*.
+    Let’s say we have the log probabilities for each of the 3 tokens as shown below.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '* *actually since group-relative advantages always have a standard deviation
+    of 1, the correct advantages should be +0.707 and -0.707.*'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Notice what happens when you multiply the advantages `A_it` by the current logprobs
+    `pi`. Now really think about what it means to maximize the mean of that product
+    matrix.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/f5679400a26413d959804499d3d6228f.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: A toy example to show what it means to maximize the product of the probability
+    of a token with it’s advantage (Illustrated by the Author)
+  prefs: []
+  type: TYPE_NORMAL
+- en: Remember we can only change the probabilities coming out of the LLM. The advantages
+    come from the environment and are therefore treated as constants. Increasing this
+    expected score would therefore mean increasing the probability of tokens with
+    a positive advantage, and decreasing the value of the negative advantage example.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/ef963a1aea0f59b0ee0c3105e2756e4f.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: To increase the mean of the product tensor, we must increase each value in the
+    tensor, so we must increase the probs of positive advantage-tokens, and decrease
+    the probs of negative-advantage tokens.
+  prefs: []
+  type: TYPE_NORMAL
+- en: (Illustrated by the Author)
+  prefs: []
+  type: TYPE_NORMAL
+- en: Below, you will find an example of how log-probs change after a few rounds of
+    training. Notice how the blue line is moving closer to zero when the advantage
+    is high? This indicates that the log-probabilities increased (or the probabilities
+    increased) after going through RL Training. Compare that to the plot on the right,
+    which shows a different response with a low advantage. The blue line is moving
+    away from 0, becoming less probable for selection in later rounds.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/ec457f659096fb26f8c969b622b290fc.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: A comparison of how RL fine-tuning affects log-probs of tokens after training
+    (Illustration by the Author)
+  prefs: []
+  type: TYPE_NORMAL
+- en: In the next section, let’s take a look at the `reasoning-gym` library and understand
+    how we could sample tasks.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 3\. Implementation
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: So, to do RL, we first need tasks. A common way to do this is by using an existing
+    dataset of math problems, like the GSM-8K dataset. In this article, let’s look
+    at a different case — generating tasks procedurally with a Python library called
+    [reasoning-gym](https://github.com/open-thought/reasoning-gym).
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'For my experiments, I used two tasks: **syllogism** and **propositional logic**.
+    `reasoning-gym` contains a host of different repositories of varying difficulty.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: A **syllogism task** is a type of logical puzzle designed to test deductive
+    reasoning. Basically, we will provide the LLM with two premises and ask if the
+    conclusion is correct or not. The **propositional logic** task is a symbolic reasoning
+    task where the LLM is provided tasks with symbols and asked to generate the conclusion.
+    Unlike syllogism, this is not a YES/NO classification response — they have to
+    generate the correct conclusion directly. This makes this task considerably harder.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/3d678695ac4dcccc6da1f07f25689aab.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Example of the Syllogism Task (Footage of my RL-trained model)
+  prefs: []
+  type: TYPE_NORMAL
+- en: '*Before we begin coding, I guess it is customary to specify what I mean by
+    “small” models.*'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The jury is still out on what qualifies as a “small” model (some say <14B,
+    some say <7B), but for my YouTube video, I picked even smaller models: SmolLM-135M-Instruct,
+    SmolLM-360M-Instruct, and Qwen3-0.6B. These are ~135M, ~360M, and ~600M models,
+    respectively.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Let’s see how to set up the basic training loop. First, we can use Huggingface’s
+    `transformers` library to load in a model we want to train, let’s say the little
+    135M param model `SmolLM-135M-Instruct`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: To generate some propositional logic tasks, for example, you just call this
+    `reasoning_gym.create_dataset function` as shown below.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE2]'
+  prefs: []
+  type: TYPE_PRE
+- en: To generate reasoning data, we want the LM to generate thinking, followed by
+    the response. Below is the system prompt we will be using.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE3]'
+  prefs: []
+  type: TYPE_PRE
+- en: To generate answers, we first tokenize the system prompt and the question as
+    shown below.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE4]'
+  prefs: []
+  type: TYPE_PRE
+- en: Then we pass it through the LM — generate multiple responses using the `num_return_sequences`
+    parameter, and detokenize it back to get a string response. No gradients are calculated
+    during this stage.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE5]'
+  prefs: []
+  type: TYPE_PRE
+- en: We also write the `extract_answer` function, which uses regular expressions
+    to extract answers between the answer tags.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE6]'
+  prefs: []
+  type: TYPE_PRE
+- en: Finally, we use the score function we got previously to generate a reward depending
+    on whether the LM’s response was correct. To calculate rewards, we add a format
+    reward and a correction reward. The correction reward comes from the environment,
+    and the format reward is awarded if the model correctly generates the `<think>
+    ... </think>` and `<answer> ... </answer>` tags.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The advantages are calculated by standardizing across each group.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE7]'
+  prefs: []
+  type: TYPE_PRE
+- en: Store the (old) log probs, advantages, responses, and response masks in a memory
+    buffer.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE8]'
+  prefs: []
+  type: TYPE_PRE
+- en: After multiple experience collection step, once the buffer is full, we initiate
+    our training loop. Here, we sample minibatches from our experience, calculate
+    the log probs, compute loss, and backdrop.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE9]'
+  prefs: []
+  type: TYPE_PRE
+- en: You can use additional entropy losses here, or minimize KLD with your reference
+    model as suggested in the original Deepseek-R1 paper, but future papers have concluded
+    that these leash the training process and not a requirement.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 4\. Warming up with Supervised Fine-tuning
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: Technically, we can try to run a big RL training right now and hope that the
+    small models can pull through and conquer our tasks. However, the probability
+    of that is incredibly low.
+  prefs: []
+  type: TYPE_NORMAL
+- en: There is one big problem — our small models are not appropriately trained to
+    generate formatted outputs or perform well on these tasks. Off the box, their
+    responses do have *some* logical flow to them, thanks to the pretraining or instruction
+    tuning from their original developers, but they are not good enough for our target
+    task.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/1e7765e2b52a840c14e459c691d32cec.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Comparing the outputs of a small model with a Large LM (Illustration by Author)
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Think about it — RL trains by collecting experiences and updating the policy
+    to maximize the good experiences. But if most of the experiences are completely
+    bad and the model receives 0 rewards, it has no way to optimize, because it gets
+    no signal to improve at all. So the recommended approach is to first teach the
+    model the behavior you want to train using supervised fine-tuning. Here is a simple
+    script:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE10]'
+  prefs: []
+  type: TYPE_PRE
+- en: To generate the fine-tuning dataset, I first generated the thinking and answer
+    tags with a small LLM-like GPT-4.1-mini. Doing this is incredibly simple — we
+    sample 200 or so examples for each task, call the OpenAI API to generate a response,
+    and save it on disk.
+  prefs: []
+  type: TYPE_NORMAL
+- en: During SFT, we load the base model we want to train, attach a trainable LORA
+    adapter ,and do parameter-efficient fine-tuning. Here are the LORA configurations
+    I used.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE11]'
+  prefs: []
+  type: TYPE_PRE
+- en: LORA allows the training process to be more memory efficient and also reduces
+    the risk of corrupting the original model. You can find the details of parameter-efficient
+    supervised fine-tuning in my YouTube video right here.
+  prefs: []
+  type: TYPE_NORMAL
+- en: I trained a LORA adapter on 200 examples of syllogism data with the smallest
+    language model I could find — the HuggingfaceTB/SmolLM-135M-Instruct, and it got
+    us an accuracy of 46%. Roughly, this means that we generate a correct answer 46%
+    of the time. More importantly, we often get the formatting right, so our regex
+    can safely extract answers from the responses more often than not.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Some more optimizations for SLMs and practical considerations
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: Not all reasoning tasks can be solved by all models. **An easy way to verify
+    if a task is too hard or too easy for the model is to just check the base accuracy
+    of the model on your task**. If it is, let’s say below 10-20%, the task is likely
+    very hard and you need additional supervised warmup fine-tuning.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '**SFT, even on small datasets, can generally show massive accuracy gains on
+    small models.** If you can acquire a good dataset, you may not even need to do
+    Reinforcement Learning in many scenarios. SLMs are immensely tunable.'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Papers like [DAPO](https://arxiv.org/abs/2503.14476) and [Critical Perspectives
+    on R1](https://arxiv.org/abs/2503.20783) have claimed that the original loss normalization
+    from [DeepSeek](https://arxiv.org/pdf/2402.03300) has a **length bias**. They
+    have proposed other normalization methods that are worth looking at. For my project,
+    the regular DeepSeek loss just worked.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: DAPO also mentions **removing the KLD term** in the original R1 paper. Originally,
+    the goal of this loss was to ensure that the updating policy is never too far
+    away from the base policy, but DAPO suggests not using this because the behaviour
+    of the policy can drastically change during reasoning, making this KLD term an
+    unnecessary regularisation term that will restrict the model’s intelligence.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '**Generating diverse responses IS KEY** to making RL possible. If you only
+    generated correct responses, or if you only generated incorrect responses, the
+    advantage will be 0, and this will give the RL algorithm no training signal at
+    all. We can generate diverse responses by increasing the `temperature`, `top_p`,
+    and `num_return_sequences` parameters in the `generate()`.'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: You can also generate **diverse rewards**, by adding more terms into the reward
+    function. For example, a length reward that penalizes overly long reasoning.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: 'The following parameters increase the **stability of training at the cost of
+    more computation**: increasing num generations per rollout, increasing the size
+    of the buffer and lowering the learning rate.'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Use **gradient accumulation** (or even gradient checkpointing) if you have limited
+    resources to train these models.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: There is some fine print I skipped in this article related to **padding**. When
+    saving experiences into buffer, it’s best practice to remove the pad tokens altogether
+    — and recreate them when loading a minibatch during training.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: It is best to leave whitespace around <think> and <answer> (and their closing
+    tags). This results in **consistent tokenization** and makes training slightly
+    easier for the SLMs.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: 4\. Results
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: Here is my YouTube video that explains everything in this blog post more pictorially
+    and provides a hands-on tutorial on how to code such a thing.
+  prefs: []
+  type: TYPE_NORMAL
+- en: On the supervised-fine-tuned SmolLM-135M on the syllogism task, we got a bump
+    to 60%! You can see the reward curve here — the healthy standard deviation of
+    the rewards shows that we were indeed getting diverse responses throughout, which
+    is a healthy thing if we want to train with RL.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/2b9758fa6fea90224a82bd5d85b7ebcd.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Rewards curve of the Syllogism task on SmolLM-135M after SFT (Illustration by
+    Author)
+  prefs: []
+  type: TYPE_NORMAL
+- en: Here is a set of hyperparameters that worked well for me.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE12]'
+  prefs: []
+  type: TYPE_PRE
+- en: I also repeated this experiment with larger models — the SmolLM-360M-Instruct
+    and the Qwen3-0.6B model. In the latter, I was able to get accuracies up to 81%
+    which is awesome! We got a 20% additive bump on average in the syllogism task!
+  prefs: []
+  type: TYPE_NORMAL
+- en: In the propositional logic task, which in my opinion is a harder reasoning task,
+    I also saw similar gains across all small models! I am sure that with more instruction
+    tuning and RL fine-tuning, possibly on multiple tasks at once, we can raise the
+    intelligence of these models a lot higher. Training on a single task can generate
+    quick results which is what I wanted for this Youtube video, but it can also act
+    as a bottleneck for the model’s overall intelligence.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Let’s end this article with a GIF of the small models outputting reasoning data
+    and solving tasks. Enjoy, and stay magnificent!
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/9ea2fd2df36bbfe79003f439dd681c0d.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'SmolLM-135M after training on Propositional Logic Tasks (Source: Author)'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '* * *'
+  prefs: []
+  type: TYPE_NORMAL
+- en: References
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: '**Author’s YouTube channel**: [https://www.youtube.com/@avb_fj](https://www.youtube.com/@avb_fj)'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Author’s Patreon**: [www.patreon.com/NeuralBreakdownwithAVB](https://www.patreon.com/c/NeuralBreakdownwithAVB)'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Author’s Twitter (X) account**: [https://x.com/neural_avb](https://x.com/neural_avb)'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Deepseek Math: https://arxiv.org/pdf/2402.03300'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'DeepSeek R1: https://arxiv.org/abs/2501.12948'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'DAPO: https://arxiv.org/abs/2503.14476'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Critical Perspectives on R1: https://arxiv.org/abs/2503.20783'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Reasoning Gym Library: [github.com/open-thought/reasoning-gym](https://github.com/open-thought/reasoning-gym)'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'A good place to read about Reasoning: [https://github.com/willccbb/verifiers](https://github.com/willccbb/verifiers)'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'A great place to study code: [https://github.com/huggingface/trl/blob/main/trl/trainer/grpo_trainer.py](https://github.com/huggingface/trl/blob/main/trl/trainer/grpo_trainer.py)'
+  prefs: []
+  type: TYPE_NORMAL

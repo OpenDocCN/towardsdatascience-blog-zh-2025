@@ -1,0 +1,500 @@
+- en: Capturing and Deploying PyTorch Models with torch.export
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 原文：[https://towardsdatascience.com/capturing-and-deploying-pytorch-models-with-torch-export/](https://towardsdatascience.com/capturing-and-deploying-pytorch-models-with-torch-export/)
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: '<mdspan datatext="el1755606794973" class="mdspan-comment">When</mdspan> we
+    think of <mdspan datatext="el1755651919677" class="mdspan-comment">starting a
+    new AI/ML</mdspan> model project, most of our attention tends to focus on the
+    big problems, such as: creating and curating datasets, designing the best ML architecture,
+    acquiring appropriately large GPU clusters for training, and building an inference
+    solution that meets target quality-of-service (QOS) requirements. However, it’s
+    often the small details that become our *Achilles’ heel*, leading to unanticipated
+    bugs and significant production delays.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'One detail that’s often overlooked is the handoff of a trained model to the
+    inference environment. While this handoff may seem trivial, it can easily become
+    the source of a great deal of frustration. The training and inference environments
+    are rarely identical, with differences varying from runtime libraries to hardware
+    targets. To navigate these differences, the AI/ML model developer must ensure:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: that the model definition, along with its trained weights, is loaded properly
+    into the inference environment, and
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: that the model’s behavior does not change.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: This post will focus on the first challenge — reliable restoration of the model
+    definition and state in an inference environment. We will survey some of the legacy
+    options and their shortcomings. We will then introduce the new [torch.export](https://docs.pytorch.org/docs/stable/export.html) API
+    and demonstrate it in action on a toy model built with [HuggingFace’s](https://huggingface.co/) [transformers](https://huggingface.co/docs/transformers/en/index) library
+    (version 4.54.0). For our experiments, we will use an [Amazon EC2 g5.xlarge](https://aws.amazon.com/ec2/instance-types/g5/) instance
+    (containing an NVIDIA A10G GPU and 4 vCPUs) running a [PyTorch (2.7) Deep Learning
+    AMI (DLAMI)](https://docs.aws.amazon.com/dlami/latest/devguide/aws-deep-learning-ami-gpu-pytorch-2.7-ubuntu-22-04.html).
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'One of the technologies underlying [torch.export](https://docs.pytorch.org/docs/stable/export.html) is [Torch
+    Dynamo](https://docs.pytorch.org/docs/stable/torch.compiler_dynamo_overview.html),
+    a key component of PyTorch’s graph compilation solution, [torch.compile](https://docs.pytorch.org/tutorials/intermediate/torch_compile_tutorial.html).
+    In a [recent post](https://towardsdatascience.com/maximizing-ai-ml-model-performance-with-pytorch-compilation/) we
+    demonstrated the power of [torch.compile](https://docs.pytorch.org/tutorials/intermediate/torch_compile_tutorial.html) and
+    its importance in optimizing the runtime performance of AI/ML models. In some
+    ways this post can be viewed as a sequel: we will revisit some of the key concepts
+    — particularly graph-breaks, we will reuse the same toy model, and we will demonstrate
+    the use of torch.compile for just-in-time (JIT) compilation in our inference environment.
+    While we recommend reading the [previous post](https://towardsdatascience.com/maximizing-ai-ml-model-performance-with-pytorch-compilation/),
+    it is not a prerequisite for this one.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Disclaimers:'
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: As of the time of this writing (PyTorch 2.8.0), [torch.export](https://docs.pytorch.org/docs/stable/export.html) is
+    a “prototype” feature. While the behaviors discussed in this post are likely to
+    mostly remain, the API definitions could change. Be sure to align your use of [torch.export](https://docs.pytorch.org/docs/stable/export.html) to
+    the latest API versions.
+  prefs: []
+  type: TYPE_NORMAL
+- en: This post will cover only a subset of torch.export’s features and behaviors.
+    It should not be viewed as an alternative to the official PyTorch [documentation](https://docs.pytorch.org/tutorials/intermediate/torch_export_tutorial.html).
+    There are a number of pages covering the export feature, including an [introductory
+    tutorial](https://docs.pytorch.org/tutorials/intermediate/torch_export_tutorial.html),
+    an [overview of the programming model](https://docs.pytorch.org/docs/2.8/export.programming_model.html),
+    and a [guide to solving export challenges](https://docs.pytorch.org/tutorials/recipes/torch_export_challenges_solutions.html).
+  prefs: []
+  type: TYPE_NORMAL
+- en: While we will demonstrate its functionality on a toy example, torch.export depends
+    heavily on the model’s details and may exhibit very different behavior in your
+    own project.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The code we will share is for demonstration purposes only and should not be
+    relied on for correctness or optimality. Please do not interpret our choice of
+    platform, framework, or any other tool or library as an endorsement for its use.
+  prefs: []
+  type: TYPE_NORMAL
+- en: A Toy HuggingFace Model
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: To facilitate our discussion, we define a simple image-to-text generative model
+    using the HuggingFace [transformers](https://huggingface.co/docs/transformers/en/index) library.
+    For simplicity, we skip the training phase and assume that the default constructor
+    returns a pretrained model.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE0]'
+  prefs: []
+  type: TYPE_PRE
+- en: We define an auto-regressive image-to-text generator that uses the encoder and
+    decoder components of the model to produce a caption for the input image. For
+    simplicity, we use a basic implementation, leaving out common optimization techniques,
+    such as [*KV caching*](https://huggingface.co/blog/not-lain/kv-caching).
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE1]'
+  prefs: []
+  type: TYPE_PRE
+- en: The following code block demonstrates the use of our generator on a batch of
+    random input images.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE2]'
+  prefs: []
+  type: TYPE_PRE
+- en: The encoder and decoder models are loaded via a *load_model* utility. We define
+    an initial implementation and amend it later based on our choice of model capturing
+    strategy.
+  prefs: []
+  type: TYPE_NORMAL
+- en: To prepare our model for the export process, we define a pass-through wrapper
+    class for the decoder. This wrapper ensures the model can be traced using positional
+    (rather than keyword) arguments, which is a current requirement of torch.export.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE3]'
+  prefs: []
+  type: TYPE_PRE
+- en: Now that we have defined our toy model, let’s explore different strategies for
+    capturing and deploying it to an inference environment.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Model Capturing and Deployment Strategies
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: In this section, we’ll review two common methods for capturing and deploying
+    an AI/ML model’s state: *weights-only capture* and conversion to a serializable
+    intermediate graph-representation using *TorchScript*.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Weights Only Capture
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: 'The first option is to use [torch.save](https://docs.pytorch.org/tutorials/beginner/saving_loading_models.html) to
+    capture only the model weights, not the model definition. This requires you to
+    explicitly redefine the PyTorch model in the inference environment. There are
+    several ways to carryg over the code definition including: copy-pasting (which
+    is very error-prone), pulling from a shared code repository, or using Python packages.
+    If the model definition relies on specific Python package dependencies, you will
+    need to make sure that those packages exist in the inference environment and that
+    their versions match the training environment.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The following code block demonstrates capturing and loading the model weights
+    for our toy model:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE4]'
+  prefs: []
+  type: TYPE_PRE
+- en: One advantage of this method is that it provides maximum flexibility for tuning
+    the model’s configuration to the inference environment. For example, you can apply
+    machine-specific optimizations that increase the throughput of the inference workload.
+    This freedom is especially important for very large models that require advanced
+    sharding techniques for model execution.
+  prefs: []
+  type: TYPE_NORMAL
+- en: However, this method assumes you can easily design and configure the inference
+    environment as desired — which cannot be taken for granted. Some inference environments
+    are extremely constrained — with limited control over the runtime libraries and
+    package installations.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The separation between the model definition and the model weights also can be
+    the source of all sorts of ugly bugs. Ensuring appropriate alignment between the
+    source code and the model weights requires disciplined version management. A preferred
+    approach would be to bundle the model definition and weights into a single archive.
+  prefs: []
+  type: TYPE_NORMAL
+- en: TorchScript Variants
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: For many years, the primary method for capturing a PyTorch model along with
+    its weights was [TorchScript](https://docs.pytorch.org/docs/stable/jit.html).
+    And despite its recent deprecation, it remains widely popular. TorchScript encapsulates
+    two different capturing solutions, [torch.jit.script](https://docs.pytorch.org/docs/stable/generated/torch.jit.script.html) and [torch.jit.trace](https://docs.pytorch.org/docs/stable/generated/torch.jit.trace.html),
+    both of which convert PyTorch models into serializable graph representations.
+    This graph can be loaded into another environment and run as a standalone PyTorch
+    program, with minimal runtime dependencies.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The [scripting](https://docs.pytorch.org/docs/stable/generated/torch.jit.script.html) and [tracing](https://docs.pytorch.org/docs/stable/generated/torch.jit.trace.html) functionalities
+    are complementary. [Scripting](https://docs.pytorch.org/docs/stable/generated/torch.jit.script.html) performs *ahead-of-time* (AOT)
+    static analysis of the source code, whereas [tracing](https://docs.pytorch.org/docs/stable/generated/torch.jit.trace.html) traces
+    the actual execution of the model on a sample input. Scripting is able to capture
+    more complexity in the graph, such as conditional control-flow and dynamic shapes.
+    This is contrary to tracing that captures just the execution path and tensor shapes
+    dictated by the input sample it runs on. On the other hand, torch.jit.trace supports
+    more operations than torch.jit.script (e.g., see [here](https://docs.pytorch.org/docs/stable/jit_language_reference.html)).
+    Often, scripting will succeed where tracing will fail and vice versa. Sometimes,
+    some form of [combination of both](https://docs.pytorch.org/docs/stable/jit.html#mixing-tracing-and-scripting) methods
+    is required.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Let’s now attempt to convert our toy model to TorchScript. Since the sequence
+    generator makes separate calls to the encoder (once) and the decoder (iteratively)
+    separately, we’ll capture them as separate graphs. The encoder takes fixed-shape
+    inputs and has no input-dependent conditional logic, so we can apply the more
+    flexible tracing option. However, the sequence that we input to the decoder increases
+    in size each time a token is generated, so we have no choice but to use the scripting
+    option.
+  prefs: []
+  type: TYPE_NORMAL
+- en: HuggingFace supports TorchScript via a dedicated configuration. See the [HuggingFace
+    documentation](https://huggingface.co/docs/transformers/en/torchscript) for more
+    details.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE5]'
+  prefs: []
+  type: TYPE_PRE
+- en: In the code block below, we extend our capture and loading utilities with TorchScript
+    support. Note the inclusion of the [torch.jit.freeze](https://docs.pytorch.org/docs/stable/generated/torch.jit.freeze.html) optimization
+    during capture and the use the [torch.jit.optimize_for_inference](https://docs.pytorch.org/docs/stable/generated/torch.jit.optimize_for_inference.html) optimization
+    on the target device.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE6]'
+  prefs: []
+  type: TYPE_PRE
+- en: Unfortunately, our capture utility fails when trying to script the decoder model.
+    A common problem with TorchScript is that it often fails on complex models. While
+    many issues can be bypassed by using [torch.jit.trace](https://docs.pytorch.org/docs/stable/generated/torch.jit.trace.html),
+    it cannot be applied to models with dynamic shapes or conditional logic, such
+    as our decoder. It is often possible to rewrite the model implementation to be
+    script-compliant, but it can require a lot of painstaking (and ugly) work. In
+    the case of our decoder model, it would require a lot of intrusive patchwork to
+    the transformers library source code.
+  prefs: []
+  type: TYPE_NORMAL
+- en: For more on the topic of TorchScript, please see the official [documentation](https://docs.pytorch.org/docs/stable/jit.html).
+  prefs: []
+  type: TYPE_NORMAL
+- en: Model Capturing with torch.export
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: The new way of capturing a model for deployment is [torch.export](https://docs.pytorch.org/docs/main/export.html).
+    Similar to [torch.jit.trace](https://docs.pytorch.org/docs/stable/generated/torch.jit.trace.html),
+    export works by [tracing](https://docs.pytorch.org/docs/stable/export.programming_model.html#basics-of-tracing) the
+    model’s execution on input samples. However, unlike [torch.jit.trace](https://docs.pytorch.org/docs/stable/generated/torch.jit.trace.html),
+    export includes support for [dynamism](https://docs.pytorch.org/docs/main/export.html#expressing-dynamism) and [conditional
+    control flow](https://docs.pytorch.org/docs/main/cond.html). The output of the
+    export utility is an intermediate graph representation called [Export IR](https://docs.pytorch.org/docs/stable/export.ir_spec.html),
+    which can be loaded and executed in a clean inference environment. One of the
+    advantages of our exported model is that, contrary to TorchScript models, they
+    can be optimized for the inference environment using [torch.compile](https://docs.pytorch.org/tutorials/intermediate/torch_compile_tutorial.html).
+    On the other hand, optimizations that require source code changes (e.g., configuring
+    the [attn_implementation](https://huggingface.co/docs/transformers/en/main_classes/model#transformers.PreTrainedModel.from_pretrained.attn_implementation))
+    cannot be applied.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Overcoming Graph Breaks
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: A *graph break* occurs when the export function encounters an “untraceable”
+    portion of Python code (e.g., see [here](https://docs.pytorch.org/docs/stable/generated/exportdb/index.html#not-supported-yet) for
+    unsupported operations). We encountered the concept of *graph breaks* in our [previous
+    post](https://towardsdatascience.com/maximizing-ai-ml-model-performance-with-pytorch-compilation/) on [graph
+    compilation](https://docs.pytorch.org/tutorials/intermediate/torch_compile_tutorial.html).
+    However, contrary to model compilation where PyTorch will simply fall back to
+    eager mode, torch.export forbids the presence of *graph breaks*. If export fails
+    on your model due to a graph break, you will have to rewrite your code to bypass
+    it.
+  prefs: []
+  type: TYPE_NORMAL
+- en: There are several resources at your disposal for overcoming graph breaks, including
+    the [Draft Export](https://docs.pytorch.org/docs/2.8/draft_export.html) utility,
+    which generates a detailed report of export issues, [ExportDB](https://docs.pytorch.org/docs/stable/generated/exportdb/index.html),
+    which maintains a list of supported and unsupported export cases, and a [tutorial](https://docs.pytorch.org/tutorials/recipes/torch_export_challenges_solutions.html) on
+    overcoming common export issues.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Debugging an Exported Graph
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: On some occasions, you may succeed in exporting a graph only to find that running
+    it on the target device either fails with an error or returns incorrect output.
+    A common cause of such errors is that some of the variables from the export environment
+    are treated as constants and baked into the exported graph.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Unfortunately, (as of the time of this writing) the tools for debugging [Export
+    IR](https://docs.pytorch.org/docs/stable/export.ir_spec.html) graphs are somewhat
+    limited. Although the exported model is a [torch.nn.Module](https://docs.pytorch.org/docs/stable/generated/torch.nn.Module.html) with
+    a [forward](https://docs.pytorch.org/docs/stable/generated/torch.nn.Module.html#torch.nn.Module.forward) function,
+    you cannot use a debugger to step into it to find the source of the errors.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We can, however, inspect the contents of the generated graph using [GraphModule.print_readable](https://docs.pytorch.org/docs/stable/fx.html#torch.fx.GraphModule.print_readable).
+    This will print out all of the graph operations along with comments that point
+    to the source code from which they were generated. Sometimes, this, combined with
+    the output error information, is enough to find the source of the errors and tweak
+    the source code accordingly. See below for an example.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Exporting a HuggingFace Model
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: To apply [torch.export](https://docs.pytorch.org/docs/stable/export.html) to
+    our toy model, we first make sure to update the PyTorch library to the latest
+    version (2.8.0 at the time of this writing). The export utility is under rapid
+    development and we want to make sure to get the most up-do-date feature support.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'In the code block below we revise our capture and load utility functions to
+    support [torch.export](https://docs.pytorch.org/docs/stable/export.html). Note
+    our use of [torch.export.Dim](https://docs.pytorch.org/docs/stable/export.html#expressing-dynamism) to
+    specify dynamic dimensions:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE7]'
+  prefs: []
+  type: TYPE_PRE
+- en: Contrary to TorchScript, [torch.export](https://docs.pytorch.org/docs/stable/export.html) had
+    no issues capturing our decoder and encoder models. In particular, no graph breaks
+    were encountered during tracing.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Deploying an Exported Model
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: To complete our demonstration, we’ll test our exported model in a clean inference
+    environment. For this experiment, we’ll use an [Amazon EC2 g5.xlarge](https://aws.amazon.com/ec2/instance-types/g5/) instance
+    (containing an NVIDIA A10G GPU and 4 vCPUs) running a [PyTorch (2.7) Deep Learning
+    AMI (DLAMI)](https://docs.aws.amazon.com/dlami/latest/devguide/aws-deep-learning-ami-gpu-pytorch-2.7-ubuntu-22-04.html).
+    We’ll update to the latest PyTorch version but intentionally won’t install the
+    transformers package
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Unfortunately, our excitement at the success of exporting our model was premature,
+    as running the exported decoder on the GPU results in a runtime error, a portion
+    of which we’ve pasted below:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE8]'
+  prefs: []
+  type: TYPE_PRE
+- en: The error indicates during the execution the exported graph, some of the tensors
+    reside on the CPU when they are expected to be on the GPU. Since we explicitly
+    copy the input tensors onto the GPU, we can conclude that these refer to tensors
+    that the graph is creating internally. Since the graph was exported on a CPU device,
+    the use of *device*=*”cpu”* was baked into the graph creation, resulting in a
+    runtime error when running on a GPU.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Although the error message points to the faulty line of code (*File “<eval_with_key>.24”,
+    line 306, in forward*), there is no actual file that we can add a breakpoint to
+    and debug. We can, however, inspect the contents of the decoder graph and search
+    for places where the use of the CPU device has been inadvertently baked in:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE9]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Analyzing the output (searching for “cpu” references) and cross-referencing
+    the source code using the embedded comments, we discover four locations where
+    the *transformers* library ([*modeling_gpt2.py*](https://github.com/huggingface/transformers/blob/v4.54.0/src/transformers/models/gpt2/modeling_gpt2.py) file)
+    creates tensors on the CPU:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: If not specified, the [GPT2 model](https://github.com/huggingface/transformers/blob/v4.54.0/src/transformers/models/gpt2/modeling_gpt2.py#L685) [creates
+    of a *cache_position*](https://github.com/huggingface/transformers/blob/v4.54.0/src/transformers/models/gpt2/modeling_gpt2.py#L854) tensor
+    on the baked-in CPU device using [torch.arange](https://docs.pytorch.org/docs/stable/generated/torch.arange.html).
+    This can be fixed by passing in a user-defined value for *cache_position*.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: On line [861](https://github.com/huggingface/transformers/blob/v4.54.0/src/transformers/models/gpt2/modeling_gpt2.py#L861),
+    a [torch.Tensor.to](https://docs.pytorch.org/docs/stable/generated/torch.Tensor.to.html) operation
+    is performed to ensure proper placement of the *position_embeds* tensor. While
+    this may be required in a case of [model parallelism](https://huggingface.co/docs/transformers/v4.13.0/en/parallelism),
+    we do not require it.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: If not specified, the model [creates a causal mask](https://github.com/huggingface/transformers/blob/v4.54.0/src/transformers/models/gpt2/modeling_gpt2.py#L867) using
+    tensors that it creates on the baked-in CPU device. We could bypass this by passing
+    in a user-defined causal mask, but we are perfectly happy keeping this *None* and
+    relying on the use of the *is_causal* flag of the [sdpa attention function](https://docs.pytorch.org/docs/stable/generated/torch.nn.functional.scaled_dot_product_attention.html).
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: If not specified, the model [creates an *ecnoder_attention_mask*](https://github.com/huggingface/transformers/blob/v4.54.0/src/transformers/models/gpt2/modeling_gpt2.py#L878) tensor
+    on the baked-in CPU. Once again, we could specify a value for this tensor, but
+    since the mask would be all *True*, setting it *None *achieves the same purpose.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: The following patch summarizes the changes we performed on the [*modeling_gpt2.py*](https://github.com/huggingface/transformers/blob/v4.54.0/src/transformers/models/gpt2/modeling_gpt2.py) file.
+    Importantly, these changes were specific to our toy model and will not generalize
+    to all use cases. This kind of *monkey-patching* is ill-advised and requires extensive
+    testing before being used in a production setting.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE10]'
+  prefs: []
+  type: TYPE_PRE
+- en: In the following code block, we extend the *decoder *definitions and export
+    implementation with an explicit value for *cache_position*.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE11]'
+  prefs: []
+  type: TYPE_PRE
+- en: Following these change, the exported decoder succeeds in generating sequences
+    on the GPU device. We hope (and expect) that as the torch.export feature evolves,
+    these kinds of issues will be handled automatically by the internal tracing mechanism.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We further test the potential for machine-specific optimizations by applying
+    graph compilation. For details on our choice of compilation parameters, see our [previous
+    post](https://towardsdatascience.com/maximizing-ai-ml-model-performance-with-pytorch-compilation/).
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE12]'
+  prefs: []
+  type: TYPE_PRE
+- en: The table below captures the execution time of our model on a batch of random
+    images, with and without torch.compile. (Note, that running the original model
+    requires installation of the transformers library, version 4.54.0).
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/e6095412de21d365422e6bbcb871a2e8.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Runtime Results (by Author)
+  prefs: []
+  type: TYPE_NORMAL
+- en: We can see that exporting the model to graph representation results in a speed-up
+    of 10.7%. The model compilation, however, had the opposite effect, significantly
+    increasing the execution time. It is likely that this could be fixed through appropriate
+    tuning.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Summary
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'In this post we explored the new torch.export utility and demonstrated its
+    use in capturing and deploying a toy HuggingFace model. We found that is has a
+    number of powerful and compelling properties, including:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Support for complex models**: torch.export succeeded in capturing models
+    that failed with TorchScript.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Portability**: Exported models can be loaded and executed as standalone programs
+    without specific package dependencies.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Machine-specific optimizations**: exported models are compatible with graph
+    compilation, enabling the application of machine-specific optimizations.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'We also encountered some of torch.export’s limitations:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Unintended consequences of graph creation:** If we are not careful about
+    how we design our model, values from the export environment can be inadvertently
+    baked into the resulting graph, breaking its compatibility with the inference
+    environment.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Limited debugging tools:** As of this writing, the tools for debugging the
+    execution of exported graphs are limited.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Although it still requires some refinement, torch.export is already a huge improvement
+    over previous capturing solutions like TorchScript. We look forward to seeing
+    it continue to evolve and improve.
+  prefs: []
+  type: TYPE_NORMAL
+- en: For more details on capturing AI/ML models using PyTorch Export and to keep
+    track of API changes, please see the [torch.export](https://docs.pytorch.org/docs/stable/export.html) documentation.
+    If you’re running inference on an edge device, also see the [ExecuTorch](https://docs.pytorch.org/executorch/stable/index.html) solution
+    for model deployment, which is based on [torch.export](https://docs.pytorch.org/docs/stable/export.html).
+  prefs: []
+  type: TYPE_NORMAL

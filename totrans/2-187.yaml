@@ -1,0 +1,568 @@
+- en: 'ResNeXt Paper Walkthrough: Taking ResNet to the Next Level'
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 原文：[https://towardsdatascience.com/taking-resnet-to-the-next-level/](https://towardsdatascience.com/taking-resnet-to-the-next-level/)
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: <mdspan datatext="el1751515760765" class="mdspan-comment">Introduction</mdspan>
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: If you read the title of this article, you might probably think that ResNeXt
+    is directly derived from ResNet. Well, that’s true, but I think it’s not entirely
+    accurate. In fact, to me ResNeXt is kind of like the combination of ResNet, VGG,
+    and Inception at the same time — I’ll show you the reason in a second. In this
+    article we are going to talk about the ResNeXt architecture, which includes the
+    history, the details of the architecture itself, and the last but not least, the
+    code implementation from scratch with PyTorch.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '* * *'
+  prefs: []
+  type: TYPE_NORMAL
+- en: The History of ResNeXt
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: The hyperparameter we usually put our concern on when tuning a neural network
+    model is the depth and width, which corresponds to the number of layers and the
+    number of channels, respectively. We see this in VGG and ResNet, where the authors
+    of the two models proposed small-sized kernels and skip-connections so that they
+    can increase the depth of the model easily. In theory, this simple approach is
+    indeed capable of expanding model capacity. However, the two hyperparameter dimensions
+    are always associated with a significant change in the number of parameters, which
+    is definitely a problem since at some point we will have our model becoming too
+    large just to make a slight improvement on accuracy. On the other hand, we knew
+    that in theory Inception is computationally cheaper, yet it has a complex architectural
+    design, which requires us to put more effort to tune the depth and the width of
+    this network. If you have ever learned about Inception, it essentially works by
+    passing a tensor through several convolution layers of different kernel sizes
+    and let the network decide which one is better to represent the features of a
+    specific task.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Xie *et al.* wondered if they could extract the best part of the three models
+    so that model tuning can be easier like VGG and ResNet while still maintaining
+    the efficiency of Inception. All their ideas are wrapped in a paper titled “*Aggregated
+    Residual Transformations for Deep Neural Networks*” [1], where they named the
+    network *ResNeXt*. This is essentially where a new concept referred to as *cardinality*
+    came from, in which it essentially adopts the idea of Inception, i.e., passing
+    a tensor through multiple branches, yet in a simpler, more scalable way. We can
+    perceive cardinality as a new parameter possible to be tuned in addition to depth
+    and width. By doing so, we now essentially have the *next* hyperparameter dimension — hence
+    the name, *ResNeXt* — which allows us to have a higher degree of freedom to perform
+    parameter tuning.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '* * *'
+  prefs: []
+  type: TYPE_NORMAL
+- en: ResNeXt Module
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: According to the paper, there are three ways we can do to implement cardinality,
+    which you can see in Figure 1 below. The paper also mentions that setting cardinality
+    to 32 is the best practice as it generally provides a good balance between accuracy
+    and computational complexity, so I’ll use this number to explain the following
+    example.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/20bbb989d73fbdde0df205a8aaa978ab.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Figure 1\. The three ResNeXt module variants [1].
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The input of the three modules above is exactly the same, i.e., an image tensor
+    having 256 channels. In variant (a), the input tensor is duplicated 32 times,
+    in which each copy will be processed independently to represent the 32 paths.
+    The first convolution layer in each path is responsible to project the 256-channel
+    image into 4 using 1×1 kernel, which is followed by two more layers: a 3×3 convolution
+    that preserves the number of channels, and a 1×1 convolution that expands the
+    channels back to 256\. The tensors from the 32 branches are then aggregated by
+    element-wise summation before eventually being summed again with the original
+    input tensor from the very beginning of the module through skip-connection.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Remember that Inception uses the idea of *split-transform-merge*. This is exactly
+    what I just explained for the ResNeXt block variant (a), where the *split* is
+    done before the first 1×1 convolution layer, the *transform* is performed within
+    each branch, and the *merge* is the element-wise summation operations. This idea
+    also applies to the ResNeXt module variant (b), in which case the *merge* operation
+    is performed by channel-wise concatenation resulting in 128-channel image (which
+    comes from 4 channels × 32 paths). The resulting tensor is then projected back
+    to the original dimension by 1×1 convolution layer before eventually summed with
+    the original input tensor.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Notice that there is a word *equivalent* in the top-left corner of the above
+    figure. This means that these three ResNeXt block variants are basically the similar
+    in terms of the number of parameters, FLOPs, and the resulting accuracy scores.
+    This notion makes sense because they are all basically derived from the same mathematical
+    formulation. I’ll talk more about it later in the subsequent section. Despite
+    this equivalency, I’ll go with option (c) later in the implementation part. This
+    is because this variant employs the so-called *group convolution*, which is much
+    easier to implement than (a) and (b). In case you’re not yet familiar with the
+    term, it is essentially a technique in a convolution operation where we divide
+    all input channels into several groups in which every single of those is responsible
+    to process channels within the same group before eventually concatenating them.
+    In the case of (c), we reduce the number of channels from 256 to 128 before the
+    splitting is done, allowing us to have 32 convolution kernel groups where each
+    responsible to process 4 channels. We then project the tensor back to the original
+    number of channels so that we can sum it with the original input tensor.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Mathematical Definition
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: As I mentioned earlier, here’s what the formal mathematical definition of a
+    ResNeXt module looks like.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/8ec15343b01a65305fdf9176f254b95a.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Figure 2\. The mathematical expression of a ResNeXt module [1].
+  prefs: []
+  type: TYPE_NORMAL
+- en: The above equation encapsulates the entire *split-transform-merge* operation,
+    where *x* is the original input tensor, *y* is the output tensor, *C* is the cardinality
+    parameter to determine the number of parallel paths used, *T* is the transformation
+    function applied to each path, and *∑* indicates that we will merge all information
+    from the transformed tensors. However, it is important to note that even though
+    sigma usually denotes summation, only (a) that actually sums the tensors. Meanwhile,
+    both (b) and (c) do the merging through concatenation followed by 1×1 convolution
+    instead, which in fact is still equivalent to (a).
+  prefs: []
+  type: TYPE_NORMAL
+- en: The Entire ResNeXt Architecture
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: The structure displayed in Figure 1 and the equation in Figure 2 basically only
+    correspond to a single ResNeXt block. In order to construct the entire architecture,
+    we need to stack the block multiple times following the structure shown in Figure
+    3 below.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/96933282ce8bc3b3122e5d0652755dfd.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Figure 3\. The ResNet-50 architecture and the ResNeXt-50 (32×4d) counterpart
+    [1].
+  prefs: []
+  type: TYPE_NORMAL
+- en: Here you can see that the structure of ResNeXt is nearly identical to ResNet.
+    So, I believe you will later find the ResNeXt implementation extremely easy, especially
+    if you have ever implemented ResNet before. The first difference you might notice
+    in the architecture is the number of kernels of the first two convolution layers
+    in each block, where the ResNeXt block generally has twice as many kernels as
+    that of the corresponding ResNet block, especially starting from the *conv2* stage
+    all the way to the *conv5* stage. Secondly, it is also clearly seen that we have
+    the cardinality parameter applied to the second convolution layer in each ResNeXt
+    block.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The ResNeXt variant implemented above, which is equivalent to ResNet-50, is
+    the one referred to as *ResNeXt-50 (32×4d)*. This naming convention indicates
+    that this variant consists of 50 layers in the main branch with 32 cardinality
+    and 4 number of channels in each path within the *conv2* stage. As of this writing,
+    there are three ResNeXt variants already implemented in PyTorch, namely *resnext50_32x4d*,
+    *resnext101_32x8d*, and *resnext101_64x4d* [2]. You can definitely import them
+    easily alongside the pretrained weights if you want. However, in this article
+    we are going to implement the architecture from scratch instead.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '* * *'
+  prefs: []
+  type: TYPE_NORMAL
+- en: ResNeXt Implementation
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: As we have understood the underlying theory behind ResNeXt, let’s now get our
+    hands dirty with the code! The first thing we do is to import the required modules
+    as shown in Codeblock 1 below.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE0]'
+  prefs: []
+  type: TYPE_PRE
+- en: Here I am going to implement the *ResNeXt-50 (32×4d)* variant. So, I need to
+    set the parameters in Codeblock 2 according to the architectural details shown
+    back in Figure 3.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE1]'
+  prefs: []
+  type: TYPE_PRE
+- en: The `CARDINALITY` variable at line `#(1)` is self-explanatory, so I don’t think
+    I need to explain it any further. Next, the `NUM_CHANNELS` variable is used to
+    store the number of output channels of each stage, except for index 0 where it
+    corresponds to the number of input channels (`#(2)`). At line `#(3)`, `NUM_BLOCKS`
+    is used to determine how many times we will repeat the corresponding block. Note
+    that we don’t specify any number for the *conv1* stage since this stage only consists
+    of a single block. Lastly here we set the `NUM_CLASSES` parameter to 1000 since
+    ResNeXt is originally pretrained on ImageNet-1K dataset (`#(4)`).
+  prefs: []
+  type: TYPE_NORMAL
+- en: The ResNeXt Module
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: Since the entire ResNeXt architecture is basically just a bunch of ResNeXt modules,
+    we can basically create a single class to define the module and later use it repeatedly
+    in the main class. In this case, I refer to the module as `Block`. The implementation
+    of this class is pretty long, though. So I decided to break it down into several
+    codeblocks. Just ensure that all the codeblocks of the same number are placed
+    within the same notebook cell if you want to run the code.
+  prefs: []
+  type: TYPE_NORMAL
+- en: You can see in the Codeblock 3a below that the `__init__()` method of this class
+    accepts several parameters. The `in_channels` parameter (`#(1)`) is used to set
+    the number of channels of the tensor to be passed into the block. I set it to
+    be adjustable because the blocks in different stage will have different input
+    shapes. Secondly, the `add_channel` and `downsample` parameters (`#(2,4)`) are
+    flags to control whether the block will perform downsampling. If you take a closer
+    look at Figure 3, you’ll notice that every time we move from one stage to another,
+    the number of output channels of the block becomes twice as large as the output
+    from the previous stage while at the same time the spatial dimension is reduced
+    by half. We need to set both `add_channel` and `downsample` to `True` whenever
+    we move from one stage to the next one. Otherwise, we set the two parameters to
+    `False` if we only move from one block to another within the same stage. The `channel_multiplier`
+    parameter (`#(3)`), on the other hand, is used to determine the number of output
+    channels relative to the number of input channels by changing the multiplication
+    factor. This parameter is important because there is a special case where we need
+    to make the number of output channels to be four times larger instead of two,
+    i.e., when we move from *conv1* stage (64) to *conv2* stage (256).
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE2]'
+  prefs: []
+  type: TYPE_PRE
+- en: The parameters we just discussed directly control the `if` statements at line
+    `#(5)` and `#(9)`. The former is going to be executed whenever the `add_channel`
+    is `True`, in which case the number of input channels will be multiplied by `channel_multiplier`
+    to obtain the number of output channels (`#(6)`). Meanwhile, if it is `False`,
+    we will make input and the output tensor dimension to be the same (`#(7)`). Here
+    we set `mid_channels` to be half the size of `out_channels` (`#(8)`). This is
+    because according to Figure 3 the number of channels in the output tensor of the
+    first two convolution layers within each block is half of that of the third convolution
+    layer. Next, the `downsample` flag we defined earlier is used to control the `if`
+    statement at line `#(9)`. Whenever it is set to `True`, it will assign the `stride`
+    variable to 2 (`#(10)`), which will later cause the convolution layer to reduce
+    the spatial dimension of the image by half.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Still inside the `__init__()` method, let’s now define the layers within the
+    ResNeXt block. See the Codeblock 3b below for the details.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE3]'
+  prefs: []
+  type: TYPE_PRE
+- en: Remember that there are cases where the output dimension of a ResNeXt block
+    is different from the input. In such a case, element-wise summation at the last
+    step cannot be performed (refer to Figure 1). This is the reason that we need
+    to initialize a `projection` layer whenever either the `add_channel` or `downsample`
+    flags are `True` (`#(1)`). This `projection` layer (`#(2)`), which is a 1×1 convolution,
+    is used to process the tensor in the skip-connection so that the output shape
+    is going to match the tensor processed by the main flow, allowing them to be summed.
+    Otherwise, if we want the ResNeXt module to preserve the tensor dimension, we
+    need to set both flags to `False` so that the projection layer will not be initialized
+    since we can directly sum the skip-connection with the tensor from the main flow.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The main flow of the ResNeXt module itself comprises three convolution layers,
+    which I refer to as `conv0`, `conv1` and `conv2`, as written at line `#(3)`, `#(5)`
+    and `#(8)` respectively. If we take a closer look at these layers, we can see
+    that both `conv0` and `conv2` are responsible for manipulating the number of channels.
+    At lines `#(3)` and `#(4)`, we can see that `conv0` changes the number of image
+    channels from `in_channels` to `mid_channels`, while `conv2` changes it from `mid_channels`
+    to `out_channels` (`#(8-9)`). On the other hand, the `conv1` layer is responsible
+    to control the spatial dimension through the `stride` parameter (`#(6)`), in which
+    the value is determined according to the `dowsample` flag we discussed earlier.
+    Furthermore, this `conv1` layer will do the entire *split-transform-merge* process
+    through group convolution (`#(7)`), which in the case of ResNeXt it corresponds
+    to cardinality.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Additionally, here we initialize batch normalization layers named `bn_proj`,
+    `bn0`, `bn1`, and `bn2`. Later in the `forward()` method, we are going to place
+    them right after the corresponding convolution layers following the *Conv-BN-ReLU*
+    structure, which is a standard practice when it comes to constructing a CNN-based
+    model. Not only that, notice that here we also write `nn.init.kaiming_normal_()`
+    after the initialization of each convolution layer. This is essentially done so
+    that the initial layer weights follow the Kaiming normal distribution as mentioned
+    in the paper.
+  prefs: []
+  type: TYPE_NORMAL
+- en: That was everything about the `__init__()` method, now that we are going to
+    move on to the `forward()` method to actually define the flow of the ResNeXt module.
+    See the Codeblock 3c below.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE4]'
+  prefs: []
+  type: TYPE_PRE
+- en: Here you can see that this function accepts `x` as the only input, in which
+    it is basically a tensor produced by the previous ResNeXt block. The `if` statement
+    I write at line `#(1)` checks whether we are about to perform downsampling. If
+    so, the tensor in the skip-connection is going to be passed through the `projection`
+    layer and the corresponding batch normalization layer before eventually stored
+    in the `residual` variable (`#(2)`). But if downsampling is not performed, we
+    are going to set `residual` to be exactly the same as `x` (`#(3)`). Next, we will
+    process the main tensor `x` using the stack of convolution layers starting from
+    `conv0` (`#(4)`) all the way to `conv2` (`#(5)`). It is important to note that
+    the *Conv-BN-ReLU* structure of the `conv2` layer is slightly different, where
+    the ReLU activation function is applied after element-wise summation is performed
+    (`#(6)`).
+  prefs: []
+  type: TYPE_NORMAL
+- en: Now let’s test the ResNeXt block we just created to find out whether we have
+    implemented it correctly. There are three conditions I am going to test here,
+    namely when we move from one stage to another (setting both `add_channel` and
+    `downsample` to `True`), when we move from one block to another within the same
+    stage (both `add_channel` and `downsample` are `False`), and when we move from
+    *conv1* stage to *conv2* stage (setting `downsample` to `False` and `add_channel`
+    to `True` with 4 channel multiplier).
+  prefs: []
+  type: TYPE_NORMAL
+- en: Test Case 1
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: The Codeblock 4 below demonstrates the first test case, in which here I simulate
+    the first block of the *conv3* stage. If you go back to Figure 3, you will see
+    that the output from the previous stage is a 256-channel image. Thus, we need
+    to set the `in_channels` parameter according to this number. Meanwhile, the output
+    of the ResNeXt block in the stage has 512 channels with 28×28 spatial dimension.
+    This tensor shape transformation is actually the reason that we set both flags
+    to `True`. Here we assume that the `x` tensor passed through the network is a
+    dummy image produced by the *conv2* stage.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE5]'
+  prefs: []
+  type: TYPE_PRE
+- en: And below is what the output looks like. It is seen at line `#(1)` that our
+    `projection` layer successfully projected the tensor to 512×28×28, exactly matching
+    the shape of the output tensor from the main flow (`#(4)`). The `conv0` layer
+    at line `#(2)` does not alter the tensor dimension at all since in this case our
+    `in_channels` and `mid_channels` are the same. The actual spatial downsampling
+    is performed by the `conv1` layer, where the image resolution is reduced from
+    56×56 to 28×28 (`#(3)`) thanks to the stride which is set to 2 for this case.
+    The process is then continued by the `conv2` layer which doubles the number of
+    channels from 256 to 512 (`#(4)`). Lastly, this tensor will be element-wise summed
+    with the projected skip-connection tensor (`#(5)`). And with that, we successfully
+    converted our tensor from 256×56×56 to 512×28×28.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE6]'
+  prefs: []
+  type: TYPE_PRE
+- en: Test Case 2
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: In order to demonstrate the second test case, here I will simulate the block
+    inside the *conv3* stage which the input is a tensor produced by the previous
+    block within the same stage. In such a case, we want the input and output dimension
+    of this ResNeXt module to be the same, hence we need to set both `add_channel`
+    and `downsample` to `False`. See the Codeblock 5 and the resulting output below
+    for the details.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE7]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE8]'
+  prefs: []
+  type: TYPE_PRE
+- en: As I’ve mentioned earlier, the projection layer is not going to be used if the
+    input tensor is not downsampled. This is the reason that at line `#(1)` we have
+    our skip-connection tensor shape unchanged. Next, we have our channel count reduced
+    to 256 by the `conv0` layer since in this case `mid_channels` is half the size
+    of `out_channels` (`#(2)`). We eventually expand this number of channels back
+    to 512 using the *conv2* layer (`#(3)`). Additionally, this kind of structure
+    is commonly known as *bottleneck* since it follows the *wide-narrow-wide* pattern,
+    which was first introduced in the original ResNet paper [3].
+  prefs: []
+  type: TYPE_NORMAL
+- en: Test Case 3
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: The third test is actually a special case since we are about to simulate the
+    first block in the *conv2* stage, where we need to set the `add_channel` flag
+    to `True` while the `downsample` to `False`. Here we don’t want to perform spatial
+    downsampling in the convolution layer because it is already done by a maxpooling
+    layer. Furthermore, you can also see in Figure 3 that the *conv1* stage returns
+    an image of 64 channels. Due to this reason, we need to set the `channel_multiplier`
+    parameter to 4 since we want the subsequent *conv2* stage to return 256 channels.
+    See the details in the Codeblock 6 below.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE9]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE10]'
+  prefs: []
+  type: TYPE_PRE
+- en: It is seen in the resulting output above that the ResNeXt module automatically
+    utilize the `projection` layer, which in this case it successfully converted the
+    64×56×56 tensor into 256×56×56 (`#(1)`). Here you can see that the number of channels
+    expanded to be 4 times larger while the spatial dimension remained the same. Afterwards,
+    we shrink the channel count to 128 (`#(2)`) and expand it back to 256 (`#(3)`)
+    to simulate the *bottleneck* mechanism. Thus, we can now perform summation between
+    the tensor from the main flow and the one produced by the `projection` layer.
+  prefs: []
+  type: TYPE_NORMAL
+- en: At this point we already got our ResNeXt module works properly to handle the
+    three cases. So, I believe this module is now ready to be assembled to actually
+    construct the entire ResNeXt architecture.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The Entire ResNeXt Architecture
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: Since the following ResNeXt class is pretty long, I break it down into two codeblocks
+    to make things easier to follow. What we basically need to do in the `__init__()`
+    method in Codeblock 7a is to initialize the ResNeXt modules using the `Block`
+    class we created earlier. The way to implement the *conv3* (`#(9)`), *conv4* (`#(12)`)
+    and *conv5* (`#(15)`) stages are pretty straightforward since what we basically
+    need to do is just to initialize the blocks inside `nn.ModuleList`. Remember that
+    the first block within each stage is a downsampling block, while the rest them
+    are not intended to perform downsampling. Due to this reason, we need to initialize
+    the first block manually by setting both `add_channel` and `downsample` flags
+    to `True` (`#(10,13,16)`) whereas the remaining blocks are initialized using loops
+    which iterate according to the numbers stored in the `NUM_CHANNELS` list (`#(11,14,17)`).
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE11]'
+  prefs: []
+  type: TYPE_PRE
+- en: As we discussed earlier, the *conv2* stage (`#(5)`) is a bit special since the
+    first block within this stage does increase the number of channels yet it does
+    not reduce the spatial dimension. This is essentially the reason that I set the
+    `add_channel` parameter to `True` (`#(6)`) while the `downsample` parameter is
+    set to `False` (`#(7)`). The initialization of the remaining blocks is the same
+    as the other stages we discussed earlier, where we can just do it with a simple
+    loop (`#(8)`).
+  prefs: []
+  type: TYPE_NORMAL
+- en: The *conv1* stage (`#(1)`) on the other hand, does not utilize the `Block` class
+    since the structure is completely different from the other stages. According to
+    Figure 3, this stage only comprises a single 7×7 convolution layer (`#(2)`), which
+    allows us to capture a larger context from the input image. The tensor produced
+    by this layer will have half the spatial dimensions of the input thanks to the
+    `stride` parameter which is set to 2 (`#(3)`). Further downsampling is performed
+    using maxpooling layer with the same stride, which again, reduces the spatial
+    dimension by half (`#(4)`). — In fact, this maxpooling layer should be inside
+    the *conv2* stage instead, but in this implementation I put it outside the `nn.ModuleList`
+    of that stage for the sake of simplicity.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Lastly, we need to initialize a global average pooling layer (`#(18)`) which
+    works by taking the average value of each channel in the tensor produced by the
+    last convolution layer. By doing this, we are going to have a single number representing
+    each channel. This tensor will then be connected to the output layer that produces
+    `NUM_CLASSES` (1000) neurons (`#(19)`), in which every single of them corresponds
+    to each class in the dataset.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Now look at the Codeblock 7b below to see how I define the `forward()` method.
+    I think there is not much thing I need to explain since what we basically do here
+    is just to pass the tensor from one layer to the subsequent one sequentially.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE12]'
+  prefs: []
+  type: TYPE_PRE
+- en: Next, let’s test our ResNeXt class using the following code. Here I am going
+    to test it by passing a dummy tensor of size 3×224×224 which simulates a single
+    RGB image of size 224×224.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE13]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE14]'
+  prefs: []
+  type: TYPE_PRE
+- en: We can see in the above output that our *conv1* stage correctly reduce the spatial
+    dimension from 224×224 to 112×112 while at the same time also increasing the number
+    of channels to 64 (`#(1)`). The downsapling is continued by the maxpooling layer,
+    where it makes the spatial dimension of the image reduced to 56×56 (`#(2)`). Moving
+    on to the *conv2* stage, we can see that our first block in the stage successfully
+    converted the 64-channel image into 256 (`#(3)`), in which the subsequent blocks
+    in the same stage preserve the dimension of this tensor (`#(4–5)`). The same thing
+    is also done by the next stages until we reach the global average pooling layer
+    (`#(6)`). It is important to note that we need to perform tensor flattening (`#(7)`)
+    to drop the empty axes before eventually connecting it to the output layer (`#(8)`).
+    And that concludes how a tensor flows through the ResNeXt architecture.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Additionally, you can use the `summary()` function that we previously loaded
+    from `torchinfo` if you want to get even deeper into the architectural details.
+    You can see at the end of the output below that we got 25,028,904 parameters in
+    total. In fact, this number of params matches exactly with the one belongs to
+    the *ResNeXt-50 32x4d* model from PyTorch, so I believe our implementation here
+    is correct. You can verify this in the link at reference number [4].
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE15]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE16]'
+  prefs: []
+  type: TYPE_PRE
+- en: '* * *'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Ending
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: I think that’s everything about ResNeXt and its implementation. You can also
+    find the entire code used in this article on my GitHub repo [5].
+  prefs: []
+  type: TYPE_NORMAL
+- en: I hope you learn something new today, and thank you very much for reading! See
+    you in my next article.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '* * *'
+  prefs: []
+  type: TYPE_NORMAL
+- en: References
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: '[1] Saining Xie *et al.* Aggregated Residual Transformations for Deep Neural
+    Networks. Arxiv. [https://arxiv.org/abs/1611.05431](https://arxiv.org/abs/1611.05431)
+    [Accessed March 1, 2025].'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[2] ResNeXt. PyTorch. [https://pytorch.org/vision/main/models/resnext.html](https://pytorch.org/vision/main/models/resnext.html)
+    [Accessed March 1, 2025].'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[3] Kaiming He *et al.* Deep Residual Learning for Image Recognition. Arxiv.
+    [https://arxiv.org/abs/1512.03385](https://arxiv.org/abs/1512.03385) [Accessed
+    March 1, 2025].'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[4] resnext50_32x4d. PyTorch. [https://pytorch.org/vision/main/models/generated/torchvision.models.resnext50_32x4d.html#torchvision.models.resnext50_32x4d](https://pytorch.org/vision/main/models/generated/torchvision.models.resnext50_32x4d.html#torchvision.models.resnext50_32x4d)
+    [Accessed March 1, 2025].'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[5] MuhammadArdiPutra. Taking ResNet to the NeXt Level — ResNeXt. GitHub. [https://github.com/MuhammadArdiPutra/medium_articles/blob/main/Taking%20ResNet%20to%20the%20NeXt%20Level%20-%20ResNeXt.ipynb](https://github.com/MuhammadArdiPutra/medium_articles/blob/main/Taking%20ResNet%20to%20the%20NeXt%20Level%20-%20ResNeXt.ipynb)
+    [Accessed April 7, 2025].'
+  prefs: []
+  type: TYPE_NORMAL

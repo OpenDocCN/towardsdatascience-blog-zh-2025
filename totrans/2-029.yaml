@@ -1,0 +1,773 @@
+- en: Help Your Model Learn the True Signal
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 原文：[https://towardsdatascience.com/help-your-model-learn-the-true-signal/](https://towardsdatascience.com/help-your-model-learn-the-true-signal/)
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: <mdspan datatext="el1755662653859" class="mdspan-comment">**Imagine this:**
+    You’re modelling</mdspan> loan default risk using features such as income and
+    credit history. A few borrowers with relatively low incomes seem to repay large
+    loans just fine, which could mislead the model. In reality, they had submitted
+    their income in US dollars rather than your local currency, but this was missed
+    during data entry, making them appear less creditworthy than they actually were.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Or you’re building a model to predict patient recovery times. Most patients
+    follow expected recovery trajectories, but a few experienced very rare complications
+    that weren’t recorded. These cases sit far from the rest in terms of the relationship
+    between symptoms, treatments, and outcomes. They’re not necessarily “wrong,” but
+    they are **disruptive**, causing the model to generalise poorly to the majority
+    of future patients.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'In both scenarios, the issue isn’t just noise or classic anomalies. The problem
+    is more subtle:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Some observations disproportionately disrupt the model’s ability to learn
+    the dominant signal.**'
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: 'These data points may:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Have a **disproportionate influence** on the learned parameters,
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Come from **unusual or unmodeled contexts** (e.g., rare complications or data
+    entry issues),
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: And most importantly, **reduce the model’s ability to generalise**.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: A model’s trustworthiness and predictive accuracy can be significantly compromised
+    by these data points that exert undue influence on its parameters or predictions.
+    Understanding and effectively managing these influential observations is not merely
+    a statistical formality, but a cornerstone of building models that are robust
+    and reliable.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**🎯 What I Seek to Achieve in This Article**'
+  prefs: []
+  type: TYPE_NORMAL
+- en: In this article, I’ll walk you through a simple yet powerful technique to **effectively identify
+    and manage these disruptive data points**, so the model can better capture the
+    stable, generalizable patterns in the data. This method is **algorithm-agnostic**,
+    making it directly adaptable to any algorithm or analytical framework you’ve chosen
+    for your use case. I will also offer the full code for you to implement it easily.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Sounds good? Let’s get started.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '* * *'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Inspiration: Cook’s Distance, Reimagined'
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: '**Cook’s Distance** is a classic diagnostic tool from linear regression. It
+    quantifies how much a single data point influences the model by:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Training the model on the full dataset
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Retraining it with one observation left out
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'Measuring how much the predictions change by calculating the sum of all the
+    changes in the regression model with vs without the observation, using the formula
+    below:'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '![Cook''s distance formula](../Images/c20942c07daf1742263dea5ec145c98d.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: A large Cook’s Distance means that an observation has high influence and is
+    possibly distorting the model, and should be checked for validity.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Why Cook’s D?
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: The Cook ‘s-D influence approach is uniquely suited for identifying data points
+    that distort a model’s learned patterns, a gap often left by other outlier detection
+    techniques.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Univariate Detection:** Univariate methods (like Z-scores or IQR rules) identify
+    extreme values within individual features or the target variable alone. However,
+    points that significantly influence a complex model’s prediction may appear perfectly
+    ordinary when each of their features is examined in isolation. They are “outliers”
+    not by their individual values, but by their *relationship* to the overall data
+    and the model’s structure.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Feature-Focused Anomaly Detection:** Techniques such as Isolation Forest
+    or Local Outlier Factor (LOF) excel at detecting anomalies purely based on the
+    distribution and density of input features (*X*). While valuable for identifying
+    unusual data entries, they inherently **do not consider the role of the target
+    variable (*Y*) or how a model uses features to predict it.** Consequently, a data
+    point flagged as an outlier in the feature space might not necessarily have a
+    disproportionate impact on your model’s predictive performance or overall learned
+    pattern. Conversely, a point not flagged by these methods might still be highly
+    influential on the model’s predictions.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Standard Residual-Based Methods:** Residuals, the difference between actual
+    and predicted values, highlight where the model performs poorly. While this indicates
+    a deviation, it doesn’t distinguish between whether the point is simply noisy
+    (e.g., unpredictable but harmless) or truly *disrupting*, that is, “pulling” the
+    model’s entire predictive surface away from the general pattern established by
+    the majority of the data. We could have points with high residuals but little
+    influence, or those with moderate residuals but disproportionately warp the model’s
+    predictions.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'This is where a Cook’s-D-style influence metric truly shines. It goes beyond
+    the size of the prediction error to ask:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**How structurally destabilizing is a single data point to the entire model’s
+    learned relationships?**'
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: Such an approach enables us to surgically identify and manage data points that
+    disproportionately pull the model’s predictions away from the “general pattern”
+    reflected in the rest of the data.
+  prefs: []
+  type: TYPE_NORMAL
+- en: This is crucial when robustness and generalisation are paramount yet hard to
+    guarantee — for example, in diagnostic tools where a few unusual patient records
+    could bias predictions for the wider population, or in fraud detection modelling,
+    where the training set contains false negatives because not every transaction
+    or claim has been audited.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**In essence, while other methods help us find “weird” data, the Cook’s-like
+    approach helps us find data points that make our model itself “weird” in its overall
+    behaviour.**'
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: '* * *'
+  prefs: []
+  type: TYPE_NORMAL
+- en: The Algorithm-Agnostic Adaptation of Cook’s D
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'Powerful as it is, this classic technique has its limitations:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: The original formula applies directly only to **Ordinary Least Squares (OLS)**
+    regression, and
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: For large datasets, it becomes computationally expensive because it requires
+    repeated model fitting
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**But the underlying logic is much broader.** Following Cook’s idea, one can
+    extend this foundational concept to *any* machine learning algorithm.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: The Metric
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: '**The Core Idea:** At its heart, this approach asks:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 🔬If we remove a single data point from the training set and re-train the model,
+    how much do the predictions for *all data points* change compared to when that
+    point was included?
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: '**Extensions beyond OLS:** Researchers have developed modified versions of
+    Cook’s D for other contexts. For example:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Generalised Cook’s Distance for GLMs** (e.g., logistic regression, Poisson
+    regression), which redefines leverage and residuals in terms of the model’s score
+    and information matrix.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Cook’s Distance for linear mixed models**, which accounts for both fixed
+    and random effects.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Algorithm-agnostic approach:** Here, we aim to adapt Cook’s core principle
+    to work with *any* machine learning model, with a workflow like this:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Train** your chosen model (e.g., LightGBM, Random Forest, Neural Network,
+    Linear Regression, etc) on the full dataset and record predictions.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'For each data point in the dataset:'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**LOO (Leave-One-Out):** Remove the data point to create a new dataset.'
+  prefs:
+  - PREF_IND
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Retrain** the model on this reduced dataset.'
+  prefs:
+  - PREF_IND
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Predict** outcomes for *all* observations in the original dataset.'
+  prefs:
+  - PREF_IND
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Measure divergence** between the two sets of predictions. A direct analogue
+    to Cook’s Distance is the ***mean squared difference** in predictions*'
+  prefs:
+  - PREF_IND
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '![](../Images/bbef22b277d40df11c9868ad4dccddaf.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Address the Computational Challenge
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: Another limitation of this powerful metric is its computational cost, as it
+    requires *N* full model retrainings. For large datasets, this can be prohibitively
+    expensive.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'To make the method practical, we can make a **strategic compromise**: instead
+    of processing every single observation, we can focus on a subset of data points.
+    These points can be selected based on their high absolute residuals when predicted
+    by the initial full model. This effectively focuses the computationally intensive
+    step on the most likely influential candidates.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '💡Pro Tip: Add a `max_loo_points`*(integer, optional)* parameter to your implementation.
+    If specified, the LOO calculation is performed only for these many data points.
+    This provides a balance between thoroughness and computational efficiency.'
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: Smart Detection of Influential Points
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'Once the influence scores have been calculated, let’s identify specific influential
+    points that warrant further investigation and management. The detection strategy
+    should adapt based on whether we’re working with the full dataset or a subset
+    (when `max_loo_points` is set):'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '💡Pro Tip: Add `influence_outlier_method` and `influence_outlier_threshold`
+    parameters to your implementation so its easy to specify the the most appropriate
+    detection approach for each use case.'
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: '**Full Dataset Analysis:**'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'When analysing the complete dataset, the influence scores represent a comprehensive
+    picture of each point’s impact on the model’s learned patterns. This allows us
+    to leverage a wide variety of distribution-based detection methods:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Percentile Method** (`influence_outlier_method="percentile"`)'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Selects points above a percentile threshold
+  prefs:
+  - PREF_IND
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'Example: `threshold=95` identifies points in the top 5% of influence scores'
+  prefs:
+  - PREF_IND
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'Good for: Maintaining a consistent proportion of influential points'
+  prefs:
+  - PREF_IND
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Z-Score Method** (`influence_outlier_method="zscore"`):'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Selects points beyond N standard deviations from the mean
+  prefs:
+  - PREF_IND
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'Example: `threshold=3` flags points more than 3 standard deviations away'
+  prefs:
+  - PREF_IND
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'Good for: Normal or approximately normal distributions'
+  prefs:
+  - PREF_IND
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Top K Method** (`influence_outlier_method="top_k"`):'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Selects the K points with highest influence scores
+  prefs:
+  - PREF_IND
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'Example: `threshold=50` selects the 50 most influential points'
+  prefs:
+  - PREF_IND
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'Good for: When you need a specific number of points to investigate.'
+  prefs:
+  - PREF_IND
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**IQR Method** (`influence_outlier_method="iqr"`):'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Selects points above Q3 + k * IQR threshold
+  prefs:
+  - PREF_IND
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'Example: `threshold=1.5` uses the standard boxplot outlier definition'
+  prefs:
+  - PREF_IND
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'Good for: Robust to outliers, works well with skewed distributions'
+  prefs:
+  - PREF_IND
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Mean Multiple Method** (`influence_outlier_method="mean_multiple"`):'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Selects points with influence scores > N times the mean score
+  prefs:
+  - PREF_IND
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'Example: `threshold=3` implements the recommendation from the literature (e.g.,
+    [Tranmer, Murphy, Elliot, & Pampaka, 2020](https://hummedia.manchester.ac.uk/institutes/cmist/archive-publications/working-papers/2020/multiple-linear-regression.pdf))'
+  prefs:
+  - PREF_IND
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'Good for: Following established statistical practices, especially when using
+    linear models'
+  prefs:
+  - PREF_IND
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Subset Analysis:**'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'For computational efficiency with large datasets, we can specify a `max_loo_points`
+    value to analyze a subset of points:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Initial Filtering:**'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Uses absolute residuals to identify `n = max_loo_points` candidate points
+  prefs:
+  - PREF_IND
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Only these candidates are evaluated for their influence scores
+  prefs:
+  - PREF_IND
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Remaining points (with lower residuals) are implicitly considered non-influential
+  prefs:
+  - PREF_IND
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Available Methods**:'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Percentile**: Select top percentage of points (capped at `max_loo_points`)'
+  prefs:
+  - PREF_IND
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Top K**: Select K most influential points (K ≤ max_loo_points)'
+  prefs:
+  - PREF_IND
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'Note: Other distribution-based methods (z-score, IQR) are not applicable here
+    due to the pre-filtered nature of the scores.'
+  prefs:
+  - PREF_IND
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: This flexible approach allows users to choose the most appropriate detection
+    method based on
+  prefs: []
+  type: TYPE_NORMAL
+- en: the dataset size and computational constraints
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Distribution characteristics of influence scores
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Specific requirements for the number of points to investigate
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Diagnostic Visuals
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: '💡Pro Tip: The detection of influential observations should be seen as a starting
+    point for investigation 🔍 rather than an automatic removal criterion 🗑️'
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: 'Each flagged point deserves careful examination within the context of the specific
+    use case. Some of these points may be **high-leverage but valid** representations
+    of unusual phenomena — removing them could hurt performance. Others could be **data
+    errors or noise** — these are the ones we’d want to filter out. To assist with
+    decision-making on influential points, the code below provides comprehensive diagnostic
+    visualisations to support the investigation:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Influence Score Distribution**'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Shows the distribution of influence scores across all points
+  prefs:
+  - PREF_IND
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Highlights the threshold used for flagging influential points
+  prefs:
+  - PREF_IND
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Helps assess if the influential points are clear outliers or part of a continuous
+    spectrum
+  prefs:
+  - PREF_IND
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Target Distribution View**'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Shows the overall distribution of the target variable
+  prefs:
+  - PREF_IND
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Highlights influential points with distinct markers
+  prefs:
+  - PREF_IND
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Helps identify if influential points are concentrated in specific value ranges
+  prefs:
+  - PREF_IND
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Feature-Target Relationships**'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Creates scatter plots for each feature against the target
+  prefs:
+  - PREF_IND
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Automatically adapts visualisation for categorical features
+  prefs:
+  - PREF_IND
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Highlights influential points to reveal potential feature-specific patterns
+  prefs:
+  - PREF_IND
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Helps understand if influence is driven by specific feature values or combinations
+  prefs:
+  - PREF_IND
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'These visualisations can guide several key decisions:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Whether to treat influential points as errors requiring removal
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Whether to collect additional observations in similar regions so the model can
+    learn to handle relevant influential points
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Whether the influence patterns suggest underlying data quality issues
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Whether the influential points represent valuable edge cases worth preserving
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: What’s the best method/threshold to filter out influential points for this use
+    case based on influence score distribution.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: All in all, the visual diagnostics, combined with domain expertise, enable more
+    informed decisions about how to handle influential observations in your specific
+    context.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '* * *'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Source Code & Demo
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: This approach, including all the functionalities discussed above, has been implemented
+    as a utility function `calculate_cooks_d_like_influence` in the `stats_utils`
+    module by the `MLarena` Python package, with the source code [available on GitHub](https://github.com/MenaWANG/mlarena)
+    🔗. Now let’s check out this function in action 😎.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Synthetic Data with Built-In Disruptors
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: I have created a synthetic dataset of housing prices as a function of age, size
+    and number of bedrooms, then split it into train (n=800) and test (n=200). In
+    the code below, I planted 50 disruptors into the training set like below (full
+    code of the demo available in [this notebook](https://github.com/MenaWANG/mlarena/blob/master/examples/5.case_cooks_like_influence_demo.ipynb)
+    in the same repo).
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE0]'
+  prefs: []
+  type: TYPE_PRE
+- en: '![The distribution of the original dataset and new dataset with planted disruptive
+    points.  ](../Images/7e8d9d3659d30bae3963a02aafcaddaf.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Calculate the Influence Score
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: Now, let’s calculate the influence score for all observations in the training
+    set. As discussed above, the `calculate_cooks_d_like_influence` function is an
+    algorithm-agnostic solution; it accepts any sklearn-style regressor that provides
+    the `fit` and `predict` methods. For example, in the code below, I passed in `LinearRegression`
+    as the estimator.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE1]'
+  prefs: []
+  type: TYPE_PRE
+- en: In the code above, I have also set the method for influential points detection
+    to be by `percentile`. Because the training set contains 800 samples, the 95%
+    cutoff gave us 40 influential points. As shown in the ***Distribution of Influence
+    Scores*** plot below, most observations cluster around small influence values,
+    but a handful stand out with much larger scores. This is expected, since we deliberately
+    planted 50 disruptors in the dataset. Follow-up analysis, available in the linked
+    notebook in the repo, confirms that the top 50 most influential points align exactly
+    with our 50 planted disruptors. 🥂
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/34b9b274dafa9e05a8c9e0563f30a235.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: The top 5% high-influence points are highlighted in the ***Target Distribution***
+    plot below. Consistent with how we planted these disruptors, only some of these
+    observations can be considered as univariate outliers.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/ad509a4cf8b451d16cf4a700d8f9ead7.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'The scatterplots below show the relationship between each feature and the target
+    variable, with influential points highlighted in red. These diagnostic plots serve
+    as powerful tools for analysing influential observations and shaping informed
+    decisions about their treatment by facilitating discussions regarding key questions
+    such as:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Are these points rare but valid cases that should be preserved to maintain important
+    edge cases?
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Do these points indicate areas where additional data collection would be beneficial
+    to better represent the full range of scenarios?
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Do these points represent errors or outliers that, if removed, would help the
+    model learn more generalizable patterns?
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '![](../Images/e7c086eed423ee7bad759b121144224f.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Focused Search and Easy Change of Algorithms
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: Next, let’s test the function on another algorithm, the LightGBM regressor.
+    As shown in the code below, you can easily configure the algorithm via the `model_params`
+    parameter.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In addition, by setting up `max_loo_points`, we can optimize the computation
+    by focusing only on the most promising candidates. For example, instead of performing
+    leave-one-out (LOO) analysis on all 800 training points, we can configure the
+    function to intelligently select 200 points with the highest absolute residuals.
+    This effectively targets the search to the ‘danger zone’ where influential points
+    are most likely to be found.
+  prefs: []
+  type: TYPE_NORMAL
+- en: You can also specify the method and threshold for identifying influential points
+    that is the most suitable for your use case. In the code below, I chose the `top_k`
+    method to identify the 50 most influential points based on their influence scores.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE2]'
+  prefs: []
+  type: TYPE_PRE
+- en: Retrain Using the Cleaned Data
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: After careful investigation of the influential points, say if you decide to
+    remove them from your training set and retrain the model. Below is the code to
+    get the cleaned training set using the `normal_indices` conveniently returned
+    from `calculate_cooks_d_like_influence` function from the code cell above.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE3]'
+  prefs: []
+  type: TYPE_PRE
+- en: In addition, if you are interested in checking out the impact of the cleaning
+    on different algorithms, you can swap algorithms easily using `MLarena` like below.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE4]'
+  prefs: []
+  type: TYPE_PRE
+- en: Comparison Across Algorithms
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: We can easily loop the workflow above over the disrupted and cleaned training
+    set and across different algorithms. Pls see the performance comparisons in the
+    following plot.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In our demo, Linear Regression shows the modest improvement primarily due to
+    the linear nature of our synthetic data. In reality, it is always worthwhile experimenting
+    with different algorithms to find the most suitable approach for your use case.
+    The experimentation or migration between algorithms doesn’t need to be disruptive;
+    more on the algorithm-agnostic ML workflow in [this article](https://towardsdatascience.com/build-algorithm-agnostic-ml-pipelines-in-a-breeze/)
+    🔗.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/7fcead4ccb9445d24ca9ae7878d5c621.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: '* * *'
+  prefs: []
+  type: TYPE_NORMAL
+- en: There you have it, the helper function `calculate_cooks_d_like_influence` that
+    you can conveniently add to your ML workflow to identify influential observations.
+    While our demonstration used synthetic data with deliberately planted disruptors,
+    real-world applications require much more nuanced investigation. The diagnostic visualisations
+    provided by this function are designed to facilitate careful analysis and meaningful discussions
+    about influential points.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Each influential point might represent a valid edge case in your domain
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Patterns in influential points could reveal important gaps in your training data
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: The decision to remove or retain points should be based on domain expertise
+    and business context
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 🔬 Think of this function as a **diagnostic tool** that highlights areas for
+    investigation, not as an automatic outlier removal mechanism. Its true value lies
+    in helping you understand your data better so your model can learn and generalise
+    better 🏆.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '* * *'
+  prefs: []
+  type: TYPE_NORMAL
+- en: I write about data, ML, and AI for problem-solving. You can also find me on
+    💼[LinkedIn](https://www.linkedin.com/in/mena-ning-wang/) | 😺[GitHub](https://github.com/MenaWANG)
+    | 🕊️[Twitter/](https://x.com/mena_wang) 🤗
+  prefs: []
+  type: TYPE_NORMAL
+- en: '* * *'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Unless otherwise noted, all images are by the author.
+  prefs: []
+  type: TYPE_NORMAL

@@ -1,0 +1,1285 @@
+- en: Avoidable and Unavoidable Randomness in GPT-4o
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 原文：[https://towardsdatascience.com/avoidable-and-unavoidable-randomness-in-gpt-4o/](https://towardsdatascience.com/avoidable-and-unavoidable-randomness-in-gpt-4o/)
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: Of course there is randomness in GPT-4o’s outputs. After all, the model samples
+    from a probability distribution when choosing each token. But what I didn’t understand
+    was that those very probabilities themselves are not deterministic. Even with
+    consistent prompts, fixed seeds, and temperature set to zero, GPT-4o still introduces
+    subtle, frustrating randomness.
+  prefs: []
+  type: TYPE_NORMAL
+- en: There’s no fix for this, and it might not even be something OpenAI *could* fix
+    if they wanted to, just so we’re clear up front about where this article is headed.
+    Along the way, we’ll examine all the sources of randomness in GPT-4o output, which
+    will require us to break down the sampling process to a low level. We’ll point
+    at the issue—the probabilities vary—and critically examine OpenAI’s official guidance
+    on determinism.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'First, though, let’s talk about why determinism matters. Determinism means
+    that the same input always produces the same output, like a mathematical function.
+    While LLM creativity is often desirable, determinism serves crucial purposes:
+    researchers need it for reproducible experiments, developers for verifying reported
+    results, and prompt engineers for debugging their changes. Without it, you’re
+    left wondering if different outputs stem from your tweaks or just the random number
+    generator’s mood swings.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Flipping a coin
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'We’re going to keep things extremely simple here and prompt the most recent
+    version of GPT-4o (`gpt-4o-2024-08-06` in the API) with this:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '` Flip a coin. Return Heads or Tails only.`'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Flipping a coin with LLMs is a fascinating topic in itself (see for example
+    Van Koevering & Kleinberg, 2024 in the references), but here, we’ll use it as
+    a simple binary question with which to explore determinism, or the lack thereof.
+  prefs: []
+  type: TYPE_NORMAL
+- en: This is our first attempt.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE0]'
+  prefs: []
+  type: TYPE_PRE
+- en: Running the code gave me `Heads`. Maybe you’ll get `Tails`, or if you’re really
+    lucky, something far more interesting.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The code first initializes an OpenAI client with an API key set in the environment
+    variable `OPENAI_API_KEY` (to avoid sharing billing credentials here). The main
+    action happens with client.chat.completions.create, where we specify the model
+    to use and send the prompt (as a part of a very simple conversation named messages)
+    to the server. We get an object called response back from the server. This object
+    contains a lot of information, as shown below, so we need to dig into it to extract
+    GPT-4o’s actual response to the message, which is `response.choices[0].message.content`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE1]'
+  prefs: []
+  type: TYPE_PRE
+- en: Now let’s flip the coin ten times. If this were a real, fair coin, of course,
+    we would expect roughly equal heads and tails over time thanks to the law of large
+    numbers. But GPT-4o’s coin doesn’t work quite like that.
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: ''
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: '[PRE2]'
+  prefs:
+  - PREF_BQ
+  type: TYPE_PRE
+- en: ''
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: Running this code gave me the following output, although you might get different
+    output, of course.
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: ''
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: '[PRE3]'
+  prefs:
+  - PREF_BQ
+  type: TYPE_PRE
+- en: ''
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: GPT-4o’s coin is clearly biased, but so are humans. Bar-Hillel, Peer, and Acquisti
+    (2014) found that people flipping imaginary coins choose “heads” 80% of the time.
+    Maybe GPT-4o learned that from us. But whatever the reason, we’re just using this
+    simple example to explore determinism.
+  prefs:
+  - PREF_BQ
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: ''
+  prefs:
+  - PREF_BQ
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: Just how biased is GPT-4o’s coin?
+  prefs:
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: ''
+  prefs:
+  - PREF_BQ
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: Let’s say we wanted to know precisely what percentage of GPT-4o coin flips land
+    Heads.
+  prefs:
+  - PREF_BQ
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: ''
+  prefs:
+  - PREF_BQ
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: 'Rather than the obvious (but expensive) approach of flipping it a million times,
+    there’s a smarter way. For classification tasks with a small set of possible answers,
+    we can extract token probabilities instead of generating full responses. With
+    the right prompt, the first token carries all the necessary information, making
+    these API calls incredibly cheap: around 30,000 calls per dollar, since each requires
+    just 18 (cached) input tokens and 1 output token.'
+  prefs:
+  - PREF_BQ
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: ''
+  prefs:
+  - PREF_BQ
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: OpenAI gives us (natural) log probabilities. These are called logprobs in the
+    code, and we convert them to regular probabilities by exponentiation. (We’ll discuss
+    temperature soon, but note that exponentiating logprobs directly like this corresponds
+    to a temperature setting of 1.0, and is how we calculate probabilities throughout
+    this article). OpenAI lets us request logprobs for the top 20 most likely tokens,
+    so we do that.
+  prefs:
+  - PREF_BQ
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: ''
+  prefs:
+  - PREF_BQ
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: '[PRE4]'
+  prefs:
+  - PREF_BQ
+  - PREF_BQ
+  type: TYPE_PRE
+- en: ''
+  prefs:
+  - PREF_BQ
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: If you run this, you’ll get *something* like the following output, but actual
+    numbers *will* vary.
+  prefs:
+  - PREF_BQ
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: ''
+  prefs:
+  - PREF_BQ
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: '[PRE5]       |    -16.7880535126 |     0.0000051173 |'
+  prefs:
+  - PREF_BQ
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: '| Here''s    |    -16.9130535126 |     0.0000045160 |'
+  prefs:
+  - PREF_BQ
+  - PREF_BQ
+  type: TYPE_TB
+- en: '| I         |    -17.2880535126 |     0.0000031038 |'
+  prefs:
+  - PREF_BQ
+  - PREF_BQ
+  type: TYPE_TB
+- en: '| As        |    -17.2880535126 |     0.0000031038 |'
+  prefs:
+  - PREF_BQ
+  - PREF_BQ
+  type: TYPE_TB
+- en: ''
+  prefs:
+  - PREF_BQ
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: 'Total probabilities: 99.999970%'
+  prefs:
+  - PREF_BQ
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: '[PRE6]'
+  prefs:
+  - PREF_BQ
+  - PREF_BQ
+  type: TYPE_PRE
+- en: '>>> import tiktoken'
+  prefs:
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: '>>> encoding = tiktoken.encoding_for_model("gpt-4o-2024-08-06")'
+  prefs:
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: '>>> encoding.encode(''Tails'')'
+  prefs:
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: '[51, 2196]'
+  prefs:
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: '>>> encoding.decode([51])'
+  prefs:
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: '''T'''
+  prefs:
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: '>>> encoding.encode(''Heads'')'
+  prefs:
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: '[181043]'
+  prefs:
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: '[PRE7]'
+  prefs:
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  type: TYPE_PRE
+- en: '| Token     |   Log Probability |   Percentage (%) |'
+  prefs:
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  type: TYPE_TB
+- en: '|-----------|-------------------|------------------|'
+  prefs:
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: '| Heads     |     -0.0110520627 |    98.9008786933 |'
+  prefs:
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  type: TYPE_TB
+- en: '| T         |     -4.5110521317 |     1.0986894433 |'
+  prefs:
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  type: TYPE_TB
+- en: '| Certainly |    -14.0110521317 |     0.0000822389 |'
+  prefs:
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  type: TYPE_TB
+- en: '| Head      |    -14.2610521317 |     0.0000640477 |'
+  prefs:
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  type: TYPE_TB
+- en: '| Sure      |    -14.2610521317 |     0.0000640477 |'
+  prefs:
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  type: TYPE_TB
+- en: '| Tail      |    -14.3860521317 |     0.0000565219 |'
+  prefs:
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  type: TYPE_TB
+- en: '| heads     |    -15.3860521317 |     0.0000207933 |'
+  prefs:
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  type: TYPE_TB
+- en: '| Heads     |    -15.5110521317 |     0.0000183500 |'
+  prefs:
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  type: TYPE_TB
+- en: '| [PRE8]'
+  prefs:
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: ''
+  prefs:
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: 'In their [cookbook](https://cookbook.openai.com/examples/reproducible_outputs_with_the_seed_parameter),
+    OpenAI offers the following advice on receiving “mostly identical” outputs:'
+  prefs:
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: ''
+  prefs:
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: If the `seed`, request parameters, and `system_fingerprint` all match across
+    your requests, then model outputs will mostly be identical. There is a small chance
+    that responses differ even when request parameters and `system_fingerprint` match,
+    due to the inherent non-determinism of our models.
+  prefs:
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: ''
+  prefs:
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: They also give “mostly identical” advice in the [reproducible outputs section](https://platform.openai.com/docs/advanced-usage/reproducible-outputs)
+    of their documentation.
+  prefs:
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: ''
+  prefs:
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: 'The request parameters that could affect randomness are `temperature` and `seed`.
+    OpenAI also suggests we track `system_fingerprint`, because differences here might
+    cause differences in output. We’ll examine each of these below, but spoiler: none
+    of them will fix or even explain this non-determinism.'
+  prefs:
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: ''
+  prefs:
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: Temperature, and why it won’t fix this
+  prefs:
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: ''
+  prefs:
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: 'Temperature controls how random the model’s responses are. Low temperatures
+    (<0.5) make it robotic and predictable, medium temperatures (0.7–1.3) allow some
+    creativity, and high temperatures (>1.5) produce gibberish. Temperature is often
+    called the “creativity parameter”, but this is an oversimplification. In their
+    analysis, Peeperkorn, Kouwenhoven, Brown, and Jordanous (2024) evaluated LLM outputs
+    across four dimensions of creativity: novelty (originality), coherence (logical
+    consistency), cohesion (how well the text flows), and typicality (how well it
+    fits expected patterns). They observed that:'
+  prefs:
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: ''
+  prefs:
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: temperature is weakly correlated with novelty, and unsurprisingly, moderately
+    correlated with incoherence, but there is no relationship with either cohesion
+    or typicality.
+  prefs:
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: ''
+  prefs:
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: 'But, this is beside the point for coin flipping. Under the hood, the log probabilities
+    are divided by the temperature before they’re renormalized and exponentiated to
+    be converted to probabilities. This creates a non-linear effect: `temperature=0.5`
+    squares the probabilities, making likely tokens dominate, while `temperature=2.0`
+    applies a square root, flattening the distribution.'
+  prefs:
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: ''
+  prefs:
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: 'What about `temperature=0.0`? Instead of breaking math dividing by zero, the
+    model simply picks the highest-probability token. Sounds deterministic, right?
+    Not quite. Here’s the catch: temperature only comes into play after the log probabilities
+    are computed, when we convert them to probabilities.'
+  prefs:
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: ''
+  prefs:
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: 'In summary: **if the logprobs aren’t deterministic, setting temperature to
+    0.0 won’t make the model deterministic**.'
+  prefs:
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: ''
+  prefs:
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: In fact, since we’re just asking the model for the raw logprobs directly rather
+    than generating full responses, the temperature setting doesn’t come into play
+    in our code at all.
+  prefs:
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: ''
+  prefs:
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: Seeds, and why they won’t fix this
+  prefs:
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: ''
+  prefs:
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: After temperature is used to compute probabilities, the model samples from these
+    probabilities to pick the next token. OpenAI gives us a little control over the
+    sampling process by letting us set the `seed` parameter for the random number
+    generator. In an ideal world, setting a seed would give us determinism at any
+    temperature. But seeds only affect sampling, not the log probabilities before
+    sampling.
+  prefs:
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: ''
+  prefs:
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: 'In summary: **if the logprobs aren’t deterministic, setting a seed won’t make
+    the model deterministic**.'
+  prefs:
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: ''
+  prefs:
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: In fact, `seed` only matters with non-zero temperatures. With `temperature=0.0`,
+    the model is always choosing the highest probability token regardless of the seed.
+    Again, since we’re just asking the model for the raw logprobs directly rather
+    than sampling, neither of these settings can help us achieve determinism.
+  prefs:
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: ''
+  prefs:
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: System fingerprints, our last hope
+  prefs:
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: ''
+  prefs:
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: The `system_fingerprint` identifies the current combination of model weights,
+    infrastructure, and configuration options in OpenAI’s backend. At least, that’s
+    what OpenAI tells us. Variations in system fingerprints might indeed explain variations
+    in logprobs. Except that they don’t, as we will verify below.
+  prefs:
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: ''
+  prefs:
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: Nothing can get you determinism
+  prefs:
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: ''
+  prefs:
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: 'Let’s confirm what we’ve been building toward. We’ll run the same request 10
+    times with every safeguard in place. Even though neither of these parameters *should*
+    matter for what we’re doing, you can never be too safe, so we’ll set `temperature=0.0`
+    and `seed=42`. And to see if infrastructure differences explain our varying logprobs,
+    we’ll print `system_fingerprint`. Here’s the code:'
+  prefs:
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: ''
+  prefs:
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: '[PRE9]'
+  prefs:
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  type: TYPE_PRE
+- en: ''
+  prefs:
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: 'Running this 10 times, here are the logprobs and probabilities for the token
+    Heads:'
+  prefs:
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: ''
+  prefs:
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: '[PRE10]'
+  prefs:
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  type: TYPE_PRE
+- en: ''
+  prefs:
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: Mixture-of-experts makes determinism impossible
+  prefs:
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: ''
+  prefs:
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: OpenAI is decidedly not open about the architecture behind GPT-4o. However,
+    it’s widely believed that GPT-4o uses a mixture-of-experts (MoE) architecture
+    with either 8 or 16 experts.
+  prefs:
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: ''
+  prefs:
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: 'According to a paper by Google DeepMind researchers Puigcerver, Riquelme, Mustafa,
+    and Houlsby (hat tip to [user elmstedt on the OpenAI forum](https://community.openai.com/t/why-the-api-output-is-inconsistent-even-after-the-temperature-is-set-to-0/329541/9)),
+    mixture-of-experts architectures may add an unavoidable level of non-determinism:'
+  prefs:
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: ''
+  prefs:
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: Under capacity constraints, all Sparse MoE approaches route tokens in groups
+    of a fixed size and enforce (or encourage) balance within the group. When groups
+    contain tokens from different sequences or inputs, these tokens compete for available
+    spots in expert buffers. Therefore, the model is no longer deterministic at the
+    sequence-level, but only at the batch-level.
+  prefs:
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: ''
+  prefs:
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: In other words, when your prompt (a *sequence of tokens*, in the quote above)
+    reaches OpenAI’s servers, it gets batched with a group of other prompts (OpenAI
+    isn’t open about how many other prompts). Each prompt in the batch is then routed
+    to an “expert” within the model. However, since only so many prompts can be routed
+    to the same expert, the expert your prompt gets routed to will depend on all the
+    other prompts in the batch.
+  prefs:
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: ''
+  prefs:
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: This “competition” for experts introduces a real-world randomness completely
+    beyond our control.
+  prefs:
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: ''
+  prefs:
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: Non-determinism beyond mixture-of-experts
+  prefs:
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: ''
+  prefs:
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: While non-determinism may be inherent to real-world mixture-of-experts models,
+    that does not seem to be the *only* source of non-determinism in OpenAI’s models.
+  prefs:
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: ''
+  prefs:
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: 'Making a few changes to our code above (switching to `gpt-3.5-turbo-0125`,
+    looking for the token `He` since GPT-3.5’s tokenizer splits “Heads” differently,
+    and ignoring system_fingerprint because this model doesn’t have it) reveals that
+    GPT-3.5-turbo *also* exhibits non-deterministic logprobs:'
+  prefs:
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: ''
+  prefs:
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: '[PRE11]'
+  prefs:
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  type: TYPE_PRE
+- en: ''
+  prefs:
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: No one is claiming that GPT-3.5-turbo uses a mixture-of-experts architecture.
+    Thus, there must be additional factors beyond mixture-of-experts contributing
+    to this non-determinism.
+  prefs:
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: ''
+  prefs:
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: What 10,000 GPT-4o coin flip probabilities tell us
+  prefs:
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: ''
+  prefs:
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: To better understand the patterns and magnitude of this non-determinism, I conducted
+    a more extensive experiment with GPT-4o, performing 10,000 “coin flips” while
+    recording the probability assigned to “Heads” in each case.
+  prefs:
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: ''
+  prefs:
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: The results reveal something fascinating. Across 10,000 API calls with identical
+    parameters, GPT-4o produced not just a few different probability values, but **42
+    distinct probabilities**. If the mixture-of-experts hypothesis were the complete
+    explanation for non-determinism in GPT-4o, we might expect to see one distinct
+    probability for each expert. But GPT-4o is believed to have either 8 or 16 experts,
+    **not 42**.
+  prefs:
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: ''
+  prefs:
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: In the output below, I clustered these probabilities, ensuring that each cluster
+    was separated from the others by 0.01 (as a raw percentage). This groups the output
+    into **12 clusters**.
+  prefs:
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: ''
+  prefs:
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: '[PRE12]'
+  prefs:
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  type: TYPE_PRE
+- en: ''
+  prefs:
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: (With a threshold of 0.001 there are 13 clusters, and with a threshold of 0.0001
+    there are 17 clusters.)
+  prefs:
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: ''
+  prefs:
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: 'As the chart above demonstrates, this multitude of results cannot be explained
+    by `system_fingerprint` values. Across all 10,000 calls, I received only two different
+    system fingerprints: 4488 results with `fp_f9f4fb6dbf` and 5512 with `fp_eb9dce56a8`,
+    and for the most part the two system fingerprints returned the same sets probabilities,
+    rather than each fingerprint producing its own distinct set of probabilities.'
+  prefs:
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: ''
+  prefs:
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: It *could* be that these 12 clusters of probabilities represent **12 different
+    experts**. Even assuming that, the variations within the clusters remain puzzling.
+    These don’t seem likely to be simple rounding errors, because they are too systematic
+    and consistent. Take the giant cluster at around 96.266% with two distinct probabilities
+    representing over half of our coin flips. The difference between these two probabilities,
+    0.0000448274%, is tiny but persistent.
+  prefs:
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: ''
+  prefs:
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: 'Conclusion: Non-determinism is baked in'
+  prefs:
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: ''
+  prefs:
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: 'There is an underlying randomness in the log probabilities returned by all
+    currently available non-thinking OpenAI models: GPT-4o, GPT-4o-mini, and the two
+    flavors of GPT-3.5-turbo. Because this non-determinism is baked into the log probabilities,
+    there’s no way for a user to get around it. Temperature and seed values have no
+    effect, and system fingerprints don’t explain it.'
+  prefs:
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: ''
+  prefs:
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: While mixture-of-experts architectures inherently introduce some randomness
+    in the competition for experts, the non-determinism in GPT-4o seems to go far
+    beyond this, and the non-determinism in GPT-3.5-turbo can’t be explained by this
+    at all, because GPT-3.5-turbo isn’t a mixture-of-experts model.
+  prefs:
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: ''
+  prefs:
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: 'While we can’t verify this claim any more because the model isn’t being served,
+    this behaviour wasn’t seen with GPT-3, according to [user _j on the OpenAI forum](https://medium.com/r/?url=https%3A%2F%2Fcommunity.openai.com%2Ft%2Fnon-deterministic-probabilities-for-first-generated-token-in-chat-completion%2F726074%2F5):'
+  prefs:
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: ''
+  prefs:
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: It is a symptom that was not seen on prior GPT-3 AI models where across hundreds
+    of trials to investigate sampling, you never had to doubt that logprobs would
+    be the same. Even if you found a top-2 answer that returned exactly the same logprob
+    value via the API, you would never see them switch position or return different
+    values.
+  prefs:
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: ''
+  prefs:
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: This suggests that whatever is causing this randomness first emerged in either
+    GPT-3.5 or GPT-3.5-turbo.
+  prefs:
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: ''
+  prefs:
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: 'But regardless of when it emerged, this non-determinism is a serious obstacle
+    to understanding these models. If you want to study a model—how it generalizes,
+    how it biases responses, how it assigns probabilities to different tokens—you
+    need consistency. but as we’ve seen, even when we lock down every knob OpenAI
+    lets us touch, we still can’t get an answer to the simplest possible question:
+    **“what is the probability that GPT-4o says a coin lands heads?”**'
+  prefs:
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: ''
+  prefs:
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: Worse, while mixture-of-experts explains some of this non-determinism, there
+    are clearly other, hidden sources of randomness that we can’t see, control, or
+    understand. In an ideal world, the API would provide more transparency by telling
+    us which expert processed our request or by offering additional parameters to
+    control this routing process. Without such visibility, we’re left guessing at
+    the true nature of the variability.
+  prefs:
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: ''
+  prefs:
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: References
+  prefs:
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: ''
+  prefs:
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: 'Bar-Hillel, M., Peer, E., & Acquisti, A. (2014). “Heads or tails?” – A reachability
+    bias in binary choice. Journal of Experimental Psychology: Learning, Memory, and
+    Cognition, 40(6), 1656–1663\. [https://doi.org/10.1037/xlm0000005](https://doi.org/10.1037/xlm0000005).'
+  prefs:
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: ''
+  prefs:
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: Peeperkorn, M., Kouwenhoven, T., Brown, D., & Jordanous, A. (2024). Is temperature
+    the creativity parameter of large language models?. In The 15th International
+    Conference on Computational Creativity (ICCC’24). [arXiv:2405.00492](https://arxiv.org/abs/2405.00492).
+  prefs:
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: ''
+  prefs:
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: Puigcerver, J., Riquelme, C., Mustafa, B., & Houlsby, N. (2024). From sparse
+    to soft mixtures of experts. In The Twelfth International Conference on Learning
+    Representations (ICLR 2024). [https://openreview.net/forum?id=jxpsAj7ltE](https://openreview.net/forum?id=jxpsAj7ltE).
+    [arXiv:2308.00951](https://arxiv.org/abs/2308.00951).Van Koevering, K., & Kleinberg,
+    J. (2024). How random is random? Evaluating the randomness and humanness of LLMs’
+    coin flips. [arXiv:2406.00092](https://arxiv.org/abs/2406.00092).
+  prefs:
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  - PREF_BQ
+  type: TYPE_NORMAL

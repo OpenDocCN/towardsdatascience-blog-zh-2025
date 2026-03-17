@@ -1,0 +1,556 @@
+- en: The Architecture Behind Web Search in AI Chatbots
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 原文：[https://towardsdatascience.com/the-architecture-behind-web-search-in-ai-chatbots-2/](https://towardsdatascience.com/the-architecture-behind-web-search-in-ai-chatbots-2/)
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: <mdspan datatext="el1764828771491" class="mdspan-comment">When you ask ChatGPT</mdspan>
+    or Claude to “search the web,” it isn’t just answering from its training data.
+    It’s calling a separate search system.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Most people know that part.
+  prefs: []
+  type: TYPE_NORMAL
+- en: What’s less clear is how much traditional search engines matter and how much
+    has been built on top of them.
+  prefs: []
+  type: TYPE_NORMAL
+- en: All of it isn’t fully public, so I’m doing some mental deduction here. But we
+    can use different hints from looking at larger systems to build a useful mental
+    model.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We’ll go through query optimization, how search engines are used for discovery,
+    chunking content, “on-the-fly” retrieval, and how you could potentially reverse-engineer
+    a system like this to build a “GEO [<mdspan datatext="el1764828654960" class="mdspan-comment">Generative
+    Engine Optimization</mdspan>] scoring system.”
+  prefs: []
+  type: TYPE_NORMAL
+- en: If you’re familiar with RAG, some of this will be repetition, but it can still
+    be useful to see how larger systems split the pipeline into a discovery phase
+    and a retrieval phase (if this is new).
+  prefs: []
+  type: TYPE_NORMAL
+- en: If you’re short on time, you can read the TL;DR.
+  prefs: []
+  type: TYPE_NORMAL
+- en: TL;DR
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: Web search in these AI chatbots is likely a two-part process. The first part
+    leans on traditional search engines to find and rank candidate docs. In the second
+    part, they fetch the content from those URLs and pull out the most relevant passages
+    using passage-level retrieval.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The big change (from traditional SEO) is query rewriting and passage-level chunking,
+    which let lower-ranked pages outrank higher ones if their specific paragraphs
+    match the question better.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The technical process
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: The companies behind Claude and ChatGPT aren’t fully transparent about how their
+    web search systems work within the UI chat, but we can infer a lot by piecing
+    things together.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We know they lean on search engines to find candidates, at this scale, it would
+    be absurd not to. We also know that what the LLM actually sees are pieces of text
+    (chunks or passages) when grounding their answer.
+  prefs: []
+  type: TYPE_NORMAL
+- en: This strongly hints at some kind of embedding-based retrieval over those chunks
+    rather than over full pages.
+  prefs: []
+  type: TYPE_NORMAL
+- en: This process has several parts, so we’ll go through it step by step.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Query re-writing & fan-out
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: First, we’ll look at how the system cleans up human queries and expands them.
+    We’ll cover the rewrite step, the fan-out step, and why this matters for SEO.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/d1da9bf59b4490de9e474c882205da4a.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: we’ll start at query rewriting — showing the entire pipeline we’re going through
+  prefs: []
+  type: TYPE_NORMAL
+- en: I think this part might be the most transparent, and the one most people seem
+    to agree on online.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The query optimization step is about taking a human query and turning it into
+    something more precise. For example, “please search for those red shoes we talked
+    about earlier” becomes “brown-red Nike sneakers.”
+  prefs: []
+  type: TYPE_NORMAL
+- en: The fan-out step, on the other hand, is about generating additional rewrites.
+    So if a user asks about hiking routes near me, the system might try things like
+    “beginner hikes near Stockholm,” “day hikes near Stockholm public transport,”
+    or “family-friendly trails near Stockholm.”
+  prefs: []
+  type: TYPE_NORMAL
+- en: This is different from just using synonyms, which traditional search engines
+    are already optimized for.
+  prefs: []
+  type: TYPE_NORMAL
+- en: If this is the first time you’re hearing about it and you’re unconvinced, take
+    a look at Google’s own docs on [AI query fan-out](https://developers.google.com/search/docs/appearance/ai-features)
+    or do a bit of digging around query rewriting.
+  prefs: []
+  type: TYPE_NORMAL
+- en: To what extent this actually works, we can’t know. They may not fan it out that
+    much and just work with a single query, then send additional ones down the pipeline
+    if the results are lackluster.
+  prefs: []
+  type: TYPE_NORMAL
+- en: What we *can* say is that it’s probably not a big model doing this part. If
+    you look at the research, [Ye et al.](https://aclanthology.org/2023.findings-emnlp.398/)
+    explicitly use an LLM to generate strong rewrites, then distill that into a smaller
+    rewriter to avoid latency and cost overhead.
+  prefs: []
+  type: TYPE_NORMAL
+- en: As for what this part of the pipeline means, for engineering, it just means
+    you want to clean up the messy human queries and turn them into something that
+    has a higher hit rate.
+  prefs: []
+  type: TYPE_NORMAL
+- en: For the business and SEO people out there, it means those human queries you’ve
+    been optimizing for are getting transformed into more robotic, document-shaped
+    ones.
+  prefs: []
+  type: TYPE_NORMAL
+- en: SEO, as I understand it, used to care a lot about matching the exact long-tail
+    phrase in titles and headings. If someone searched for “best running shoes for
+    bad knees,” you’d stick to that exact string.
+  prefs: []
+  type: TYPE_NORMAL
+- en: What you need to care about now is also entities, attributes, and relationships.
+  prefs: []
+  type: TYPE_NORMAL
+- en: So, if a user asks for “something for dry skin,” the rewrites might include
+    things like “moisturizer,” “occlusive,” “humectant,” “ceramides,” “fragrance-free,”
+    “avoid alcohols” and not just “how would I find a good product for dry skin.”
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'But let’s be clear so there’s no confusion: we can’t see the internal rewrites
+    themselves, so these are just examples.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: If you’re interested in this part, you can dig deeper. I bet there are plenty
+    of papers out there on how to do this well.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Let’s move on to what these optimized queries are actually used for.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Using search engines (for doc level discovery)
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: It’s pretty common knowledge by now that, to get up-to-date answers, most AI
+    bots rely on traditional search engines. That’s not the whole story, but it does
+    cut the web down to something smaller to work with.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/652fd9b469f7bd240f4284463716fbbe.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: next up doc discovery — showing the entire pipeline we’re going through
+  prefs: []
+  type: TYPE_NORMAL
+- en: I’m assuming the full web is too large, too noisy, and too fast-changing for
+    an LLM pipeline to pull raw content directly. So by using already established
+    search engines, you get a way to narrow the universe.
+  prefs: []
+  type: TYPE_NORMAL
+- en: If you look at larger RAG pipelines that work with millions of documents, they
+    do something similar. I.e. using a filter of some sort to decide which documents
+    are important and worth further processing.
+  prefs: []
+  type: TYPE_NORMAL
+- en: For this part, we do have proof.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Both [OpenAI](https://help.openai.com/en/articles/9237897-chatgpt-search) and
+    [Anthropic](https://techcrunch.com/2025/03/21/anthropic-appears-to-be-using-brave-to-power-web-searches-for-its-claude-chatbot/)
+    have said they use third-party search engines like Bing and Brave, alongside their
+    own crawlers.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Perplexity may have built out this part on their own by now, but in the beginning,
+    they would have done the same.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We also have to consider that traditional search engines like Google and Bing
+    have already solved the hardest problems. They’re an established technology that
+    handles things like language detection, authority scoring, domain trust, spam
+    filtering, and so on.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Throwing all of that away to embed the entire web yourself seems unlikely.
+  prefs: []
+  type: TYPE_NORMAL
+- en: However, we don’t know how many results they actually fetch per query, whether
+    it’s just the top 20 or 30\. One [unofficial article](https://www.seerinteractive.com/insights/87-percent-of-searchgpt-citations-match-bings-top-results)
+    compared citations from ChatGPT and Bing, looked at the ranking order, and found
+    that some came from as far down as 22nd place.
+  prefs: []
+  type: TYPE_NORMAL
+- en: If true, this suggests you need to aim for top-20-ish visibility.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Furthermore, we also don’t know what other metrics they use to decide what surfaces
+    from there. This [article](https://arxiv.org/html/2509.08919v1) argues that AI
+    engines heavily favor *earned media* rather than official sites or socials.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Still, the search engine’s job (whether it’s fully third-party or a mix) is
+    discovery. It ranks the URL based on authority and keywords.
+  prefs: []
+  type: TYPE_NORMAL
+- en: It might include a snippet of information, but that alone won’t be enough to
+    answer the question. Unless of course it’s a very easy question like “who is the
+    CEO of X?”
+  prefs: []
+  type: TYPE_NORMAL
+- en: But for deeper questions, if the model relied only on the snippet, plus the
+    title and URL, it would likely hallucinate the details. It’s not enough context.
+  prefs: []
+  type: TYPE_NORMAL
+- en: So this pushes us toward a two-stage architecture, where a retrieval step is
+    baked in (which we’ll get to soon).
+  prefs: []
+  type: TYPE_NORMAL
+- en: What does this mean in terms of SEO?
+  prefs: []
+  type: TYPE_NORMAL
+- en: It means you still need to rank high in traditional search engines to be included
+    in that initial batch of documents that gets processed. So, yes, classic SEO still
+    matters.
+  prefs: []
+  type: TYPE_NORMAL
+- en: But it may also mean you need to think about po*tential new* metrics they might
+    be using to rank those results.
+  prefs: []
+  type: TYPE_NORMAL
+- en: This stage is all about narrowing the universe to a few pages worth digging
+    into, using established search tech plus internal knobs. Everything else (the
+    “it returns passages of information” part) comes after this step, using standard
+    retrieval techniques.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Crawl, chunk & retrieve
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: Now let’s move on to what happens when the system has identified a handful of
+    interesting URLs.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Once a small set of URLs passes the first filter, the pipeline is fairly straightforward:
+    crawl the page, break it into pieces, embed those pieces, retrieve the ones that
+    match the query, and then re-rank them.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: This is what’s called retrieval.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/bce09cd6cffe1ab36db6884f181e4db1.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: next up chunking, retrieval — showing the entire pipeline we’re going through
+  prefs: []
+  type: TYPE_NORMAL
+- en: I call it *on-the-fly* here because the system only embeds chunks once a URL
+    becomes a candidate, then it caches those embeddings for reuse. This part might
+    be new if you’re already familiar with retrieval.
+  prefs: []
+  type: TYPE_NORMAL
+- en: To crawl the page, it seem like they use their own crawlers. For OpenAI, this
+    is OAI-SearchBot, which should then fect the raw HTML so it can be processed.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Crawlers don’t typically execute JavaScript. They most likely rely on server-rendered
+    HTML, so the same SEO rules apply: content needs to be accessible.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Once the HTML is fetched, the content has to be turned into something searchable.
+  prefs: []
+  type: TYPE_NORMAL
+- en: If you’re new to this, it might feel like the AI “scans the document,” but that’s
+    not what happens. Scanning entire pages per query would be too slow and too expensive.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Instead, pages are split into passages, usually guided by HTML structure: headings,
+    paragraphs, lists, section breaks, that kind of thing. These are called *chunks*
+    in the context of retrieval.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Each chunk becomes a small, self-contained unit. Token-wise, you can see from
+    Perplexity UI citations that chunks are on the order of tens of tokens, maybe
+    around 150, not 1,000\.
+  prefs: []
+  type: TYPE_NORMAL
+- en: That’s about 110–120 words.
+  prefs: []
+  type: TYPE_NORMAL
+- en: After chunking, those units are embedded using both sparse and dense vectors.
+    This enables the system to run hybrid search and match a query both semantically
+    and by keyword.
+  prefs: []
+  type: TYPE_NORMAL
+- en: If you’re new to semantic search, in short, it means the system searches for
+    meaning instead of exact words. *So a query like “symptoms of iron deficiency”
+    and “signs your body is low on iron” would still land near each other in embedding
+    space.*
+  prefs: []
+  type: TYPE_NORMAL
+- en: '*You can read more on embeddings [here](https://towardsdatascience.com/working-with-embeddings-closed-versus-open-source-39491f0b95c2/)
+    if you’re keen to learn how it works.*'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Once a popular page has been chunked and embedded, those embeddings are probably
+    cached. No one is re-embedding the same StackOverflow answer thousands of times
+    a day.
+  prefs: []
+  type: TYPE_NORMAL
+- en: This is obviously why the system feels so fast, probably the hot 95–98% of the
+    web that actually gets cited is already embedded, and cached aggressively.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We don’t know to what extent though and how much they pre-embed to make sure
+    the system runs fast for popular queries.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Now the system needs to figure out which chunks matter. It uses the embeddings
+    for each chunk of text to compute a score for both semantic and keyword matching.
+  prefs: []
+  type: TYPE_NORMAL
+- en: It picks the chunks with the highest scores. This can be anything from 10 to
+    50 top-scoring chunks.
+  prefs: []
+  type: TYPE_NORMAL
+- en: From here, most mature systems will use a re-ranker (cross-encoder) to process
+    those top chunks again, doing another round of ranking. This is the “fix the retrieval
+    mess” stage, because unfortunately retrieval isn’t always completely reliable
+    for a lot of reasons.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Although they say nothing about using a cross-encoder, Perplexity is one of
+    the few that documents their retrieval process openly.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Their [Search API](https://www.perplexity.ai/hub/blog/introducing-the-perplexity-search-api)
+    says they “divide documents into fine-grained units” and score those units individually
+    so they can return the “most relevant snippets already ranked.”
+  prefs: []
+  type: TYPE_NORMAL
+- en: What does this all mean for SEO? If the system is doing retrieval like this,
+    your page isn’t treated as one big blob.
+  prefs: []
+  type: TYPE_NORMAL
+- en: It’s broken into pieces (often paragraph or heading level) and those pieces
+    are what get scored. The full page matters during discovery, but once retrieval
+    begins, it’s the chunks that matter.
+  prefs: []
+  type: TYPE_NORMAL
+- en: That means each chunk needs to answer the user’s question.
+  prefs: []
+  type: TYPE_NORMAL
+- en: It also means that if your important information isn’t contained inside a single
+    chunk, the system can lose context. Retrieval isn’t magic. The model never sees
+    your full page.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'So now we’ve covered the retrieval stage: where the system crawls pages, chops
+    them into units, embeds those units, and then uses hybrid retrieval and re-ranking
+    to pull out only the passages that can answer the user’s question.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Doing another pass & handing over chunks to LLM
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: Now let’s move on to what happens after the retrieval part, including the “continuing
+    to search” feature and handing the chunks to the main LLM.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/60a94ad5e1ef6cc6ec176c112a699690.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: next up checking content + handing it over to the LLM
+  prefs: []
+  type: TYPE_NORMAL
+- en: Once the system has identified a few high-ranking chunks, it has to decide whether
+    they’re good enough or if it needs to keep searching. This decision is almost
+    certainly made by a small controller model, not the main LLM.
+  prefs: []
+  type: TYPE_NORMAL
+- en: I’m guessing here, but if the material looks thin or off-topic, it may run another
+    round of retrieval. If it looks solid, it can hand those chunks over to the LLM.
+  prefs: []
+  type: TYPE_NORMAL
+- en: At some point, that handoff happens. The selected passages, along with some
+    metadata, are passed to the main LLM.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The model reads all the provided chunks and picks whichever one best supports
+    the answer it wants to generate.
+  prefs: []
+  type: TYPE_NORMAL
+- en: It does not mechanically follow the retriever’s order. So there’s no guarantee
+    the LLM will use the “top” chunk. It may prefer a lower-ranked passage simply
+    because it’s clearer, more self-contained, or closer to the phrasing needed for
+    the answer.
+  prefs: []
+  type: TYPE_NORMAL
+- en: So just like us, it decides what to take in and what to ignore. And even if
+    your chunk scores the highest, there’s no assurance it will be the first one mentioned.
+  prefs: []
+  type: TYPE_NORMAL
+- en: What to think about
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: This system isn’t really a black box. It’s a system people have built to hand
+    the LLMs the right information to answer a user’s question.
+  prefs: []
+  type: TYPE_NORMAL
+- en: If what I’ve inferred here is true, then it finds candidates, splits documents
+    into units, searches and ranks those units, and then hands them over to an LLM
+    to summarize.
+  prefs: []
+  type: TYPE_NORMAL
+- en: From this we can also figure out what we need to think about when creating content
+    for it.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Traditional SEO still matters a lot, because this system leans on the old one.
+    Things like having a proper sitemap, easily rendered content, proper headings,
+    domain authority, and accurate last-modified tags are all important for your content
+    to be sorted correctly.
+  prefs: []
+  type: TYPE_NORMAL
+- en: As I pointed out, they may be mixing search engines with their own technology
+    to decide which URLs get picked, which is worth keeping in mind.
+  prefs: []
+  type: TYPE_NORMAL
+- en: But if they use retrieval on top of it, then paragraph level relevance is the
+    new leverage point.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'This then means answer-in-one-chunk design will rule. (Just don’t do it in
+    a way that feels weird, maybe a TL;DR.) And remember to use the right vocabulary:
+    entities, attributes, relationships, like we talked about in the query optimization
+    section.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: How to build a “GEO Scoring System” (for fun)
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: To figure out how well your content will do, we’ll have to simulate the hostile
+    environment your content will live in. So let’s try to reverse engineer this pipeline.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '*Note, this is non-trivial, as we don’t know the internal metrics they use
+    nor is this system fully public, so think of this as a rough blueprint.*'
+  prefs: []
+  type: TYPE_NORMAL
+- en: The idea is to create a pipeline that can do query rewrite, discovery, retrieval,
+    re-ranking and an LLM judge, and then see where you end up compared to your competitors
+    for different topics.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/9b596b1f57b9563f9db074f4ba3227ba.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: sketching the pipeline to check where you score compared to competitors
+  prefs: []
+  type: TYPE_NORMAL
+- en: You can begin with a few topics like “hybrid retrieval for enterprise RAG” or
+    “LLM evaluation with LLM-as-judge,” and then build a system that generates natural
+    queries around them.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Then you pass those queries through an LLM rewrite step, because these systems
+    often reformulate the user query before retrieval. Those rewritten queries are
+    what you actually push through the pipeline.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The first check is visibility. For each query, look at the top 20–30 results
+    across Brave, Google and Bing. Note whether your page appears and where it sits
+    relative to competitors.
+  prefs: []
+  type: TYPE_NORMAL
+- en: If your page appears in these first results, you move on to the retrieval part.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Fetch your page and the competing pages, clean the HTML, split them into chunks,
+    embed those chunks, and build a small hybrid retrieval setup that combines semantic
+    and keyword matching. Add a re-ranking step.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Once you have the top chunks, you add the final layer: an LLM-as-a-judge. Being
+    in the top five doesn’t guarantee citation, so you simulate the last step by handing
+    the LLM a few of the top-scored chunks (with some metadata) and see which one
+    it cites first.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'When you run this for your pages and competitors, you see where you win or
+    lose: the search layer, the retrieval layer or the LLM layer.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Remember this is still a rough sketch, we can’t know the exact authority scores
+    they use, but it gives you something to start with if you want to build a similar
+    system.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '* * *'
+  prefs: []
+  type: TYPE_NORMAL
+- en: This article focused on the mechanics rather than the strategy side of SEO/GEO,
+    which I get won’t be for everyone.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The goal was to map the flow from a user query to the final answer and show
+    that the AI search tool isn’t some opaque force.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Even if parts of the system aren’t public, we can still infer a reasonable sketch
+    of what’s happening. What’s clear so far is that the AI web search doesn’t replace
+    traditional search engines.
+  prefs: []
+  type: TYPE_NORMAL
+- en: It just layers retrieval on top of them.
+  prefs: []
+  type: TYPE_NORMAL
+- en: There’s still more to figure out before saying what actually matters in practice.
+    Here I’ve mostly gone through the technical pipeline but if this is new stuff
+    I hoped it explain it well.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '* * *'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Hopefully it was easy to read. If you enjoyed it, feel free to share it or connect
+    with me on [LinkedIn](https://www.linkedin.com/in/ida-silfverskiold/), [Medium](https://medium.com/@ilsilfverskiold)
+    or through my [site](https://www.ilsilfverskiold.com/).
+  prefs: []
+  type: TYPE_NORMAL
+- en: ❤
+  prefs: []
+  type: TYPE_NORMAL

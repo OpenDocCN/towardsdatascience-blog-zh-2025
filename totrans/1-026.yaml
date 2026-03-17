@@ -1,0 +1,317 @@
+- en: 'Overcoming the Hidden Performance Traps of Variable-Shaped Tensors: Efficient
+    Data Sampling in PyTorch'
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 原文：[https://towardsdatascience.com/overcoming-the-hidden-performance-traps-of-variable-shaped-tensors-efficient-data-sampling-in-pytorch/](https://towardsdatascience.com/overcoming-the-hidden-performance-traps-of-variable-shaped-tensors-efficient-data-sampling-in-pytorch/)
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: <mdspan datatext="el1764508226421" class="mdspan-comment">This</mdspan> is the
+    <mdspan datatext="el1764619607491" class="mdspan-comment">eleventh</mdspan> part
+    of a [series of posts](https://towardsdatascience.com/pytorch-model-performance-analysis-and-optimization-10c3c5822869/) on
+    the topic of analyzing and optimizing PyTorch models. Throughout the series, we
+    have advocated for using the [PyTorch Profiler](https://pytorch.org/tutorials/recipes/recipes/profiler_recipe.html) in
+    AI model development and demonstrated the potential impact of performance optimization
+    on the speed and cost of running AI/ML workloads. One common phenomenon we have
+    seen is how seemingly innocent code can hamper runtime performance. In this post,
+    we explore some of the penalties associated with the naive use of variable-shaped
+    tensors — tensors whose shape is dependent on preceding computations and/or inputs.
+    While not applicable to all situations, there are times when the use of variable-shaped
+    tensors can be avoided — although this may come at the expense of additional compute
+    and/or memory. We will demonstrate the tradeoffs of these alternatives on a toy
+    implementation of data sampling in PyTorch.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Three Downsides of Variable Shaped Tensors
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'We motivate the discussion by presenting three disadvantages to the use of
+    variable-shaped tensors:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Host-Device Sync Events
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: In an ideal scenario, the CPU and GPU are able to run in parallel in an asynchronous
+    manner, with the CPU continuously feeding the GPU with input samples, allocating
+    required GPU memory, and loading GPU compute kernels, and the GPU executing the
+    loaded kernels on the provided inputs using the allocated memory. The presence
+    of dynamic-shaped tensors throws a wrench into this parallelism. In order to allocate
+    the appropriate amount memory, the CPU must wait for the GPU to report the tensor’s
+    shape, and then the GPU must wait for the CPU to allocate the memory and proceed
+    with the kernel loading. The overhead of this sync event can cause a drop in the
+    GPU utilization and slow runtime performance.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We saw an example of this in [part three](https://towardsdatascience.com/pytorch-model-performance-analysis-and-optimization-part-3-1c5876d78fe2) of
+    this series when we studied a naive implementation of the common [cross-entropy
+    loss](https://pytorch.org/docs/stable/generated/torch.nn.CrossEntropyLoss.html) that
+    included calls to [torch.nonzero](https://pytorch.org/docs/stable/generated/torch.nonzero.html) and [torch.unique](https://pytorch.org/docs/stable/generated/torch.unique.html).
+    Both APIs return tensors with shapes that are dynamic and dependent on the contents
+    of the input. When these functions are run on the GPU, a host-device synchronization
+    event occurs. In the case of the [cross-entropy loss](https://pytorch.org/docs/stable/generated/torch.nn.CrossEntropyLoss.html),
+    we discovered the inefficiency through the use of [PyTorch Profiler](https://pytorch.org/tutorials/recipes/recipes/profiler_recipe.html) and
+    were able to easily overcome it with an alternative implementation that avoided
+    the use of variable-shaped tensors and demonstrated much better runtime performance.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Graph Compilation
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: 'In a [recent post](https://towardsdatascience.com/maximizing-ai-ml-model-performance-with-pytorch-compilation/) we
+    explored the performance benefits of applying *just-in-time* (JIT) compilation
+    using the [torch.compile](https://docs.pytorch.org/docs/stable/generated/torch.compile.html) operator.
+    One of our observations was that graph compilation provided much better results
+    when the graph was static. The presence of dynamic shapes in the graph limits
+    the extent of the optimization via compilation: In some cases, it fails completely;
+    in others it results in lower performance gains. The same implications also apply
+    to other forms of graph compilation, such as [XLA](https://openxla.org/xla), [ONNX](https://onnx.ai/), [OpenVINO](https://github.com/openvinotoolkit/openvino),
+    and [TensorRT](https://developer.nvidia.com/tensorrt).'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Data Batching
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: 'Another optimization we have encountered in several of our posts (e.g., [here](https://chaimrand.medium.com/optimizing-pytorch-model-inference-on-cpu-ccd3aa5884ad))
+    is sample-batching. Batching improves performance in two primary ways:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Reducing overhead of kernel loading**: Rather than loading the GPU kernels
+    required for the computation pipeline once per input sample, the CPU can load
+    the kernels once per batch.'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '**Maximizing parallelization across compute units**: GPUs are highly parallel
+    compute engines. The more we are able to parallelize computation, the more we
+    can saturate the GPU and increase its utilization. By batching we can potentially
+    increase the degree of parallelization by a factor of the batch size.'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Despite their downsides, the use of variable-shaped tensors is often unavoidable.
+    But sometimes we can modify our model implementation to circumvent them. Sometimes
+    these changes will be straightforward (as in the cross-entropy loss example).
+    Other times they may require some creativity in coming up with a different sequence
+    of fixed-shape PyTorch APIs that provide the same numerical result. Often, this
+    effort can deliver meaningful rewards in runtime and costs.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In the next sections, we will study the use of variable-shaped tensors in the
+    context of the data sampling operation. We will start with a trivial implementation
+    and analyze its performance. We will then propose a GPU-friendly alternative that
+    avoids the use of variable-shaped tensors.
+  prefs: []
+  type: TYPE_NORMAL
+- en: To compare our implementations, we will use an [Amazon EC2 g6e.xlarge](https://aws.amazon.com/ec2/instance-types/g6e/) with
+    an [NVIDIA L40S](https://www.nvidia.com/en-eu/data-center/l40s/) running an [AWS
+    Deep Learning AMI (DLAMI)](https://docs.aws.amazon.com/dlami/latest/devguide/appendix-ami-release-notes.html) with [PyTorch
+    (2.8)](https://pytorch.org/get-started/locally/). The code we will share is intended
+    for demonstration purposes. Please do not rely on it for accuracy or optimality.
+    Please do not interpret our mention of any framework, library, or platform and
+    an endorsement of its use.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Sampling in AI Model Workloads
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: In the context of this post, sampling refers to the selection of a subset of
+    items from a large set of candidates for the purposes of computational efficiency,
+    balancing of datatypes, or regularization. Sampling is common in many AI/ML models,
+    such as detection, ranking, and contrastive learning systems.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'We define a simple variation of the sampling problem: Given a list of *N* tensors
+    each with a binary label, we are asked to return a subset of *K *tensors containing
+    both positive and negative examples, in random order. If the input list contains
+    enough samples of each label (*K/2*), the returned subset should be evenly split.
+    If it is lacking samples of one type, these should be filled with random samples
+    of the second type.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: The code block below contains a PyTorch implementation of our sampling function.
+    The implementation is inspired by the popular [Detectron2](https://github.com/facebookresearch/detectron2) library
+    (e.g., see [here](https://github.com/facebookresearch/detectron2/blob/v0.6/detectron2/modeling/sampling.py#L9) and [here](https://github.com/facebookresearch/detectron2/blob/v0.6/detectron2/modeling/roi_heads/roi_heads.py#L181)).
+    For the experiments in this post, we will fix the sampling ratio to *1:10.*
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE0]'
+  prefs: []
+  type: TYPE_PRE
+- en: Performance Analysis With PyTorch Profiler
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'Even when not immediately obvious, the use of dynamic shapes is easily identifiable
+    in the PyTorch Profiler Trace view. We use the following function to enable PyTorch
+    Profiler:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE1]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The image below was captured for the value of ten million input samples. It
+    clearly shows the presence of sync events coming from the torch.nonzero call,
+    as well as the corresponding drops in GPU utilization:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/af5b1a08ff417e8bd50bccd1dc65e28a.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Profiler Trace of Sampler (by Author)
+  prefs: []
+  type: TYPE_NORMAL
+- en: The use of torch.nonzero in our implementation is not ideal, but can it be avoided?
+  prefs: []
+  type: TYPE_NORMAL
+- en: A GPU-Friendly Data Sampler
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'We propose an alternative implementation of our sampling function that replaces
+    the dynamic torch.nonzero function with a creative combination of the static [torch.count_nonzero](https://docs.pytorch.org/docs/stable/generated/torch.count_nonzero.html), [torch.topk](https://docs.pytorch.org/docs/stable/generated/torch.topk.html),
+    and other APIs:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE2]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Clearly, this function requires more memory and more operations than our first
+    implementation. The question is: Do the performance benefits of a static, synchronization-free
+    implementation outweigh the extra cost in memory and compute?'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'To assess the tradeoffs between the two implementations, we introduce the following
+    benchmarking utility:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE3]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The following table compares the average runtime of each of the implementations
+    for a variety of input sample sizes:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/e0680690e47a89b578a241ca6ca2df7e.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Comparative Step Time Performance — Lower is Better (by Author)
+  prefs: []
+  type: TYPE_NORMAL
+- en: For most of the input sample sizes, the overhead of the host-device sync event
+    is either comparable or lower than the additional compute of the static implementation.
+    Disappointingly, we only see a major benefit from the sync-free alternative when
+    the input sample size reaches ten million. Sample sizes that large are uncommon
+    in AI/ML settings. But it’s not our tendency to give up so easily. As noted above,
+    the static implementation enables other optimizations like graph compilation and
+    input batching.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Graph Compilation
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: 'Contrary to the original function — which fails to compile — our static implementation
+    is fully compatible with torch.compile:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE4]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The following table includes the runtimes of our compiled function:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/582a4d12f0657864a0a5df28442939ac.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Comparative Step Time Performance — Lower is Better (by Author)
+  prefs: []
+  type: TYPE_NORMAL
+- en: The results are significantly better — providing a 70–75 percent boost over
+    the original sampler implementation in the 1–10 thousand range. But we still have
+    one more optimization up our sleeve.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Maximizing Performance with Batched Input
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: 'Because the original implementation contains variable-shaped operations, it
+    cannot handle batched input directly. To process a batch, we have no choice but
+    to apply it to each input individually, in a Python loop:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE5]'
+  prefs: []
+  type: TYPE_PRE
+- en: In contrast, our optimized function supports batched inputs as is — no changes
+    necessary.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE6]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The table below compares the step times of our sampling functions on a batch
+    size of 32:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/d562107006270e767fd986b311b55476.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Step Time Performance on Batched Input — Lower is Better (by Author)
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Now the results are definitive: By using a static implementation of the data
+    sampler, we are able to boost performance by 2X–52X(!!) the variable-shaped option,
+    depending on the input sample size.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Note that although our experiments were run on a GPU device, the model compilation
+    and input batching optimizations also apply to a CPU environment. Thus, avoiding
+    variable shapes could have implications on AI/ML model performance on CPU, as
+    well.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Summary
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'The optimization process we demonstrated in this post generalizes beyond the
+    specific case of data sampling:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Discovery via Performance Profiling:** Using the [PyTorch Profiler](https://pytorch.org/tutorials/recipes/recipes/profiler_recipe.html) we
+    were able to identify drops in GPU utilization and discover their source: the
+    presence of variable-shaped tensors resulting from the torch.nonzero operation.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**An Alternate Implementation:** Our profiling findings allowed us to develop
+    an alternative implementation that accomplished the same goal while avoiding the
+    use of variable-shaped tensors. However, this step came at the cost of additional
+    compute and memory overhead. As seen in our initial benchmarks, the sync-free
+    alternative demonstrated worse performance on common input sizes.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Unlocking Further Potential for Optimization:** The true breakthrough came
+    because the static-shaped implementation was compilation-friendly and supported
+    batching. These optimizations provided performance gains that dwarfed the initial
+    overhead, leading to a 2x to 52x speedup over the original implementation.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Naturally, not all stories will end as happily as ours. In many cases, we may
+    come across PyTorch code that performs poorly on the GPU but does not have an
+    alternative implementation, or it may have one that requires significantly more
+    compute resources. However, given the potential for meaningful gains in performance
+    and reductions in cost, the process of identifying runtime inefficiencies and
+    exploring alternative implementations is an essential part of AI/ML development.
+  prefs: []
+  type: TYPE_NORMAL

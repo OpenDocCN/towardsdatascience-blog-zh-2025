@@ -1,0 +1,1021 @@
+- en: How to Build an Over-Engineered Retrieval System
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 原文：[https://towardsdatascience.com/how-to-build-an-overengineered-retrieval-system/](https://towardsdatascience.com/how-to-build-an-overengineered-retrieval-system/)
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: <mdspan datatext="el1763428277760" class="mdspan-comment">One of the things</mdspan>
+    you’ll stumble upon when doing AI engineering work is that there’s no real blueprint
+    to follow.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Yes, for the most basic parts of retrieval (the “R” in RAG), you can chunk documents,
+    use semantic search on a query, re-rank the results, and so on. This part is well
+    known.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'But once you start digging into this area, you begin to ask questions like:
+    **how can we call a system intelligent if it’s only able to read a few chunks
+    here and there in a document?** So, how do we make sure it has enough information
+    to actually answer intelligently?'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Soon, you’ll find yourself going down a rabbit hole, trying to discern what
+    others are doing in their own orgs, because none of this is properly documented,
+    and people are still building their own setups.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'This will lead you to implement various optimization strategies: building custom
+    chunkers, rewriting user queries, using different search methods, filtering with
+    metadata, and expanding context to include neighboring chunks.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/e9b0a39f1256f3f312bfb93521457f4b.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Hence why I’ve now built a rather bloated retrieval system to show you how it
+    works. So, let’s walk through it so we can see the results of each step, but also
+    to discuss the trade-offs.
+  prefs: []
+  type: TYPE_NORMAL
+- en: To demo this system in public, I decided to embed 150 recent ArXiv papers (2,250
+    pages) that mention RAG. This means the system we’re testing here is designed
+    for scientific papers, and all the test queries will be RAG-related.
+  prefs: []
+  type: TYPE_NORMAL
+- en: I have collected the raw outputs for each step for a few queries in this [repository](https://github.com/ilsilfverskiold/Awesome-LLM-Resources-List/tree/main/guides/RAG/Custom),
+    if you want to look at the whole thing in detail.
+  prefs: []
+  type: TYPE_NORMAL
+- en: For the tech stack, I’m using Qdrant and Redis to store data, and Cohere and
+    OpenAI for the LLMs. I do not rely on any framework to build the pipelines (as
+    it makes it harder to debug).
+  prefs: []
+  type: TYPE_NORMAL
+- en: '*As always, I do a quick review of what we’re doing for beginners, so if RAG
+    is already familiar to you, feel free to skip the first section.*'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Recap retrieval & RAG
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: When you work with AI knowledge systems like Copilot (where you feed it your
+    custom docs to answer from) you work with a RAG system.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**RAG** stands for **Retrieval Augmented Generation** and is separated into
+    two parts, the retrieval part and the generation part.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Retrieval** refers to the process of **fetching information in your files**,
+    using keyword and semantic matching, based on a user query. **The generation**
+    part is where **the LLM comes in and answers** based on the provided context and
+    the user query.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/c821c7a0df21463680c3495762ffcd3d.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: For anyone new to RAG it may seem like a chunky way to build systems. Shouldn’t
+    an LLM do most of the work on its own?
+  prefs: []
+  type: TYPE_NORMAL
+- en: Unfortunately, LLMs are static, and we need to engineer systems so that each
+    time we call on them, we give them everything they need upfront so they can answer
+    the question.
+  prefs: []
+  type: TYPE_NORMAL
+- en: I have written about building RAG bots for Slack [before](https://towardsdatascience.com/agentic-rag-applications-company-knowledge-slack-agents/).
+    This one uses standard chunking methods, if you’re keen to get a sense of how
+    people build something simple.
+  prefs: []
+  type: TYPE_NORMAL
+- en: This article goes a **step further** and tries to rebuild the entire retrieval
+    pipeline without any frameworks, to do some fancy stuff like build a multi-query
+    optimizer, fuse results, and expand the chunks to build better context for the
+    LLM.
+  prefs: []
+  type: TYPE_NORMAL
+- en: As we’ll see though, all of **these fancy additions we’ll have to pay for in
+    latency and additional work.**
+  prefs: []
+  type: TYPE_NORMAL
+- en: Processing different documents
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: As with any data engineering problem, your first hurdle will be to architect
+    how to store data. With retrieval, we focus on something called chunking, and
+    how you do it and what you store with it is essential to building a well-engineered
+    system.
+  prefs: []
+  type: TYPE_NORMAL
+- en: When we do retrieval, we search text, and to do that we need to separate the
+    text into different chunks of information. These pieces of text are what we’ll
+    later search to find a match for a query.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Most simple systems use general chunkers, simply splitting the full text by
+    length, paragraph, or sentence.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/d1b63864440a6aa3dd3c9d4002838a29.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: But every document is different, so by doing this you risk losing context.
+  prefs: []
+  type: TYPE_NORMAL
+- en: To understand this, you should look at different documents to see how they all
+    follow different structures. You’ll have an HR document with clear section headers,
+    and API docs with unnumbered sections using code blocks and tables.
+  prefs: []
+  type: TYPE_NORMAL
+- en: If you applied the same chunking logic to all of these, you’d risk splitting
+    each text the wrong way. This means that once the LLM gets the chunks of information,
+    it will be incomplete, which may cause it to fail at producing an accurate answer.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Furthermore, for each chunk of information, you also need to think about the
+    data you want it to hold.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Should it contain certain metadata so the system can apply filters? Should it
+    link to similar information so it can connect data? Should it hold context so
+    the LLM understands where the information comes from?
+  prefs: []
+  type: TYPE_NORMAL
+- en: This means the architecture of how you store data becomes the most important
+    part. If you start storing information and later realize it’s not enough, you’ll
+    have to redo it. If you realize you’ve complicated the system, you’ll have to
+    start from scratch.
+  prefs: []
+  type: TYPE_NORMAL
+- en: This system will ingest Excel and PDFs, focusing on adding context, keys, and
+    neighbors. This will allow you to see what this looks like when doing retrieval
+    later.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '*For this demo, I have stored data in Redis and Qdrant. We use Qdrant to do
+    semantic, BM25, and hybrid search, and to expand content we fetch data from Redis.*'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Ingesting tabular files
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: First we’ll go through how you can chunk tabular data, add context, and keep
+    information connected with keys.
+  prefs: []
+  type: TYPE_NORMAL
+- en: When dealing with already structured tabular data, like in Excel files, it might
+    seem like the obvious approach is to let the system search it directly. But semantic
+    matching is actually quite effective for messy user queries.
+  prefs: []
+  type: TYPE_NORMAL
+- en: SQL or direct queries only work if you already know the schema and exact fields.
+    For instance, if you get a query like “Mazda 2023 specs” from a user, semantically
+    matching rows will give us something to go on.
+  prefs: []
+  type: TYPE_NORMAL
+- en: I’ve talked to companies that wanted their system to match documents across
+    different Excel files. To do this, we can store keys along with the chunks (without
+    going full KG).
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'So for instance, if we’re working with Excel files containing purchase data,
+    we could ingest data for each row like so:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE0]'
+  prefs: []
+  type: TYPE_PRE
+- en: If we decide later in the retrieval pipeline to connect information, we can
+    do standard search using the keys to find connecting chunks. This allows us to
+    make quick hops between documents without adding another router step to the pipeline.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/1fd6efed0f93629eb484a76cd665f9b3.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Very simplified — connecting keys between tabular documents | Image by author
+  prefs: []
+  type: TYPE_NORMAL
+- en: We can also set a summary for each document. This acts as a gatekeeper to chunks.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE1]'
+  prefs: []
+  type: TYPE_PRE
+- en: The gatekeeper summary idea might be a bit complicated to understand at first,
+    but it also helps to have the summary stored at the document level if you need
+    it when building the context later.
+  prefs: []
+  type: TYPE_NORMAL
+- en: When the LLM sets up this summary (and a brief context string), it can suggest
+    the key columns (i.e. order IDs and so on).
+  prefs: []
+  type: TYPE_NORMAL
+- en: '*As a note, always set the key columns manually if you can, if that’s not possible,
+    set up some validation logic to make sure the keys aren’t just random (it can
+    happen that an LLM will choose weird columns to store while ignoring the most
+    vital ones).*'
+  prefs: []
+  type: TYPE_NORMAL
+- en: For this system with the ArXiv papers, I’ve ingested two Excel files that contain
+    information on title and author level.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The chunks will look something like this:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE2]'
+  prefs: []
+  type: TYPE_PRE
+- en: These Excel files were strictly not necessary (the PDF files would have been
+    enough), but they’re a way to demo how the system can look up keys to find connecting
+    information.
+  prefs: []
+  type: TYPE_NORMAL
+- en: I created summaries for these files too.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE3]'
+  prefs: []
+  type: TYPE_PRE
+- en: We also store information in Redis at document level, which tells us what it’s
+    about, where to find it, who is allowed to see it, and when it was last updated.
+    This will allow us to update stale information later.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Now let’s turn to PDF files, which are the worst monster you’ll deal with.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Ingesting PDF docs
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: To process PDF files, we do similar things as with tabular data, but chunking
+    them is much harder, and we store neighbors instead of keys.
+  prefs: []
+  type: TYPE_NORMAL
+- en: To start processing PDFs, we have several frameworks to work with, such as LlamaParse
+    and Docling, but none of them are perfect, so we have to build out the system
+    further.
+  prefs: []
+  type: TYPE_NORMAL
+- en: PDF documents are very hard to process, as most don’t follow the same structure.
+    They also often contain figures and tables that most systems can’t handle correctly.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Nevertheless, a tool like Docling can help us at least parse normal tables properly
+    and map out each element to the correct page and element number.
+  prefs: []
+  type: TYPE_NORMAL
+- en: From here, we can create our own programmatic logic by mapping sections and
+    subsections for each element, and smart-merging snippets so chunks read naturally
+    (i.e. don’t split mid-sentence).
+  prefs: []
+  type: TYPE_NORMAL
+- en: We also make sure to group chunks by section, keeping them together by linking
+    their IDs in a field called *neighbors*.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/7e9d59b9e4e78fee83a70cb119736306.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: This allows us to keep the chunks small but still expand them after retrieval.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The end result will be something like below:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE4]'
+  prefs: []
+  type: TYPE_PRE
+- en: When we set up data like this, we can consider these chunks as seeds. We are
+    searching for where there may be relevant information based on the user query,
+    and expanding from there.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The difference from simpler RAG systems is that we try to take advantage of
+    the LLM’s growing context window to send in more information (but there are obviously
+    trade offs to this).
+  prefs: []
+  type: TYPE_NORMAL
+- en: You’ll be able to see a messy solution of what this looks like when building
+    the context in the retrieval pipeline later.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Building the retrieval pipeline
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: Since I’ve built this pipeline piece by piece, it allows us to test each part
+    and go through why we make certain choices in how we retrieve and transform information
+    before handing it over to the LLM.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We’ll go through semantic, hybrid, and BM25 search, building a multi-query optimizer,
+    re-ranking results, expanding content to build the context, and then handing the
+    results to an LLM to answer.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We’ll end the section with some discussion on latency, unnecessary complexity,
+    and what to cut to make the system faster.
+  prefs: []
+  type: TYPE_NORMAL
+- en: If you want to look at the output of several runs of this pipeline, go to this
+    [repository](https://medium.com/data-science-collective/agentic-rag-company-knowledge-slack-agents-98e588fd1209).
+  prefs: []
+  type: TYPE_NORMAL
+- en: Semantic, BM25 and hybrid search
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: The first part of this pipeline is to make sure we are getting back relevant
+    documents for a user query. To do this, we work with semantic, BM25, and hybrid
+    search.
+  prefs: []
+  type: TYPE_NORMAL
+- en: For simple retrieval systems, people will usually just use semantic search.
+    To perform semantic search, we embed dense vectors for each chunk of text using
+    an embedding model.
+  prefs: []
+  type: TYPE_NORMAL
+- en: If this is new to you, note that embeddings represent each piece of text as
+    a point in a high-dimensional space. The position of each point reflects how the
+    model understands its meaning, based on patterns it learned during training.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/a560c3d812ab712ee3f6c5da8f4b148b.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Texts with similar meanings will then end up close together.
+  prefs: []
+  type: TYPE_NORMAL
+- en: This means that if the model has seen many examples of similar language, it
+    becomes better at placing related texts near each other, and therefore better
+    at matching a query with the most relevant content.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '*I have written about* [*this before,*](https://towardsdatascience.com/working-with-embeddings-closed-versus-open-source-39491f0b95c2/)
+    *using clustering on various embeddings models to see how they performed for a
+    use case, if you’re keen to learn more.*'
+  prefs: []
+  type: TYPE_NORMAL
+- en: To create dense vectors, I used OpenAI’s Large embedding model, since I’m working
+    with scientific papers.
+  prefs: []
+  type: TYPE_NORMAL
+- en: This model is more expensive than their small one and perhaps not ideal for
+    this use case.
+  prefs: []
+  type: TYPE_NORMAL
+- en: I would look into specialized models for specific domains or consider fine-tuning
+    your own. Because remember if the embedding model hasn’t seen many examples similar
+    to the texts you’re embedding, it will be harder to match them to relevant documents.
+  prefs: []
+  type: TYPE_NORMAL
+- en: To support hybrid and BM25 search, we also build a lexical index (sparse vectors).
+    BM25 works on exact tokens (for example, “ID 826384”) instead of returning “similar-meaning”
+    text the way semantic search does.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'To test semantic search, we’ll set up a query that I think the papers we’ve
+    ingested can answer, such as: *“Why do LLMs get worse with longer context windows
+    and what to do about it?”*'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE5]'
+  prefs: []
+  type: TYPE_PRE
+- en: From the results above, we can see that it’s able to match some interesting
+    passages where they discuss topics that can answer the query.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'If we try BM25 (which matches exact tokens) with the same query, we get back
+    these results:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE6]'
+  prefs: []
+  type: TYPE_PRE
+- en: Here, the results are lackluster for this query — but sometimes queries include
+    specific keywords we need to match, where BM25 is the better choice.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We can test this by changing the query to *“papers from Anirban Saha Anik”*
+    using BM25.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE7]'
+  prefs: []
+  type: TYPE_PRE
+- en: All the results above mention “Anirban Saha Anik,” which is exactly what we’re
+    looking for.
+  prefs: []
+  type: TYPE_NORMAL
+- en: If we ran this with semantic search, it would return not just the name “Anirban
+    Saha Anik” but similar names as well.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE8]'
+  prefs: []
+  type: TYPE_PRE
+- en: This is a good example of how semantic search isn’t always the ideal method — similar
+    names don’t necessarily mean they’re relevant to the query.
+  prefs: []
+  type: TYPE_NORMAL
+- en: So, there are cases where semantic search is ideal, and others where BM25 (token
+    matching) is the better choice.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We can also use hybrid search, which combines semantic and BM25.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'You’ll see the results below from running hybrid search on the original query:
+    *“why do LLMs get worse with longer context windows and what to do about it?”*'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE9]'
+  prefs: []
+  type: TYPE_PRE
+- en: I found semantic search worked best for this query, which is why it can be useful
+    to run multi-queries with different search methods to fetch the first chunks (though
+    this also adds complexity).
+  prefs: []
+  type: TYPE_NORMAL
+- en: So, let’s turn to building something that can transform the original query into
+    several optimized versions and fuse the results.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Multi-query optimizer
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: For this part we look at how we can optimize messy user queries by generating
+    multiple targeted variations and selecting the right search method for each. It
+    can improve recall but it introduces trade-offs.
+  prefs: []
+  type: TYPE_NORMAL
+- en: All the agent abstraction systems you see usually transform the user query when
+    performing search. For example, when you use the QueryTool in LlamaIndex, it uses
+    an LLM to optimize the incoming query.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/0d0f506181729bf19e8917c062715219.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: We can rebuild this part ourselves, but instead we give it the ability to create
+    multiple queries, while also setting the search method. *When you’re working with
+    more documents, you could also have it set filters at this stage.*
+  prefs: []
+  type: TYPE_NORMAL
+- en: As for creating a lot of queries, I would try to keep it simple, as issues here
+    will cause low-quality outputs in retrieval. The more unrelated queries the system
+    generates, the more noise it introduces into the pipeline.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The function I’ve created here will generate 1–3 academic-style queries, along
+    with the search method to be used, based on a messy user query.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE10]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'We will get back results like these:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE11]'
+  prefs: []
+  type: TYPE_PRE
+- en: We can also test the system with specific keywords like names and IDs to make
+    sure it chooses BM25 rather than semantic search.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE12]'
+  prefs: []
+  type: TYPE_PRE
+- en: This will pull up results where *Chenxin Diao* is clearly mentioned.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '*I should note, BM25 may cause issues when users misspell names, such as asking
+    for “Chenx Dia” instead of “Chenxin Diao.” So in reality you may just want to
+    slap hybrid search on all of them (and later let the re-ranker take care of weeding
+    out irrelevant results).*'
+  prefs: []
+  type: TYPE_NORMAL
+- en: If you want to do this even better, you can build a retrieval system that generates
+    a few example queries based on the input, so when the original query comes in,
+    you fetch examples to help guide the optimizer.
+  prefs: []
+  type: TYPE_NORMAL
+- en: This helps because smaller models aren’t great at transforming messy human queries
+    into ones with more precise academic phrasing.
+  prefs: []
+  type: TYPE_NORMAL
+- en: To give you an example, when a user is asking why the LLM is lying, the optimizer
+    may transform the query to something like “causes of inaccuracies in large language
+    models” rather than directly look for “hallicunations.”
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'After we fetch results in parallel, we fuse them. The result will look something
+    like this:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE13]'
+  prefs: []
+  type: TYPE_PRE
+- en: We see that there are some good matches, but also a few irrelevant ones that
+    we’ll need to filter out further.
+  prefs: []
+  type: TYPE_NORMAL
+- en: As a note before we move on, this is probably the step you’ll cut or optimize
+    once you’re trying to reduce latency.
+  prefs: []
+  type: TYPE_NORMAL
+- en: I find LLMs aren’t great at creating key queries that actually pull up useful
+    information all that well, so if it’s not done right, it just adds more noise.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Adding a re-ranker
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: We do get results back from the retrieval system, and some of these are good
+    while others are irrelevant, so most retrieval systems will use a re-ranker of
+    some sort.
+  prefs: []
+  type: TYPE_NORMAL
+- en: A re-ranker takes in several chunks and gives each one a relevancy score based
+    on the original user query. You have several choices here, including using something
+    smaller, but I’ll use Cohere’s re-ranker.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'We can test this re-ranker on the first question we used in the previous section:
+    *“Why is everyone saying RAG doesn’t scale? How are people fixing that?”*'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE14]'
+  prefs: []
+  type: TYPE_PRE
+- en: Remember, at this point, we’ve already transformed the user query, done semantic
+    or hybrid search, and fused the results before passing the chunks to the re-ranker.
+  prefs: []
+  type: TYPE_NORMAL
+- en: If you look at the results, we can clearly see that it’s able to identify a
+    few relevant chunks that we can use as seeds.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '*Remember it only has 150 docs to go on in the first place. *'
+  prefs: []
+  type: TYPE_NORMAL
+- en: You can also see that it returns multiple chunks from the same document. We’ll
+    set this up later in the context construction, but if you want unique documents
+    fetched, you can add some custom logic here to set the limit for unique docs rather
+    than chunks.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'We can try this with another question: *“hallucinations in RAG vs normal LLMs
+    and how to reduce them”*'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE15]'
+  prefs: []
+  type: TYPE_PRE
+- en: This query also performs well enough (if you look at the full chunks returned).
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'We can also test messier user queries, like: *“why is the llm lying and rag
+    help with this?”*'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE16]'
+  prefs: []
+  type: TYPE_PRE
+- en: Before we move on, I need to note that there are moments where this re-ranker
+    doesn’t do that well, as you’ll see above from the scores.
+  prefs: []
+  type: TYPE_NORMAL
+- en: At times it estimates that the chunks doesn’t answer the user’s question but
+    it actually does, at least when we look at these chunks as seeds.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Usually for a re-ranker, the chunks should hint at the entire content, but we’re
+    using these chunks as seeds, so in some cases it will rate results very low, but
+    it’s enough for us to go on.
+  prefs: []
+  type: TYPE_NORMAL
+- en: This is why I’ve kept the score threshold very low.
+  prefs: []
+  type: TYPE_NORMAL
+- en: There may be better options here that you might want to explore, maybe building
+    a custom re-ranker that understands what you’re looking for.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Nevertheless, now that we have a few relevant documents, we’ll use its metadata
+    that we set before on ingestion to expand and fan out the chunks so the LLM will
+    get enough context to understand how to answer the question.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Build the context
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: Now that we have a few chunks as seeds, we’ll pull up more information from
+    Redis, expand, and build the context.
+  prefs: []
+  type: TYPE_NORMAL
+- en: This step is obviously a lot more complicated, as you need to build logic for
+    which chunks to fetch and how (keys if they exist, or neighbors if there are any),
+    fetch information in parallel, and then clean out the chunks further.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Once you have all the chunks (plus information on the documents themselves),
+    you need to put them together, i.e. de-duping chunks, perhaps setting a limit
+    on how far the system can expand, and highlighting which chunks were fetched and
+    which were expanded.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The end result will look like something below:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE17]text'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[start on page 4]'
+  prefs: []
+  type: TYPE_NORMAL
+- en: LLMs in QA
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: 'The advent of LLMs has steered in a transformative era in NLP, particularly
+    within the domain of QA. These models, pre-trained on massive corpora of diverse
+    text, exhibit sophisticated capabilities in both natural language understanding
+    and generation. Their proficiency in producing coherent, contextually relevant,
+    and human-like responses to a broad spectrum of prompts makes them exceptionally
+    well-suited for QA tasks, where delivering precise and informative answers is
+    paramount. Recent advancements by models such as BERT [57] and ChatGPT [58], have
+    significantly propelled the field forward. LLMs have demonstrated strong performance
+    in open-domain QA scenarios-such as commonsense reasoning[20]-owing to their extensive
+    embedded knowledge of the world. Moreover, their ability to comprehend and articulate
+    responses to abstract or contextually nuanced queries and reasoning tasks [22]
+    underscores their utility in addressing complex QA challenges that require deep
+    semantic understanding. Despite their strengths, LLMs also pose challenges: they
+    can exhibit contextual ambiguity or overconfidence in their outputs (''hallucinations'')[21],
+    and their substantial computational and memory requirements complicate deployment
+    in resource-constrained environments.'
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: RAG, fine tuning in QA
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: '---------------------- this was the passage that we matched to the query -------------'
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: LLMs also face problems when it comes to domain specific QA or tasks where they
+    are needed to recall factual information accurately instead of just probabilistically
+    generating whatever comes next. Research has also explored different prompting
+    techniques, like chain-of-thought prompting[24], and sampling based methods[23]
+    to reduce hallucinations. Contemporary research increasingly explores strategies
+    such as fine-tuning and retrieval augmentation to enhance LLM-based QA systems.
+    Fine-tuning on domain-specific corpora (e.g., BioBERT for biomedical text [17],
+    SciBERT for scientific text [18]) has been shown to sharpen model focus, reducing
+    irrelevant or generic responses in specialized settings such as medical or legal
+    QA. Retrieval-augmented architectures such as RAG [19] combine LLMs with external
+    knowledge bases, to try to further mitigate issues of factual inaccuracy and enable
+    real-time incorporation of new information. Building on RAG's ability to bridge
+    parametric and non-parametric knowledge, many modern QA pipelines introduce a
+    lightweight re-ranking step [25] to sift through the retrieved contexts and promote
+    passages that are most relevant to the query. However, RAG still faces several
+    challenges. One key issue lies in the retrieval step itself-if the retriever fails
+    to fetch relevant documents, the generator is left to hallucinate or provide incomplete
+    answers. Moreover, integrating noisy or loosely relevant contexts can degrade
+    response quality rather than enhance it, especially in high-stakes domains where
+    precision is critical. RAG pipelines are also sensitive to the quality and domain
+    alignment of the underlying knowledge base, and they often require extensive tuning
+    to balance recall and precision effectively.
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: '--------------------------------------------------------------------------------------'
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: '[end on page 5]'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE18]text'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[start on page 1]'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 1 Introduction
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: Large language models (LLMs) have recently accelerated the pace of transformation
+    across multiple fields, including transportation (Lyu et al., 2025), arts (Zhao
+    et al., 2025), and education (Gao et al., 2024), through various paradigms such
+    as direct answer generation, training from scratch on different types of data,
+    and fine-tuning on target domains. However, the hallucination problem (Henkel
+    et al., 2024) associated with LLMs has confused people for a long time, stemming
+    from multiple factors such as a lack of knowledge on the given prompt (Huang et
+    al., 2025b) and a biased training process (Zhao, 2025).
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: Serving as a highly efficient solution, RetrievalAugmented Generation (RAG)
+    has been widely employed in constructing foundation models (Chen et al., 2024)
+    and practical agents (Arslan et al., 2024). Compared to training methods like
+    fine-tuning and prompt-tuning, its plug-and-play feature makes RAG an efficient,
+    simple, and costeffective approach. The main paradigm of RAG involves first calculating
+    the similarities between a question and chunks in an external knowledge corpus,
+    followed by incorporating the top K relevant chunks into the prompt to guide the
+    LLMs (Lewis et al., 2020).
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: Despite the advantages of RAG, selecting the appropriate embedding models remains
+    a crucial concern, as the quality of retrieved references directly influences
+    the generation results of the LLM (Tu et al., 2025). Variations in training data
+    and model architecture lead to different embedding models providing benefits across
+    various domains. The differing similarity calculations across embedding models
+    often leave researchers uncertain about how to choose the optimal one. Consequently,
+    improving the accuracy of RAG from the perspective of embedding models continues
+    to be an ongoing area of research.
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: '---------------------- this was the passage that we matched to the query -------------'
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: 'To address this research gap, we propose two methods for improving RAG by combining
+    the benefits of multiple embedding models. The first method is named Mixture-Embedding
+    RAG, which sorts the retrieved materials from multiple embedding models based
+    on normalized similarity and selects the top K materials as final references.
+    The second method is named Confident RAG, where we first utilize vanilla RAG to
+    generate answers multiple times, each time employing a different embedding model
+    and recording the associated confidence metrics, and then select the answer with
+    the highest confidence level as the final response. By validating our approach
+    using multiple LLMs and embedding models, we illustrate the superior performance
+    and generalization of Confident RAG, even though MixtureEmbedding RAG may lose
+    to vanilla RAG. The main contributions of this paper can be summarized as follows:'
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: 'We first point out that in RAG, different embedding models operate within their
+    own prior domains. To leverage the strengths of various embedding models, we propose
+    and test two novel RAG methods: MixtureEmbedding RAG and Confident RAG. These
+    methods effectively utilize the retrieved results from different embedding models
+    to their fullest extent.'
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: '--------------------------------------------------------------------------------------'
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: While Mixture-Embedding RAG performs similarly to vanilla RAG, the Confident
+    RAG method exhibits superior performance compared to both the vanilla LLM and
+    vanilla RAG, with average improvements of 9.9% and 4.9%, respectively, when using
+    the best confidence metric. Additionally, we discuss the optimal number of embedding
+    models for the Confident RAG method based on the results.
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: '[...]'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE19]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[optimize query... retrieve... fuse... re-rank... expand... build context...]'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'LLM Answers:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: LLMs sometimes "lie" because they generate the next likely words based on patterns,
+    not on verified facts. Without grounding in sources, they can produce confident
+    but false statements-known as hallucinations-and their built‑in knowledge can
+    be outdated or incomplete [6][3]. This is risky in domains that demand strict
+    accuracy (e.g., law or telecom regulations) where small errors have big consequences
+    [3].
+  prefs: []
+  type: TYPE_NORMAL
+- en: RAG helps by having the model first retrieve relevant documents from an external
+    corpus and then generate answers grounded in that evidence. This reduces hallucinations
+    and brings in up‑to‑date information [2][6][1]. In practice, domain‑tailored RAG
+    has raised accuracy substantially; for example, a radio‑regulations RAG pipeline
+    boosted GPT‑4o accuracy by +11.9% over vanilla prompting and achieved up to 97%
+    retrieval accuracy, supporting more reliable answers [3].
+  prefs: []
+  type: TYPE_NORMAL
+- en: However, RAG is only as good as its retrieval and how well the model uses the
+    retrieved text. Static, off‑the‑shelf retrievers can be brittle for complex tasks
+    (e.g., multihop questions or procedural queries) that need iterative lookups or
+    query reformulation [2]. Naive RAG can also drown the model in long, noisy contexts
+    or pull semantically similar but irrelevant chunks-the "needle‑in‑a‑haystack"
+    problem-leading to wrong answers [4].
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Better RAG practices address this: instruction‑tuning for RAG that teaches
+    filtering, combining multiple sources, and RAG‑specific reasoning with a "think
+    before answering" approach (HIRAG) improves use of evidence [1]; adaptive, feedback‑driven
+    retrieval decides when and how to retrieve and re‑rank evidence [2]; and pipeline
+    designs that optimize chunking and retrieval raise answer accuracy [4].'
+  prefs: []
+  type: TYPE_NORMAL
+- en: If hallucination still persists, techniques that steer decoding directly (beyond
+    RAG) can further suppress it [5].
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'cited documents:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[1] doc::b0610cc6134b401db0ea68a77096e883 - HIRAG: Hierarchical-Thought Instruction-Tuning
+    Retrieval-Augmented Generation'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[2] doc::53b521e646b84289b46e648c66dde56a - Test-time Corpus Feedback: From
+    Retrieval to RAG'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[3] doc::9694bd0124d0453c81ecb32dd75ab489 - Retrieval-Augmented Generation
+    for Reliable Interpretation of Radio Regulations'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[4] doc::6d7a7d88cfc04636b20931fdf22f1e61 - KeyKnowledgeRAG (K^2RAG): An Enhanced
+    RAG method for improved LLM question-answering capabilities'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[5] doc::3c9a1937ecbc454b8faff4f66bdf427f - DSCC-HS: A Dynamic Self-Reinforcing
+    Framework for Hallucination Suppression in Large Language Models'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[6] doc::688cfbc0abdc4520a73e219ac26aff41 - A Systematic Review of Key Retrieval-Augmented
+    Generation (RAG) Systems: Progress, Gaps, and Future Directions'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '```'
+  prefs: []
+  type: TYPE_NORMAL
+- en: You’ll see that it cites sources correctly and uses the information it has been
+    handed, but as we’re using GPT-5, the latency is quite high with this large context.
+  prefs: []
+  type: TYPE_NORMAL
+- en: It takes about 9 seconds to first token with GPT-5 (but it will depend on your
+    environment).
+  prefs: []
+  type: TYPE_NORMAL
+- en: If the entire retrieval pipeline takes about 4–5 seconds (and this is not optimized),
+    this means the last part will take about 2–3 times longer.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Some people will argue that you need to send in less information in the context
+    window to decrease latency for this part but that also defeats the purpose of
+    what we’re trying to do.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Others will argue for using chain prompting, having one smaller LLM extract
+    useful information and then letting another bigger LLM answer with an optimized
+    context window but I’m not sure how much you save in terms of time or if it’s
+    worth it.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Others will go as small as possible, sacrificing “intelligence” for speed and
+    cost. But there is also a risk of using smaller with more than a 2k window as
+    they can start to hallucinate.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Nevertheless, it’s up to you how you optimize the system. That is the hard part.
+  prefs: []
+  type: TYPE_NORMAL
+- en: If you want to examine the entire pipeline for a few queries see [this](https://github.com/ilsilfverskiold/Awesome-LLM-Resources-List/tree/main/guides/RAG/Custom)
+    folder.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Let’s talk latency & cost
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: People talking about sending in entire docs into an LLM are probably not ruthlessly
+    optimizing for latency in their systems. This is the part you’ll spend the most
+    time with, users don’t want to wait.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Yes you can apply some UX tricks, but devs might think you’re lazy if your retrieval
+    pipeline is slower than a few seconds.
+  prefs: []
+  type: TYPE_NORMAL
+- en: This is also why it’s interesting that we see this shift into agentic search
+    in the wild, it’s so much slower to add large context windows, LLM-based query
+    transforms, auto “router” chains, sub-question decomposition and multi-step “agentic”
+    query engines.
+  prefs: []
+  type: TYPE_NORMAL
+- en: For this system here (mostly built with Codex and my instructions) we land at
+    around 4–5 seconds for retrieval in a Serverless environment.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/9d7efaf256c0e672f9daa0ba62cc7ca3.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: This is kind of slow (but pretty cheap).
+  prefs: []
+  type: TYPE_NORMAL
+- en: You can optimize each step here to bring that number down, keeping most things
+    warm. However, using the APIs you can’t always control how fast they return a
+    response.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Some people will argue to host your own smaller models for the optimizer and
+    routers, but then you need to add in costs to host which can easily add a few
+    hundred dollars per month.
+  prefs: []
+  type: TYPE_NORMAL
+- en: With this pipeline here, each run (without caching) cost us 1.2 cents ($0.0121)
+    so if you had your org ask 200 questions every day you would pay around $2.42
+    with GPT-5.
+  prefs: []
+  type: TYPE_NORMAL
+- en: If you switch to GPT-5-mini for the main LLM, one pipeline run would drop to
+    0.0041 cents, and amount to about $0.82 per day for 200 runs.
+  prefs: []
+  type: TYPE_NORMAL
+- en: As for embedding the documents, I paid around $0.5 for 200 PDF files using OpenAI’s
+    large model. This cost will increase as you scale which is something to consider,
+    then it can make sense with small or specialized fine-tuned model.
+  prefs: []
+  type: TYPE_NORMAL
+- en: How to improve it
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: As we’re only working with recent RAG papers, once you scale it, you can add
+    some stuff to make it more robust.
+  prefs: []
+  type: TYPE_NORMAL
+- en: I should first note though that you may not see most of the real issues until
+    your docs start growing. Whatever feels solid with a few hundred docs will start
+    to feel messy once you ingest tens of thousands.
+  prefs: []
+  type: TYPE_NORMAL
+- en: You can have the optimizer set filters, perhaps using semantic matching for
+    topics. You can also have it set the dates to keep the information fresh while
+    introducing an authority signal in re-ranking that boosts certain sources.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Some teams take this a bit further and design their own scoring functions to
+    decide what should surface and how to prioritize documents, but this depends entirely
+    on what your corpus looks like.
+  prefs: []
+  type: TYPE_NORMAL
+- en: If you need to ingest several thousand docs, it might make sense to skip the
+    LLM during ingestion and instead use it in the retrieval pipeline, where it analyzes
+    documents only when a query asks for it. You can then cache that result for next
+    time.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Lastly, always remember to add proper evals to show retrieval quality and groundedness,
+    especially if you’re switching models to optimize for cost. I’ll try to do some
+    writing on this in the future.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '* * *'
+  prefs: []
+  type: TYPE_NORMAL
+- en: If you’re still with me this far, a question you can ask yourself is whether
+    it’s worth it to build a system like this or if it is too much work.
+  prefs: []
+  type: TYPE_NORMAL
+- en: I might do something that will clearly compare the output quality for naive
+    RAG vs better-chunked RAG with expansion/metadata in the future.
+  prefs: []
+  type: TYPE_NORMAL
+- en: I’d also like to compare the same use case using knowledge graphs.
+  prefs: []
+  type: TYPE_NORMAL
+- en: To check out more of my work and follow my future writing, connect with me on
+    [LinkedIn](https://www.linkedin.com/in/ida-silfverskiold/), [Medium](https://medium.com/@ilsilfverskiold),
+    [Substack](https://howtouseai.substack.com/), or check my [website](https://www.ilsilfverskiold.com/).
+  prefs: []
+  type: TYPE_NORMAL
+- en: ❤
+  prefs: []
+  type: TYPE_NORMAL
+- en: PS. I’m looking for some work in January. If you need someone who’s building
+    in this space (and enjoys building weird, fun things while explaining difficult
+    technical concepts), get in [touch.](https://www.linkedin.com/in/ida-silfverskiold/)
+  prefs: []
+  type: TYPE_NORMAL

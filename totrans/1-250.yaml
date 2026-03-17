@@ -1,0 +1,278 @@
+- en: 'RAG Explained: Reranking for Better Answers'
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 原文：[https://towardsdatascience.com/rag-explained-reranking-for-better-answers/](https://towardsdatascience.com/rag-explained-reranking-for-better-answers/)
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: <mdspan datatext="el1758674394326" class="mdspan-comment">[In my last post](https://towardsdatascience.com/rag-explained-understanding-embeddings-similarity-and-retrieval/)</mdspan>,
+    we took a look at how the retrieval mechanism of a RAG pipeline works. In a RAG
+    pipeline, relevant documents from a knowledge base are identified and retrieved
+    based on how similar they are to the user’s query. More specifically, the similarity
+    of each text chunk is quantified using a retrieval metric, like cosine similarity,
+    L2 distance, or dot product as a measure, then the text chunks are ranked based
+    on their similarity scores, and finally, we pick the top text chunks that are
+    the most similar to the user’s query.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Unfortunately, high similarity scores don’t *always* guarantee perfect relevance.
+    In other words, the retriever may retrieve a text chunk that has a high similarity
+    score, but is in fact not that useful – just not what we need to answer our user’s
+    question 🤷🏻‍♀️. And this is where **re-ranking** is introduced, as a way to refine
+    results before feeding them into the LLM.
+  prefs: []
+  type: TYPE_NORMAL
+- en: As in my previous posts, I will once again be using the *[War and Peace](https://www.gutenberg.org/cache/epub/2600/pg2600.txt)* text
+    as an example, licensed as Public Domain and easily accessible through [Project
+    Gutenberg](https://www.gutenberg.org/).
+  prefs: []
+  type: TYPE_NORMAL
+- en: 🍨*[**DataCream**](https://datacream.substack.com/) is a newsletter offering
+    stories and tutorials on AI, data, tech. If you are interested in these topics,
+    **[subscribe here](https://datacream.substack.com/).***
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: • • •
+  prefs: []
+  type: TYPE_NORMAL
+- en: What about Reranking?
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'Text chunks retrieved solely based on a retrieval metric – that is, *raw retrieval*–
+    may not be that useful for several different reasons:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: The retrieved chunks we end up with may vary largely with the selected number
+    of top chunks k. Depending on the number k of top chunks we retrieve, we may get
+    very different results.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: We may retrieve chunks that are semantically close to what we are looking for,
+    but still off-topic and, in reality, not appropriate to answer the user’s query.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: We may get partial matches to specific words included in the user’s query, leading
+    to chunks that include those specific words but are in fact irrelevant.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Back to my favorite question from the *‘War and Peace’* example, if we ask *‘Who
+    is Anna Pávlovna?’*, and use a very small k (like k = 2), the retrieved chunks
+    may not contain enough information to comprehensively answer the question. Conversely,
+    if we allow for a large number of chunks k to be retrieved (say k = 20), we are
+    most probably going to also retrieve some irrelevant text chunks where *‘Anna
+    Pávlovna’* is just mentioned, but isn’t the topic of the chunk. Thus, the meaning
+    of some of those chunks is going to be unrelated to the user’s query and useless
+    for answering it. Therefore, we need a way to distinguish the truly relevant retrieved
+    text chunks out of all the retrieved chunks.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Here, it is worth clarifying that one straightforward solution for this issue
+    would be just retrieving everything and passing everything to the generation step
+    (to the LLM). Unfortunately, this cannot be done for a bunch of reasons, like
+    that the LLMs have certain context windows, or that the LLMs’ performance gets
+    worse when overstuffing with information.
+  prefs: []
+  type: TYPE_NORMAL
+- en: So, this is the issue we try to tackle by introducing the reranking step. In
+    essence, reranking means re-evaluating the chunks that are retrieved based on
+    the cosine similarity scores with a more accurate, yet also more expensive and
+    slower method.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/420cf83fc0b7ae996588e4bfe6094dbb.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Image by author – trying to fit everything I’ve talked about so far into a single
+    diagram 😅
+  prefs: []
+  type: TYPE_NORMAL
+- en: There are various methods for doing this, as for instance, cross-encoders, employing
+    an LLM to do the reranking, or using heuristics. Ultimately, by introducing this
+    extra reranking step, we essentially implement what is called a two-stage retrieval
+    with reranking, which is a standard industry approach. This allows for improving
+    the relevance of the retrieved text chunks and, as a result, the quality of the
+    generated responses.
+  prefs: []
+  type: TYPE_NORMAL
+- en: So, let’s take a more detailed look… 🔍
+  prefs: []
+  type: TYPE_NORMAL
+- en: • • •
+  prefs: []
+  type: TYPE_NORMAL
+- en: Reranking with a Cross-Encoder
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: Cross-encoders are the standard models used for reranking in a RAG framework.
+    Unlike retriever functions used in the initial retrieval step, which just take
+    into account the similarity scores of different text chunks, cross-encoders are
+    able to perform a more in-depth comparison of each of the retrieved text chunks
+    with the user’s query. More specifically, a cross encoder **jointly embeds a document
+    and the user’s query and produces a similarity score.** On the flip side, in cosine
+    similarity-based retrieval, the document and the user’s query are embedded separately
+    from one another, and then their similarity is calculated. As a result, some information
+    of the original texts is lost when creating the embeddings separately, and some
+    more information is preserved when the texts are jointly embedded. Consequently,
+    a cross encoder can assess better the relevance between two text chunks (that
+    is, the user’s query and a document).
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/2bd86d152de5a198b229c6ed421be1ff.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: So why not use a cross-encoder in the first place? The answer is because cross-encoders
+    are *very* slow. For instance, a cosine similarity search for about 1,000 passages
+    takes less than a millisecond. On the contrary, using solely a cross-encoder (like
+    [`ms-marco-MiniLM-L-6-v2`)](https://www.sbert.net/docs/pretrained-models/ce-msmarco.html)
+    to search the same set of 1,000 passages and match for a single query would be
+    orders-of-magnitude slower!
+  prefs: []
+  type: TYPE_NORMAL
+- en: This is to be expected if you think about it, since using a cross-encoder means
+    that we have to pair each chunk of the knowledge base with the user’s query and
+    embed them on the spot, and for each and every new query. On the contrary, with
+    cosine similarity-based retrieval, we get to create all the embeddings of the
+    knowledge base beforehand, and just once, and then once the user submits a query,
+    we just need to embed the user’s query and calculate the pairwise cosine similarities.
+  prefs: []
+  type: TYPE_NORMAL
+- en: For that reason, we adjust our RAG pipeline appropriately and get the best of
+    both worlds; first, we narrow down the candidate relevant chunks with the cosine
+    similarity search, and then, in the second step, we assess the similarity of the
+    retrieved chunks more accurately with a cross-encoder.
+  prefs: []
+  type: TYPE_NORMAL
+- en: • • •
+  prefs: []
+  type: TYPE_NORMAL
+- en: Back to the ‘War and Peace’ Example
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: So now let’s see how all these play out in the *‘War and Peace’* example by
+    answering one more time my favorite question – ‘*Who is Anna Pávlovna*?’.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'My code so far looks something like this:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE0]'
+  prefs: []
+  type: TYPE_PRE
+- en: For k = 2, we get the following top chunks retrieved.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/073e72de71a296c5477d5a279a3a4d34.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: But, if we set k = 6, we get the following chunks retrieved, and somewhat of
+    a more informative answer, containing additional data on our question, like the
+    fact that she’s *‘maid of honor and favorite of the Empress Márya Fëdorovna’*.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/8182f3cf0148d735bd5bcbf5b7ec06ab.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Now, let’s adjust our code to rerank those 6 chunks and see if the top 2 remain
+    the same. To do this, we will be using a cross-encoder model to re-rank the top-k
+    retrieved documents before passing them to your LLM. More specifically, I will
+    be utilizing the [cross-encoder/ms-marco-TinyBERT-L2](https://huggingface.co/cross-encoder/ms-marco-TinyBERT-L2)
+    cross-encoder, which is a simple, pre-trained cross-encoding model, running on
+    top of PyTorch. To do so, we also need to import the `torch` and `transformers`
+    libraries.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE1]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Then we can initialise the cross-encoder and define a function for reranking
+    the top k chunks retrieved from the vector search:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE2]'
+  prefs: []
+  type: TYPE_PRE
+- en: '… and also adjust of function as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE3]'
+  prefs: []
+  type: TYPE_PRE
+- en: '… and finally, these are the top 2 chunks, and the respective answer we get,
+    after re-ranking with the cross-encoder:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/dd37be69a042783c06ca1525d6d2c368.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Notice how these 2 chunks are different from the top 2 chunks we got from the
+    vector search.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Thus, the importance of the reranking step is rendered clearly. We use the vector
+    search to narrow down the possibly relevant chunks, out of all the available documents
+    in the knowledge base, but then use the reranking step to identify the most relevant
+    chunks accurately.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/26b57d0ef9b5e99f6b2bc6d965f41f0a.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Image by author
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'We can imagine the two-step retrieval as a funnel: the first stage pulls in
+    a wide set of candidate chunks, and the reranking stage filters out the irrelevant
+    ones. What’s left is the most useful context, leading to clearer and more accurate
+    answers.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: • • •
+  prefs: []
+  type: TYPE_NORMAL
+- en: On my mind
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'So, it becomes apparent is an essential step for building a robust RAG pipeline.
+    Fundamentally, it allows us to bridge the gap between the quick but not so precise
+    vector search, and context-aware answers. By performing a two-step retrieval,
+    with the vector search being the first step, and the second step being the reranking,
+    we get the best of both worlds: efficiency at scale and higher quality responses.
+    In practice, this two-stage approach is what makes modern RAG pipelines both practical
+    and powerful.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: • • •
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: '*Loved this post? Let’s be friends! Join me on:*'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 📰***[Substack](https://datacream.substack.com/)*** 💌* **[Medium](https://medium.com/@m.mouschoutzi)***
+    💼***[LinkedIn](https://www.linkedin.com/in/mariamouschoutzi/)*** ☕***[Buy me a
+    coffee](http://buymeacoffee.com/mmouschoutzi)!***
+  prefs: []
+  type: TYPE_NORMAL
+- en: • • •
+  prefs: []
+  type: TYPE_NORMAL
+- en: What about pialgorithms?
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: Looking to bring the power of RAG into your organization?
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[**pialgorithms**](https://pialgorithms.com/) can do it for you ***👉 ***[***book
+    a demo***](https://pialgorithms.com/#contact)*** today!***'
+  prefs: []
+  type: TYPE_NORMAL

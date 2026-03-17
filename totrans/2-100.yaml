@@ -1,0 +1,1022 @@
+- en: How I Fine-Tuned Granite-Vision 2B to Beat a 90B Model — Insights and Lessons
+    Learned
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 原文：[https://towardsdatascience.com/how-i-fine-tuned-granite-vision-2b-to-beat-a-90b-model-insights-and-lessons-learned/](https://towardsdatascience.com/how-i-fine-tuned-granite-vision-2b-to-beat-a-90b-model-insights-and-lessons-learned/)
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: <mdspan datatext="el1753471540338" class="mdspan-comment">Fine-tuning large
+    language</mdspan> or vision-language models is a powerful technique that unlocks
+    their potential on specialized tasks. However, despite their effectiveness, these
+    approaches are often out of reach for many users due to their high computational
+    cost and the need for GPUs with large VRAM — resources that only a small percentage
+    of end users can access.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In this project, I fine-tuned IBM’s [Granite-Vision 2B](https://huggingface.co/ibm-granite/granite-vision-3.2-2b),
+    a relatively small yet powerful vision-language model, to tackle the challenge
+    of converting images of tables into clean, structured HTML code.
+  prefs: []
+  type: TYPE_NORMAL
+- en: What makes this project particularly exciting is that the fine-tuning was performed
+    on a consumer-grade GPU — the NVIDIA RTX 4070 Ti Super — and yet, the resulting
+    2-billion-parameter model was able to outperform much larger models, including [meta-llama/Llama-3.2–90B-Vision](https://huggingface.co/meta-llama/Llama-3.2-90B-Vision),
+    on this image-to-text generation task. This success not only demonstrates the
+    power of parameter-efficient fine-tuning methods like LoRA but also highlights
+    the practical value of building specialized small models tailored to specific
+    problems.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In this post, I’ll walk you through the motivation behind this work, the model
+    and dataset choices, the custom HTML similarity metric I adapted, the experiments
+    and results, and finally, the key insights and lessons learned throughout the
+    process. Whether you’re interested in vision-language models, fine-tuning techniques,
+    or practical AI applications, I hope this journey offers useful takeaways. The
+    fine-tuning code used for this project was adapted from [HuggingFace’s Granite
+    Vision fine-tuning cookbook](https://huggingface.co/learn/cookbook/en/fine_tuning_granite_vision_sft_trl),
+    authored by Eli Schwartz, who in turn adapted the original code from Sergio Paniego.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Motivation
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'While working on Retrieval-Augmented Generation (RAG) projects, I encountered
+    a major challenge: accurately extracting large and complex tables from PDFs, especially
+    when these tables appeared as images. Despite trying different approaches — including
+    tools like Unstructured and large vision-language models such as Meta’s Llama
+    90B — the results often fell short of the accuracy needed.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'This led me to consider a different approach: a **small, specialized vision-language
+    model focused exclusively on table understanding and extraction**. Such a model
+    could serve as a dedicated preprocessing step to significantly improve RAG pipelines
+    that rely on accurate table extraction.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Around the same time, IBM released Granite-Vision 2B — a vision-language model
+    with just the right balance of size and power. It’s capable enough to handle complex
+    tables, yet small enough to be fine-tuned on consumer-grade GPUs with 16 GB of
+    VRAM. This made it an ideal candidate for my project.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The Task: Image to HTML (Table Extraction)'
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: One important design choice was the target format: **HTML**. By converting tables
+    into clean HTML code, we obtain a structured and widely supported representation
+    that can be easily converted into other formats. For example, HTML tables can
+    be readily imported into data analysis tools like Pandas as dataframes, making
+    downstream processing and analysis much more efficient.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The original plan was to build a custom dataset by extracting HTML table tags,
+    rendering them as images, and pairing each image with its corresponding HTML code.
+    Fortunately, I found a solution: the [PubTabNet-HTML](https://huggingface.co/datasets/apoidea/pubtabnet-html) dataset,
+    which includes over 568,000 image–HTML pairs, far more than needed for this project.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: PubTabNet was developed by IBM and is based on scientific articles from the **PubMed
+    Central Open Access Subset (commercial use collection)**. The tables were extracted
+    by aligning PDF and XML versions of the articles. The **annotations** (i.e., the
+    HTML labels) are licensed under the **Community Data License Agreement – Permissive
+    – Version 1.0**, and while **IBM does not own the images**, they are used in accordance
+    with the [PMC Open Access Subset Terms of Use](https://www.ncbi.nlm.nih.gov/pmc/tools/openftlist/).
+    This makes the dataset suitable for both research and commercial applications,
+    provided the license terms are followed.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Custom Metric: HTML Similarity'
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: Standard text similarity metrics like BLEU or ROUGE are insufficient for evaluating
+    HTML table generation because they primarily focus on surface-level text matching
+    and ignore important structural and stylistic aspects of HTML code.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'To better capture the quality of generated HTML tables, I adapted a custom **HTML
+    Similarity** metric that combines multiple complementary components, where the
+    most important ones (style and structure) are imported from [**niteru**](https://raw.githubusercontent.com/ninoseki/niteru):'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Style similarity (S):** Extracts CSS classes of each html document and calculates
+    the jaccard similarity of the sets of classes.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Structural similarity (T):** Uses sequence comparison of the html tags to
+    compute the similarity.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Content similarity (C):** Based on normalized edit distance between the extracted
+    plain text content of the tables.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Token overlap similarity (J):** The Jaccard similarity between the sets of
+    content tokens.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'The final similarity score **M** is a weighted sum of these components:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/ef52545aa5b7280f65429ab9cd183c5e.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'I manually tested the metric on various example outputs, iteratively adjusting
+    the weighting coefficients to better capture meaningful similarities. This process
+    resulted in a balanced evaluation that fairly rewards accurate table structure
+    and style, alongside precise textual content. Python implementation is as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE0]'
+  prefs: []
+  type: TYPE_PRE
+- en: The metric also includes a regex-based function to extract only the HTML content
+    within `<table>` tags. This was necessary because one of the reference models
+    only generated incomplete or extra HTML outside of the table structure. By focusing
+    the comparison strictly on the table content, the metric provides a more fair
+    and meaningful evaluation across models.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Developing a custom evaluation metric like this is crucial for reliably tracking
+    model improvements and benchmarking performance against reference models.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Training Setup
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: To fine-tune the model efficiently on my NVIDIA RTX 4070 Ti Super, which has
+    16 GB VRAM, I used **LoRA** (Low-Rank Adaptation). This allowed me to update only
+    a small number of parameters, significantly reducing GPU memory usage. In fact,
+    during training, the model used only about half of the available VRAM — with enough
+    headroom to play around with longer sequences, but not enough to handle more than
+    one batch. Additionally, LoRA is generally faster to train than approaches like
+    QLoRA.
+  prefs: []
+  type: TYPE_NORMAL
+- en: LoRA Setup
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'I used the following LoRA configuration:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE1]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Key points:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '`r=16`: This low-rank dimension provides a good balance between model capacity
+    and GPU memory usage.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '`use_dora=True`: [DoRA](https://arxiv.org/pdf/2402.09353) (Weight-Decomposed
+    Low Rank Adaptation) improves the learning capacity and stability of LoRA by decomposing
+    the pretrained weights into magnitude and direction components, helping the model
+    better resemble the capacity of full fine-tuning — all without adding inference
+    overhead. Performed slightly better than the default setting.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '`init_lora_weights="gaussian"`: No particular reason, I didn’t want to experiment
+    with this parameter.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '`target_modules`: This flexible setup allows selectively targeting vision layers,
+    language layers, or both, depending on the experiment. In practice, vision layers
+    remained unaffected — even with `use_dora=False`— since DoRA currently supports
+    only embedding, linear, and Conv2d layers. As a result, I fine-tuned only the
+    language layers.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Dataset Setup
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: During my initial experiments, I kept running into **out-of-memory (OOM)** errors
+    — even though there was still plenty of available GPU VRAM after loading model,
+    LoRA layers and optimizer parameters (around 4GB still free). There were no memory
+    spikes during training, but the crashes consistently happened at the same training
+    step.
+  prefs: []
+  type: TYPE_NORMAL
+- en: After some investigation, I realized that the problem was caused by large tables,
+    which resulted in extremely long token sequences. To address this, I adjusted
+    the `max_seq_length` parameter and filtered out samples that exceeded this limit.
+    After experimentation, I found that using `max_seq_length = 1024` allowed me to
+    fine-tune the model reliably without triggering OOM errors.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'To filter out oversized tables, I wrote a simple data processing function that:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Filters out samples whose HTML token length exceeds `max_seq_length`
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Automatically balances the number of training and test samples
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Uses **streaming** to avoid loading the entire dataset into memory (PubTabNet-HTML
+    is quite large, around 10 GB on disk)
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: .
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE2]'
+  prefs: []
+  type: TYPE_PRE
+- en: The final configuration included `num_train_images=10000` and `num_test_images=250` to
+    compute the evaluation loss.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Fine-Tuning Configuration
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'For training, I used the **Transformers SFTTrainer** to fine-tune the model:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE3]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Key points:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '`num_train_epochs=1`: The dataset is very large, and to run multiple experiments
+    efficiently, I chose to train for only one full epoch while maximizing learning
+    per sample and number of training samples.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '`per_device_train_batch_size=1`: Larger batch sizes would not fit in GPU memory
+    without significantly reducing max_seq_length — which would hurt performance on
+    large tables. Keeping longer sequences was more important for this task.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '`gradient_accumulation_steps=8`: Used to effectively simulate a larger batch
+    size and help stabilize the learning process, compensating for the small physical
+    batch. This is the final value, but experimented with `gradient_accumulation_steps=4` as
+    well.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '`optim="adamw_torch_fused"` and `bf16=True`: These settings leverage modern
+    NVIDIA architectures (Ada Lovelace) to accelerate training and reduce memory usage
+    — as recommended for this hardware.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Evaluation Loss Workaround
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: At the time of developing the project, there is a known issue in the Transformers
+    + LoRA integration that causes an error when running evaluation with a validation
+    dataset during training. Fortunately, a community-tested [workaround](https://raw.githubusercontent.com/huggingface/transformers/issues/33420#issuecomment-2957417282) is
+    available (although not yet merged into the main branch), and I successfully used
+    this fix in my experiments.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Evaluation (Inference) Setup
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: The evaluation dataset used for final scoring was completely independent from
+    the `eval_dataset` used during training. It consists of **500 randomly selected
+    images**, none of which were included in either the `train_dataset` or the training `eval_dataset`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Once fine-tuning was complete, I used the **best model checkpoint** — selected
+    based on the lowest evaluation loss — to run inference on these 500 samples.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Initially, I attempted to perform inference by simply **loading the LoRA/DoRA
+    adapter** on top of the base model. However, I found that inference with **DoRA
+    adapters is extremely slow** when not merged into the model weights (as explained
+    in the [official PEFT docs](https://raw.githubusercontent.com/huggingface/peft/blob/main/docs/source/developer_guides/lora.md)).
+    In fact, generating one test random sample took about **90 seconds** in this configuration.
+  prefs: []
+  type: TYPE_NORMAL
+- en: To resolve this, I merged the adapter weights into the base model — which is
+    the recommended practice — and after merging, inference speed improved dramatically: **down
+    to ~20 seconds for the same sample**, making full evaluation runs much more practical.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The **reference models** used for comparison with my fine-tuned models are:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[meta-llama/Llama-3.2–90B-Vision](https://huggingface.co/meta-llama/Llama-3.2-90B-Vision):
+    Meta’s massive **90-billion parameter**model — the main baseline I aimed to surpass
+    through specialization and parameter-efficient fine-tuning of a much smaller VLM.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '[KennethTM/pix2struct-base-table2html](https://huggingface.co/KennethTM/pix2struct-base-table2html):
+    A much smaller model fine-tuned from Google’s [pix2struct-base](https://huggingface.co/google/pix2struct-base),
+    highly specialized for exactly the same dataset I used in this project. Thanks
+    to its smaller size, the developer(s) was able to train it for many more samples
+    and over longer training runs — demonstrating the key advantage of using **smaller,
+    targeted models** for specific tasks.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: These two baselines allowed me to benchmark both **scaling-based performance** (vs
+    the 90B model) and **specialization efficiency** (vs the smaller, dedicated Pix2Struct
+    model).
+  prefs: []
+  type: TYPE_NORMAL
+- en: Experiments & Results
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: A total of 9 experiments were conducted, iteratively modifying one or two components
+    at a time. The goal was to understand the effect of each change on model performance,
+    gradually refining the setup to achieve the best possible **HTML Similarity** score
+    compared to reference models.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The experimental process was incremental: whenever a change improved the results,
+    it was incorporated into the next round of experiments and continued exploring
+    new variations.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The experiments focused on adjusting the following components:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Vision vs. Language Layers**'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: 1.1 `lang_only`
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 1.2 `vision_only`
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 1.3 `lang_vision`
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**2\. Ground Truth Output Format**'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 2.1 `lang_table_only`
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**3\. Training Framework**'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 3.1 `lang_table_unsloth`
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 3.2 `vision_table_unsloth`
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**4\. Gradient Accumulation**'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 4.1 `lang_table_only_2`
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**5\. Prompt Format**'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 5.1 `lang_table_only_3`
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**6\. Gradient Accumulation & Dataset Size**'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 6.1 `lang_table_only_4`
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Both the **evaluation loss** and the **HTML Similarity** metric were used to
+    assess model performance, and I found them to be well correlated — confirming
+    that HTML Similarity is a good proxy for how well the model is learning the task.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Before diving into the results of each experiment, let’s first look at **GPU
+    memory utilization during training**, which is often the most critical factor
+    in determining whether a model can be fine-tuned on consumer hardware.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/cb4398ae68fedba99ef1bae054cf1710.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: GPU Memory Utilization During Training | Image by author from wandb.ai
+  prefs: []
+  type: TYPE_NORMAL
+- en: As shown in the graph, GPU utilization remained stable throughout training —
+    averaging around **75% VRAM usage**, or roughly **12 GB** on my GPU. Most of VRAM
+    usage (~5.5 GB) is the frozen model weights. LoRA gradients + optimizer states
+    take very little (<< 1 GB). Activations + overhead should fill the rest (~5–6
+    GB), which depends on `batch_size` and `max_seq_length`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: First Run: `lang_only`
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'This experiment uses the following initial components/parameters:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/efdd9d367623635cb9726ebd08ab98d1.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: These were the starting values for the first experiment. In subsequent runs,
+    I modified many of them as I refined the approach. This first experiment focused
+    only on tuning **language layers**, while training the model to predict the full
+    raw HTML output — including everything inside and around the `<table>` tags.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Since this was the first run, I’ll include the **training loss curve** here
+    to illustrate how it behaves. For later experiments, I’ll omit this graph — as
+    the behavior was similar across runs, with minor variations. In practice, **evaluation
+    loss** is more useful for comparing performance across experiments.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/00058548fd92f139e58ba0fe47217114.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Training Loss | Image by author from wandb.ai
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'One important note about the logging configuration: `logging_steps=25` means
+    that the training loss is only logged after every 25 steps, where each logged
+    value is the average over `gradient_accumulation_steps=4`. As a result, the largest
+    drop in loss appears at the second log point — where most of the initial learning
+    happens. After that, the model continues learning more gradually, with a slow
+    decreasing trend, depending on the difficulty of the training samples.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Now, let’s take a look at the **evaluation loss**:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/cd98a112082ad27def847b88ee7e847a.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Validation Loss 1 | Image by author from wandb.ai
+  prefs: []
+  type: TYPE_NORMAL
+- en: Since we are evaluating on the same set of 250 validation samples, the evaluation
+    loss curve gives us a more stable and meaningful view of model learning — and
+    will serve as a baseline for comparisons across future runs.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Here, we observe a clear and consistent downward trend throughout training.
+    The initial loss starts close to **0.03**, with a steady improvement as training
+    progresses, eventually stabilizing just below **0.015**.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The smooth nature of this curve — compared to the more variable training loss
+    — reflects the regular structure of the validation set and confirms that the model
+    is generalizing well to unseen samples, even with a small batch size and a single
+    epoch of training.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Now, let’s compare the performance of this fine-tuned model against the reference
+    models on the **HTML Similarity** metric:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/037c54bc1502c9aa558cd3e06a0d0ba2.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: As we can see, this first experiment already delivers **strong performance gains** —
+    improving the base Granite-Vision 2B model by a large margin (+0.18) and clearly
+    outperforming LLaMA 90B Vision on this specialized task. Only Pix2Struct retains
+    a slight lead at this stage.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Second Run: `vision_only`
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: There isn’t much to analyze in this run. I tested several variations that could
+    potentially unblock learning in the vision layers — including drastically increasing
+    the learning rate — but without success.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'While the base code suggests that fine-tuning vision layers **should** be possible,
+    in practice I found it was not working in this setup. The following evaluation
+    loss curve confirms that no learning occurred — the loss remained constant throughout
+    training. To avoid wasting compute resources, I stopped the run early:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/cc717d3bed2ba656374be32487da6da8.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Validation Loss 2 | Image by author from wandb.ai
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Additionally, training was noticeably faster in this run compared to the previous `lang_only` experiment
+    — suggesting that the language layers (which contain the bulk of the model’s parameters)
+    remained frozen, and only the small vision layers were being processed:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/9e3b8b3b3920dd57062d69ae5bbaa382.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Validation Samples per Second 1 | Image by author from wandb.ai
+  prefs: []
+  type: TYPE_NORMAL
+- en: Third Run: `lang_vision`
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: At this point, it was clear that only language layers were being effectively
+    trained. In this `lang_vision` run — where both language and vision layers were
+    selected — I expected results similar to `lang_only`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Indeed, the evaluation loss curve confirmed this expectation, showing nearly
+    identical behavior to `lang_only`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/2117b2bc5a22298e21a923add02020de.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Validation Loss 3 | Image by author from wandb.ai
+  prefs: []
+  type: TYPE_NORMAL
+- en: Once this was clear, I again stopped training early to conserve resources, and
+    proceeded to test new approaches.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Fourth Run: `lang_table_only`
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'This experiment modified the following component:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/851923d8f42bb6901ae1ea12beb83f6f.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: The goal of this run was to train the model to predict **only the table content**,
+    without any surrounding HTML wrapper code. This approach could help improve learning
+    — by removing unnecessary tokens — and also align the training behavior more closely
+    with Pix2Struct’s model.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Additionally, by stripping out the wrapper HTML, the target sequences became
+    shorter — which allowed longer and more complex tables to fit within the model’s
+    context window. This change could also improve the model’s ability to generalize
+    to larger or more detailed tables.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Let’s look at the **evaluation loss** compared to the first run:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/fbb74274e94026043b56d62efae3983c.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Validation Loss 4 | Image by author from wandb.ai
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'At first glance, the higher evaluation loss might seem counterintuitive. However,
+    there’s a clear explanation: the wrapper HTML code is trivial for the model to
+    learn — since it tends to be nearly identical across many training samples. These
+    repetitive tokens reduce cross-entropy loss, artificially lowering the average
+    loss in earlier runs. By removing them, the model now focuses entirely on the
+    more challenging and variable table content — resulting in a higher but more meaningful
+    loss value.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Now, let’s see how this change impacted the **HTML Similarity** metric:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/a1165ea42448204ded266ab39c72a3ef.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: In this first test, we observe **no significant gain or degradation** from using
+    this new output format. It is possible that the model would need **more epochs** or **larger
+    training samples** to fully adapt to this new format. Another idea is to **update
+    the prompt** — so that from the very first step the model understands it should
+    focus solely on table content, rather than having to infer this behavior through
+    training alone. This will be explored in the next experiments.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Fifth / Sixth Run: `lang_table_unsloth`, `vision_table_unsloth`
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'In these experiments, I explored the following components:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/f3000c93c861d24187b702e3c0a3f75e.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: At this point, I discovered the promising [Unsloth](https://raw.githubusercontent.com/unslothai/unsloth) framework
+    — which claims to offer **2x faster training** with up to **70% lower memory usage**.
+    Of course, I wanted to test whether it could accelerate my workflow.
+  prefs: []
+  type: TYPE_NORMAL
+- en: My first idea was to leverage the improved memory handling to run longer sequences
+    (`max_seq_length=2048`), but in my case this quickly led to **Out of Memory (OOM)** errors
+    — so I reverted to my previous configuration.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The training speed improvements, however, were undeniable — almost **4x faster** than
+    my earlier runs:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/e7d77aed0df77ca91e896f8d6a8cd22b.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Validation Samples per Second 2 | Image by author from wandb.ai
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Unfortunately, this came at a clear **cost to loss performance**:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/f18dc7d7c8d08a863b598135846992fd.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Validation Loss 5 | Image by author from wandb.ai
+  prefs: []
+  type: TYPE_NORMAL
+- en: Given this noticeable drop in quality, I paused the experiment to investigate
+    further — particularly to see if **Unsloth would allow me to train vision layers**,
+    which is one of its advertised advantages. However, I encountered exactly the
+    same behavior as with HuggingFace Transformers — no actual learning in vision
+    layers.
+  prefs: []
+  type: TYPE_NORMAL
+- en: With these results in mind, I decided to **set aside Unsloth for this project**and
+    continue using **HuggingFace Transformers**, which had shown more reliable learning
+    in earlier runs.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Seventh Run: `lang_table_only_2`
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'Here are the new parameters for this run:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/338ae8562e99f2d2a7a2621bd35f5ee6.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Going back to the previous configuration, I wanted to analyze the impact of
+    a **larger virtual batch size** (via higher `gradient_accumulation_steps`).
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The results were promising — the **evaluation loss** became smoother and trended
+    closer to the original `lang_only` run, even though the model was now predicting **only
+    the table content**:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/d4737e1896473d62c7d08e9c9a921fc1.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Validation Loss 6 | Image by author from wandb.ai
+  prefs: []
+  type: TYPE_NORMAL
+- en: Based on this positive result, I decided to keep this `gradient_accumulation_steps=8` setting
+    for the final experiment.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Evaluating this model on **HTML Similarity** resulted in a small but meaningful
+    improvement — finally reaching parity with Pix2Struct:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/d3f5564932067f1855bf0ea998fcff75.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'Naturally, the goal is not just to match Pix2Struct — but to surpass it. Two
+    important levers remained to explore: dataset size and prompt.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Eighth Run: `lang_table_only_3`
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'The updated parameters for this run were:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/cff1bca96f4270b644842cae402813b4.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: I accidentally reverted `gradient_accumulation_steps` back to **4** in this
+    run, only realizing it once the training was nearly complete — but this actually
+    gave me an extra-chance to observe its effect on learning.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The main goal here was to **double the training size** (to 10K images) and
+    to test the updated, clearer **prompt** format. Unfortunately, a random **CUDA
+    error** caused training to halt around **80% completion** — but even so, the improvement
+    was clear:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/29327a5dfa467d2d43f2e17a4a5bda9a.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Validation Loss 7 | Image by author from wandb.ai
+  prefs: []
+  type: TYPE_NORMAL
+- en: As expected, some smoothness was lost due to the smaller virtual batch size,
+    but the new **prompt** proved very effective — noticeably boosting model learning.
+  prefs: []
+  type: TYPE_NORMAL
+- en: This set the stage perfectly for the **final experiment**, using this improved
+    prompt, 10K training samples, and restoring `gradient_accumulation_steps` to 8.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Final Run: `lang_table_only_4`
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'The final set of parameters are:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/5b2a04148c7262d28b89c19659d6c075.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'The evaluation loss for this final run:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/23f07b7a2a06feeb024658bd6d8b797d.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Validation Loss 7 | Image by author from wandb.ai
+  prefs: []
+  type: TYPE_NORMAL
+- en: As expected, restoring the `gradient_accumulation_steps` to 8 smoothed the loss
+    curve, reducing spikes and achieving slightly lower overall loss values. With
+    a **full epoch** of training on 10K images, this became the best-performing model
+    across all experiments.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Now, let’s look at the final results on the **HTML Similarity** metric:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/fc1c9a0d7bc2956bdde1092995625394.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Final HTML Similarity Results | Image by author from matplotlib
+  prefs: []
+  type: TYPE_NORMAL
+- en: The goal of this project was achieved — the fine-tuned model now **surpasses
+    both reference models** on this task. Looking back at the original Granite-Vision
+    2B, the LoRA fine-tuning improved performance to **0.77**, a **+21 percentage
+    point gain** — all accomplished in under **8 hours** on a **consumer-grade GPU**.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Qualitative Results
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: To better illustrate how much the model improved through fine-tuning, let’s
+    look at a specific example: **Image ID 618932**.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/07ca41e2f639309d2ecb840b68a84759.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: PubTabNet Evaluation Sample with ID 618932 | Image from [PMC](https://pmc.ncbi.nlm.nih.gov/tools/openftlist/)
+  prefs: []
+  type: TYPE_NORMAL
+- en: This table is particularly tricky — under the `Kappa` column there are **sub-headers** (`Present
+    study` and `King et al. 2001`). These complex layouts typically challenge generic
+    VLMs, especially when they haven’t been exposed to enough similar examples during
+    training. Models can usually **understand** these sub-headers and **answer questions** about
+    them, but generating the full table structure in HTML often requires further prompt
+    tuning and specialized fine-tuning.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Let’s first see how a *base*, non-fine-tuned Granite-Vision 2B model performs
+    on this task.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Baseline: Raw Granite-Vision 2B'
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'The model can answer questions based on the table correctly:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE4]'
+  prefs: []
+  type: TYPE_PRE
+- en: '**Out[1]:**'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE5]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'However, when asked to generate the full HTML table, the model struggles:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE6]'
+  prefs: []
+  type: TYPE_PRE
+- en: '**Out[2]:**'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/edad5830d63c006ab5980401a9d2a4d3.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'And the **HTML Similarity** metrics for this attempt:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE7]'
+  prefs: []
+  type: TYPE_PRE
+- en: Fine-Tuned Model: `lang_table_only_4`
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'Now, let’s try the exact same test using the fine-tuned model:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE8]'
+  prefs: []
+  type: TYPE_PRE
+- en: '**Out[4]:**'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE9]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'And the same prediction prompt:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE10]'
+  prefs: []
+  type: TYPE_PRE
+- en: '**Out[5]:**'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/f54dff7111febfce27bff02bf71336e1.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: The fine-tuned model now produces an output that closely matches the ground
+    truth, correctly capturing the table structure and sub-headers — something the
+    base model struggled with.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Final **HTML Similarity** metrics:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE11]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'This example shows a clear quantitative improvement as well: from a score of
+    0.36 to 0.96 on a complex table structure — confirming that fine-tuning on this
+    specialized task dramatically boosts the model’s capability.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Inference Speed
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: One major advantage of using a smaller model — aside from the ability to fine-tune
+    on consumer-grade hardware — is **inference speed**. Even if larger models offer
+    competitive performance, latency and throughput remain key factors, especially
+    in production settings.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Let’s compare the inference speed of the different models:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/1c536955b6eae017f701faebac5faf98.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Inference SpeedM | Image by author from matplotlib
+  prefs: []
+  type: TYPE_NORMAL
+- en: As shown in the plot, **Pix2Struct** is by far the fastest model. For some use
+    cases — such as **batch-processing thousands of documents for table extraction** —
+    this speed advantage could translate into **significant time savings** and lower
+    compute costs.
+  prefs: []
+  type: TYPE_NORMAL
+- en: However, the **fine-tuned Granite-Vision 2B** achieves a good balance when the
+    amount of documents to process is not massive, having a superior accuracy on this
+    specialized task and reasonably fast inference without the need for extremely
+    large compute infrastructure.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Conclusions
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: This project demonstrated that with **LoRA-based fine-tuning** and a **targeted
+    task** (table extraction → HTML), a **small vision-language model (Granite-Vision
+    2B)** can **outperform much larger models** — even Meta’s 90B LLaMA Vision — while
+    requiring only a **consumer GPU** and less than a day of training.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'A few key takeaways:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Small, specialized models matter** — you don’t always need 70B+ models to
+    solve specific problems with high accuracy.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Parameter-efficient fine-tuning (LoRA)** is a game-changer: adapting large
+    foundation models becomes accessible for most practitioners.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Prompt design and training targets** have a big influence — small changes
+    (like switching to `lang_table_only` or refining the prompt) directly impacted
+    performance.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Having a **custom metric (HTML Similarity)** was critical to track meaningful
+    progress beyond generic text-based metrics.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Smaller models not only train faster, but also **infer faster** — ideal for
+    production pipelines with high volume.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Finally — and maybe most importantly — this type of experimentation shows that **you
+    can move fast and iterate** even with limited hardware. Fine-tuning powerful open
+    models and adapting them to real-world tasks is **not reserved to big labs anymore**.
+  prefs: []
+  type: TYPE_NORMAL
+- en: I hope this encourages other AI engineers to experiment with small VLMs and
+    fine-tuning techniques for their own projects and solutions — and to see that
+    powerful results are possible even without massive compute budgets!
+  prefs: []
+  type: TYPE_NORMAL
+- en: What’s Next?
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'There are definitely some interesting follow-up ideas that can be explored
+    next:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Prompt engineering refinements**: Final tests (while writing this blog) showed
+    that separating prompts into *system message* (defining behavior) and *user message* (providing
+    task instructions) significantly improved the base model’s performance. Applying
+    this strategy during fine-tuning could further enhance the model’s ability to
+    consistently generate accurate HTML. This will be tested in upcoming experiments.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Training vision layers**: Currently, only the language layers are fine-tuned,
+    as training the vision layers through text-only loss proved ineffective. A more
+    advanced approach could involve adding an auxiliary vision loss — for example,
+    contrastive learning between vision outputs and HTML structure — to better adapt
+    the vision backbone for table extraction tasks.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Improved generalization**: The current model is fine-tuned on a single dataset.
+    Expanding training to include more diverse document layouts, table styles, and
+    noisy OCR scenarios could improve robustness and transferability to real-world
+    data.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Links
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: '[GitHub Repository](https://github.com/JulioSanchezD/TableVision2html)'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '[HuggingFace Model](https://huggingface.co/JulioSnchezD/granite-vision-3.2-2b-table2html)'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '* * *'
+  prefs: []
+  type: TYPE_NORMAL
+- en: If you liked this post, feel free to reach out or share your own experiments!
+  prefs: []
+  type: TYPE_NORMAL

@@ -1,0 +1,796 @@
+- en: A Refined Training Recipe for Fine-Grained Visual Classification
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 原文：[https://towardsdatascience.com/a-refined-training-recipe-for-fine-grained-visual-classification/](https://towardsdatascience.com/a-refined-training-recipe-for-fine-grained-visual-classification/)
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: <mdspan datatext="el1755020362112" class="mdspan-comment">For the past year</mdspan>,
+    my research at **Multitel** has focused on **fine-grained visual classification
+    (FGVC)**. Specifically, I worked on building a **robust car classifier that can
+    work in real-time on edge devices.** This post is part of what may become a small
+    series of reflections on this experience. I’m writing to share some of the lessons
+    I learned but also to organize and compound what I’ve learned. At the same time,
+    I hope this gives a sense of the kind of high-level engineering and applied research
+    we do at Multitel, work that blends academic rigor with real-world constraints.
+    Whether you’re a fellow researcher, a curious engineer, or someone considering
+    joining our team, I hope this post offers both insight and inspiration.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '1\. The problem:'
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: We needed a system that could **identify specific car models**, not just “this
+    is a BMW,” but *which* BMW model and year. And it needed to run in real time on
+    resource-constrained edge devices alongside other models. This kind of task falls
+    under what’s known as **fine-grained visual classification (FGVC)**.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/8affe64a87c8bf78273b9881f5f03a13.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Example of two models along with discriminative parts [1].
+  prefs: []
+  type: TYPE_NORMAL
+- en: FGVC aims to recognize images belonging to multiple subordinate categories of
+    a super-category (e.g. species of animals / plants, models of cars etc).​ The
+    difficulty lies with understanding fine-grained visual differences that sufficiently
+    discriminate between objects that are highly similar in overall appearance but
+    differ in fine-grained features *[2]*.​
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/a6e20ca6a5e75f56d2d3f1e4f3b3d394.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Fine-grained classification vs. general image classification​ [3].
+  prefs: []
+  type: TYPE_NORMAL
+- en: What makes FGVC particularly tricky?
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Small inter-class variation**: The visual differences between classes can
+    be extremely subtle.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Large intra-class variation**: At the same time, instances within the same
+    class may vary greatly due to changes in lighting, pose, background, or other
+    environmental factors.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**The subtle visual differences** can be easily overwhelmed by the other factors
+    such as poses and viewpoints​.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Long-tailed distributions**: Datasets typically have a few classes with many
+    samples and many classes with very few examples. For example, you might have only
+    a couple of images of a rare spider species found in a remote region, while common
+    species have thousands of images. This imbalance makes it difficult for models
+    to learn equally well across all categories.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '![](../Images/8f824d796fe0c4fc7e444e6476c86b1a.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Two species of gulls from CUB 200 dataset illustrate the diﬃculty of ﬁne-grained
+    object classiﬁcation [4].
+  prefs: []
+  type: TYPE_NORMAL
+- en: '2\. The landscape:'
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: When we first started tackling this problem, we naturally turned to literature.
+    We dove into academic papers, examined benchmark datasets, and explored state-of-the-art
+    FGVC methods. And at first, the problem seemed far more complicated than it actually
+    turned out to be, at least in our specific context.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'FGVC has been actively researched for years, and there’s no shortage of approaches
+    that introduce increasingly complex architectures and pipelines. Many early works,
+    for example, proposed two-stage models: a localization subnetwork would first
+    identify discriminative object parts, and then a second network would classify
+    based on those parts. Others focused on custom loss functions, high-order feature
+    interactions, or label dependency modeling using hierarchical structures.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: All of these methods were designed to tackle the subtle visual distinctions
+    that make FGVC so challenging. If you’re curious about the evolution of these
+    approaches, Wei et al *[2]*. provide a solid survey that covers many of them in
+    depth.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/a92f8e67cacf8fc7a603e393aa956291.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Overview of the landscape of deep learning based fine-grained image analysis
+    (FGIA) [2].
+  prefs: []
+  type: TYPE_NORMAL
+- en: When we looked closer at recent [benchmark results](https://web.archive.org/web/20250317111655/https://paperswithcode.com/sota/fine-grained-image-classification-on-stanford)
+    (archived from Papers with Code), many of the top-performing solutions were based
+    on transformer architectures. These models often reached state-of-the-art accuracy,
+    but with little to no discussion of inference time or deployment constraints.
+    Given our requirements, we were fairly certain that these models wouldn’t hold
+    up in real-time on an edge device already running multiple models in parallel.
+  prefs: []
+  type: TYPE_NORMAL
+- en: At the time of this work, the best reported result on Stanford Cars was 97.1%
+    accuracy, achieved by **CMAL-Net**.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '3\. Our approach:'
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'Instead of starting with the most complex or specialized solutions, we took
+    the opposite approach: Could a model that we already knew would meet our real-time
+    and deployment constraints perform well enough on the task? Specifically, we asked
+    whether a solid general-purpose architecture could get us close to the performance
+    of more recent, heavier models, if trained properly.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'That line of thinking led us to a paper by Ross Wightman et al., *“ResNet Strikes
+    Back: An Improved Training Procedure in Timm.”* In it, Wightman makes a compelling
+    argument: most new architectures are trained using the latest advancements and
+    techniques but then compared against older baselines trained with outdated recipes.
+    Wightman argues that ResNet-50, which is frequently used as a benchmark, is often
+    not given the benefit of these modern improvements. His paper proposes a refined
+    training procedure and shows that, when trained properly, even a vanilla ResNet-50
+    can achieve surprisingly strong results, including on several FGVC benchmarks.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'With these constraints and goals in mind, we set out to build our own strong,
+    reusable training procedure, one that could deliver high performance on FGVC tasks
+    without relying on architecture-specific tricks. The idea was simple: start with
+    a known, efficient backbone like ResNet-50 and focus entirely on improving the
+    training pipeline rather than modifying the model itself. That way, the same recipe
+    could later be applied to other architectures with minimal adjustments.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'We began collecting ideas, techniques, and training refinements from across
+    several sources, compounding best practices into a single, cohesive pipeline.
+    In particular, we drew from four key resources:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Bag of Tricks for Image Classification with Convolutional Neural Networks (He
+    et al.)
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Compounding the Performance Improvements of Assembled Techniques in a Convolutional
+    Neural Network (Lee et al.)
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'ResNet Strikes Back: An Improved Training Procedure in Timm (Wightman et al.)'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: How to Train State-of-the-Art Models Using TorchVision’s Latest Primitives (Vryniotis)
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Our goal was to create a robust training pipeline that didn’t rely on model-specific
+    tweaks. That meant focusing on techniques that are broadly applicable across architectures.
+  prefs: []
+  type: TYPE_NORMAL
+- en: To test and validate our training pipeline, we used the Stanford Cars dataset
+    [9], a widely used fine-grained classification benchmark that closely aligns with
+    our real-world use case. The dataset contains 196 car categories and 16,185 images,
+    all taken from the rear to emphasize subtle inter-class differences. The data
+    is nearly evenly split between 8,144 training images and 8,041 testing images.
+    To simulate our deployment scenario, where the classification model operates downstream
+    of an object detection system, we crop each image to its annotated bounding box
+    before training and evaluation.
+  prefs: []
+  type: TYPE_NORMAL
+- en: While the original hosting site for the dataset is no longer available, it remains
+    accessible via curated repositories such as Kaggle, and Huggingface. The dataset
+    is distributed under the **BSD-3-Clause license**, which permits both commercial
+    and non-commercial use. In this work, it was used solely in a research context
+    to produce the results presented here.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/b5ff3750939edc2f7e935d2a14946139.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Example of a cropped Image from the Stanford Cars dataset [9].
+  prefs: []
+  type: TYPE_NORMAL
+- en: Building the Recipe
+  prefs:
+  - PREF_H4
+  type: TYPE_NORMAL
+- en: What follows is the distilled training recipe we arrived at, built through experimentation,
+    iteration, and careful aggregation of ideas from the works mentioned above. The
+    idea is to show that by simply applying modern training best practices, without
+    any architecture-specific hacks, we could get a general-purpose model like ResNet-50
+    to perform competitively on a fine-grained benchmark.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We’ll start with a vanilla ResNet-50 trained using a basic setup and progressively
+    introduce improvements, one step at a time.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'With each technique, we’ll report:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: The individual performance gain
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: The cumulative gain when added to the pipeline
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: While many of the techniques used are likely familiar, our intent is to highlight
+    how powerful they can be when compounded intentionally. Benchmarks often obscure
+    this by comparing new architectures trained with the latest advancements to old
+    baselines trained with outdated recipes. Here, we want to flip that and show what’s
+    possible with a carefully tuned recipe applied to a widely available, efficient
+    backbone.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We also recognize that many of these techniques interact with each other. So,
+    in practice, we tuned some combinations through greedy or grid search to account
+    for synergies and interdependencies.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The Base Recipe:'
+  prefs:
+  - PREF_H4
+  type: TYPE_NORMAL
+- en: Before diving into optimizations, we start with a clean, simple baseline.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We train a **ResNet-50** model pretrained on **ImageNet** using the **Stanford
+    Cars** dataset. Each model is trained for **600 epochs** on a single **RTX 4090
+    GPU**, with **early stopping** based on validation accuracy using a **patience
+    of 200 epochs**.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'We use:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Nesterov Accelerated Gradient (NAG)** for optimization'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Learning rate**: 0.01'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Batch size**: 32'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Momentum**: 0.9'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Loss function**: Cross-entropy'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: All training and validation images are **cropped to their bounding boxes** and
+    resized to **224×224** pixels. We start with the same standard augmentation policy
+    as in [5].
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Here’s a summary of the base training configuration and its performance:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '| Model | Pretrain | Optimizer | Learning rate'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '| Momentum | Batch size |'
+  prefs: []
+  type: TYPE_TB
+- en: '| ResNet50 | ImageNet | NAG | 0.01 | 0.9 | 32 |'
+  prefs: []
+  type: TYPE_TB
+- en: '| Loss function | Image size | Epochs | Patience | Augmentation | Accuracy
+    |'
+  prefs: []
+  type: TYPE_TB
+- en: '| Crossentropy Loss | 224×224 | 600 | 200 | Standard | 88.22 |'
+  prefs: []
+  type: TYPE_TB
+- en: We fix the **random seed** across runs to ensure reproducibility and reduce
+    variance between experiments. To assess the true effect of a change in the recipe,
+    we follow best practices and average results over **multiple runs (typically 3
+    to 5)**.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We’ll now build on top of this baseline step-by-step, introducing one technique
+    at a time and tracking its impact on accuracy. The goal is to isolate what each
+    component contributes and how they compound when applied together.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Large batch training:​
+  prefs:
+  - PREF_H4
+  type: TYPE_NORMAL
+- en: In mini-batch SGD, gradient descending is a random process because the examples 
+    are randomly selected in each batch. Increasing the batch size does not change
+    the expectation of the stochastic gradient but reduces its variance.  Using large
+    batch size, however, may slow down the training progress. For the same number
+    of epochs, training with a large batch size results in a model with degraded validation
+    accuracy compared to the ones trained with smaller batch sizes. ​
+  prefs: []
+  type: TYPE_NORMAL
+- en: He *et al [5]* argues that linearly increasing the learning rate with the batch
+    size works empirically for ResNet-50 training.​
+  prefs: []
+  type: TYPE_NORMAL
+- en: To improve both the accuracy and the speed of our training we change the batch
+    size to 128 and the learning rate to 0.1\. We add a StepLR scheduler that decays
+    the learning rate of each parameter group by 0.1 every 30 epochs.​
+  prefs: []
+  type: TYPE_NORMAL
+- en: Learning rate warmup:​
+  prefs:
+  - PREF_H4
+  type: TYPE_NORMAL
+- en: Since at the beginning of the training all parameters are typically random values 
+    using a too large learning rate may result in numerical instability.​
+  prefs: []
+  type: TYPE_NORMAL
+- en: In the warmup heuristic, we use a small learning rate at the beginning and then 
+    switch back to the initial learning rate when the training process is stable.
+    We use a gradual warmup strategy that increases the learning rate from 0 to the
+    initial learning rate linearly.​
+  prefs: []
+  type: TYPE_NORMAL
+- en: We add a linear warmup strategy for 5 epochs.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/fe9064ec45745ddca9ea5076baf951c7.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Learning rate curve. Image by author.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '| Model | Pretrain | Optimizer | **Learning rate** | Momentum |'
+  prefs: []
+  type: TYPE_TB
+- en: '| ResNet50 | ImageNet | NAG | **0.1** | 0.9 |'
+  prefs: []
+  type: TYPE_TB
+- en: '| **Batch size** | Loss function | Image size | Epochs | Patience |'
+  prefs: []
+  type: TYPE_TB
+- en: '| **128** | Crossentropy Loss | 224×224 | 600 | 200 |'
+  prefs: []
+  type: TYPE_TB
+- en: '| Augmentation | **Scheduler** | **Scheduler step size** | **Scheduler Gamma**
+    | **Warmup Method** |'
+  prefs: []
+  type: TYPE_TB
+- en: '| Standard | **StepLR** | **30** | **0.1** | **Linear** |'
+  prefs: []
+  type: TYPE_TB
+- en: '| **Warmup** **epochs** | **Warmup Decay** | **Accuracy** | **Incremental Improvement**
+    | **Absolute Improvement** |'
+  prefs: []
+  type: TYPE_TB
+- en: '| **5** | **0.01** | **89.21** | **+0.99** | **+0.99** |'
+  prefs: []
+  type: TYPE_TB
+- en: 'Trivial Augment​:'
+  prefs:
+  - PREF_H4
+  type: TYPE_NORMAL
+- en: To explore the impact of stronger data augmentation, we replaced the baseline
+    augmentation with **TrivialAugment**. Trivial Augment works as follows. It takes
+    an image x and a set of augmentations A as  input. It then simply samples an augmentation
+    from A uniformly at random and applies this augmentation to the given image x
+    with a strength m, sampled uniformly at random from the set of possible strengths {0,
+    . . . , 30}, and returns the augmented image.
+  prefs: []
+  type: TYPE_NORMAL
+- en: What makes TrivialAugment especially attractive is that it’s **completely parameter-free,**
+    it doesn’t require search or tuning, making it a simple yet effective drop-in
+    replacement that reduces experimental complexity.
+  prefs: []
+  type: TYPE_NORMAL
+- en: While it may seem counterintuitive that such a generic and randomized strategy
+    would outperform augmentations specifically tailored to the dataset or more sophisticated
+    automated augmentation methods, we tried a variety of alternatives, and **TrivialAugment
+    consistently delivered strong results** across runs. Its simplicity, stability,
+    and surprisingly high effectiveness make it a compelling default choice.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/90fa67a075e1bda05dfcf261ed9d36e6.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: A visualization of TrivialAugment [10].
+  prefs: []
+  type: TYPE_NORMAL
+- en: '| Model | Pretrain | Optimizer | Learning rate | Momentum |'
+  prefs: []
+  type: TYPE_TB
+- en: '| ResNet50 | ImageNet | NAG | **0.1** | 0.9 |'
+  prefs: []
+  type: TYPE_TB
+- en: '| Batch size | Loss function | Image size | Epochs | Patience |'
+  prefs: []
+  type: TYPE_TB
+- en: '| 128 | Crossentropy Loss | 224×224 | 600 | 200 |'
+  prefs: []
+  type: TYPE_TB
+- en: '| **Augmentation** | Scheduler | Scheduler step size | Scheduler Gamma | Warmup
+    Method |'
+  prefs: []
+  type: TYPE_TB
+- en: '| **TrivialAugment** | StepLR | 30 | 0.1 | Linear |'
+  prefs: []
+  type: TYPE_TB
+- en: '| Warmup epochs | Warmup Decay | **Accuracy** | **Incremental Improvement**
+    | **Absolute Improvement** |'
+  prefs: []
+  type: TYPE_TB
+- en: '| 5 | 0.01 | **92.66** | **+3.45** | **+4.44** |'
+  prefs: []
+  type: TYPE_TB
+- en: 'Cosine Learning Rate Decay:'
+  prefs:
+  - PREF_H4
+  type: TYPE_NORMAL
+- en: Next, we explored modifying the learning rate schedule. We switched to a **cosine
+    annealing** strategy, which decreases the learning rate from the initial value
+    to 0 by following the cosine function.​ A big advantage of cosine is that there
+    are no hyper-parameters to optimize, which cuts down again our search space.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/f436fd7d9633df2bfacbd31770c21e71.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Updated learning rate curve. Image by author.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '| Model | Pretrain | Optimizer | Learning rate | Momentum |'
+  prefs: []
+  type: TYPE_TB
+- en: '| ResNet50 | ImageNet | NAG | **0.1** | 0.9 |'
+  prefs: []
+  type: TYPE_TB
+- en: '| Batch size | Loss function | Image size | Epochs | Patience |'
+  prefs: []
+  type: TYPE_TB
+- en: '| 128 | Crossentropy Loss | 224×224 | 600 | 200 |'
+  prefs: []
+  type: TYPE_TB
+- en: '| Augmentation | **Scheduler** | **Scheduler step size** | **Scheduler Gamma**
+    | Warmup Method |'
+  prefs: []
+  type: TYPE_TB
+- en: '| TrivialAugment | **Cosine** | **–** | **–** | Linear |'
+  prefs: []
+  type: TYPE_TB
+- en: '| Warmup epochs | Warmup Decay | **Accuracy** | **Incremental Improvement**
+    | **Absolute Improvement** |'
+  prefs: []
+  type: TYPE_TB
+- en: '| 5 | 0.01 | **93.22** | **+0.56** | **+5** |'
+  prefs: []
+  type: TYPE_TB
+- en: 'Label Smoothing:'
+  prefs:
+  - PREF_H4
+  type: TYPE_NORMAL
+- en: 'A good technique to reduce overfitting is to stop the model from becoming overconfident.
+    This can be achieved by softening the ground truth using Label Smoothing. The
+    idea is to change the construction of the true label to:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: \[q_i = \begin{cases}
+  prefs: []
+  type: TYPE_NORMAL
+- en: 1 – \varepsilon, & \text{if } i = y, \\
+  prefs: []
+  type: TYPE_NORMAL
+- en: \frac{\varepsilon}{K – 1}, & \text{otherwise}.
+  prefs: []
+  type: TYPE_NORMAL
+- en: \end{cases} \]
+  prefs: []
+  type: TYPE_NORMAL
+- en: There is a single parameter which controls the degree of smoothing (the higher
+    the stronger) that we need to specify. We used a smoothing factor of **ε = 0.1**,
+    which is the standard value proposed in the original paper and widely adopted
+    in the literature.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Interestingly, we found empirically that adding label smoothing reduced gradient
+    variance during training. This allowed us to safely increase the learning rate
+    without destabilizing training. As a result, we **increased the initial learning
+    rate from 0.1 to 0.4**
+  prefs: []
+  type: TYPE_NORMAL
+- en: '| Model | Pretrain | Optimizer | Learning rate | Momentum |'
+  prefs: []
+  type: TYPE_TB
+- en: '| ResNet50 | ImageNet | NAG | **0.1** | 0.9 |'
+  prefs: []
+  type: TYPE_TB
+- en: '| Batch size | Loss function | Image size | Epochs | Patience |'
+  prefs: []
+  type: TYPE_TB
+- en: '| 128 | Crossentropy Loss | 224×224 | 600 | 200 |'
+  prefs: []
+  type: TYPE_TB
+- en: '| Augmentation | Scheduler | Scheduler step size | Scheduler Gamma | Warmup
+    Method |'
+  prefs: []
+  type: TYPE_TB
+- en: '| TrivialAugment | StepLR | 30 | 0.1 | Linear |'
+  prefs: []
+  type: TYPE_TB
+- en: '| Warmup epochs | Warmup Decay | **Label Smoothing** | ****Accuracy**** | ****Incremental
+    Improvement**** |'
+  prefs: []
+  type: TYPE_TB
+- en: '| 5 | 0.01 | **0.1** | **94.5** | ****+1.28**** |'
+  prefs: []
+  type: TYPE_TB
+- en: '| **Absolute Improvement** |  |  |  |  |'
+  prefs: []
+  type: TYPE_TB
+- en: '| **+6.28** |  |  |  |  |'
+  prefs: []
+  type: TYPE_TB
+- en: 'Random Erasing:'
+  prefs:
+  - PREF_H4
+  type: TYPE_NORMAL
+- en: As an additional form of regularization, we introduced Random Erasing into the
+    training pipeline. This technique randomly selects a rectangular region within
+    an image and replaces its pixels with random values, with a fixed probability.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Often paired with Automatic Augmentation methods, it usually yields additional
+    improvements in accuracy due to its regularization effect.​ We added Random Erasing
+    with a probability of 0.1.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/9dbb01ce67d51118ed65d896a987c3a3.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Examples of Random Erasing [11].
+  prefs: []
+  type: TYPE_NORMAL
+- en: '| Model | Pretrain | Optimizer | Learning rate | Momentum |'
+  prefs: []
+  type: TYPE_TB
+- en: '| ResNet50 | ImageNet | NAG | **0.1** | 0.9 |'
+  prefs: []
+  type: TYPE_TB
+- en: '| Batch size | Loss function | Image size | Epochs | Patience |'
+  prefs: []
+  type: TYPE_TB
+- en: '| 128 | Crossentropy Loss | 224×224 | 600 | 200 |'
+  prefs: []
+  type: TYPE_TB
+- en: '| Augmentation | Scheduler | Scheduler step size | Scheduler Gamma | Warmup
+    Method |'
+  prefs: []
+  type: TYPE_TB
+- en: '| TrivialAugment | StepLR | 30 | 0.1 | Linear |'
+  prefs: []
+  type: TYPE_TB
+- en: '| Warmup epochs | Warmup Decay | Label Smoothing | ****Random Erasing**** |
+    ****Accuracy**** |'
+  prefs: []
+  type: TYPE_TB
+- en: '| 5 | 0.01 | 0.1 | **0.1** | ****94.93**** |'
+  prefs: []
+  type: TYPE_TB
+- en: '| ******Incremental Improvement****** | **Absolute Improvement** |  |  |  |'
+  prefs: []
+  type: TYPE_TB
+- en: '| **+0.43** | **+6.71** |  |  |  |'
+  prefs: []
+  type: TYPE_TB
+- en: 'Exponential Moving Average (EMA):'
+  prefs:
+  - PREF_H4
+  type: TYPE_NORMAL
+- en: Training a neural network using mini batches introduces noise and less accurate
+    gradients when gradient descent updates the model parameters between batches.
+    Exponential moving average is used in training deep neural networks to improve
+    their stability and generalization.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Instead of just using the raw weights that are directly learned during training,
+    EMA maintains a running average of the model weights which are then updated at
+    each training step using a weighted average of the current weights and the previous
+    EMA values.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Specifically, at each training step, the EMA weights are updated using:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: \[\theta_{\mathrm{EMA}} \leftarrow \alpha \, \theta_{\mathrm{EMA}} + (1 – \alpha)
+    \, \theta\]
+  prefs: []
+  type: TYPE_NORMAL
+- en: where θ are the current model weights and α is a decay factor controlling how
+    much weight is given to the past.
+  prefs: []
+  type: TYPE_NORMAL
+- en: By evaluating the EMA weights rather than the raw ones at test time, we found
+    improved consistency in performance across runs, especially in the later stages
+    of training.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '| Model | Pretrain | Optimizer | Learning rate | Momentum |'
+  prefs: []
+  type: TYPE_TB
+- en: '| ResNet50 | ImageNet | NAG | **0.1** | 0.9 |'
+  prefs: []
+  type: TYPE_TB
+- en: '| Batch size | Loss function | Image size | Epochs | Patience |'
+  prefs: []
+  type: TYPE_TB
+- en: '| 128 | Crossentropy Loss | 224×224 | 600 | 200 |'
+  prefs: []
+  type: TYPE_TB
+- en: '| Augmentation | Scheduler | Scheduler step size | Scheduler Gamma | Warmup
+    Method |'
+  prefs: []
+  type: TYPE_TB
+- en: '| TrivialAugment | StepLR | 30 | 0.1 | Linear |'
+  prefs: []
+  type: TYPE_TB
+- en: '| Warmup epochs | Warmup Decay | Label Smoothing | Random Erasing | ****EMA
+    Steps**** |'
+  prefs: []
+  type: TYPE_TB
+- en: '| 5 | 0.01 | 0.1 | 0.1 | ****32**** |'
+  prefs: []
+  type: TYPE_TB
+- en: '| ******EMA Decay****** | **Accuracy** | ******Incremental Improvement******
+    | **Absolute Improvement** |  |'
+  prefs: []
+  type: TYPE_TB
+- en: '| **0.994** | **94.93** | 0 | +6.71 |  |'
+  prefs: []
+  type: TYPE_TB
+- en: We tested EMA in isolation, and found that it led to notable improvements in
+    both training stability and validation performance. But when we integrated EMA
+    into the full recipe alongside other techniques, it did not provide further improvement.
+    The results appeared to plateau, suggesting that most of the gains had already
+    been captured by the other components.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Because our goal is to develop a **general-purpose training recipe** rather
+    than one overly tailored to a single dataset, we chose to **keep EMA in the final
+    setup**. Its benefits may be more pronounced in other conditions, and its low
+    overhead makes it a safe inclusion.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Optimizations we tested but didn’t adopt:'
+  prefs:
+  - PREF_H4
+  type: TYPE_NORMAL
+- en: 'We also explored a range of additional techniques that are commonly effective
+    in other image classification tasks, but found that they either **did not lead
+    to significant improvements** or, in some cases, **slightly regressed performance**
+    on the Stanford Cars dataset:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Weight Decay:** Adds L2 regularization to discourage large weights during
+    training. We experimented extensively with weight decay in our use case, but it
+    consistently regressed performance.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Cutmix/Mixup:** Cutmix replaces random patches between images and mixes the
+    corresponding labels. Mixup creates new training samples by linearly combining
+    pairs of images and labels.  We tried applying either CutMix or MixUp randomly
+    with equal probability during training, but this approach regressed results.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**AutoAugment:** Delivered strong results and competitive accuracy, but we
+    found **TrivialAugment** to be better. More importantly, TrivialAugment is completely
+    parameter-free, which cuts down our search space and simplifies tuning.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Alternative Optimizers and Schedulers:** We experimented with a wide range
+    of optimizers and learning rate schedules. **Nesterov Accelerated Gradient (NAG)**
+    consistently gave us the best performance among optimizers, and **Cosine Annealing**
+    stood out as the best scheduler, delivering strong results with no additional
+    hyperparameters to tune.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '4\. Conclusion:'
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'The graph below summarizes the improvements as we progressively built up our
+    training recipe:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/3e12ef5bbac0292e87c4acd523ed087d.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Cumulative Accuracy Improvement from Model Refinements. Image by author.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Using just a standard **ResNet-50**, we were able to achieve **strong performance
+    on the Stanford Cars dataset**, demonstrating that careful tuning of a few simple
+    techniques can go a long way in fine-grained classification.
+  prefs: []
+  type: TYPE_NORMAL
+- en: However, it’s important to keep this in perspective. These results mainly show
+    that we can train a model to distinguish between fine-grained, well-represented
+    classes in a clean, curated dataset. The **Stanford Cars dataset** is nearly **class-balanced**,
+    with **high-quality, mostly frontal images** and **no major occlusion or real-world
+    noise**. It does **not address challenges like long-tailed distributions**, domain
+    shift, or recognition of unseen classes.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In practice, you’ll never have a dataset that covers **every car model**—especially
+    one that’s **updated daily** as new models appear. Real-world systems need to
+    handle **distributional shifts**, **open-set recognition**, and **imperfect inputs**.
+  prefs: []
+  type: TYPE_NORMAL
+- en: So while this served as a **strong baseline and proof of concept**, there was
+    still significant work to be done to build something **robust and production-ready**.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'References:'
+  prefs:
+  - PREF_H4
+  type: TYPE_NORMAL
+- en: '[1] [Krause, Deng, et al. Collecting a Large-Scale Dataset of Fine-Grained
+    Cars.](https://ai.stanford.edu/~jkrause/papers/fgvc13.pdf)'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[2] [Wei, et al. Fine-Grained Image Analysis with Deep Learning: A Survey.](https://arxiv.org/abs/2111.06119)'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[3] [Reslan, Farou. Automatic Fine-grained Classification of Bird Species Using
+    Deep Learning.](https://www.researchgate.net/publication/366192757_Automatic_Fine-grained_Classification_of_Bird_Species_Using_Deep_Learning)'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[4] [Zhao, et al. A survey on deep learning-based fine-grained object clasiffication
+    and semantic segmentation.](https://www.zhaobo.me/papers/ijac_survey.pdf)'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[5] [He, et al. Bag of Tricks for Image Classification with Convolutional Neural
+    Networks.](https://arxiv.org/pdf/1812.01187)'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[6] [Lee, et al. Compounding the Performance Improvements of Assembled Techniques
+    in a Convolutional Neural Network.](https://arxiv.org/pdf/2001.06268)'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[7] [Wightman, et al. ResNet Strikes Back: An Improved Training Procedure in
+    Timm.](https://arxiv.org/abs/2110.00476)'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[8] [Vryniotis. How to Train State-of-the-Art Models Using TorchVision’s Latest
+    Primitives.](https://pytorch.org/blog/how-to-train-state-of-the-art-models-using-torchvision-latest-primitives/)'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[9] [Krause et al, 3D Object Representations for Fine-Grained Catecorization.](https://ieeexplore.ieee.org/document/6755945)'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[10] [Müller, Hutter. TrivialAugment: Tuning-free Yet State-of-the-Art Data
+    Augmentation.](https://arxiv.org/abs/2103.10158)'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[11] [Zhong et al, Random Erasing Data Augmentation.](https://arxiv.org/pdf/1708.04896)'
+  prefs: []
+  type: TYPE_NORMAL

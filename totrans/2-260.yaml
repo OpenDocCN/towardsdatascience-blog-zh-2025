@@ -1,0 +1,426 @@
+- en: 'Automate Models Training: An MLOps Pipeline with Tekton and Buildpacks'
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 原文：[https://towardsdatascience.com/automate-models-training-an-mlops-pipeline-with-tekton-and-buildpacks/](https://towardsdatascience.com/automate-models-training-an-mlops-pipeline-with-tekton-and-buildpacks/)
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: <mdspan datatext="el1749532257635" class="mdspan-comment">The drive to operationalize</mdspan>
+    machine learning effectively means that simply training a model is no longer enough;
+    robust, automated, and reproducible training pipelines are fast becoming standard
+    requirements in MLOps. Many teams struggle to integrate machine learning experimentation
+    with production-grade CI/CD practices, often becoming entangled in manual processes
+    or complex container configurations. What if you could streamline the containerization
+    of your training workflows and orchestrate them without ever needing to write
+    a Dockerfile?
+  prefs: []
+  type: TYPE_NORMAL
+- en: In this tutorial, I’ll show how to automate training a GPT-2 model using open-source
+    [Tekton](https://tekton.dev/) pipelines and [Buildpacks](https://buildpacks.io/).
+    We’ll containerize a training workflow without writing a Dockerfile, and use Tekton
+    to orchestrate the build and training steps.
+  prefs: []
+  type: TYPE_NORMAL
+- en: I’ll demonstrate this with a lightweight GPT-2 tuning example, showing the model’s
+    output before versus after training, and provide step-by-step instructions to
+    recreate the pipeline.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Overview of the toolkit: Tekton, Buildpacks, and GPT-2'
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'Tekton Pipelines: Cloud-Native CI/CD for ML'
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: Tekton Pipelines is an open-source CI/CD framework that runs natively on Kubernetes.
+    It allows you to define pipelines as Kubernetes resources, enabling cloud-native
+    build, test, and deploy workflows. In a Tekton pipeline, each step runs in a container,
+    making it an ideal fit for ML workflows that require isolation and reproducibility.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Buildpacks: skipping Dockerfiles'
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: Remember the last time you wrestled with a complex Dockerfile, trying to get
+    all dependencies and configurations just right? [Paketo Buildpacks](https://paketo.io/)
+    (an implementation of Cloud Native Buildpacks) offer a refreshing alternative.
+    They automate the creation of container images directly from your source code.
+    Buildpacks analyze your project, detect the language and dependencies, and then
+    build an optimized, secure container image for you. This not only saves time but
+    also incorporates best practices into your image-building process, often resulting
+    in more secure and efficient images than those created manually with Dockerfiles.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'GPT-2: lightweight model'
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: We’ll be using GPT-2 as our example model. It’s a well-known transformer model,
+    and crucially, it’s lightweight enough for us to tune quickly on a small, custom
+    dataset. This makes it perfect for demonstrating the mechanics of our training
+    pipeline without requiring massive compute resources or hours of waiting. We’ll
+    tune it on a tiny set of question-answer pairs, allowing us to see a clear difference
+    in its outputs after our pipeline works its magic.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The goal here isn’t to achieve groundbreaking NLP results with GPT-2\. Instead,
+    we’re focusing squarely on showcasing an efficient and automated CI/CD pipeline
+    for model training. The model is our payload.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Peeking Inside the Project: Code, Data, and Pipeline Structure'
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'I’ve set up an example [repository on GitHub](https://github.com/sylvainkalache/Automate-PyTorch-Model-Training-with-Tekton-and-Buildpacks)
+    that contains everything you’ll need to follow along. Let’s take a quick tour
+    of the key components:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '`training_process/train.py` – the model training script. It uses HuggingFace
+    Transformers with PyTorch to fine-tune GPT-2 on a custom Q&A dataset. It reads
+    a small text file of question-answer pairs (see below), fine-tunes GPT-2 on this
+    data, and saves the trained model to an output directory.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '`training_process/requirements.txt` – Python dependencies needed for training.
+    Buildpacks will auto-install these into the image.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '`training_process/train.txt` – A small dataset of Q&A pairs. Feel free to customize
+    it 🙂'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '`untrained_model.py` – A helper script to test GPT-2 before fine-tuning.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Tekton Pipeline Files:**'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '`model-training-pipeline.yaml` – defines the Tekton pipeline with two tasks
+    (explained in the next section).'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '`source-pv-pvc.yaml` – defines a PersistentVolume and PersistentVolumeClaim
+    for sharing the source code and data with the Tekton tasks (used as a workspace).'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '`kind-config.yaml` – a [Kind](https://kind.sigs.k8s.io/) cluster configuration
+    to mount the local `training_process/` directory into the Kubernetes cluster.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '`sa.yml`– a ServiceAccount and secret configuration for pushing the built image
+    to a container registry (Docker Hub in this case).'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: With these pieces, we have our code, data, and pipeline definitions ready. Now,
+    let’s examine the structure of the Tekton pipeline.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Anatomy of Our Tekton Pipeline: Building and Training'
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: At its core, a Tekton Pipeline resource is what orchestrates your CI/CD workflow
+    by defining a series of Tasks. You can think of these Tasks as reusable building
+    blocks, each composed of one or more Steps where your actual commands and scripts
+    execute — all neatly packaged within containers.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'For our specific MLOps goal of automating the GPT-2 model training, the Pipeline
+    (defined in `model-training-pipeline.yaml`) is designed with a clear, sequential
+    structure. It will execute two primary Tasks, one after the other: first, to build
+    and containerize our training code, and second, to run the training process using
+    that fresh container image.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Diagram showing the Tekton pipeline  Tasks](../Images/e0e20a33d43b28d45845fdcc88a2a09f.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Let’s go over each in detail.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Build The Image: Containerize the Training Code'
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: 'This task utilizes Paketo Buildpacks to create a Docker image that contains
+    our training code and all itsdependencies. Importantly, no Dockerfile is required:
+    the Buildpacks builder will automatically detect the Python app and install PyTorch,
+    Transformers, and other dependencies as specified in the requirements.txt file.
+    In the pipeline, this task is referred to as `build-image`. It runs the Paketo
+    Buildpacks builder (`paketobuildpacks/builder:full`) with the source code workspace
+    mounted. Under the hood, it invokes the Cloud Native Buildpacks lifecycle creator:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '`/cnb/lifecycle/creator -skip-restore -app "$(workspaces.source.path)" "$(params.APP_IMAGE)"`'
+  prefs: []
+  type: TYPE_NORMAL
+- en: This command tells Buildpacks to create a container image from the app source
+    in the workspace and tag it as `$(params.APP_IMAGE)`. By default, `APP_IMAGE`
+    is set to a Docker Hub repository (e.g., `sylvainkalache/automate-pytorch-model-training-with-tekton-and-buildpacks:latest`).
+  prefs: []
+  type: TYPE_NORMAL
+- en: Note that you’ll need to substitute with your registry. I use Docker Hub in
+    this example. After this step, our training code is packaged into a container
+    image and pushed to the registry.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Train the Model
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: The second task, `run-training`, depends on the first. This task pulls and runs
+    the image produced by the build step to execute the model training. Essentially,
+    it starts a container from the image (which has Python, GPT-2 code, etc. installed)
+    and runs the `train.py` script inside that container.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The Shared Workspace: Connecting the Dots'
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: Let’s go over why we need a shared workspace in our Tekton pipeline. In this
+    automated workflow composed of multiple stages, the build stage and training stage
+    require a shared place to exchange files or data. Our build-image task needs access
+    to our local source code to containerize it. Later, the run-training task needs
+    access to the training data. Finally, when the training task successfully generates
+    a fine-tuned model, we need a way to save and retrieve that valuable output.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '​​Both tasks share a Tekton Workspace named “source”. This workspace is backed
+    by a PersistentVolumeClaim (`source-pvc`), which is set up to mount our local
+    code. This is how the pipeline accesses the training script and data: the same
+    files you have in `training_process/` on your machine are mounted into the Tekton
+    task pods at `/workspace/source`.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Diagram showing how the code is connected to the Kind cluster where the Tekton
+    pipeline will run](../Images/deeb4928ef67970b0065d8b0a99387b0.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: The Buildpacks builder reads the code from there to build the image, and the
+    training container later reads the data and writes outputs there as well. Using
+    a shared workspace ensures that the model saved during training persists after
+    the task completes (so we can retrieve it) and that both tasks operate on the
+    same code base. Note that this setup is suitable for this tutorial, but it is
+    unlikely to be something you’d want for production.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Now, merging the two sections, this is what the entire training pipeline looks
+    like.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![A diagram of the entire process, showing how the code and passed to Kind
+    and the Tekton pipeline in its entirety ](../Images/784529f2d8b85a3fbcea22c5997283cf.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Now that we understand the pipeline, let’s walk through setting it up and running
+    it.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Step-by-Step: Running the Tekton Pipeline for GPT-2 Training'
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: Ready to see it in action? Follow these steps to set up your environment, deploy
+    the Tekton resources, and trigger the training pipeline. This assumes you have
+    a Kubernetes cluster (for local testing, you can use [Kind](https://kind.sigs.k8s.io/)
+    with the provided config) and `kubectl` access to it. If you do not have such
+    a setup, [here](https://github.com/sylvainkalache/Automate-PyTorch-Model-Training-with-Tekton-and-Buildpacks/blob/main/install.sh)
+    is a rough list of commands you’ll need to get the necessary tools. This tutorial
+    was tested on Ubuntu 22.04.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Clone the Example Repository
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: 'Get the code and pipeline manifests on your machine:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE0]'
+  prefs: []
+  type: TYPE_PRE
+- en: Install Tekton Pipelines
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: 'If Tekton is not already installed on your cluster, install it by applying
+    the official release YAML:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '`kubectl apply -f https://storage.googleapis.com/tekton-releases/pipeline/latest/release.yaml`'
+  prefs: []
+  type: TYPE_NORMAL
+- en: This command will create the Tekton CRDs (Pipeline, Task, PipelineRun, etc.)
+    in your cluster. You only need to do this once.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Apply the Pipeline and Volume Manifests
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: 'Deploy the Tekton pipeline definition and supporting Kubernetes resources:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE1]'
+  prefs: []
+  type: TYPE_PRE
+- en: '**Let’s go over the details of each command:**'
+  prefs: []
+  type: TYPE_NORMAL
+- en: The first command creates the Tekton Pipeline object `model-training-pipeline`
+    in the cluster.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: The second creates a PersistentVolume and Claim. The provided `source-pv-pvc.yaml`
+    assumes you’re using Kind and mounts the local `training_process/` directory into
+    the cluster. It defines a hostPath volume at `/mnt/training_process` on the node,
+    and ties it to a PVC named `source-pvc`.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: The third applies a ServiceAccount for Tekton to use when running the pipeline.
+    This `sa.yml` should reference the Docker registry secret created in the next
+    step, allowing Tekton’s build step to push the image.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Create Docker Registry Secret
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: 'Tekton’s Buildpacks task will push the built image to a container registry.
+    For this, you need to provide your registry credentials (e.g., Docker Hub login).
+    Create a Kubernetes secret with your registry auth details:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE2]'
+  prefs: []
+  type: TYPE_PRE
+- en: This secret will store your auth info. Ensure the ServiceAccount from step 3
+    is configured to use this secret for image pull and push.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Run the Tekton Pipeline
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'With everything in place, you can start the pipeline, run:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE3]'
+  prefs: []
+  type: TYPE_PRE
+- en: Here we pass the PVC as the source workspace. Also specify the service account
+    (`-s`) that has the registry secret. This will start the pipeline. Use `tkn pipelinerun
+    logs -f` to watch the progress. You should see output from the Buildpacks creator
+    (detecting a Python app, installing requirements) and then from the training script
+    (printing training epochs and completion).
+  prefs: []
+  type: TYPE_NORMAL
+- en: After the pipeline finishes successfully, the fine-tuned model will be saved
+    in the `training_process/output-model` directory (thanks to the PVC workspace,
+    it persists on your local filesystem via the Kind mount). We can now compare the
+    GPT-2 model’s output before and after fine-tuning.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The Proof is in the Pudding: GPT-2 Output Before vs. After Training'
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: Did our automated pipeline improve the model? Let’s find out.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Before The Training
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: 'What does the off-the-shelf GPT-2 model say? Run `untrained_model.py` with
+    a question. For example:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Terminal screenshot showing that the off the shelf model did not correctly
+    answer the question “How far is the sun?”](../Images/9f9c896943656780e8b9cb6b26a8e360.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: We can see that GPT-2 gave a rambling response that didn’t correctly answer
+    the question.
+  prefs: []
+  type: TYPE_NORMAL
+- en: After the Training Process
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: 'Now let’s see GPT-2 tuned on our Q&A data. We can load the model saved by our
+    pipeline and generate an answer. The script `training_process/serve.py` does this.
+    For example:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Terminal screenshot showing that the trained model correctly answer the question
+    “How far is the sun?”](../Images/bcd868403265c53b36021af3674e62c2.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'Because we trained on a QA format, the fine-tuned GPT-2 will produce an answer
+    after the `|` separator. Indeed, after training, the model’s answer to *“How far
+    is the sun?”* was: “150 million kilometers away.” — precisely the answer from
+    our training data.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: This simple comparison demonstrates that our CI/CD pipeline successfully took
+    our source code, built it, trained the model, and produced an improved version.
+    While this was a minimal dataset for illustrative purposes, imagine plugging in
+    your larger, domain-specific datasets. The pipeline structure remains unchanged,
+    providing a robust and automated path for model updates.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Tekton + Buildpacks: A Winning Combo for Simpler ML CI/CD'
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: Using Tekton pipelines with Buildpacks offers an elegant solution for machine
+    learning CI/CD workflows. Both Tekton and Buildpacks are cloud-native, open-source
+    solutions that integrate well with the rest of your Kubernetes ecosystem.
+  prefs: []
+  type: TYPE_NORMAL
+- en: By automating model training in this way, ML engineers and DevOps teams can
+    collaborate more effectively. The ML code is treated similarly to application
+    code in CI/CD – every change can trigger a pipeline that reliably builds and trains
+    the model. Tekton provides the pipeline glue with Kubernetes scalability, and
+    Paketo Buildpacks take the hassle out of containerizing ML workloads. The end
+    result is faster experimentation and deployment for ML models, achieved with a
+    declarative, easy-to-maintain pipeline. I hope you like it!
+  prefs: []
+  type: TYPE_NORMAL
+- en: Thanks For Reading
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'I’m Sylvain Kalache, leading [Rootly AI Labs](http://labs.rootly.com/): a fellow-driven
+    community building AI-centric prototypes, open-source tools, and research to redefine
+    reliability engineering. Sponsored by Anthropic, Google Cloud, and Google DeepMind,
+    all our work is freely available on [GitHub](https://github.com/Rootly-AI-Labs).
+    For more of my stories, follow me on [LinkedIn](https://www.linkedin.com/in/sylvainkalache/)
+    or explore my writing in my [portfolio](https://www.sylvainkalache.com/#writing).'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Sylvain Kalache](../Images/c7c3eeecb47fc672ea38e73c650a323e.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: '*Sylvain Kalache, the author, created all the images and diagrams in this article.*'
+  prefs: []
+  type: TYPE_NORMAL

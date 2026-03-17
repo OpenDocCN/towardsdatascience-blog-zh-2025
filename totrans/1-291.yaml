@@ -1,0 +1,559 @@
+- en: 'No Peeking Ahead: Time-Aware Graph Fraud Detection'
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 原文：[https://towardsdatascience.com/no-peeking-ahead-time-aware-graph-fraud-detection/](https://towardsdatascience.com/no-peeking-ahead-time-aware-graph-fraud-detection/)
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: In my last article [[1](https://medium.com/@erikapatg/applications-and-opportunities-of-graphs-in-insurance-0078564271ab)],
+    I threw out a lot of ideas centered around building structured graphs, mainly
+    focused on descriptive or unsupervised exploration of data through graph structures.
+    However, when we use graph features to improve our models, the **temporal nature
+    of the data must be taken into accoun**t. If we want to avoid undesired effects,
+    we need to be careful not to **leak future information** into our training process.
+    This means our graph (and the features derived from it) must be constructed in
+    a time-aware, incremental way.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Data leakage is such a paradoxical problem that a 2023 study by Sayash Kapoor
+    and Arvind Narayanan [2] found that, up to that moment, it had affected 294 research
+    papers across 17 scientific fields. They classify the types of data leakages **ranging
+    from textbook errors to open research problems**.
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: The issue is that during prototyping, results often seem very promising when
+    they are really not. Most of the time, people do not realize this until models
+    are deployed in production, **wasting the time and resources of an entire team**.
+    Then, performance usually falls short of expectations without understanding why.
+    This issue can become the **Achilles’ heel that undermines all business AI initiatives**.
+  prefs: []
+  type: TYPE_NORMAL
+- en: …
+  prefs: []
+  type: TYPE_NORMAL
+- en: ML-base leakage
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: Data leakage occurs when the training data contains information about the output
+    that won’t be available during inference. This causes overly optimistic evaluation
+    metrics during development, creating misleading expectations. However, when deployed
+    in real-time systems with the proper data flow, the model predictions become untrustworthy
+    because it learned from information not accessible.
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: '**Ethically**, we must strive to produce results that truly reflect the capabilities
+    of our models, rather than **sensational or misleading findings**. When a model
+    moves from prototyping to production, it should not fail to generalize properly;
+    if it does, its practical value is undermined. **Models that fail to generalize
+    well can exhibit significant problems during inference or deployment**, compromising
+    their usefulness.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: This is especially dangerous in sensitive contexts like fraud detection, which
+    often involve imbalanced data scenarios (with fewer fraud cases than non-fraud).
+    In these situations, the **harm caused by data leakage is more pronounced because
+    the model might overfit to leaked data** related to the minority class, producing
+    seemingly good results for the minority label, which is the hardest to predict.
+    This can lead to missed fraud detections, resulting in serious practical consequences.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Data leakage examples can be categorized into textbook errors and open research
+    problems [2] as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Textbook Errors:**'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Imputing missing values using the entire dataset instead of only the training
+    set, causing information about the test data to leak into training.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Duplicated or very similar instances appearing both in training and test sets,
+    such as images of the same object taken from slightly different angles.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Lack of clear separation between training and test datasets, or no test set
+    at all, leading to models having access to test information before evaluation.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Using proxies of outcome variables that indirectly reveal the target variable.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Random data splitting in scenarios where multiple related records belong to
+    a single entity, such as multiple claim status events from the same customer.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Synthetic data augmentation performed over the whole dataset, instead of only
+    on the training set.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Open problems for research:**'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Temporal leakage occurs when future data unintentionally influences training.
+    In such cases, strict separation is challenging because timestamps can be noisy
+    or incomplete.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Updating database records without lineage or audit trail, for example, changing
+    fraud status without storing history, can cause models to train on future or altered
+    data unintentionally.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Complex real-world data integration and pipeline issues that introduce leakage
+    through misconfiguration or lack of controls.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: These cases are part of a broader taxonomy reported in machine learning research,
+    highlighting data leakage as a critical and often an underinvestigated risk for
+    reliable modeling [3]. Such issues arise even with simple tabular data, and they
+    **can remain hidden when working with many features** if each one is not individually
+    checked.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Now, let’s consider **what happens when we include nodes and edges** in the
+    equation…
+  prefs: []
+  type: TYPE_NORMAL
+- en: …
+  prefs: []
+  type: TYPE_NORMAL
+- en: Graph-base leakage
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'In the case of graph-based models, leakage can be sneakier than in traditional
+    tabular settings. When features are derived from connected components or topological
+    structures, using future nodes or edges can silently alter the graph’s structure.
+    For example:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: methodologies such as **graph neural networks (GNNs) learn the context not only
+    from individual nodes but also from their neighbours**, which can inadvertently
+    introduce leakage if sensitive or future information is propagated across the
+    graph structure during training.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: when the graph structure is overwritten or updated without preserving the past
+    events means **the model loses valuable context needed for accurate temporal analysis**,
+    and it may again access information in the incorrect time or lose traceability
+    about possible leakage or problems with the data that originate the graphs.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'Computing graph aggregations like degree, triangles, or PageRank on the entire
+    graph without accounting for the temporal dimension (time-agnostic aggregation)
+    uses all edges: past, present, and future. This causes data leakage because features
+    include information from future edges that wouldn’t be available at prediction
+    time.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Graph temporal leakage occurs when features, edges, or node relationships from
+    future time points are included during training in a way that **violates the chronological
+    order of events**. This results in edges or training features that incorporate
+    data from time steps that should be unknown.
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: …
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**How can this be fixed?**'
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: We can build a single graph that captures the entire history by assigning **timestamps
+    or time intervals to edges**. To analyze the graph up to a specific point in time
+    (t), we “look back in time” by filtering any graph to include only the events
+    that occurred before or at that cutoff. This approach is ideal for preventing
+    data leakage because it ensures that only past and present information is used
+    for modeling. Additionally, it offers flexibility in defining different time windows
+    for safe and accurate temporal analysis.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In this article, we build a **temporal graph of insurance claims** where the
+    nodes represent individual claims, and temporal links are created when two claims
+    share an entity (e.g., phone number, license plate, repair shop, etc.) to ensure
+    the correct event order. Graph-based features are then computed to feed fraud
+    prediction models, carefully avoiding the use of future information (**no peeking**).
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The idea is simple: **if two claims share a common entity and one occurs before
+    the other**, we connect them at the moment this connection becomes visible (figure
+    1). As we explained in the previous section, the way we model the data is crucial,
+    not only to capture what we’re truly looking for, but also to enable the use of
+    advanced methods such as Graph Neural Networks (GNNs).'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/a0ab67141ef5fc26a143967ab68e29f5.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: '**Figure 1:** Claims and entities (such as phone numbers) are added to the
+    graph as they arrive over time. When a new claim (Claim_id2 at time t) shares
+    a previously observed entity with an earlier claim (Claim_id1 at time t-1), a
+    directed temporal edge (blue arrow) is created from the earlier to the later claim.
+    This construction reveals when relationships become visible and ensures causal,
+    time-respecting connectivity in the graph. Image by Author.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: In our graph model, we save the timestamp when **an entity is first seen**,
+    capturing the moment it appears in the data. However, in many real-world scenarios,
+    it is also useful to consider a time interval spanning the entity’s first and
+    last appearances (for example, generated with another variable like plate or email).
+    This interval can provide richer temporal context, reflecting the lifespan or
+    active period of nodes and edges, which is valuable for dynamic temporal graph
+    analyses and advanced model training.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Code
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'The code is available in this repository: [Link to the repository](https://github.com/erikapat/graphs_neo4j/tree/feature/first_steps/temporal_graph)'
+  prefs: []
+  type: TYPE_NORMAL
+- en: To run the experiments, set up a Python ≥3.11 environment with the required
+    [libraries](https://github.com/erikapat/graphs_neo4j/blob/feature/first_steps/temporal_graph/requirements.txt)
+    (e.g., **torch**, **torch-geometric**, **networkx**, etc.). It is recommended
+    to use a virtual environment (via **venv** or **conda**) to keep dependencies
+    isolated.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Code Pipeline
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: The diagram of Figure 2, shows the end-to-end workflow for fraud detection with
+    GraphSAGE. **Step 1** loads the (simulated) raw claims data. **Step 2** builds
+    a time-stamped directed graph (entity→claim and older-claim→newer-claim). **Step
+    3** performs temporal slicing to create train, validation, and test sets, then
+    indexes nodes, builds features, and finally trains and validates the model.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/d60f5aac8e9bcb0826fa3d0315163f84.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'Figure 2\. End-to-end pipeline for temporal fraud modeling: **(I)** load data
+    → **(II)** build and save a time-stamped graph and **(III)** prepare subgraphs
+    (temporal slicing → node indexing → feature building → PyG `Data`) for training
+    and inference. Image by Author.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Step 1: Simulated Fraud Dataset'
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: 'We first [simulate a dataset of insurance claims](https://github.com/erikapat/graphs_neo4j/blob/feature/first_steps/temporal_graph/1_simulation.py).
+    Each row in the [dataset](https://github.com/erikapat/graphs_neo4j/blob/feature/first_steps/temporal_graph/data/sy_dataset_1.csv)
+    represents a claim and includes variables such as:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Entities**: `insurer_license_plate`, `insurer_phone_number`, `insurer_email`,
+    `insurer_address`, `repair_shop`, `bank_account`, `claim_location`, `third_party_license_plate`'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Core information**: `claim_id`, `claim_date`, `type_of_claim`, `insurer_id`,
+    `insurer_name`'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Target**: `fraud` (binary variable indicating whether the claim is fraudulent
+    or not)'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: These entity attributes act as potential links between claims, allowing us to
+    infer connections through shared values (e.g., two claims using the same repair
+    shop or phone number). By modeling these implicit relationships as edges in a
+    graph, we can build powerful topological representations that capture suspicious
+    behavioral patterns and enable downstream tasks such as feature engineering or
+    graph-based learning.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/305885c3411bc0990718ef4a3b64e80e.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Table 1\. Overview of simulated insurance claims data, showing key entity fields
+    and the fraud label for each record used in the exercise. Table by Author.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/975b794759ab3136be363c8750c9024e.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Figure 3\. Distribution of fraud and non-fraud claims (left) and evolution of
+    daily fraud rate with claim volume (right) in the simulated dataset. Fraud base
+    rate of approximately 12.45%. Image by Author.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Step2: Graph Modeling'
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: We use the NetworkX library to build our [graph model](https://github.com/erikapat/graphs_neo4j/blob/feature/first_steps/temporal_graph/3_graph_creation.py).
+    For **small-scale examples, NetworkX is sufficient** and effective. For more advanced
+    graph processing, tools like Memgraph or Neo4j could be used. To model with NetworkX,
+    we create nodes and edges representing entities and their relationships, enabling
+    network analysis and visualization within Python.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'So, we have:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: one node per claim, with node key equal to the claim_id and attributes as node_type
+    and claim_date
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: one node per entity value (phone, plate, bank account, shop, etc.). **Node key:**
+    `"{column_name}:{value}"` and attributes `node_type = <column_name>` (e.g., `"insurer_phone_number"`,
+    `"bank_account"`, `"repair_shop"`) `label = <value>` (just the raw value without
+    the prefix)
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'The graph includes these two types of **edges**:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '`claim_id(t-1)`→ `claim_id(t)` : when two claims share an entity (with `edge_type=''claim-claim''`)'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '`entity_value` →`claim_id`: direct link to the shared entity (with `edge_type=''entity-claim''`)'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'These edges are annotated with:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '`edge_type`: to distinguish the relation (`claim`→`claim` vs `entity`→`claim`)'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '`entity_type`: the column from which the value comes (like `bank_account`)'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '`shared_value`: the actual value (like a phone number or license plate)'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '`timestamp`: when the edge was added (based on the current claim’s date)'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: To interpret our simulation, we implemented a [script that generates explanations](https://github.com/erikapat/graphs_neo4j/blob/feature/first_steps/temporal_graph/2_why.py)
+    for why a claim is flagged as fraud. In Figure 4, claim 20000695 is considered
+    risky primarily because it is associated with repair shop SHOP_856, which acts
+    as an active hub with multiple claims linked around similar dates, a pattern often
+    seen in fraud “bursts.” Additionally, this claim shares a license plate and address
+    with several other claims, creating dense connections to other suspicious cases.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/17992110b8441851c0f1ce7b229db56d.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'Figure 4\. Visual explanation for claim 20000695: The left panel shows a entity-claim
+    network highlighting connections between the claim and key entities such as the
+    repair shop, location, and license plate; the right panel displays the claim-claim
+    network, revealing how this claim clusters with others via shared entities. The
+    lower panel summarizes risk factors supporting the fraud label. [Streamlit code](https://github.com/erikapat/graphs_neo4j/blob/feature/first_steps/temporal_graph/6_streamlit.py).
+    Image by Author.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'This code saves the graph as a pickel file: `temporal_graph_with_edge_attrs.gpickle. `'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Step 3: Graph preparation & Training'
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: Representation learning transforms complex, high-dimensional data (like text,
+    images, or sensor readings) into simplified, structured formats (often called
+    embeddings) that capture meaningful patterns and relationships. These learned
+    representations improve model performance, interpretability, and the ability to
+    transfer learning across different tasks.
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: 'W[e train a neural network](https://github.com/erikapat/graphs_neo4j/blob/feature/first_steps/temporal_graph/5_training.past_value.py)**,**
+    to map each input to a vector in ℝᵈ that encodes what matters. In our pipeline,
+    **GraphSAGE** does **representation learning** on the claim graph: it aggregates
+    information from a node’s neighbours (shared phones, shops, plates, etc.) and
+    mixes that with the node’s own attributes to produce a **node embedding**. Those
+    embeddings are then fed to a small classifier head to predict fraud.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**3.1\. Temporal slicing**'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'From the single full graph we create in step 2, we extract **three time-sliced
+    subgraphs** for train, validation, and test. For each split we choose a cutoff
+    date and keep only (1) **claim nodes** with `claim_date ≤ cutoff`, and (2) **edges**
+    whose `timestamp ≤ cutoff`. This produces a **time-consistent** subgraph for that
+    split: no information from the future leaks into the past, matching how the model
+    would run in production with only historical data available.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**3.2 Node indexing**'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Give every node in the sliced graph an integer index `0…N-1`. This is just an
+    **ID mapping** (like tokenization). We’ll use these indices to align features,
+    labels, and edges in tensors.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**3.3 Build node features**'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Create one feature row per node:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Type one-hot** (claim, phone, email, …).'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Degree stats** computed within the sliced graph: normalized in-degree, out-degree,
+    and undirected degree within the sliced graph.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Prior fraud from older neighbors (claims only):** fraction of **older connected
+    claims** (direct claim→claim predecessors) that are labeled fraud, considering
+    only neighbors that existed **before** the current claim’s time.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: We also set the label `y` (1/0) for claims and 0 for entities, and mark claims
+    in `claim_mask` so loss/metrics are computed only on claims.
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: '**3.4 Build PyG Data**'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Translate edges `(u→v)` into a 2×E integer tensor `edge_index` using the node
+    indices and **add self-loops** so each node also retains its own features at every
+    layer. Pack everything into a PyG `Data(x, edge_index, y, claim_mask)` object.
+    Edges are directed, so message passing respects time (earlier→later).
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**3.5 GraphSage:**'
+  prefs: []
+  type: TYPE_NORMAL
+- en: We implement a GraphSAGE architecture in PyTorch Geometric with the `SAGEConv`
+    layer. so, we run two GraphSAGE convolution layers (mean aggregation), ReLU, dropout,
+    then a linear head to predict fraud vs non-fraud. We train **full-batch** (no
+    neighbor sampling). The loss is weighted to handle class imbalance and is computed
+    **only on claim nodes** via `claim_mask`. After each epoch we evaluate on the
+    **validation** split and choose the decision **threshold** that maximizes F1;
+    we keep the best model by val-F1 (early stopping).
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/c8d84ce09d564b5dff1c02bf211cd952.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Figure 5\. PyTorch implementation of a GraphSAGE model architecture for node
+    representation learning and prediction on graph data. Image by Author.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**3.6 Inference results.**'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Evaluate the best model on the **test** split using the **validation-chosen**
+    threshold. Report accuracy, precision, recall, F1, and the confusion matrix. Produce
+    a **lift table/plot** (how concentrated fraud is by score decile), export a **t-SNE
+    plot** of claim embeddings to visualize structure.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/1299bcb5fb22b365997f1c1ccad72c66.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: '**Figure 6:** Model results. **Left:** Lift by decile on the test set; **Right:**
+    t-SNE of claim embeddings (fraud vs. non-fraud). Image by Author.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The lift chart evaluates how well the model ranks fraud: bars show lift by
+    score decile and the line shows cumulative fraud capture. In the top 10–20% of
+    claims (Deciles 1–2), the fraud rate is about 2–3× the average, suggesting that
+    reviewing the top 20–30% of claims would capture a large share of fraud. The t-SNE
+    plot shows several clusters where fraud concentrates, indicating the model learns
+    meaningful relational patterns, while overlap with non-fraud points highlights
+    remaining ambiguity and opportunities for feature or model tuning.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: …
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Conclusion**'
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: Using a graph that only connects older claims to newer claims (past to future)
+    without “leaking” future fraud information, the model successfully concentrates
+    fraud cases in the top scoring groups, achieving about 2–3 times better detection
+    in the top 10–20%. This setup is reliable enough to deploy.
+  prefs: []
+  type: TYPE_NORMAL
+- en: As a test, it is possible to try a version where the graph is two-way or undirected
+    (connections both ways) and compare the **spurious improvement** with the one-way
+    version. If the two-way version gets significantly better results, it’s likely
+    because of “temporal leakage,” meaning future information is improperly influencing
+    the model. This is a way to prove why two-way connections should not be used in
+    real use cases.
+  prefs: []
+  type: TYPE_NORMAL
+- en: To avoid making the article too long, we will cover the experiments with and
+    without leakage in a separate article. In this article, we focus on developing
+    a model that meets production readiness.
+  prefs: []
+  type: TYPE_NORMAL
+- en: There’s still room to improve with richer features, calibration, and small model
+    tweaks, but our focus here is to explain a leak-safe temporal graph methodology
+    that addresses data leakage.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**References**'
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: '[1] Gomes-Gonçalves, E. (2025, January 23). Applications and Opportunities
+    of Graphs in Insurance. *Medium*. Retrieved September 11, 2025, from [https://medium.com/@erikapatg/applications-and-opportunities-of-graphs-in-insurance-0078564271ab](https://medium.com/@erikapatg/applications-and-opportunities-of-graphs-in-insurance-0078564271ab)'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[2] Kapoor, S., & Narayanan, A. (2023). *Leakage and the reproducibility crisis
+    in machinelearning-based science. Patterns. 2023; 4 (9): 100804*. [Link](https://pdf.sciencedirectassets.com/776857/1-s2.0-S2666389922X0010X/1-s2.0-S2666389923001599/main.pdf?X-Amz-Security-Token=IQoJb3JpZ2luX2VjEA4aCXVzLWVhc3QtMSJIMEYCIQCZBfrG4QrnhKJ%2Bn0n4lXjLmcjiQs7PoKeSb7C4lfpl%2FQIhANZjGQTIaURPRzMNpe9o%2BnX4nPcomYvwJCtgyhuZOKMoKrMFCHcQBRoMMDU5MDAzNTQ2ODY1Igz%2BHgNEXZXB%2FbZIZcEqkAXFhkKRGDxiSpHa%2BkphZvpX6iQUqo730MgusTWc8Pe2%2BEZfj9HNvp86gmObqFnw4y5JitTjMg0GL%2BXMikPNMwlWF%2BuDrjUUyVTvIqYbRY9HPtnEif4fAeTskU71SuTgA%2Bb91Rj6o0CE1sU8NdVULngUo9WcxV0alR0stU1Nf41zeb9tUiEReRg7q22wK0xeNQA8tPdsMuTtNNQ2W8pwFpFTtd09GNKqAQfNm0lmBQDeit9tkUkEZ%2FX6io4rR%2BeTL0x%2FhEtfH94dxIyFI%2BCeEZBNQz%2BD8uMxOO%2Bi6tXQWL2uErNnfl05lMIi54a415fJoQuOZFi9mhKqB7VQ4QaInUFl7i03wWBdkqPciWvP72RnEBc%2FpDTpXIAAzxohE%2FDLpRIAGhs%2FIX%2BieJIOMuwScibe8AcEwhxOF4EMws4nbkuykfj5JwMxb3tanWLnCrFd12GHfKg%2Bc6bUBxC4477c2VOIefQjZ%2Fxv6yc3%2Fm2OZetakhAtnD2rXxjU9qogCeFuXWAMYynSxgxDtpwuW5tGnm%2BkRtwqpajg8mMuvcC5lw5qpkXhKaYjP8HdwO%2B%2B4gvuLWXE3cQU2v00%2BlJ6kbkOrFmr8CxKJGs8744997GokVqYqNcN5DjFTwFWITBCxX2R4g%2FZajP9u5WXazbp6Z6x2D3EbZ97LfPMbXcdOyy%2B%2BVCmJcLC9gOC9hZeDWPF%2B0UXnfqHQRIv9m%2Bkb5XHyQKqbQSFm1%2FAQ2guzKTIkrnzCaRJeTAfigDjDwekO3RurM21NOdqRd760IQX6hxImstxaiOXeAVEUWmWrFBq6IDuZKty1jgedgTpvTqoFvLRaLSQuWAy1TZigbHHZ3Nl6LDbMxEWDAHUTkc8H2oqk3Tq%2BRI20zD32OvFBjqwAVxsgWoIpwk3NUogXRCkSYWJsdqUEWvfDgQmkreLfhtGY94xDxzdM5zXQKj2gth9GIECPvdGljT1FaZN5hJP%2Fd3F9VoP7%2F9MIeBtBUQRjNrL%2FirA1IFzInN2Tju3n1qWRZAxnggbGPN9bsAEKepY7%2BqIqPPEKJAjzuJySs5sTy1dqzH%2BQIN%2FYiwnDG4YEz4L7QFOHYdUeXtp%2FRcxMEGeLciOGmJR6ybSEr%2B9Umfl63U%2F&X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Date=20250905T143853Z&X-Amz-SignedHeaders=host&X-Amz-Expires=300&X-Amz-Credential=ASIAQ3PHCVTY5LC2L7YA%2F20250905%2Fus-east-1%2Fs3%2Faws4_request&X-Amz-Signature=1862e25765da631946ce29cc907833c2d760e33689aed23cc1cbb5b96c5a4f9c&hash=a63208c15d523f43702ed5a09d4bf6d972a0cc05ddb9d6b0540f8e0915ee33dc&host=68042c943591013ac2b2430a89b270f6af2c76d8dfd086a07176afe7c76c2c61&pii=S2666389923001599&tid=spdf-66969b3e-1a80-4618-9b74-683b3dff2f8b&sid=a93309ab3c2b444bfd49f1a2f39c098134a8gxrqb&type=client&tsoh=d3d3LnNjaWVuY2VkaXJlY3QuY29t&rh=d3d3LnNjaWVuY2VkaXJlY3QuY29t&ua=061458570759515c54&rr=97a679129f1c03eb&cc=es).'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[3] Guignard, F., Ginsbourger, D., Levy Häner, L., & Herrera, J. M. (2024).
+    Some combinatorics of data leakage induced by clusters. *Stochastic Environmental
+    Research and Risk Assessment*, *38*(7), 2815–2828.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[4] Huang, S., et. al. (2024). UTG: Towards a Unified View of Snapshot and
+    Event Based Models for Temporal Graphs. *arXiv preprint arXiv:2407.12269*. [https://arxiv.org/abs/2407.12269](https://arxiv.org/abs/2407.12269)'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[5] Labonne, M. (2022). GraphSAGE: Scaling up Graph Neural Networks. *Towards
+    Data Science*. Retrieved from [https://towardsdatascience.com/introduction-to-graphsage-in-python-a9e7f9ecf9d7/](https://towardsdatascience.com/introduction-to-graphsage-in-python-a9e7f9ecf9d7/)'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[6] An Introduction to GraphSAGE. (2025). Weights & Biases. Retrieved from
+    [https://wandb.ai/graph-neural-networks/GraphSAGE/reports/An-Introduction-to-GraphSAGE–Vmlldzo1MTEwNzQ1](https://wandb.ai/graph-neural-networks/GraphSAGE/reports/An-Introduction-to-GraphSAGE--Vmlldzo1MTEwNzQ1)'
+  prefs: []
+  type: TYPE_NORMAL

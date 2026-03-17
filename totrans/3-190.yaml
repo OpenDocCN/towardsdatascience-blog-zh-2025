@@ -1,0 +1,689 @@
+- en: Custom Training Pipeline for Object Detection Models
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 原文：[https://towardsdatascience.com/custom-training-pipeline-for-object-detection-models/](https://towardsdatascience.com/custom-training-pipeline-for-object-detection-models/)
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: What if you want to write the whole object detection training pipeline from
+    scratch, so you can understand each step and be able to customize it? That’s what
+    I set out to do. I examined several well-known object detection pipelines and
+    designed one that best suits my needs and tasks. Thanks to [Ultralytics](https://github.com/ultralytics/ultralytics),
+    [YOLOx](https://github.com/Megvii-BaseDetection/YOLOX), [DAMO-YOLO](https://github.com/tinyvision/DAMO-YOLO),
+    [RT-DETR](https://github.com/lyuwenyu/RT-DETR) and [D-FINE](https://github.com/Peterande/D-FINE)
+    repos, I leveraged them to gain deeper understanding into various design details.
+    I ended up implementing [SoTA real-time object detection model D-FINE](https://paperswithcode.com/sota/real-time-object-detection-on-coco?p=d-fine-redefine-regression-task-in-detrs-as)
+    in my custom pipeline.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Plan
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'Dataset, Augmentations and transforms:'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Mosaic (with affine transforms)
+  prefs:
+  - PREF_IND
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Mixup and Cutout
+  prefs:
+  - PREF_IND
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Other augmentations with bounding boxes
+  prefs:
+  - PREF_IND
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Letterbox vs simple resize
+  prefs:
+  - PREF_IND
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'Training:'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Optimizer
+  prefs:
+  - PREF_IND
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Scheduler
+  prefs:
+  - PREF_IND
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: EMA
+  prefs:
+  - PREF_IND
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Batch accumulation
+  prefs:
+  - PREF_IND
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: AMP
+  prefs:
+  - PREF_IND
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Grad clipping
+  prefs:
+  - PREF_IND
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Logging
+  prefs:
+  - PREF_IND
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'Metrics:'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: mAPs from TorchMetrics / cocotools
+  prefs:
+  - PREF_IND
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: How to compute Precision, Recall, IoU?
+  prefs:
+  - PREF_IND
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Pick a suitable solution for your case
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Experiments
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Attention to data preprocessing
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Where to start
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Dataset
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'Dataset processing is the first thing you usually start working on. With object
+    detection, you need to load your image and annotations. Annotations are often
+    stored in COCO format as a json file or YOLO format, with txt file for each image.
+    Let’s take a look at the YOLO format: Each line is structured as: `class_id`,
+    `x_center`, `y_center`, `width`, `height`, where bbox values are normalized between
+    0 and 1.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: When you have your images and txt files, you can write your dataset class, nothing
+    tricky here. Load everything, transform (augmentations included) and return during
+    training. I prefer splitting the data by creating a CSV file for each split and
+    then reading it in the Dataloader class rather than physically moving files into
+    train/val/test folders. This is an example of a customization that helped my use
+    case.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Augmentations
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'Firstly, when augmenting images for object detection, it’s crucial to apply
+    the same transformations to the bounding boxes. To comfortably do that I use [Albumentations](https://albumentations.ai)
+    lib. For example:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE0]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Secondly, there are a lot of interesting and not trivial augmentations:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[Mosaic](https://arxiv.org/pdf/2004.10934). The idea is simple, let’s take
+    several images (for example 4), and stack them together in a grid (2×2). Then
+    let’s do some affine transforms and feed it to the model.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '[MixUp](https://arxiv.org/pdf/1905.04899). Originally used in image classification
+    (it’s surprising that it works). Idea – let’s take two images, put them onto each
+    other with some percent of transparency. In classification models it usually means
+    that if one image is 20% transparent and the second is 80%, then the model should
+    predict 80% for class 1 and 20% for class 2\. In object detection we just get
+    more objects into 1 image.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Cutout**. Cutout involves removing parts of the image (by replacing them
+    with black pixels) to help the model learn more robust features.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: I see mosaic often applied with Probability 1.0 of the first ~90% of epochs.
+    Then, it’s usually turned off, and lighter augmentations are used. The same idea
+    applies to mixup, but I see it being used a lot less (for the most popular detection
+    framework, Ultralytics, it’s turned off by default. For another one, I see P=0.15). Cutout seems
+    to be used less frequently.
+  prefs: []
+  type: TYPE_NORMAL
+- en: You can read more about those augmentations in these two articles: [1](https://arxiv.org/pdf/2004.10934), [2](https://arxiv.org/pdf/1905.04899).
+  prefs: []
+  type: TYPE_NORMAL
+- en: Results from just turning on mosaic are pretty good (darker one without mosaic
+    got mAP 0.89 vs 0.92 with, tested on a real dataset)
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/3017f4d4d07fdc231f97e0cabdbcd2e7.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Author’s metrics on a custom dataset, logged in Wandb
+  prefs: []
+  type: TYPE_NORMAL
+- en: Letterbox or simple resize?
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'During training, you usually resize the input image to a square. Models often
+    use 640×640 and benchmark on COCO dataset. And there are two main ways how you
+    get there:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Simple resize to a target size.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'Letterbox: Resize the longest side to the target size (e.g., 640), preserving
+    the aspect ratio, and pad the shorter side to reach the target dimensions.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '![](../Images/224104af86d05ba3349da612315c4b48.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Sample from [VisDrone](https://github.com/VisDrone/VisDrone-Dataset) dataset
+    with ground truth bounding boxes, preprocessed with a simple resize function
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/054d07d7d03dd19fcfd414ca51ccc758.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Sample from [VisDrone](https://github.com/VisDrone/VisDrone-Dataset) dataset
+    with ground truth bounding boxes, preprocessed with a letterbox
+  prefs: []
+  type: TYPE_NORMAL
+- en: Both approaches have advantages and disadvantages. Let’s discuss them first,
+    and then I will share the results of numerous experiments I ran comparing these
+    approaches.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Simple resize:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Compute goes to the whole image, with no useless padding.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: “Dynamic” aspect ratio may act as a form of regularization.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Inference preprocessing perfectly matches training preprocessing (augmentations
+    excluded).
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Kills real geometry. Resize distortion could affect the spatial relationships
+    in the image. Although it might be a human bias to think that a fixed aspect ratio
+    is important.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'Letterbox:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Preserves real aspect ratio.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: During inference, you can cut padding and run not on the square image if you
+    don’t lose accuracy (some models can degrade).
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Can train on a bigger image size, then inference with cut padding to get the
+    same inference latency as with simple resize. For example 640×640 vs 832×480\.
+    The second one will preserve the aspect ratios and objects will appear +- the
+    same size.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Part of the compute is wasted on gray padding.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Objects get smaller.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: How to test it and decide which one to use?
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Train from scratch with parameters:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Simple resize, 640×640
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Keep aspect ratio, max side 640, and add padding (as a baseline)
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Keep aspect ratio, larger image size (for example max side 832), and add padding
+    Then inference 3 models. When the aspect ratio is preserved – cut padding during
+    the inference. Compare latency and metrics.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'Example of the same image from above with cut padding (640 × 384):'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/9736659a68aafa7f14eec2395cd9481f.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Sample from [VisDrone](https://github.com/VisDrone/VisDrone-Dataset) dataset
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Here is what happens when you preserve ratio and inference by cutting gray
+    padding:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE1]'
+  prefs: []
+  type: TYPE_PRE
+- en: As shown, training with preserved aspect ratio at a larger size (832) achieved
+    a higher F1 score (0.633) compared to a simple 640×640 resize (F1 score of 0.617),
+    while the latency remained similar. Note that some models may degrade if the padding
+    is removed during inference, which kills the whole purpose of this trick and probably
+    the letterbox too.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'What does this mean:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Training from scratch:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: With the same image size, simple resize gets better accuracy than letterbox.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: For letterbox, If you cut padding during the inference **and your model doesn’t
+    lose accuracy** – you can train and inference with a bigger image size to match
+    the latency, and get a little bit higher metrics (as in the example above).
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'Training with pre-trained weights initialized:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: If you finetune – use the same tactic as the pre-trained model did, it should
+    give you the best results if the datasets are not too different.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: For D-FINE I see lower metrics when cutting padding during inference. Also the
+    model was pre-trained on a simple resize. For YOLO, a letterbox is typically a
+    good choice.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Training
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'Every ML engineer should know how to implement a training loop. Although PyTorch
+    does much of the heavy lifting, you might still feel overwhelmed by the number
+    of design choices available. Here are some key components to consider:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[Optimizer](https://pytorch.org/docs/stable/optim.html) – start with Adam/AdamW/SGD.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '[Scheduler](https://pytorch.org/docs/stable/optim.html#how-to-adjust-learning-rate)
+    – fixed LR can be ok for Adams, but take a look at StepLR, CosineAnnealingLR or
+    OneCycleLR.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '[EMA](https://arxiv.org/abs/1806.04498). This is a nice technique that makes
+    training smoother and sometimes achieves higher metrics. After each batch, you
+    update a secondary model (often called the EMA model)  by computing an exponential
+    moving average of the primary model’s weights.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '[Batch accumulation](https://lightning.ai/docs/pytorch/stable/advanced/training_tricks.html#accumulate-gradients)
+    is nice when your vRAM is very limited. Training a transformer-based object detection
+    model means that in some cases even in a middle-sized model you only can fit 4
+    images into the vRAM. By accumulating gradients over several batches before performing
+    an optimizer step, you effectively simulate a larger batch size without exceeding
+    your memory constraints. Another use case is when you have a lot of negatives
+    (images without target objects) in your dataset and a small batch size, you can
+    encounter unstable training. Batch accumulation can also help here.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '[AMP](https://pytorch.org/docs/stable/notes/amp_examples.html) uses half precision
+    automatically where applicable. It reduces vRAM usage and makes training faster
+    (if you have a GPU that supports it). I see 40% less vRAM usage and at least a
+    15% training speed increase.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '[Grad clipping](https://pytorch.org/docs/stable/generated/torch.nn.utils.clip_grad_norm_.html).
+    Often, when you use AMP, training can become less stable. This can also happen
+    with higher LRs. When your gradients are too big, training will fail. Gradient
+    clipping will make sure gradients are never bigger than a certain value.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Logging. Try [Hydra](https://hydra.cc/docs/intro/) for configs and something
+    like [Weights and Biases](https://wandb.ai/site/) or [Clear ML](https://clear.ml)
+    for experiment tracking. Also, log everything locally. Save your best weights,
+    and metrics, so after numerous experiments, you can always find all the info on
+    the model you need.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '[PRE2]'
+  prefs: []
+  type: TYPE_PRE
+- en: Metrics
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: For object detection everyone uses mAP, and it is already standardized how we
+    measure those. Use [pycocotools](https://github.com/cocodataset/cocoapi/tree/master/PythonAPI/pycocotools)
+    or [faster-coco-eval](https://github.com/MiXaiLL76/faster_coco_eval) or [TorchMetrics](https://lightning.ai/docs/torchmetrics/stable/)
+    for mAP. But mAP means that we check how good the model is overall, on all confidence
+    levels. mAP0.5 means that IoU threshold is 0.5 (everything lower is considered
+    as a wrong prediction). I personally don’t fully like this metric, as in production
+    we always use 1 confidence threshold. So why not set the threshold and then compute
+    metrics? That’s why I also always calculate confusion matrices, and based on that
+    – Precision, Recall, F1-score, and IoU.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'But logic also might be tricky. Here is what I use:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 1 GT (ground truth) object = 1 predicted object, and it’s a TP if IoU > threshold.
+    If there is no prediction for a GT object – it’s a FN. If there is no GT for a
+    prediction – it’s a FP.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 1 GT should be matched by a prediction only 1 time. If there are 2 predictions
+    for 1 GT, then I calculate 1 TP and 1 FP.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Class ids should also match. If the model predicts class_0 but GT is class_1,
+    it means FP += 1 and FN += 1.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: During training, I select the best model based on the metrics that are relevant
+    to the task. I typically consider the average of mAP50 and F1-score.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Model and loss
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: I haven’t discussed model architecture and loss function here. They usually
+    go together, and you can choose any model you like and integrate it into your
+    pipeline with everything from above. I did that with DAMO-YOLO and D-FINE, and
+    the results were great.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Pick a suitable solution for your case
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: Many people use Ultralytics, however it has GPLv3, and you can’t use it in commercial
+    projects unless your code is open source. So people often look into Apache 2 and
+    MIT licensed models. Check out [D-FINE](https://github.com/Peterande/D-FINE),
+    [RT-DETR2](https://github.com/lyuwenyu/RT-DETR) or some yolo models like [Yolov9](https://github.com/MultimediaTechLab/YOLO).
+  prefs: []
+  type: TYPE_NORMAL
+- en: What if you want to customize something in the pipeline? When you build everything
+    from scratch, you should have full control. Otherwise, try choosing a project
+    with a smaller codebase, as a large one can make it difficult to isolate and modify
+    individual components.
+  prefs: []
+  type: TYPE_NORMAL
+- en: If you don’t need anything custom and your usage is allowed by the Ultralytics
+    license – it’s a great repo to use, as it supports multiple tasks (classification,
+    detection, instance segmentation, key points, oriented bounding boxes), models
+    are efficient and achieve good scores. Reiterating ones more, you probably don’t
+    need a custom training pipeline if you are not doing very specific things.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Experiments
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: Let me share some results I got with a custom training pipeline with the D-FINE
+    model and compare it to the Ultralytics YOLO11 model on the [VisDrone-DET2019
+    dataset](https://paperswithcode.com/dataset/visdrone).
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Trained from scratch:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE3]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'From COCO pre-trained:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE4]'
+  prefs: []
+  type: TYPE_PRE
+- en: Latency was measured on an RTX 3060 with TensorRT (TRT), static image size 640×640,
+    including the time for `cv2.imread.` OpenVINO (OV) on i5 14000f (no iGPU). Dynamic
+    means that during inference, gray padding is being cut for faster inference. It
+    worked with the YOLO11 TensorRT version. More details about cutting gray padding
+    above (*Letterbox or simple resize* section).
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'One disappointing result is the latency on intel N100 CPU with iGPU ($150 miniPC):'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE5]'
+  prefs: []
+  type: TYPE_PRE
+- en: '![](../Images/1e1b83bc037695125c6b9fdf2a26a9da.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Author’s screenshot of iGPU usage from n100 machine during model inference
+  prefs: []
+  type: TYPE_NORMAL
+- en: Here, traditional convolutional neural networks are noticeably faster, maybe
+    because of optimizations in OpenVINO for GPUs.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Overall, I conducted over 30 experiments with different datasets (including
+    real-world datasets), models, and parameters and I can say that D-FINE gets better
+    metrics. And it makes sense, as on COCO, it is also higher than all YOLO models.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/0d1f8f3749855d2638d4f48e1922422c.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: '[D-FINE paper](https://arxiv.org/pdf/2410.13842) comparison to other object
+    detection models'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'VisDrone experiments:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/42ced7d1171221c1f5724a342f3bcdc5.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Author’s metrics logged in WandB, D-FINE model
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/1d057fbe7f22125fd9b5d0080b2f95e2.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Author’s metrics logged in WandB, YOLO11 model
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Example of D-FINE model predictions (green – GT, blue – pred):'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/af3023abdf55699e76b9cbf4d83bac18.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Sample from [VisDrone](https://github.com/VisDrone/VisDrone-Dataset) dataset
+  prefs: []
+  type: TYPE_NORMAL
+- en: Final results
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'Knowing all the details, let’s see a final comparison with the best settings
+    for both models on i12400F and RTX 3060 with the VisDrone dataset:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE6]'
+  prefs: []
+  type: TYPE_PRE
+- en: As shown above, I was able to use a smaller D-FINE model and achieve both faster
+    inference time and accuracy than YOLO11\. Beating Ultralytics, the most widely
+    used real-time object detection model, in both speed and accuracy, is quite an
+    accomplishment, isn’t it? The same pattern is observed across several other real-world
+    datasets.
+  prefs: []
+  type: TYPE_NORMAL
+- en: I also tried out YOLOv12, which came out while I was writing this article. It
+    performed similarly to YOLO11 and even achieved slightly lower metrics (mAP 0.456
+    vs 0.452). It appears that YOLO models have been hitting the wall for the last
+    couple of years. D-FINE was a great update for object detection models.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Finally, let’s see visually the difference between YOLO11m and D-FINEs. YOLO11m,
+    conf 0.25, nms iou 0.5, latency 13.3ms:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/99edbef823980d083cf35152649060cf.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Sample from [VisDrone](https://github.com/VisDrone/VisDrone-Dataset) dataset
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'D-FINEs, conf 0.5, no nms, latency 12.3ms:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/1b3d0e737a300ce83a542e10a17fade3.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Sample from [VisDrone](https://github.com/VisDrone/VisDrone-Dataset) dataset
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Both Precision and Recall are higher with the D-FINE model. And it’s also faster.
+    Here is also “m” version of D-FINE:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/961e96f2e37f35ba532a32a3e702918c.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Sample from [VisDrone](https://github.com/VisDrone/VisDrone-Dataset) dataset
+  prefs: []
+  type: TYPE_NORMAL
+- en: Isn’t it crazy that even that one car on the left was detected?
+  prefs: []
+  type: TYPE_NORMAL
+- en: Attention to data preprocessing
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: This part can go a little bit outside the scope of the article, but I want to
+    at least quickly mention it, as some parts can be automated and used in the pipeline.
+    What I definitely see as a computer vision engineer is that when engineers don’t
+    spend time working with the data – they don’t get good models. You can have all
+    SoTA models and everything done right, but garbage in – garbage out. So, I always
+    pay a ton of attention to how to approach the task and how to gather, filter,
+    validate, and annotate the data. Don’t think that the annotation team will do
+    everything right. Get your hands dirty and check manually some portion of the
+    dataset to be sure that annotations are good and collected images are representative.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Several quick ideas to look into:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Remove duplicates and near duplicates from val/test sets. The model should not
+    be validated on one sample two times, and definitely, you don’t want to have a
+    data leak, by getting two same images, one in training and one in validation sets.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Check how small your objects can be. Everything not visible to your eye should
+    not be annotated. Also, remember that augmentations will make objects appear even
+    smaller (for example, mosaic or zoom out). Configure these augmentations accordingly
+    so you won’t end up with unusably small objects on the image.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: When you already have a model for a certain task and need more data – try using
+    your model to pre-annotate new images. Check cases where the model fails and gather
+    more similar cases.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Where to start
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: I worked a lot on this pipeline, and I am ready to share it with everyone who
+    wants to try it out. It uses the SoTA D-FINE model under the hood and adds some
+    features that were absent in the original repo (mosaic augmentations, batch accumulation,
+    scheduler, more metrics, visualization of preprocessed images and eval predictions,
+    exporting and inference code, better logging, unified and simplified configuration
+    file).
+  prefs: []
+  type: TYPE_NORMAL
+- en: Here is the link to [my repo](https://github.com/ArgoHA/custom_d_fine). Here
+    is the [original D-FINE repo](https://github.com/Peterande/D-FINE), where I also
+    contribute. If you need any help, please contact me on [LinkedIn](https://linkedin.com/in/argo-saakyan/).
+    Thank you for your time!
+  prefs: []
+  type: TYPE_NORMAL
+- en: Citations and acknowledgments
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: '[DroneVis](https://github.com/VisDrone/VisDrone-Dataset)'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE7]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[D-FINE](https://arxiv.org/abs/2410.13842)'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE8]'
+  prefs: []
+  type: TYPE_PRE

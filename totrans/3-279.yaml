@@ -1,0 +1,424 @@
+- en: 'Efficient Metric Collection in PyTorch: Avoiding the Performance Pitfalls of
+    TorchMetrics'
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 原文：[https://towardsdatascience.com/efficient-metric-collection-in-pytorch-avoiding-the-performance-pitfalls-of-torchmetrics/](https://towardsdatascience.com/efficient-metric-collection-in-pytorch-avoiding-the-performance-pitfalls-of-torchmetrics/)
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: Metric collection is an essential part of every machine learning project, enabling
+    us to track model performance and monitor training progress. Ideally, metrics
+    should be collected and computed without introducing any additional overhead to
+    the training process. However, just like other components of the training loop,
+    inefficient metric computation can introduce unnecessary overhead, increase training-step
+    times and inflate training costs.
+  prefs: []
+  type: TYPE_NORMAL
+- en: This post is the seventh in our series on [performance profiling and optimization
+    in PyTorch](https://medium.com/@chaimrand/pytorch-model-performance-analysis-and-optimization-10c3c5822869).
+    The series has aimed to emphasize the critical role of performance analysis and
+    optimization in machine learning development. Each post has focused on different
+    stages of the training pipeline, demonstrating practical tools and techniques
+    for analyzing and boosting resource utilization and runtime efficiency.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In this installment, we focus on metric collection. We will demonstrate how
+    a naïve implementation of metric collection can negatively impact runtime performance
+    and explore tools and techniques for its analysis and optimization.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'To implement our metric collection, we will use [TorchMetrics](https://pypi.org/project/torchmetrics/)
+    a popular library designed to simplify and standardize metric computation in PyTorch.
+    Our goals will be to:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Demonstrate the runtime overhead** caused by a naïve implementation of metric
+    collection.'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '**Use PyTorch Profiler** to pinpoint performance bottlenecks introduced by
+    metric computation.'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '**Demonstrate optimization techniques** to reduce metric collection overhead.'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: To facilitate our discussion, we will define a toy PyTorch model and assess
+    how metric collection can impact its runtime performance. We will run our experiments
+    on an NVIDIA A40 GPU, with a [PyTorch 2.5.1 docker](https://hub.docker.com/layers/pytorch/pytorch/2.5.1-cuda12.4-cudnn9-devel/images/sha256-14611869895df612b7b07227d5925f30ec3cd6673bad58ce3d84ed107950e014)
+    image and [TorchMetrics 1.6.1](https://pypi.org/project/torchmetrics/).
+  prefs: []
+  type: TYPE_NORMAL
+- en: It’s important to note that metric collection behavior can vary greatly depending
+    on the hardware, runtime environment, and model architecture. The code snippets
+    provided in this post are intended for demonstrative purposes only. Please do
+    not interpret our mention of any tool or technique as an endorsement for its use.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Toy Resnet Model
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: In the code block below we define a simple image classification model with a
+    [ResNet-18](https://pytorch.org/vision/main/models/generated/torchvision.models.resnet18)
+    backbone.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE0]'
+  prefs: []
+  type: TYPE_PRE
+- en: We define a synthetic dataset which we will use to train our toy model.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE1]'
+  prefs: []
+  type: TYPE_PRE
+- en: We define a collection of standard metrics from TorchMetrics, along with a control
+    flag to enable or disable metric calculation.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE2]'
+  prefs: []
+  type: TYPE_PRE
+- en: Next, we define a [PyTorch Profiler](https://pytorch.org/tutorials/recipes/recipes/profiler_recipe.html)
+    instance, along with a control flag that allows us to enable or disable profiling.
+    For a detailed tutorial on using PyTorch Profiler, please refer to the [first
+    post](https://medium.com/towards-data-science/pytorch-model-performance-analysis-and-optimization-10c3c5822869)
+    in this series.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE3]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Lastly, we define a standard training step:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE4]'
+  prefs: []
+  type: TYPE_PRE
+- en: Metric Collection Overhead
+  prefs:
+  - PREF_H4
+  type: TYPE_NORMAL
+- en: To measure the impact of metric collection on training step time, we ran our
+    training script both with and without metric calculation. The results are summarized
+    in the following table.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/a8e687dcead4ff1a47fb81479d48da00.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: The Overhead of Naive Metric Collection (by Author)
+  prefs: []
+  type: TYPE_NORMAL
+- en: Our naïve metric collection resulted in a nearly 10% drop in runtime performance!!
+    While metric collection is essential for machine learning development, it usually
+    involves relatively simple mathematical operations and hardly warrants such a
+    significant overhead. What is going on?!!
+  prefs: []
+  type: TYPE_NORMAL
+- en: Identifying Performance Issues with PyTorch Profiler
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'To better understand the source of the performance degradation, we reran the
+    training script with the PyTorch Profiler enabled. The resultant trace is shown
+    below:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/04dd80ade5f5d9856ac99d37319ac429.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Trace of Metric Collection Experiment (by Author)
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The trace reveals recurring “cudaStreamSynchronize” operations that coincide
+    with noticeable drops in GPU utilization. These types of “CPU-GPU sync” events
+    were discussed in detail in [part two](https://medium.com/towards-data-science/pytorch-model-performance-analysis-and-optimization-part-2-3bc241be91)
+    of our series. In a typical training step, the CPU and GPU work in parallel: The
+    CPU manages tasks like data transfers to the GPU and kernel loading, and the GPU
+    executes the model on the input data and updates its weights. Ideally, we would
+    like to minimize the points of synchronization between the CPU and GPU in order
+    to maximize performance. Here, however, we can see that the metric collection
+    has triggered a sync event by performing a CPU to GPU data copy. This requires
+    the CPU to suspend its processing until the GPU catches up which, in turn, causes
+    the GPU to wait for the CPU to resume loading the subsequent kernel operations.
+    The bottom line is that these synchronization points lead to inefficient utilization
+    of both the CPU and GPU. Our metric collection implmentation adds eight such synchronization
+    events to each training step.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: A closer examination of the trace shows that the sync events are coming from
+    the [update](https://github.com/Lightning-AI/torchmetrics/blob/v1.6.1/src/torchmetrics/aggregation.py#L547)
+    call of the [MeanMetric](https://github.com/Lightning-AI/torchmetrics/blob/v1.6.1/src/torchmetrics/aggregation.py#L494)
+    TorchMetric. For the experienced profiling expert, this may be sufficient to identify
+    the root cause, but we will go a step further and use the [torch.profiler.record_function](https://pytorch.org/tutorials/beginner/profiler.html#performance-debugging-using-profiler)
+    utility to identify the exact offending line of code.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Profiling with [record_function](https://pytorch.org/tutorials/beginner/profiler.html#performance-debugging-using-profiler)
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: To pinpoint the exact source of the sync event, we extended the [MeanMetric](https://github.com/Lightning-AI/torchmetrics/blob/v1.6.1/src/torchmetrics/aggregation.py#L494)
+    class and overrode the [update](https://github.com/Lightning-AI/torchmetrics/blob/v1.6.1/src/torchmetrics/aggregation.py#L547)
+    method using [record_function](https://pytorch.org/tutorials/beginner/profiler.html#performance-debugging-using-profiler)
+    context blocks. This approach allows us to profile individual operations within
+    the method and identify performance bottlenecks.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE5]'
+  prefs: []
+  type: TYPE_PRE
+- en: We then updated our avg_loss metric to use the newly created ProfileMeanMetric
+    and reran the training script.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/e9a380dd2347c4b877f017ea3ad0008b.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Trace of Metric Collection with [record_function](https://pytorch.org/tutorials/beginner/profiler.html#performance-debugging-using-profiler)
+    (by Author)
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The updated trace reveals that the sync event originates from the following
+    line:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE6]'
+  prefs: []
+  type: TYPE_PRE
+- en: This operation converts the default scalar value `weight=1.0` into a PyTorch
+    tensor and places it on the GPU. The sync event occurs because this action triggers
+    a CPU-to-GPU data copy, which requires the CPU to wait for the GPU to process
+    the copied value.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Optimization 1: Specify Weight Value'
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: 'Now that we have found the source of the issue, we can overcome it easily by
+    specifying a *weight* value in our *update* call. This prevents the runtime from
+    converting the default scalar `weight=1.0` into a tensor on the GPU, avoiding
+    the sync event:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE7]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Rerunning the script after applying this change reveals that we have succeeded
+    in eliminating the initial sync event… only to have uncovered a new one, this
+    time coming from the [_cast_and_nan_check_input](https://github.com/Lightning-AI/torchmetrics/blob/v1.6.1/src/torchmetrics/aggregation.py#L76)
+    function:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/fb8b0d8b32cc2c4953a96605fcf5d602.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Trace of Metric Collection following Optimization 1 (by Author)
+  prefs: []
+  type: TYPE_NORMAL
+- en: Profiling with [record_function](https://pytorch.org/tutorials/beginner/profiler.html#performance-debugging-using-profiler) — Part 2
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: To explore our new sync event, we extended our custom metric with additional
+    profiling probes and reran our script.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE8]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The resultant trace is captured below:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/f66bf82f1ce79a43046cb9bcde7f4a09.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Trace of Metric Collection with [record_function](https://pytorch.org/tutorials/beginner/profiler.html#performance-debugging-using-profiler) — part
+    2 (by Author)
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The trace points directly to the offending line:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE9]'
+  prefs: []
+  type: TYPE_PRE
+- en: This operation checks for `NaN` values in the input tensors, but it introduces
+    a costly CPU-GPU synchronization event because the operation involves copying
+    data from the GPU to the CPU.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Upon a closer inspection of the TorchMetric [BaseAggregator](https://github.com/Lightning-AI/torchmetrics/blob/v1.6.1/src/torchmetrics/aggregation.py#L31)
+    class, we find several options for handling NAN value updates, all of which pass
+    through the offending line of code. However, for our use case — calculating the
+    average loss metric — this check is unnecessary and does not justify the runtime
+    performance penalty.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Optimization 2: Disable NAN Value Checks'
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: To eliminate the overhead, we propose disabling the `NaN` value checks by overriding
+    the `_cast_and_nan_check_input` function. Instead of a static override, we implemented
+    a dynamic solution that can be applied flexibly to any descendants of the [BaseAggregator](https://github.com/Lightning-AI/torchmetrics/blob/v1.6.1/src/torchmetrics/aggregation.py#L31)
+    class.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE10]'
+  prefs: []
+  type: TYPE_PRE
+- en: Post Optimization Results: Success
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: After implementing the two optimizations — specifying the weight value and disabling
+    the `NaN` checks—we find the step time performance and the GPU utilization to
+    match those of our baseline experiment. In addition, the resultant PyTorch Profiler
+    trace shows that all of the added “cudaStreamSynchronize” events that were associated
+    with the metric collection, have been eliminated. With a few small changes, we
+    have reduced the cost of training by ~10% without any changes to the behavior
+    of the metric collection.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In the next section we will explore an additional Metric collection optimization.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Example 2: Optimizing Metric Device Placement'
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: In the previous section, the metric values resided on the GPU, making it logical
+    to store and compute the metrics on the GPU. However, in scenarios where the values
+    we wish to aggregate reside on the CPU, it might be preferable to store the metrics
+    on the CPU to avoid unnecessary device transfers.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'In the code block below, we modify our script to calculate the average step
+    time using a [MeanMetric](https://github.com/Lightning-AI/torchmetrics/blob/v1.6.1/src/torchmetrics/aggregation.py#L494)
+    on the CPU. This change has no impact on the runtime performance of our training
+    step:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE11]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The problem arises when we attempt to extend our script to support distributed
+    training. To demonstrate the problem, we modified our model definition to use
+    [DistributedDataParallel (DDP)](https://pytorch.org/tutorials/intermediate/ddp_tutorial.html):'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE12]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The DDP modification results in the following error:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE13]'
+  prefs: []
+  type: TYPE_PRE
+- en: By default, metrics in distributed training are programmed to synchronize across
+    all devices in use. However, the synchronization backend used by DDP does not
+    support metrics stored on the CPU.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'One way to solve this is to disable the cross-device metric synchronization:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE14]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'In our case, where we are measuring the average time, this solution is acceptable.
+    However, in some cases, the metric synchronization is essential, and we have may
+    have no choice but to move the metric onto the GPU:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE15]'
+  prefs: []
+  type: TYPE_PRE
+- en: Unfortunately, this situation gives rise to a new CPU-GPU sync event coming
+    from the [update](https://github.com/Lightning-AI/torchmetrics/blob/v1.6.1/src/torchmetrics/aggregation.py#L547)
+    function.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/4658e71a147050c34ced0d373c00c6b2.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Trace of avg_time Metric Collection (by Author)
+  prefs: []
+  type: TYPE_NORMAL
+- en: This sync event should hardly come as a surprise—after all, we are updating
+    a GPU metric with a value residing on the CPU, which should necessitate a memory
+    copy. However, in the case of a scalar metric, this data transfer can be completely
+    avoided with a simple optimization.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Optimization 3: Perform Metric Updates with Tensors instead of Scalars'
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: 'The solution is straightforward: instead of updating the metric with a float
+    value, we convert to a Tensor before calling `update`.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE16]'
+  prefs: []
+  type: TYPE_PRE
+- en: This minor change bypasses the problematic line of code, eliminates the sync
+    event, and restores the step time to the baseline performance.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'At first glance, this result may seem surprising: We would expect that updating
+    a GPU metric with a CPU tensor should still require a memory copy. However, PyTorch
+    optimizes operations on scalar tensors by using a dedicated kernel that performs
+    the addition without an explicit data transfer. This avoids the expensive synchronization
+    event that would otherwise occur.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Summary
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'In this post, we explored how a naïve approach to TorchMetrics can introduce
+    CPU-GPU synchronization events and significantly degrade PyTorch training performance.
+    Using PyTorch Profiler, we identified the lines of code responsible for these
+    sync events and applied targeted optimizations to eliminate them:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Explicitly specify a weight tensor when calling the `MeanMetric.update` function
+    instead of relying on the default value.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Disable NaN checks in the base `Aggregator` class or replace them with a more
+    efficient alternative.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Carefully manage the device placement of each metric to minimize unnecessary
+    transfers.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Disable cross-device metric synchronization when not required.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: When the metric resides on a GPU, convert floating-point scalars to tensors
+    before passing them to the `update` function to avoid implicit synchronization.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: We have created a dedicated [pull request](https://github.com/Lightning-AI/torchmetrics/pull/2943)
+    on the [TorchMetrics github](https://github.com/Lightning-AI/torchmetrics/tree/master)
+    page covering some of the optimizations discussed in this post. Please feel free
+    to contribute your own improvements and optimizations!
+  prefs: []
+  type: TYPE_NORMAL

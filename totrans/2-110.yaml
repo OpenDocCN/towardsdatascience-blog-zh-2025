@@ -1,0 +1,545 @@
+- en: 'Torchvista: Building an Interactive Pytorch Visualization Package for Notebooks'
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 原文：[https://towardsdatascience.com/torchvista-building-an-interactive-pytorch-visualization-package-for-notebooks/](https://towardsdatascience.com/torchvista-building-an-interactive-pytorch-visualization-package-for-notebooks/)
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: <mdspan datatext="el1753296200159" class="mdspan-comment">Introduction</mdspan>
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: In this post, I talk through the motivation, complexities and implementation
+    details of building torchvista, an open-source package to interactively visualize
+    the forward pass of any Pytorch model from within web-based notebooks.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'To get a sense of the workings of torchvista while reading this post, you can
+    check out:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[**Github page**](https://github.com/sachinhosmani/torchvista) if you want
+    to install it via `pip` and use it from web-based notebooks (Jupyter, Colab, Kaggle,
+    VSCode, etc)'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: An interactive [**demo page**](https://sachinhosmani.github.io/torchvista/)
+    with various well-known models visualized
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: A [**Google Colab**](https://colab.research.google.com/drive/1wrWKhpvGiqHhE0Lb1HnFGeOcS4uBqGXw?usp=sharing)
+    tutorial
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'A video demo:'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Motivation
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: Pytorch models can get very large and complex, and making sense of one from
+    the code alone can be a tiresome and even intractable exercise. Having a graph-like
+    visualization of it is just what we need to make this easier.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'While there exist tools like Netron, pytorchviz, and torchview that make this
+    easier, my motivation for building torchvista was that I found that they were
+    lacking in some or all of these requirements:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Interaction support**: The visualized graph should be interactive and not
+    a static image. It should be a structure you can zoom, drag, expand/collapse,
+    etc. Models can get very large, and if all you are see is a gigantic static image
+    of the graph, how can you really explore it?'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '![](../Images/2f2999285b9511897c0bed3be26f84be.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Drag and zoom to explore a large model
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Modular exploration**: Large Pytorch models are modular in thought and implementation.
+    For example, think of a module which has a `Sequential` module which contains
+    a few `Attention` blocks, which in turn each has Fully connected blocks which
+    contain `Linear` layers with activation functions and so on. The tool should allow
+    you to tap into this modular structure, and not just present a low-level tensor
+    link graph.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '![](../Images/cf27bec3d88f3503ecd83eab950717d3.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Expanding modules in a modular fashion
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Notebook support**: We tend to prototype and build our models in notebooks.
+    If a tool were provided as a standalone application that required you to build
+    your model and load it to visualize it, it’s just too long a feedback loop. So
+    the tool has to ideally work from within notebooks.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '![](../Images/97d475e741a8e6d9b46fbd6cace17ee9.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Visualization within a Jupyter notebook
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Error debugging support**: While building models from scratch, we often run
+    into many errors until the model is able to run a full forward pass end-to-end.
+    So the visualization tool should be error tolerant and show you a partial visualization
+    graph even if there are errors, so that you can debug the error.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '![](../Images/4c64b78f33984079b1f4f526efa5958f.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: A sample visualization of when `torch.cat` failed due to mismatched tensor shapes
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Forward pass tracing**: Pytorch natively exposes a backward pass graph through
+    its autograd system, which the package [pytorchviz](https://github.com/szagoruyko/pytorchviz)
+    exposes as a graph, but this is different from the forward pass. When we build,
+    study and imagine models, we think more about the forward pass, and this can be
+    very useful to visualize.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Building torchvista
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: Basic API
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: The goal was to have a simple API that works with almost any Pytorch model.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE0]'
+  prefs: []
+  type: TYPE_PRE
+- en: With one line of code calling `trace_model(<model_instance>, <input>)` it should
+    just produce an interactive visualization of the forward pass.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Steps involved
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: 'Behind the scenes, torchvista, when called, works in two phases:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Tracing**: This is where torchvista extracts a graph data structure from
+    the forward pass of the model. Pytorch does not inherently expose this graph structure
+    (even though it does expose a graph for the backward pass), so torchvista has
+    to build this data structure by itself.'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '**Visualization**: Once the graph is extracted, torchvista has to produce the
+    actual visualization as an interactive graph. torchvista’s tracer does this by
+    loading a template HTML file (with JS embedded within it), and injecting serialized
+    graph data structure objects as strings into the template to be subsequently loaded
+    by the browser engine.'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '![](../Images/edaa7cf8d35a7d2073493be9fb75ac3f.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Behind the scenes of trace_model()
+  prefs: []
+  type: TYPE_NORMAL
+- en: Tracing
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: Tracing is essentially done by (temporarily) wrapping all the important and
+    known tensor operations, and standard Pytorch modules. The goal of wrapping is
+    to modify the functions so that when called, they additionally do the bookkeeping
+    necessary for tracing.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Structure of the graph
+  prefs:
+  - PREF_H4
+  type: TYPE_NORMAL
+- en: 'The graph we extract from the model is a directed graph where:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: The nodes are the various Tensor operations and the various inbuilt Pytorch
+    modules that get called during the forward pass
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Additionally, input and output tensors, and constant valued tensors are also
+    nodes in the graph.
+  prefs:
+  - PREF_IND
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: An edge exists from one node to the other for each tensor sent from the former
+    to the latter.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: The edge label is the dimension of the associated tensor.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '![](../Images/fff11bac2962822c28e6543688f0139f.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Example graph with operations and input/output/constant tensors as nodes, and
+    an edge for every tensor that’s sent, with edge label set as the dimensions of
+    the tensor
+  prefs: []
+  type: TYPE_NORMAL
+- en: But, the structure of our graph can be more complicated because most Pytorch
+    modules call tensor operations and sometimes other modules’ `forward` method.
+    This means we have to maintain a graph structure that holds information to visually
+    explore it at any level of depth.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/b9ab31de548cca5082d885648ce01740.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'An example of nested modules shown various depths: TransformerEncoder uses
+    TransformerEncoderLayer which calls multi_head_attention_forward, dropout, and
+    other operations.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Therefore, the structure that torchvista extracts includes two main data structures:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Adjacency list of the lowest level operations/modules that get called.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '[PRE1]'
+  prefs: []
+  type: TYPE_PRE
+- en: Hierarchy map that maps each node to its parent module container (if present)
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '[PRE2]'
+  prefs: []
+  type: TYPE_PRE
+- en: With both of these, we are able to construct any desired views of the forward
+    pass in the visualization layer.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Wrapping operations and modules
+  prefs:
+  - PREF_H4
+  type: TYPE_NORMAL
+- en: 'The whole idea behind wrapping is to do some bookkeeping before and after the
+    actual operation, so that when the operation is called, our wrapped function instead
+    gets called, and the bookkeeping is carried out. The goals of bookkeeping are:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Record connections between nodes based on tensor references.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Record tensor dimensions to show as edge labels.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Record module hierarchy for modules in the case where modules are nested within
+    one another
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'Here is a simplified code snippet of how wrapping works:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE3]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'And when trace_model is about to complete, we must reset everything back to
+    its original state:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE4]'
+  prefs: []
+  type: TYPE_PRE
+- en: This is done in the same way for the `forward()` methods of inbuilt Pytorch
+    modules like `Linear`, `Conv2d` etc.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Connections between nodes
+  prefs:
+  - PREF_H4
+  type: TYPE_NORMAL
+- en: As stated previously, an edge exists between two nodes if a tensor was sent
+    from one to the other. This forms the basis of creating connections between nodes
+    while building the graph.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Here is a simplified code snippet of how this works:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE5]'
+  prefs: []
+  type: TYPE_PRE
+- en: '![](../Images/824a04f86fccc4743375a0772804c124.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: How graph edges are created
+  prefs: []
+  type: TYPE_NORMAL
+- en: Module hierarchy map
+  prefs:
+  - PREF_H4
+  type: TYPE_NORMAL
+- en: When we wrap modules, things have to be done a little differently to build the
+    module hierarchy map. The idea is to maintain a stack of modules currently being
+    called so that the top of the stack always represents in the immediate parent
+    in the hierarchy map.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Here is a simplified code snippet of how this works:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE6]'
+  prefs: []
+  type: TYPE_PRE
+- en: Visualization
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: 'This part is entirely handled in Javscript because the visualization happens
+    in web-based notebooks. The key libraries that are used here are:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'graphviz: for generating the layout for the graph ([viz-js](https://github.com/mdaines/viz-js/)
+    is the JS port)'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '[d3](https://github.com/d3/d3): for drawing the interactive graph on a canvas'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '[iPython](https://github.com/ipython/ipython): to render HTML contents within
+    a notebook'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Graph Layout
+  prefs:
+  - PREF_H4
+  type: TYPE_NORMAL
+- en: Getting the layout for the graph right is an extremely complex problem. The
+    main goal is for the graph to have a top-to-bottom “flow” of edges, and most importantly,
+    for there to not be an overlap between the various nodes, edges, and edge labels.
+  prefs: []
+  type: TYPE_NORMAL
+- en: This is made all the more complex when we are working with a “hierarchical”
+    graph where there are “container” boxes for modules within which the underlying
+    nodes and subcomponents are shown.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/1adaf31e77d7d72ddaf173d190c1cfbe.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: A complex layout with a neat top-to-bottom flow and no overlaps
+  prefs: []
+  type: TYPE_NORMAL
+- en: Thankfully, graphviz ([viz-js](https://github.com/mdaines/viz-js)) comes to
+    the rescue for us. graphviz uses a language called “[DOT language](https://graphviz.org/doc/info/lang.html)”
+    through which we specify how we require the graph layout to be constructed.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Here is a sample of the DOT syntax for the above graph:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE7]'
+  prefs: []
+  type: TYPE_PRE
+- en: Once this DOT representation is generated from our adjacency list and hierarchy
+    map, graphviz produces a layout with positions and sizes of all nodes and paths
+    for edges.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Rendering
+  prefs:
+  - PREF_H4
+  type: TYPE_NORMAL
+- en: Once the layout is generated, d3 is used to render the graph visually. Everything
+    is drawn on a canvas (which is easy to make draggable and zoomable), and we set
+    various event handlers to detect user clicks.
+  prefs: []
+  type: TYPE_NORMAL
+- en: When the user makes these two types of expand/collapse clicks on modules (using
+    the ‘+’ ‘-‘ buttons), torchvista records which node the action was performed on,
+    and just re-renders the graph because the layout has to be reconstructed, and
+    then automatically drags and zooms in to an appropriate level based on the recorded
+    pre-click position.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Rendering a graph using d3 is a very detailed topic and otherwise not to unique
+    to torchvista, and hence I leave out the details from this post.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[Bonus] Handling errors in Pytorch models'
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: When users trace their Pytorch models (especially while developing the models),
+    sometimes the models throw errors. It would have been easy for torchvista to just
+    give up when this happens and let the user fix the error first before they could
+    use torchvista. But torchvista instead lends a hand at debugging these errors
+    by doing best-effort tracing of the model. The idea is simple – just trace the
+    maximum it can until the error happens, and then render the graph with just so
+    much (with visual indicators showing where the error happened), and then just
+    raise the exception so that the user can also see the stacktrace like they normally
+    would.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/6c2cf8c61ebeff48f0ab90145680290f.png)![](../Images/fd9630e6c13bc1771b331f50d4c99722.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: When an error is thrown, the stack trace is also shown below the partially rendered
+    graph
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Here is a simplified code snippet of how this works:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE8]'
+  prefs: []
+  type: TYPE_PRE
+- en: Wrapping up
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: This post shed some light on the journey of building a Pytorch visualization
+    package. We first talked about the very specific motivation for building such
+    a tool by comparing with other similar tools. Then, we discussed the design and
+    implementation of torchvista in two parts. The first part was about the process
+    of tracing the forward pass of a Pytorch model using (temporary) wrapping of operations
+    and modules to extract detailed information about the model’s forward pass, including
+    not only the connections between various operations, but also the module hierarchy.
+    Then, in the second part, we went over the visualization layer, and the complexities
+    of layout generation, which were solved using the right choice of libraries.
+  prefs: []
+  type: TYPE_NORMAL
+- en: torchvista is open source, and all contributions, including feedback, issues
+    and pull requests, are welcome. I hope torchvista helps people of all levels of
+    expertise in building and visualizing their models (regardless of model size),
+    showcasing their work, and as a tool for educating others about machine learning
+    models.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Future directions
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: 'Potential future enhancements to torchvista include:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Adding support for “rolling”, where if the same substructure of a model is repeated
+    several times, it is shown just once with a count of how many times it repeats
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Systematic exploration of state-of-the-art models to ensure all their tensor
+    operations are adequately covered
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Support for exporting static images of models as png or pdf files
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Efficiency and speed improvements
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: References
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'Open source libraries used:'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '[viz-js](https://github.com/mdaines/viz-js/), a Javascript port of graphviz'
+  prefs:
+  - PREF_IND
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '[d3](https://github.com/d3/d3) visualization library'
+  prefs:
+  - PREF_IND
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '[iPython](https://github.com/ipython/ipython)'
+  prefs:
+  - PREF_IND
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '[Dot language](https://graphviz.org/doc/info/lang.html) from graphviz'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'Other similar visualization tools:'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '[Netron](https://github.com/lutzroeder/netron)'
+  prefs:
+  - PREF_IND
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '[pytorchviz](https://github.com/szagoruyko/pytorchviz/)'
+  prefs:
+  - PREF_IND
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '[torchview](https://github.com/mert-kurttutan/torchview/)'
+  prefs:
+  - PREF_IND
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'torchvista:'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '[Github](https://github.com/sachinhosmani/torchvista)'
+  prefs:
+  - PREF_IND
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Interactive [demo page](https://sachinhosmani.github.io/torchvista/) with various
+    well-known models visualized
+  prefs:
+  - PREF_IND
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '[Google Colab](https://colab.research.google.com/drive/1wrWKhpvGiqHhE0Lb1HnFGeOcS4uBqGXw?usp=sharing)
+    tutorial'
+  prefs:
+  - PREF_IND
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '* * *'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '*All images unless otherwise stated are by the author*.'
+  prefs: []
+  type: TYPE_NORMAL

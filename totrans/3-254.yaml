@@ -1,0 +1,533 @@
+- en: 'Learnings from a Machine Learning Engineer — Part 5: The Training'
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 原文：[https://towardsdatascience.com/learnings-from-a-machine-learning-engineer-part-5-the-training/](https://towardsdatascience.com/learnings-from-a-machine-learning-engineer-part-5-the-training/)
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: In this fifth part of my series, I will outline the steps for creating a Docker
+    container for training your image classification model, evaluating performance,
+    and preparing for deployment.
+  prefs: []
+  type: TYPE_NORMAL
+- en: AI/ML engineers would prefer to focus on model training and data engineering,
+    but the reality is that we also need to understand the infrastructure and mechanics
+    behind the scenes.
+  prefs: []
+  type: TYPE_NORMAL
+- en: I hope to share some tips, not only to get your training run running, but how
+    to streamline the process in a cost efficient manner on cloud resources such as
+    Kubernetes.
+  prefs: []
+  type: TYPE_NORMAL
+- en: I will reference elements from my previous articles for getting the best model
+    performance, so be sure to check out [Part 1](https://towardsdatascience.com/learnings-from-a-machine-learning-engineer-part-1-the-data/) and [Part
+    2](https://towardsdatascience.com/learnings-from-a-machine-learning-engineer-part-2-the-data-sets/) on
+    the data sets, as well as [Part 3](https://towardsdatascience.com/learnings-from-a-machine-learning-engineer-part-3-the-evaluation/) and [Part
+    4](https://towardsdatascience.com/learnings-from-a-machine-learning-engineer-part-4-the-model/) on
+    model evaluation.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Here are the learnings that I will share with you:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Infrastructure overview
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Building your Docker container
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Executing your training run
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Deploying your model
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Infrastructure overview
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: First, let me provide a brief description of the setup that I created, specifically
+    around Kubernetes. Your setup may be entirely different, and that is just fine.
+    I simply want to set the stage on the infrastructure so that the rest of the discussion
+    makes sense.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Image management system
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: This is a server you deploy that provides a user interface to for your subject
+    matter experts to label and evaluate images for the image classification application.
+    The server can run as a pod on your Kubernetes cluster, but you may find that
+    running a dedicated server with faster disk may be better.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Image files are stored in a directory structure like the following, which is
+    self-documenting and easily modified.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE0]'
+  prefs: []
+  type: TYPE_PRE
+- en: Ideally, these files would reside on local server storage (instead of cloud
+    or cluster storage) for better performance. The reason for this will become clear
+    as we see what happens as the image library grows.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Cloud storage
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: Cloud storage allows for a virtually limitless and convenient way to share files
+    between systems. In this case, the image library on your management system could
+    access the same files as your Kubernetes cluster or Docker engine.
+  prefs: []
+  type: TYPE_NORMAL
+- en: However, the downside of cloud storage is the latency to open a file. Your image
+    library will have **thousands and thousands** of images, and the latency to read
+    each file will have a significant impact on your training run time. Longer training
+    runs means more cost for using the expensive GPU processors!
+  prefs: []
+  type: TYPE_NORMAL
+- en: The way that I found to speed things up is to create a *tar* file of your image
+    library on your management system and copy them to cloud storage. Even better
+    would be to create multiple tar files **in parallel**, each containing 10,000
+    to 20,000 images.
+  prefs: []
+  type: TYPE_NORMAL
+- en: This way you only have network latency on a handful of files (which contain
+    thousands, once extracted) and you start your training run much sooner.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Kubernetes or Docker engine
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: A Kubernetes cluster, with proper configuration, will allow you to dynamically
+    scale up/down nodes, so you can perform your model training on GPU hardware as
+    needed. Kubernetes is a rather heavy setup, and there are other container engines
+    that will work.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The technology options change constantly!
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: The main idea is that you want to spin up the resources you need — for only
+    as long as you need them — then scale down to reduce your time (and therefore
+    cost) of running expensive GPU resources.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Once your GPU node is started and your Docker container is running, you can
+    extract the *tar* files above to **local** storage, such as an *emptyDir*, on
+    your node. The node typically has high-speed SSD disk, ideal for this type of
+    workload. There is one caveat — the storage capacity on your node must be able
+    to handle your image library.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Assuming we are good, let’s talk about building your Docker container so that
+    you can train your model on your image library.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Building your Docker container
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: Being able to execute a training run in a consistent manner lends itself perfectly
+    to building a Docker container. You can “pin” the version of libraries so you
+    know exactly how your scripts will run every time. You can version control your
+    containers as well, and revert to a known good image in a pinch. What is really
+    nice about Docker is you can run the container pretty much anywhere.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The tradeoff when running in a container, especially with an image classification
+    model, is the speed of file storage. You can attach any number of volumes to your
+    container, but they are usually *network* attached, so there is latency on each
+    file read. This may not be a problem if you have a small number of files. But
+    when dealing with hundreds of thousands of files like image data, that latency
+    adds up!
+  prefs: []
+  type: TYPE_NORMAL
+- en: This is why using the *tar* file method outlined above can be beneficial.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Also, keep in mind that Docker containers could be terminated unexpectedly,
+    so you should make sure to store important information outside the container,
+    on cloud storage or a database. I’ll show you how below.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Dockerfile
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: Knowing that you will need to run on GPU hardware (here I will assume Nvidia),
+    be sure to select the right base image for your Dockerfile, such as **nvidia/cuda** with
+    the “devel**”** flavor that will contain the right drivers.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Next, you will add the script files to your container, along with a “batch”
+    script to coordinate the execution. Here is an example Dockerfile, and then I’ll
+    describe what each of the scripts will be doing.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE1]'
+  prefs: []
+  type: TYPE_PRE
+- en: Dockerfiles are declarative, almost like a cookbook for building a small server
+    — you know what you’ll get every time. Python libraries benefit, too, from this
+    declarative approach. Here is a sample *requirements.txt* file that loads the
+    TensorFlow libraries with CUDA support for GPU acceleration.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE2]'
+  prefs: []
+  type: TYPE_PRE
+- en: Extract Image Library script
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: In Kubernetes, the Docker container can access local, high speed storage on
+    the physical node. This can be achieved via the *emptyDir* volume type. As mentioned
+    before, this will only work if the local storage on your node can handle the size
+    of your library.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE3]'
+  prefs: []
+  type: TYPE_PRE
+- en: You would want to have another *volumeMount* to your cloud storage where you
+    have the *tar* files. What this looks like will depend on your provider, or if
+    you are using a persistent volume claim, so I won’t go into detail here.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Now you can extract the *tar* files — ideally in parallel for an added performance
+    boost — to the local mount point.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Training script
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: As AI/ML engineers, the model training is where we want to spend most of our
+    time.
+  prefs: []
+  type: TYPE_NORMAL
+- en: This is where the magic happens!
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: With your image library now extracted, we can create our train-validation-test
+    sets, load a pre-trained model or build a new one, fit the model, and save the
+    results.
+  prefs: []
+  type: TYPE_NORMAL
+- en: One key technique that has served me well is to load the most recently trained
+    model as my base. I discuss this in more detail in [Part 4](https://towardsdatascience.com/learnings-from-a-machine-learning-engineer-part-4-the-model/) under
+    “Fine tuning”, this results in faster training time and significantly improved
+    model performance.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Be sure to take advantage of the local storage to checkpoint your model during
+    training since the models are quite large and you are paying for the GPU even
+    while it sits idle writing to disk.
+  prefs: []
+  type: TYPE_NORMAL
+- en: This of course raises a concern about what happens if the Docker container dies
+    part-way though the training. The risk is (hopefully) low from a cloud provider,
+    and you may not want an incomplete training anyway. But if that does happen, you
+    will at least want to understand **why**, and this is where saving the main log
+    file to cloud storage (described below) or to a package like MLflow comes in handy.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Evaluation script
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: After your training run has completed and you have taken proper precaution on
+    saving your work, it is time to see how well it performed.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Normally this evaluation script will pick up on the model that just finished.
+    But you may decide to point it at a previous model version through an interactive
+    session. This is why have the script as stand-alone.
+  prefs: []
+  type: TYPE_NORMAL
+- en: With it being a separate script, that means it will need to read the completed
+    model from disk — ideally local disk for speed. I like having two separate scripts
+    (training and evaluation), but you might find it better to combine these to avoid
+    reloading the model.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Now that the model is loaded, the evaluation script should generate predictions
+    on **every** image in the training, validation, test, and benchmark sets. I save
+    the results as a **huge** matrix with the softmax confidence score for each class
+    label. So, if there are 1,000 classes and 100,000 images, that’s a table with
+    100 million scores!
+  prefs: []
+  type: TYPE_NORMAL
+- en: I save these results in *pickle* files that are then used in the score generation
+    next.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Score Performance script
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: Taking the matrix of scores produced by the evaluation script above, we can
+    now create various metrics of model performance. Again, this process could be
+    combined with the evaluation script above, but my preference is for independent
+    scripts. For example, I might want to regenerate scores on previous training runs.
+    See what works for you.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Here are some of the *sklearn* functions that produce useful insights like F1,
+    log loss, AUC-ROC, Matthews correlation coefficient.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE4]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Aside from these basic statistical analyses for each dataset (train, validation,
+    test, and benchmark), it is also useful to identify:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Which **ground truth** labels get the most number of errors?
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Which **predicted** labels get the most number of incorrect guesses?
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: How many **ground-truth-to-predicted** label pairs are there? In other words,
+    which classes are easily confused?
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: What is the **accuracy** when applying a minimum softmax confidence score threshold?
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: What is the **error rate** above that softmax threshold?
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: For the “difficult” benchmark sets, do you get a sufficiently **high** score?
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: For the “out-of-scope” benchmark sets, do you get a sufficiently **low** score?
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: As you can see, there are multiple calculations and it’s not easy to come up
+    with a single evaluation to decide if the trained model is good enough to be moved
+    to production.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In fact, for an image classification model, it is helpful to manually review
+    the images that the model got wrong, as well as the ones that got a low softmax
+    confidence score. Actually looking at what the model got wrong, you can get a
+    gut-feel for how well it will perform in the real world.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Check out [Part 3](https://towardsdatascience.com/learnings-from-a-machine-learning-engineer-part-3-the-evaluation/) for
+    more in-depth discussion on evaluation and scoring.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Export Model script
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: All of the heavy lifting is done by this point. Since your Docker container
+    will be shutdown soon, now is the time to copy the model artifacts to cloud storage
+    and prepare them for being put to use.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The example Python code snippet below is more geared to Keras and TensorFlow.
+    This will take the trained model and export it as a *saved_model*. Later, I will
+    show how this is used by TensorFlow Serving in the **Deploy** section below.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE5]'
+  prefs: []
+  type: TYPE_PRE
+- en: This script also copies the other training run artifacts such as the model evaluation
+    results, score summaries, and log files generated from model training. Don’t forget
+    about your label map so you can give human readable names to your classes!
+  prefs: []
+  type: TYPE_NORMAL
+- en: Bulk Identification script
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: Your training run is complete, your model has been scored, and a new version
+    is exported and ready to be served. Now is the time to use this latest model to
+    assist you on trying to identify unlabeled images.
+  prefs: []
+  type: TYPE_NORMAL
+- en: As I described in [Part 4](https://towardsdatascience.com/learnings-from-a-machine-learning-engineer-part-4-the-model/),
+    you may have a collection of “unknowns” — really good pictures, but no idea what
+    they are. Let your new model provide a best guess on these and record the results
+    to a file or a database. Now you can create filters based on closest match and
+    by high/low scores. This allows your subject matter experts to leverage these
+    filters to find new image classes, add to existing classes, or to remove images
+    that have very low scores and are no good.
+  prefs: []
+  type: TYPE_NORMAL
+- en: By the way, I put this step inside the GPU container since you may have thousands
+    of “unknown” images to process and the accelerated hardware will make light work
+    of it. However, if you are not in a hurry, you could perform this step on a separate
+    CPU node, and shutdown your GPU node sooner to save cost. This would especially
+    make sense if your “unknowns” folder is on slower cloud storage.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Batch Control script
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: All of the scripts described above perform a specific task — from extracting
+    your image library, executing model training, performing evaluation and scoring,
+    exporting the model artifacts for deployment, and perhaps even bulk identification.
+  prefs: []
+  type: TYPE_NORMAL
+- en: One script to rule them all
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: To coordinate the entire show, this batch control script gives you the entry
+    point for your container and an easy way to trigger everything. Be sure to produce
+    a log file in case you need to analyze any failures along the way. Also, be sure
+    to write the log to your cloud storage in case the container dies unexpectedly.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE6]'
+  prefs: []
+  type: TYPE_PRE
+- en: Executing your training run
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: So, now it’s time to put everything in motion…
+  prefs: []
+  type: TYPE_NORMAL
+- en: Start your engines!
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: Let’s go through the steps to prepare your image library, fire up your Docker
+    container to train your model, and then examine the results.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Image library ‘tar’ files
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: Your image management system should now create a *tar* file backup of your data.
+    Since *tar* is a single-threaded function, you will get significant speed improvement
+    by creating multiple tar files in parallel, each with a portion of you data.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Now these files can be copied to your shared cloud storage for the next step.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Start your Docker container
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: All the hard work you put into creating your container (described above) will
+    be put to the test. If you are running Kubernetes, you can create a Job that will
+    execute the *BatchControl.sh* script.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Inside the Kubernetes Job definition, you can pass environment variables to
+    adjust the execution of your script. For example, the batch size and number of
+    epochs are set here and then pulled into your Python scripts, so you can alter
+    the behavior without changing your code.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE7]'
+  prefs: []
+  type: TYPE_PRE
+- en: Once the Job is completed, be sure to verify that the GPU node properly scales
+    back down to zero according to your scaling configuration in Kubernetes — you
+    don’t want to be saddled with a huge bill over a simple configuration error.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Manually review results
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: With the training run complete, you should now have model artifacts saved and
+    can examine the performance. Look through the metrics, such as F1 and log loss,
+    and benchmark accuracy for high softmax confidence scores.
+  prefs: []
+  type: TYPE_NORMAL
+- en: As mentioned earlier, the reports only tell part of the story. It is worth the
+    time and effort to manually review the images that the model got wrong or where
+    it produced a low confidence score.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Don’t forget about the bulk identification. Be sure to leverage these to locate
+    new images to fill out your data set, or to find new classes.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Deploying your model
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: Once you have reviewed your model performance and are satisfied with the results,
+    it is time to modify your TensorFlow Serving container to put the new model into
+    production.
+  prefs: []
+  type: TYPE_NORMAL
+- en: TensorFlow Serving is available as a Docker container and provides a very quick
+    and convenient way to serve your model. This container can listen and respond
+    to API calls for your model.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Let’s say your new model is version 7, and your **Export** script (see above)
+    has saved the model in your cloud share as */image_application/models/007*. You
+    can start the TensorFlow Serving container with that volume mount. In this example,
+    the *shareName* points to folder for version 007.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE8]'
+  prefs: []
+  type: TYPE_PRE
+- en: A subtle note here — the export model script should create a sub-folder to models/007,
+    also named 007, with the saved model export. This may seem a little redundant,
+    but TensorFlow Serving will mount this share folder as /bitnami/model-data and
+    detect the numbered sub-folder inside it for the version to serve. This will allow
+    you to query the API for the model version (good for logging) as well as the identification.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Conclusion
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: As I mentioned at the start of this article, this setup has worked for my situation.
+    This is certainly not the only way to approach this challenge, and I invite you
+    to customize your own solution.
+  prefs: []
+  type: TYPE_NORMAL
+- en: I wanted to share my hard-fought learnings as I embraced cloud services in Kubernetes,
+    with the desire to keep costs under control. Of course, doing all this while maintaining
+    a high level of model performance is an added challenge, but one that you can
+    achieve.
+  prefs: []
+  type: TYPE_NORMAL
+- en: I know that the information above is mostly an outline of the process, but I
+    hope it provided enough information here so that you can fill in the rest, specific
+    to your own application.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Happy learnings!
+  prefs: []
+  type: TYPE_NORMAL

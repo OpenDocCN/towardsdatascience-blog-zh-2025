@@ -1,0 +1,454 @@
+- en: 'Graph Neural Networks Part 4: Teaching Models to Connect the Dots'
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 原文：[https://towardsdatascience.com/graph-neural-networks-part-4-teaching-graphs-to-connect-the-dots/](https://towardsdatascience.com/graph-neural-networks-part-4-teaching-graphs-to-connect-the-dots/)
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: '**<mdspan datatext="el1745951325198" class="mdspan-comment">Have you</mdspan>
+    ever wondered how it’s possible that Facebook knows who you might know? Or why
+    it sometimes suggests a total stranger? This problem is called link prediction.
+    In a social network graph, people are nodes and friendships are edges, the goal
+    is to predict if a connection should exist between two nodes.**'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Link prediction is a very popular topic! It can be used to recommend friends
+    in social networks, suggest products on e-commerce sites or movies on Netflix,
+    or predict protein interactions in biology. In this post, you will explore how
+    link prediction works. First you will learn simple heuristics, and we end with
+    powerful GNN-based methods like SEAL.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The previous posts explained [GCNs](https://towardsdatascience.com/graph-neural-networks-part-1-graph-convolutional-networks-explained-9c6aaa8a406e/),
+    [GATs](https://towardsdatascience.com/graph-neural-networks-part-2-graph-attention-networks-vs-gcns-029efd7a1d92/),
+    and [GraphSage](https://towardsdatascience.com/graph-neural-networks-part-3-how-graphsage-handles-changing-graph-structure/).
+    They mainly covered predicting node properties, so you can read this article standalone,
+    because this time we shift focus to predicting edges. If you want to dive a bit
+    deeper into node representations, I recommend to revisit the previous posts. The
+    code setup can be found [here](https://towardsdatascience.com/graph-neural-networks-part-1-graph-convolutional-networks-explained-9c6aaa8a406e/).
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: '* * *'
+  prefs: []
+  type: TYPE_NORMAL
+- en: What is Link Prediction?
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: Link prediction is the task of forecasting missing or future connections (edges)
+    between nodes in a graph. Given a graph *G = (V, E)*, the goal is to predict whether
+    an edge should exist between two nodes (*u, v*) ∉ *E*.
+  prefs: []
+  type: TYPE_NORMAL
+- en: To evaluate link prediction models, you can create a test set by hiding a portion
+    of the existing edges and ask the model to predict them. Of course, the test set
+    should have positive samples (real edges), and negative samples (random node pairs
+    that are not connected). You can train the model on the remaining graph.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The output of the model is a link score or probability for each node pair. You
+    can evaluate this with metrics like AUC or average precision.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We will take a look at simple heuristic-based methods, and then we move on to
+    more complex methods.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/5f71ebe20f81d2d85bc73f816008706b.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Graph with nodes and edges. We will use this graph as example for the heuristic-based
+    methods. Image by author.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Heuristic-Based Methods
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'We can divide these ‘easy’ methods into two categories: local and global. Local
+    heuristics are based on local structure, while global heuristics use the whole
+    graph. These approaches are rule-based and work well as baselines for link prediction
+    tasks.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Local Heuristics
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: As the name says, local heuristics rely on the *immediate neighborhood* of the
+    two nodes you are testing for a potential link. And actually they can be surprisingly
+    effective. Benefits of local heuristics are that they are fast and interpretable.
+    But they only look at the close neighborhood, so capturing the complexity of relationships
+    is limited.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Common Neighbors
+  prefs:
+  - PREF_H4
+  type: TYPE_NORMAL
+- en: 'The idea is simple: if two nodes share many common neighbors, they are more
+    likely to be connected.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: For calculation you count the number of neighbors the nodes have in common.
+    One issue here is that it does not take into account the relative number of common
+    neighbors.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In the examples below, the number of common neighbors between A and B is 3,
+    and the number of common neighbors between C and D is 1.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/9f95f985717d23ad20a40362dd08f076.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Jaccard Coefficient
+  prefs:
+  - PREF_H4
+  type: TYPE_NORMAL
+- en: The Jaccard Coefficient fixes the issue of common neighbors and computes the
+    relative number of neighbors in common.
+  prefs: []
+  type: TYPE_NORMAL
+- en: You take the common neighbors and divide this by the total number of unique
+    neighbors of the two nodes.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'So now things change a bit: the Jaccard coefficient of nodes A and B is 3/5
+    = 0.6 (they have 3 common neighbors and 5 total unique neighbors), while the Jaccard
+    coefficient of nodes C and D is 1/1 = 1 (they have 1 common neighbor and 1 unique
+    neighbor). In this case the connection between C and D is more likely, because
+    they only have 1 neighbor, and it’s also a common neighbor.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/4616f937d5ca3b32dff875d6ecd50483.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Jaccard coefficient for 2 different edges. Image by author.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Adamic-Adar Index
+  prefs:
+  - PREF_H4
+  type: TYPE_NORMAL
+- en: 'The Adamic-Adar index goes one step further than common neighbors: it uses
+    the popularity of a common neighbor and gives less weight to more popular neighbors
+    (they have more connections). The intuition behind this is that if a node is connected
+    to everyone, it doesn’t tell us much about a specific connection.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: What does that look like in a formula?
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/58d12293e24fa54f2b619543a8239798.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: So for each common neighbor *z*, we add a score of 1 divided by the log of the
+    number of neighbors from *z*. By doing this, the more popular the common neighbor,
+    the smaller its contribution.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Let’s calculate the Adamic-Adar index for our examples.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/d3b618db0d2c7e7e744d19bc38323b4f.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Adamic-Adar index. If a common neighbor is popular, its contribution decreases.
+    Image by author.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Preferential Attachment
+  prefs:
+  - PREF_H4
+  type: TYPE_NORMAL
+- en: A different approach is preferential attachment. The idea behind it is that
+    nodes with higher degrees are more likely to form links. Calculation is super
+    easy, you just multiply the degrees (number of connections) of the two nodes.
+  prefs: []
+  type: TYPE_NORMAL
+- en: For A and B, the degrees are respectively 5 and 3, so the score is 5*3 = 15\.
+    C and D have a score of 1*1 = 1\. In this case A and B are more likely to have
+    a connection, because they have more neighbors in general.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/3faf4659b2bbbdbf48cb345fd2e4f279.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Preferential attachment score for the examples. Image by author.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Global Heuristics
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: Global heuristics consider paths, walks, or the entire graph structure. They
+    can capture richer patterns, but are more computationally expensive.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Katz Index
+  prefs:
+  - PREF_H4
+  type: TYPE_NORMAL
+- en: The most well-known global heuristic for link prediction is the Katz Index.
+    It takes all the different paths between two nodes (usually only paths up to three
+    steps). Each path gets a weight that decays exponentially with its length. This
+    makes sense intuitively, because the shorter a path, the more important it is
+    (friends in common means a lot). On the other hand, indirect paths matter as well!
+    They can hint at potential links.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The Katz Formula:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/29e56f087dbd49f917c9ba3e2c21f2f4.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'We take two nodes, C and E, and count the paths between them. There are three
+    paths with up to three steps: one path with two steps (orange), and two paths
+    with three steps (blue and green). Now we can calculate the Katz index, let’s
+    choose 0.1 for beta:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/cd50f6ea777a2ff3fbd550968d3a355a.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Katz index calculation for nodes C and E. Shorter paths add more weight. Image
+    by author.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Rooted PageRank
+  prefs:
+  - PREF_H4
+  type: TYPE_NORMAL
+- en: This method uses random walks to determine how likely it is that a random walk
+    from the first node, will end up in the second node. So you start in the first
+    node, then you either walk to a random neighbor, or you jump back to the first
+    node. The probability that you end up at the second node tells how closely the
+    two nodes are. If the probability is high, there is a good chance the nodes should
+    be linked.
+  prefs: []
+  type: TYPE_NORMAL
+- en: ML-Based Link Prediction
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: Machine learning approaches take link prediction beyond heuristics by learning
+    patterns directly from the data. Instead of relying on predefined rules, ML models
+    can learn complex features that signal whether a link should exist.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'A basic approach is to treat link prediction as a binary classification task:
+    for each node pair (u, v), we create a feature vector and train a model to predict
+    1 (link exists) or 0 (link doesn’t exist). You can add the heuristics we calculated
+    before as features. The heuristics didn’t agree all the time on likelihood of
+    edges, sometimes the edge between A and B was more likely, while for others the
+    edge between C and D was the better choice. By including multiple scores as features
+    we don’t have to choose one heuristic. Of course depending on the problem some
+    heuristics might work better than others.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Another type of features you can add are aggregated features: for example node
+    degree, node embeddings, attribute averages, etc.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Then use any classifier (e.g., logistic regression, random forest, XGBoost)
+    to predict links. This already performs better than heuristics alone, especially
+    when combined.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'In this post we will use the Cora dataset to test different approaches to link
+    prediction. The [Cora dataset](https://paperswithcode.com/dataset/cora) contains
+    scientific papers. The edges represent citations between papers. Let’s train a
+    machine learning model as baseline, where we only add the Jaccard coefficient:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE0]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'We evaluate with AUC. This is the result:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE1]'
+  prefs: []
+  type: TYPE_PRE
+- en: We can go a step further and use neural networks that operate directly on the
+    graph structure.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'VGAE: Encoding and Decoding'
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: A [Variational Graph Auto-Encoder](https://arxiv.org/abs/1611.07308) is like
+    a neural network that learns to guess the hidden structure of the graph. It can
+    then use that hidden knowledge to predict missing links.
+  prefs: []
+  type: TYPE_NORMAL
+- en: A VGAE is actually a combination of a GAE (Graph Auto-Encoder) and a [VAE](https://en.wikipedia.org/wiki/Variational_autoencoder)
+    (Variational Auto-Encoder). I’ll get back to the difference between a GAE and
+    a VGAE later on.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The steps of a VGAE are as follows. First, the VGAE **encodes nodes into latent
+    vectors**, and then it **decodes node pairs** to **predict whether an edge exists**
+    between them.
+  prefs: []
+  type: TYPE_NORMAL
+- en: How does the encoding work? Each node is mapped to a latent variable, that is
+    a point in some hidden space. The encoder is a [Graph Convolutional Network](https://towardsdatascience.com/graph-neural-networks-part-1-graph-convolutional-networks-explained-9c6aaa8a406e/)
+    (GCN) that produces a mean and a variance vector for each node. It uses the node
+    features and the adjacency matrix as input. Using the vectors, the VGAE samples
+    a latent embedding from a normal distribution. It’s important to note that each
+    node isn’t just mapped to a single point, but to a distribution! This is the difference
+    between a GAE and a VGAE, in a GAE each node is mapped to one single point.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/acdea5774216f3b6f46a4e16215803c3.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'The next step is the decoding step. The VGAE will guess if there is an edge
+    between two nodes. It does this by calculating the inner product between the embeddings
+    of the two nodes:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/86a8211f282050a18b030ca1b14cec93.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'The thought behind it is: if the nodes are closer together in the hidden space,
+    it’s more likely they are connected.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'VGAE visualized:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/95f647fa7e13c092cd172b32ad4d3061.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'How does the model learn? It optimizes two things:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Reconstruction Loss: Do the predicted edges match the real ones?'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'KL Divergence Loss: Is the latent space nice and regular?'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'Let’s test the VGAE on the Cora dataset:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE2]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'And the result (ML model added for comparison):'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE3]'
+  prefs: []
+  type: TYPE_PRE
+- en: Wow! Massive improvement compared to the ML model!
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'SEAL: Learning from Subgraphs'
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'One of the most powerful GNN-based approaches is [SEAL](https://proceedings.neurips.cc/paper_files/paper/2018/file/53f0d7c537d99b3824f0f99d62ea2428-Paper.pdf)
+    (Subgraph Embedding-based Link prediction). The idea is simple and elegant: instead
+    of looking at global node embeddings, SEAL looks at the **local subgraph** around
+    each node pair.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Here’s a step by step explanation:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: For each node pair (u, v), extract a small enclosing subgraph. E.g., neighbors
+    only (1-hop neighborhood) or neighbors and neighbors from neighbors (2-hop neighborhood).
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: 'Label the nodes in this subgraph to reflect their role: which ones are u, v,
+    and which ones are neighbors.'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Use a GNN (like DGCNN or GCN) to learn from the subgraph and predict if a link
+    should exist.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: 'Visualization of the steps:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/95ccdf44e351db8cb79cca03f3f50b4a.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Three steps of SEAL. Image by author.
+  prefs: []
+  type: TYPE_NORMAL
+- en: SEAL is very powerful because it learns structural patterns directly from examples,
+    instead of relying on handcrafted rules. It also works well with sparse graphs
+    and generalizes across different types of networks.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Let’s see if SEAL can improve the results of the VGAE on the Cora dataset.
+    For the SEAL code, I took the [sample code from PyTorch geometric](https://github.com/pyg-team/pytorch_geometric/blob/master/examples/seal_link_pred.py)
+    (check it out by following the link), since SEAL requires quite some processing.
+    You can recognize the different steps in the code (preparing the data, extracting
+    the subgraphs, labeling the nodes). Training for 50 epochs gives the following
+    result:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE4]'
+  prefs: []
+  type: TYPE_PRE
+- en: Almost exactly the same result as the VGAE. So for this problem, VGAE might
+    be the best choice (VGAE is significantly faster than SEAL). Of course this can
+    vary, depending on your problem.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '* * *'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Conclusion
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: In this post, we dived into the topic of link prediction, from heuristics to
+    SEAL. Heuristic methods are fast and interpretable and can serve as good baselines,
+    but ML and GNN-based methods like VGAE and SEAL can learn richer representations
+    and offer better performance. Depending on your dataset size and task complexity,
+    it’s worth exploring both!
+  prefs: []
+  type: TYPE_NORMAL
+- en: Thanks for reading, until next time!
+  prefs: []
+  type: TYPE_NORMAL
+- en: Related
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: '**[Graph Neural Networks Part 1\. Graph Convolutional Networks Explained](https://towardsdatascience.com/graph-neural-networks-part-1-graph-convolutional-networks-explained-9c6aaa8a406e/)**'
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: ''
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: '[**Graph Neural Networks Part 2\. Graph Attention Networks vs. GCNs**](https://towardsdatascience.com/graph-neural-networks-part-2-graph-attention-networks-vs-gcns-029efd7a1d92/)'
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: ''
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: '[**Graph Neural Networks Part 3: How GraphSAGE Handles Changing Graph Structure**](https://towardsdatascience.com/graph-neural-networks-part-3-how-graphsage-handles-changing-graph-structure/)'
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL

@@ -1,0 +1,532 @@
+- en: 'When Transformers Sing: Adapting SpectralKD for Text-Based Knowledge Distillation'
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 原文：[https://towardsdatascience.com/when-transformers-sing-adapting-spectralkd-for-text-based-knowledge-distillation/](https://towardsdatascience.com/when-transformers-sing-adapting-spectralkd-for-text-based-knowledge-distillation/)
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: <mdspan datatext="el1761183506645" class="mdspan-comment">Introduction</mdspan>
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: While working on my Knowledge Distillation problem for intent classification,
+    I faced a puzzling roadblock. My setup involved a teacher model, which is RoBERTa-large
+    (finetuned on my intent classification), and a student model, which I was trying
+    to train without losing too much accuracy compared to the teacher.
+  prefs: []
+  type: TYPE_NORMAL
+- en: I experimented with multiple mapping techniques, connecting every 2nd layer
+    to the student layer, averaging two teacher layers into one, and even assigning
+    custom weights like giving (0.3 to l1 and 0.7 to l2). But no matter what combination
+    I tried, the teacher’s accuracy never matched the student model.
+  prefs: []
+  type: TYPE_NORMAL
+- en: That’s when I started exploring **how to map the most informative layers *to
+    my student model so that the student can maximize its performance***. I wanted
+    a way to quantify which layer of the teacher model truly matters for distillation.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'In that search, I stumbled upon a fascinating paper—”[**SpectralKD: A Unified
+    Framework for Interpreting and Distilling Vision Transformers via Spectral Analysis**](https://arxiv.org/pdf/2412.19055),”
+    which tackled a similar problem but in the image domain. The authors used a spectral
+    analysis approach (Spectral KD) to more intelligently align the teacher and student
+    models.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Curious, I decided to adapt the idea to text data – and ***BOOM!!!, it actually
+    worked!*** For the first time, my student model started thinking almost like its
+    teacher.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/3658ff1da43414f028b6bc14fe685fd7.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'Source: Author'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Here’s the **layer intensity graph** of my fine-tuned **RoBERTa-large** model.
+    Based on the spectral insights, I selected **layers 1–9 and 21–23** for my **student
+    model** during knowledge distillation, the ones carrying the richest information.
+  prefs: []
+  type: TYPE_NORMAL
+- en: I can’t share my dataset or code for confidentiality reasons, but I’ll walk
+    you through how the **paper’s image-based approach** inspired my **text-based
+    adaptation**, and how you can think about doing the same.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '* * *'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Behind the Scenes: How FFT Reveals a Model’s Spectral Soul'
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'So, let’s start with **spectral intensity**, and slowly dive into the real
+    magician here: the **Fast Fourier Transform (FFT)**.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: In the [spectralKD paper](https://arxiv.org/pdf/2412.19055), the authors introduce
+    a framework that helps us to see Vision Transformer(ViTs), not just what they
+    are predicting, but also **how the information flows in the layers**. Instead
+    of relying on intuition or visualisation, they use spectral analysis, a way **to
+    measure the frequency richness of the model’s internal representations.**
+  prefs: []
+  type: TYPE_NORMAL
+- en: Imagine each Transformer layer as the musician in an orchestra, some layers
+    play high notes(fine details), while others play low notes(broad features). The
+    FFT helps us to listen to each player’s music separately and filter out which
+    one is having the strongest melodies, i.e., the most information-rich signals.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/ee37544aaa3eb37fd40424da8ed5a6f2.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'Source: Author'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Step 1: Feature maps, The raw material'
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: ''
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: '![](../Images/85cec5b50db3dff72e7ffd62cca4350e.png)'
+  prefs:
+  - PREF_BQ
+  type: TYPE_IMG
+- en: ''
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: B is batch size
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: C is number of channels and,
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: H,W is the spatial height and width.
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: 'Step 2: Applying the fourier Transform'
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: ''
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: 'The authors apply a 1-dimensional FFT along the channel dimension to translate
+    these real-valued activations into the frequency domain:'
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: '**F(X)=FFT(X)**'
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: ''
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: 'This means:'
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: For every spatial location (b, h, w), a **1D FFT** is computed across all channels.
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: The result is a **complex-valued tensor** (since FFT outputs real + imaginary
+    parts).
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: F(X) therefore tells us how much of each frequency is present in that layer’s
+    representation.
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: And if you’re wondering, *“Why FFT though?”* — hold that thought.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Because later in this blog, we’re going to uncover **exactly why FFT is the
+    perfect tool** to measure a model’s inner intensity.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Step 3: measuring frequency strength'
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: ''
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: '![](../Images/543487f1b4c24e66fc0981ed466fcc1e.png)'
+  prefs:
+  - PREF_BQ
+  type: TYPE_IMG
+- en: ''
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: '**Re(F(X))** is the real part,'
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: '**Im(F(X))** is the imaginary part.'
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: 'Step 4: Averaging across the map'
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: ''
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: 'Now we want to summarize this intensity across all positions in the layer:'
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: ''
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: '![](../Images/284a3861c5199652574dfb3407d8c772.png)'
+  prefs:
+  - PREF_BQ
+  type: TYPE_IMG
+- en: ''
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: This step tells us the average intensity of the single channel
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: ''
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: '![](../Images/4ff0c6c356372add60cca7ff900c6cfe.png)'
+  prefs:
+  - PREF_BQ
+  type: TYPE_IMG
+- en: ''
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: And then you can simply do average of each channels. Voilà! Now you have the
+    spectral intensity of the single layer of the Vision Transformer.
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: '* * *'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Peeking into the Frequency Realm: The Fourier Lens of SpectralKD'
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'Let’s look into the Fast Fourier Transform:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/6e3fda77eafa3f749ef899dcaed613e0.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Xₖ is the input sequence (your signal, feature, or activation pattern).
+  prefs: []
+  type: TYPE_NORMAL
+- en: xₙ is the frequency component at the frequency index.
+  prefs: []
+  type: TYPE_NORMAL
+- en: N is the number of points in the sequence (i.e., number of channels or features).
+  prefs: []
+  type: TYPE_NORMAL
+- en: Each term e⁻ʲ²πᵏⁿ/ᴺ acts as a **rotating phasor**, a tiny complex wave spinning
+    through the signal space, and together, they form one of the most beautiful ideas
+    in signal processing.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/36698c1a2b5c039f4d80a5cdd3024cda.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'Source: Author (Here, a rotating phasor e⁻ʲ²πᵏⁿ/ᴺ is getting multiplied by
+    g(t) in a complex plane)'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/bf5b85f9d431d3597481c11d98dbe4ed.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'source: Author (Average out all the points in the complex plane, then it will
+    give you the center of mass of the phasor entity, and it gets peaked only at a
+    specific frequency or K (in the above case, it is 3))'
+  prefs: []
+  type: TYPE_NORMAL
+- en: .**OMG! What just happened here?** Let me break it down.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'When you multiply your hidden activations xₙ (say, across channels or feature
+    dimensions) by this phasor, you’re essentially asking:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: “Hey, layer, how much of the *k-th type of variation* do you contain in your
+    representations?”
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: Each frequency k corresponds to a distinct **pattern scale** across the feature
+    dimensions.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Lower k values capture **broad, smooth semantic structures** (like topic-level
+    context), while higher k values capture **rapid, fine-grained variations** (like
+    token-level nuances or syntactic signals).
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Now here’s the fun part: if some layer resonates with a particular frequency
+    pattern, the multiplication of the Fourier Transform aligns perfectly, and the
+    sum in the Fourier formula produces a **strong response** for that k.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: If not, the rotations cancel out, meaning that frequency doesn’t play a big
+    role in that layer’s representation.
+  prefs: []
+  type: TYPE_NORMAL
+- en: So, the Fourier Transform isn’t adding anything new; it is just finding out
+    how our layer encodes information across different scales of abstraction.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'It’s like zooming out and realizing:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Some layers hum quietly with smooth, conceptual meanings (low frequencies),
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Others buzz with sharp, detailed interactions between tokens (high frequencies).
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: The FFT basically **turns a layer’s hidden states into a frequency fingerprint**
+    — a map of what kinds of information that layer is focusing on.
+  prefs: []
+  type: TYPE_NORMAL
+- en: And that’s exactly what SpectralKD uses to figure out which layers are *actually
+    doing the heavy lifting* during knowledge distillation.
+  prefs: []
+  type: TYPE_NORMAL
+- en: If you still need the visualization and more intuition of the Fourier transform,
+    you can just go through the 3Blue1Brown Video, [“But what is the Fourier Transform?
+    A visual introduction.”](https://youtu.be/spUNpyF58BY?si=C6v49BiX0-F-cfo5)
+  prefs: []
+  type: TYPE_NORMAL
+- en: '* * *'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'From Vision to Language: How Spectral Intensity Guided My Intent Classifier'
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: '![](../Images/571f8badf000730cfcdd46e6c9fd8139.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'Source: Author'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Let a layer activation tensor be:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/5cebd24cec58b53255ba7f152f82513a.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'where:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: N = number of samples (batch size)
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: L = sequence length (number of tokens/time steps)
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: H = hidden dimension (number of channels/features produced by the layer)
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Each Sample i has an activation matrix Xᵢ ∈ Rᴸ ˣ ᴴ (sequence positions x hidden
+    features)
+  prefs: []
+  type: TYPE_NORMAL
+- en: Now again, you can compute the FFT of that Xᵢ and then measure the frequency
+    length using the real and imaginary components and average out across the channels,
+    and then for each layer.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Frequency length:**'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/f82e4b6676a1d1fa36727b559c0d3ae0.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: '**Frequency across channels:**'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/26a35c5aab0d8e3ca15eae2bb6c9722f.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: '**Frequency across a layer:**'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/936f3402ae94d3897a875ea7f0bd9aca.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Here, **K is the number of bins retained**.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '* * *'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Conclusion
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'Their analysis shows two major insights:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Not all layers contribute equally.** In uniform transformer architectures,
+    only a few *early* and *final* layers show strong spectral activity, the true
+    “hotspots” of information flow.'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '**Different transformer types, similar melodies.** Despite architectural variations,
+    both hierarchical and uniform transformers share surprisingly similar spectral
+    patterns, hinting at a universal way these models learn and represent knowledge.'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Building on these findings, SpectralKD introduces a **simple, parameter-free
+    knowledge distillation (KD)** strategy. By selectively aligning the spectral behavior
+    of early and final layers between a teacher and a student model, the student learns
+    to *mimic the teacher’s spectral signature*, even in intermediate layers that
+    were never explicitly aligned.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The results are striking in the paper: the distilled student (DeiT-Tiny) doesn’t
+    just match performance on benchmarks like ImageNet-1K, it also *learns to think
+    spectrally like the teacher*, capturing both local and global information with
+    remarkable **allegiance**.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Ultimately, SpectralKD bridges **interpretability and distillation**, offering
+    a fresh way to visualize what happens inside transformers during learning. It
+    opens a new line of research, the authors call **“distillation dynamics”**, a
+    journey into how knowledge itself flows, oscillates, and harmonizes between teacher
+    and student networks.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '* * *'
+  prefs: []
+  type: TYPE_NORMAL
+- en: References
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: '**Core Spectral & Transformer Foundations**'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[Vaswani, A. *Attention Is All You Need.* *NeurIPS*, 2017.](https://arxiv.org/pdf/1706.03762)'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '[Dosovitskiy, A. *An Image is Worth 16×16 Words: Transformers for Image Recognition
+    at Scale.* arXiv preprint arXiv:2010.11929, 2020.](https://arxiv.org/abs/2010.11929)'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '[Raghu, M., Unterthiner, T., Kornblith, S., Zhang, C., & Dosovitskiy, A. *Do
+    Vision Transformers See Like Convolutional Neural Networks?* *NeurIPS*, 2021.](https://proceedings.neurips.cc/paper_files/paper/2021/file/652cf38361a209088302ba2b8b7f51e0-Paper.pdf)'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '[Han, K. et al. *A Survey on Vision Transformer.* *IEEE TPAMI*, 2022.](https://ieeexplore.ieee.org/document/9716741)'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Interpretability & Spectral Analysis**'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[Chefer, H., Gur, S., & Wolf, L. *Transformer Interpretability Beyond Attention
+    Visualization.* *CVPR*, 2021.](https://arxiv.org/pdf/2012.09838)'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '[Yeh, C. et al. *AttentionViz: A Global View of Transformer Attention.* *IEEE
+    TVCG*, 2023.](https://arxiv.org/pdf/2305.03210)'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '[Zeng, J. et al. *Peeling Back the Layers: Interpreting the Storytelling of
+    ViT.* *ACM Multimedia*, 2024.](https://dl.acm.org/doi/10.1145/3664647.3681712)'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Knowledge Distillation & Model Compression**'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[Hinton, G. *Distilling the Knowledge in a Neural Network.* arXiv preprint
+    arXiv:1503.02531, 2015.](https://arxiv.org/pdf/1503.02531)'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '[Phuong, M., & Lampert, C. *Towards Understanding Knowledge Distillation.*
+    *ICML*, 2019.](https://arxiv.org/pdf/2105.13093)'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '[Park, W. et al. *Relational Knowledge Distillation.* *CVPR*, 2019.](https://arxiv.org/pdf/1904.05068)'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '[Chandrasegaran, K. et al. *Revisiting Label Smoothing and Knowledge Distillation
+    Compatibility: What Was Missing?* *ICML*, 2022.](https://arxiv.org/pdf/2206.14532)'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '[Huang, T. et al. *Knowledge Distillation from a Stronger Teacher.* *NeurIPS*,
+    2022.](https://arxiv.org/pdf/2205.10536)'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '[Pham, C. et al. *Frequency Attention for Knowledge Distillation.* *WACV*,
+    2024.](https://arxiv.org/pdf/2403.05894)'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '[Fan, J. et al. *ScaleKD: Strong Vision Transformers Could Be Excellent Teachers.*
+    arXiv preprint arXiv:2411.06786, 2024.](https://arxiv.org/pdf/2411.06786)'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '[Son, S. et al. *The Role of Masking for Efficient Supervised Knowledge Distillation
+    of Vision Transformers.* *ECCV*, 2025](https://arxiv.org/pdf/2302.10494).'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**SpectralKD Core Paper**'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[*SpectralKD: A Unified Framework for Interpreting and Distilling Vision Transformers
+    via Spectral Analysis*, 2024.](https://arxiv.org/pdf/2412.19055)'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL

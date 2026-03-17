@@ -1,0 +1,579 @@
+- en: 'Coconut: A Framework for Latent Reasoning in LLMs'
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 原文：[https://towardsdatascience.com/coconut-a-framework-for-latent-reasoning-in-llms/](https://towardsdatascience.com/coconut-a-framework-for-latent-reasoning-in-llms/)
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: 'Paper link: [https://arxiv.org/abs/2412.06769](https://arxiv.org/abs/2412.06769)'
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: ''
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: 'Released: 9th of December 2024'
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: '![](../Images/e1bfe83663362f1b014e3110e079f4e9.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: '**Figure 1.** The two reasoning modes of Coconut. In **Language Mode** (left),
+    the model uses output text tokens as inputs for the next reasoning step. In **Latent
+    Mode** (right), the model instead feeds its previous hidden state (the output
+    of the last hidden layer) back into itself as input. Figure taken from [1]'
+  prefs: []
+  type: TYPE_NORMAL
+- en: <mdspan datatext="el1755021152317" class="mdspan-comment">Recently, there has
+    been</mdspan> a high focus on LLMs with reasoning capabilities, and for a good
+    reason. Reasoning enhances the LLMs’ power to tackle complex issues, fosters stronger
+    generalization, and introduces an interpretable layer that sheds light on a model’s
+    internal thought process.
+  prefs: []
+  type: TYPE_NORMAL
+- en: A Major milestone in LLM reasoning is the introduction of Chain-of-Thought Reasoning
+    (CoT)[2], which proved that guiding models to reason step-by-step leads to significant
+    improvements on arithmetic and symbolic reasoning tasks.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Despite their power, reasoning models still operate primarily within the confines
+    of natural language, which can limit their effectiveness. Much of the token space
+    is devoted to maintaining linguistic coherence rather than facilitating abstract
+    reasoning. Addressing this limitation, an intriguing paper from Meta, **Training
+    Large Language Models to Reason in a Continuous Latent Space[1]***,* proposes
+    redeeming the chain of thought out of natural language entirely, only translating
+    back to language when necessary.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Their contribution can be summarized in three key points:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Chain of Continuous Thought (Coconut):** An enhanced reasoning paradigm that
+    builds on CoT. Instead of relying on the final text output, Coconut utilizes the
+    model’s last embedding layer latent representations.'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: 'An exploration of Coconut’s capabilities: indicating how multiple next steps
+    in reasoning can be encoded simultaneously in the latent space.'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: A deeper analysis of the latent reasoning process itself, so that we can understand
+    Coconut’s internal representation of information.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '* * *'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Coconut, Simplified
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: Before delving into the implementation details of Continuous Chain of Thought,
+    it’s important to first establish some foundational grounds.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Given an input of sequence **x = [x(1),x(2),x(3) … ,x(T)]** , a Chain-Of-Thought
+    LLM **(M)**, which predicts the next token **x(t+1)** based on the sequence of
+    previous tokens **x(≤t)** can be formally described as:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: $$M_{CoT}(x_{t+1}|x<=t) = softmax(Wx_{t})$$
+  prefs: []
+  type: TYPE_NORMAL
+- en: Where **W** is the weight matrix of our LLM, and **x(t)** is the input tokens
+    at step **t**.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Coconut extends this formulation by removing the dependency on textual input
+    tokens and instead using the model’s last hidden state **h(t)** as input. This
+    adaptation modifies the LLM’s predictive function into:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: $$M_{Coconut}(x_{t+1}|x<=t) = softmax(Wh_{t})$$
+  prefs: []
+  type: TYPE_NORMAL
+- en: $$H_{t} = Transformer(E_{t})$$
+  prefs: []
+  type: TYPE_NORMAL
+- en: Where **E(t) = [e(x1), e(x2), … e(xt)]** represents the sequence of token embeddings,
+    with **e(⋅)** denoting the embedding function. **H(t)​** captures the sequence
+    of hidden states for all tokens up to position **t**.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'This new formulation allows Coconut to operate in two distinct modes: **Language
+    Mode** and **Latent Mode**, as illustrated in Figure 1 (left and right, respectively).
+    In Language Mode, the model functions like a standard LLM, processing textual
+    tokens as input, while in Latent mode, it operates on the internal hidden states
+    instead.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Mode switching plays a critical role in Coconut’s training process. It not
+    only enables the model to learn how to generate meaningful latent representations
+    but also facilitates the decoding of these latent thoughts. Mode transitions are
+    controlled using two special placeholder tokens: `<bot>` (begin-of-thought) and
+    `<eot>` (end-of-thought). Inserting `<bot>` at position *i* and `<eot>` at position
+    *j* signals the model to operate in Latent Mode for tokens between positions i<t<j
+    (note here that e(xi) =`<bot>`, and e(xj)= `<eot>`).'
+  prefs: []
+  type: TYPE_NORMAL
+- en: $$E_{t}=[e_{x_{1}},e_{x_{2}},….,e_{x_{i}},h_{i},h_{i+1},..,h_{j-1},e_{x_{j}},e_{x_{j+1}},…,e_{x_{t}}]$$
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/bcdc5b6c0793dfc2f85335f544716cfd.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: '**Figure 2\.** Training process of Coconut, where at each training stage one
+    language reasoning step is removed and replaced with c latent reasoning steps.
+    Here, c is equal to 1\. Figure taken from [1].'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Inspired by [3], Coconut employs a multi-stage training curriculum. At each
+    stage k, k language-based reasoning steps are replaced with L latent steps, where
+    L=k⋅c, and c is a hyperparameter determining how many latent steps substitute
+    a single language reasoning step. This progression is visualized in Figure 2,
+    where at stage k=0, the model trains purely on standard CoT examples.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The author’s decision to apply multi-stage training is to decompose the training
+    process into easier objectives, leading to better results. This pattern is already
+    suggested and backed up in [3], where they proved that intermediately removing
+    tokens enabled deeper internalization of reasoning.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Using latent thought enables end-to-end gradient-based training by replacing
+    token-level transitions between reasoning steps with continuous hidden representations,
+    as with this change, the network is fully differentiable. Beyond that, it also
+    allows the model to encode multiple possible next steps concurrently, refining
+    the reasoning path as it advances. A deeper exploration of this mechanism is provided
+    in the *Understanding Latent Reasoning* section.
+  prefs: []
+  type: TYPE_NORMAL
+- en: To illustrate, let’s examine a simple example drawn from GSM8K[4], one of the
+    datasets used to train Coconut.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Question:**'
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: ''
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: “Betty is saving money for a new wallet, which costs $100\. Betty has only half
+    of the money she needs. Her parents decided to give her $15 for that purpose,
+    and her grandparents twice as much as her parents. How much more money does Betty
+    need to buy the wallet? “
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: ''
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: '**Reasoning steps:**'
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: ''
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: 1.Betty has only 100 / 2 = $<<100/2=50>>50.
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: ''
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: 2.Betty’s grandparents gave her 15 * 2 = $<<15*2=30>>30.
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: ''
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: 3.This means, Betty needs 100–50–30–15 = $<<100–50–30–15=5>>5 more.
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: ''
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: '4\. Answer: 5'
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: 'This question is then incorporated into the training dataset and used across
+    three distinct stages:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/50223d77178c3aea793790077e8ef9cc.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: '**Figure 3\.** An example of the training process of Coconut. Figure by writer
+    based on example taken from GSM8k[4].'
+  prefs: []
+  type: TYPE_NORMAL
+- en: As shown in Figure 3, at stage 0, no latent thoughts are present, only language-based
+    reasoning steps followed by the final answer. In subsequent stages 1 and 2, one
+    language reasoning step is progressively replaced by one latent thought (since
+    c=1), until stage 3, where all reasoning steps are latent. This procedure is applied
+    to each training example in the dataset.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '* * *'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Key Findings & Analysis
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'Three datasets were used to evaluate Coconut’s effectiveness. One focused on
+    mathematical reasoning (**GSM8K[4])** and two on logical reasoning: **ProntoQA[5]**
+    and **ProsQA**. **ProsQA** (Proof with Search Question-Answering) is a modified
+    version of ProntoQA, featuring randomly generated directed acyclic graphs (DAGs)
+    of reasoning steps, designed to challenge the model with more complex planning
+    tasks. All models were fine-tuned using GPT-2 as the base model, with c=1 for
+    most datasets, except for GSM8K, where two latent thoughts were used (c=2).'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Below is a simplified summary of the results reported in the paper:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/92bf017ecd5a9e396f2fbff50625a377.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: '**Table 1**. Accuracy results on three datasets. Results taken from [1].'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The models used for comparison with the Coconut architecture are:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**CoT**: Model trained with Chain-of-Thought reasoning, utilizing full reasoning
+    chains during training.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**No-CoT**: Model trained without any reasoning chains; standard language modeling
+    without intermediate reasoning steps.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Coconut**: The full implementation proposed in this paper.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**w/o curriculum**: The Coconut model trained without the multi-stage curriculum;
+    i.e., no gradual introduction of latent thoughts.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**w/o thought**: Coconut with multi-stage training retained, but without introducing
+    latent thoughts. Language reasoning steps are simply removed over stages instead.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Pause as thought [6]**: Model trained without latent thoughts entirely, but
+    special <pause> tokens are inserted in place of each removed thought. These tokens
+    allow the model additional computation steps before generating an answer. Prior
+    studies [7] have reported improved performance using this approach.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: A close examination of the previous table reveals three key insights into the
+    Coconut training paradigm.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**First,** latent reasoning demonstrates superior performance over Chain-of-Thought
+    on logical reasoning tasks, outperforming it on benchmarks such as ProntoQA[5]
+    and ProsQA. The substantial accuracy gain observed in ProsQA (97.0% vs 77.5%)
+    highlights Coconut’s effectiveness in handling more complex reasoning challenges.
+    Unfortunately, the authors didn’t explain the accuracy loss between CoT and Coconut
+    (42.9% vs. 34.9%). This could be due to the mathematical nature of GSM8k, which,
+    unlike ProsQA, requires less reasoning prowess.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Second,** comparing Coconut with its non-multi-stage training counterpart,
+    we reach the same findings suggested by [3]: breaking down the training process
+    into simpler, more manageable tasks significantly enhances model performance.
+    Furthermore, through comparing “w/o curriculum” with “w/o thought” implementation,
+    it is clear that the effect of gradual multi-stage training is actually more prominent
+    than just replacing language steps with latent thoughts in a single step. This
+    is an interesting finding showing how crucial gradual training is to the final
+    results.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Lastly,** even when supplying the model with multi-stage training and enough
+    computational capacity with the *pause as thought* model, the LLM still falls
+    short compared to the main Coconut implementation. This is more apparent when
+    comparing their GSM8K results, reinforcing the hypothesis that incorporating latent
+    thoughts still boosts training effectiveness.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '* * *'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Understanding Latent Reasoning
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'One of the advantages of Coconut is that, unlike language-based thoughts, latent
+    thoughts have the ability to consider several directions or outputs in their consideration.
+    This leads to a different reasoning process than normal chaining, allowing us
+    to interpret the reasoning process as a hypothetical tree search. Each depth layer
+    is the result of a respective latent step k, and each node is a calculated probability
+    of a specific option. This will be covered more in Example #2.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Two main examples of this phenomenon are presented in the paper. We will cover
+    both of them briefly to illustrate the latent reasoning power of this new thought
+    paradigm.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Example #1:**'
+  prefs: []
+  type: TYPE_NORMAL
+- en: The first example demonstrates how a latent thought can contain multiple possible
+    outcomes within its reasoning tree. To explore this, the continuous thought generated
+    by the model was decoded using an LLM head, a process done solely for testing
+    purposes, allowing us to probe the continuous thought and verify whether these
+    latent thoughts were being learned correctly.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Question**:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: James decides to run 3 sprints 3 times a week. He runs 60 meters each sprint.
+    How many meters does he run a week?
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Reasoning Steps:**'
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: ''
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: 1\. He runs 3*3=9 sprints a week
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: ''
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: 2\. So he runs 9*60=540
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: ''
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: 'Answer: 540'
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: ''
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: '**Alternative Solution:**'
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: ''
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: 1\. He runs 3*60=180 meters a week
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: ''
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: 2\. So he runs 3*180=540
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: 'When we decode the first latent thought generated by the model, we find that
+    the top three possible outputs are:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 1.”180” with a probability of 0.22
+  prefs: []
+  type: TYPE_NORMAL
+- en: 2.” 180” ( with a space) with prob. of 0.20
+  prefs: []
+  type: TYPE_NORMAL
+- en: 3.”90” with prob. of 0.13
+  prefs: []
+  type: TYPE_NORMAL
+- en: This shows that the model is indeed considering the first step in the two viable
+    solutions mentioned above.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Example #2:**'
+  prefs: []
+  type: TYPE_NORMAL
+- en: The second example gives a clearer illustration of how the tree search is constructed
+    as the number of thoughts increases, pruning older branches that are no longer
+    relevant to the reasoning process and prioritizing more “sound” nodes.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/4a2b9875a04a839c7809bbd5a2690772.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: '**Figure 4.** Latent search tree for example #2\. On the left are the results
+    of decoding the first latent reasoning step, and on the right are the results
+    of the second latent step. Figure taken from [1].'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Question**:'
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: ''
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: “Every grimpus is a yimpus. Every worpus is a jelpus. Every zhorpus is a sterpus.
+    Every impus is a hilpus. Every jompus is a …grimpus is a gwompus. Every rempus
+    is a gorpus. Alex is a sterpus. Every zhorpus is a rompus. Is Alex a gorpus or
+    bompus?”
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: ''
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: '**Reasoning Steps:**'
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: ''
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: 1.”Alex is a grimpus.”
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: ''
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: 2\. “Every grimpus is a rorpus.”
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: ''
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: 3.”Every rorpus is a bompus.”
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: ''
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: 'Answer: “Alex is a bompus.”'
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: The probability for each option can be obtained through the multiplication of
+    every token’s probability, as depicted in Figure 4\. Here we show the state of
+    the search tree after one latent thought (left), and after two (right).
+  prefs: []
+  type: TYPE_NORMAL
+- en: We can see from the total calculated probabilities that in step one, the least
+    probable option (0.01) is sterpus, while the second probable option is grimpus
+    (0.32), which is the correct first step of reasoning in this case. When the search
+    tree is updated with information from the second thought, the node for sterpus
+    is completely disregarded, and the new node with the highest probability is rorpus,
+    which is the correct second reasoning step.
+  prefs: []
+  type: TYPE_NORMAL
+- en: This proves that Coconut has the power of including various next steps in its
+    reasoning process, prioritizing more important steps as we go (similar to grimpus
+    in step one) and disregarding less relevant ones (sterpus in step one). This shows
+    that Coconut has the ability to navigate several thoughts in a tree manner, until
+    it reaches its final conclusion.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '* * *'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Conclusion
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: In this post, we have discussed Coconut, a new reasoning paradigm elevating
+    LLMs from the necessity of “thinking” in language space, and utilizing the latent
+    space instead. We have discussed Coconut’s significant performance compared to
+    other reasoning methods, covered the importance of multi-stage training, and given
+    examples to prove and understand how the latent reasoning process works under
+    the hood.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In my opinion, Coconut addresses an interesting research topic, sparking new
+    exploration into latent reasoning approaches, paving the way for the creation
+    of more sophisticated machine reasoning models that are not bound by language
+    syntax.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '* * *'
+  prefs: []
+  type: TYPE_NORMAL
+- en: References
+  prefs:
+  - PREF_H4
+  type: TYPE_NORMAL
+- en: '[1] S. Hao, S. Sukhbaatar, D. Su, X. Li, Z. Hu, J. Weston and Y. Tian, *Training
+    Large Language Models to Reason in a Continuous Latent Space* (2024), arXiv preprint
+    arXiv:2412.06769'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[2] J. Wei, X. Wang, D. Schuurmans, M. Bosma, B. Ichter, F. Xia, E. Chi, Q.
+    Le and D. Zhou, *Chain-of-Thought Prompting Elicits Reasoning in Large Language
+    Models* (2022), arXiv preprint arXiv:2201.11903'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[3] Y. Deng, Y. Choi and S. Shieber, *From Explicit CoT to Implicit CoT: Learning
+    to Internalize CoT Step by Step* (2024), arXiv preprint arXiv:2405.14838'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[4] K. Cobbe, V. Kosaraju, M. Bavarian, M. Chen, H. Jun, L. Kaiser, M. Plappert,
+    J. Tworek, J. Hilton, R. Nakano, C. Hesse and J. Schulman, *Training Verifiers
+    to Solve Math Word Problems* (2021), arXiv preprint arXiv:2110.14168'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[5] A. Saparov and H. He, *Language Models Are Greedy Reasoners: A Systematic
+    Formal Analysis of Chain-of-Thought* (2022), arXiv preprint arXiv:2210.01240'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[6] S. Goyal, Z. Ji, A. S. Rawat, A. K. Menon, S. Kumar and V. Nagarajan, *Think
+    Before You Speak: Training Language Models With Pause Tokens* (2024), arXiv preprint
+    arXiv:2310.02226'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[7] J. Pfau, W. Merrill and S. R. Bowman, *Let’s Think Dot by Dot: Hidden Computation
+    in Transformer Language Models* (2024), arXiv preprint arXiv:2404.15758'
+  prefs: []
+  type: TYPE_NORMAL

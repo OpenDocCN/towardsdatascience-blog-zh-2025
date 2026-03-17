@@ -1,0 +1,308 @@
+- en: Anatomy of a Parquet File
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 原文：[https://towardsdatascience.com/anatomy-of-a-parquet-file/](https://towardsdatascience.com/anatomy-of-a-parquet-file/)
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: 'In recent years, Parquet has become a standard format for data storage in Big
+    Data ecosystems. Its column-oriented format offers several advantages:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Faster query execution when only a subset of columns is being processed
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Quick calculation of statistics across all data
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Reduced storage volume thanks to efficient compression
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: When combined with storage frameworks like Delta Lake or Apache Iceberg, it
+    seamlessly integrates with query engines (e.g., Trino) and data warehouse compute
+    clusters (e.g., Snowflake, BigQuery). In this article, the content of a Parquet
+    file is dissected using mainly standard Python tools to better understand its
+    structure and how it contributes to such performances.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Writing Parquet file(s)
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: To produce Parquet files, we use PyArrow, a Python binding for Apache Arrow
+    that stores dataframes in memory in columnar format. PyArrow allows fine-grained
+    parameter tuning when writing the file. This makes PyArrow ideal for Parquet manipulation
+    (one can also simply use [Pandas](https://pandas.pydata.org/docs/reference/api/pandas.DataFrame.to_parquet.html)).
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE0]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE1]'
+  prefs: []
+  type: TYPE_PRE
+- en: The output clearly reflects a columns-oriented storage, unlike Pandas, which
+    usually displays a traditional “row-wise” table.
+  prefs: []
+  type: TYPE_NORMAL
+- en: How is a Parquet file stored?
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'Parquet files are generally stored in cheap object storage databases like S3
+    (AWS) or GCS (GCP) to be easily accessible by data processing pipelines. These
+    files are usually organized with a partitioning strategy by leveraging directory
+    structures:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE2]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'If `birth_year` and `city columns` are defined as partitioning keys, PyArrow
+    creates such a tree structure in the directory dataset:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE3]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The strategy enables partition pruning: when a query filters on these columns,
+    the engine can use folder names to read only the necessary files. This is why
+    the partitioning strategy is crucial for limiting delay, I/O, and compute resources
+    when handling large volumes of data (as has been the case for decades with traditional
+    relational databases).'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The pruning effect can be easily verified by counting the files opened by a
+    Python script that filters the birth year:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE4]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE5]'
+  prefs: []
+  type: TYPE_PRE
+- en: Only 23 files are read out of 100.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Reading a raw Parquet file
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: Let’s decode a raw Parquet file without specialized libraries. For simplicity,
+    the dataset is dumped into a single file without compression or encoding.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE6]'
+  prefs: []
+  type: TYPE_PRE
+- en: The first thing to know is that the binary file is framed by 4 bytes whose ASCII
+    representation is “PAR1”. The file is corrupted if this is not the case.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE7]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'As indicated in the [documentation](https://parquet.apache.org/docs/file-format/),
+    the file is divided into two parts: the “row groups” containing actual data, and
+    the footer containing metadata (schema below).'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/75b045e4fccf317e1162173e45997edf.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: The footer
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: The size of the footer is indicated in the 4 bytes preceding the end marker
+    as an unsigned integer written in “little endian” format (noted “<I” for the `unpack`
+    function).
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE8]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE9]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The footer information is encoded in a cross-language serialization format
+    called [Apache Thrift](https://thrift.apache.org/). Using a human-readable but
+    verbose format like JSON and then translating it into binary would be less efficient
+    in terms of memory usage. With Thrift, one can declare data structures as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE10]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'On the basis of this declaration, Thrift can generate Python code to decode
+    byte strings with such data structure (it also generates code to perform the encoding
+    part). The thrift file containing all the data structures implemented in a Parquet
+    file can be downloaded [here](https://github.com/apache/parquet-format/blob/master/src/main/thrift/parquet.thrift).
+    After having installed the thrift binary, let’s run:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE11]'
+  prefs: []
+  type: TYPE_PRE
+- en: The generated Python code is placed in the “gen-py” folder. The footer’s data
+    structure is represented by the FileMetaData class – a Python class automatically
+    generated from the Thrift schema. Using Thrift’s Python utilities, binary data
+    is parsed and populated into an instance of this FileMetaData class.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE12]'
+  prefs: []
+  type: TYPE_PRE
+- en: The footer contains extensive information about the file’s structure and content.
+    For instance, it accurately tracks the number of rows in the generated dataframe.
+    These rows are all contained within a single “row group.” *But what is a “row
+    group?”*
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Row groups**'
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: Unlike purely column-oriented formats, Parquet employs a hybrid approach. Before
+    writing column blocks, the dataframe is first partitioned vertically into row
+    groups (the parquet file we generated is too small to be split in multiple row
+    groups).
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/d64902ec96b88a88ec01847543bfac74.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'This hybrid structure offers several advantages:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Parquet calculates statistics (such as min/max values) for each column within
+    each row group. These statistics are crucial for query optimization, allowing
+    query engines to skip entire row groups that don’t match filtering criteria. For
+    example, if a query filters for `birth_year > 1955` and a row group’s maximum
+    birth year is 1954, the engine can efficiently skip that entire data section.
+    This optimisation is called “predicate pushdown”. Parquet also stores other useful
+    statistics like distinct value counts and null counts.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE13]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE14]'
+  prefs: []
+  type: TYPE_PRE
+- en: Row groups enable parallel processing of data (particularly valuable for frameworks
+    like Apache Spark). The size of these row groups can be configured based on the
+    computing resources available (using the `row_group_size` property in function
+    `write_table` when using PyArrow).
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '[PRE15]'
+  prefs: []
+  type: TYPE_PRE
+- en: Even if this is not the primary objective of a column format, Parquet’s hybrid
+    structure maintains reasonable performance when reconstructing complete rows.
+    Without row groups, rebuilding an entire row might require scanning the entirety
+    of each column which would be extremely inefficient for large files.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Data Pages**'
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: 'The smallest substructure of a Parquet file is the page. It contains a sequence
+    of values from the same column and, therefore, of the same type. The choice of
+    page size is the result of a trade-off:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Larger pages mean less metadata to store and read, which is optimal for queries
+    with minimal filtering.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Smaller pages reduce the amount of unnecessary data read, which is better when
+    queries target small, scattered data ranges.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '![](../Images/2ff8865e4ebf5ccf50d957ed95996b3d.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Now let’s decode the contents of the first page of the column dedicated to addresses
+    whose location can be found in the footer (given by the `data_page_offset` attribute
+    of the right `ColumnMetaData`) . Each page is preceded by a Thrift `PageHeader`
+    object containing some metadata. The offset actually points to a Thrift binary
+    representation of the page metadata that precedes the page itself. The Thrift
+    class is called a `PageHeader` and can also be found in the `gen-py` directory.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 💡 *Between the PageHeader and the actual values contained within the page, there
+    may be a few bytes dedicated to implementing the* [*Dremel*](https://static.googleusercontent.com/media/research.google.com/fr//pubs/archive/36632.pdf)
+    *format, which allows encoding* [*nested data structures*](https://parquet.apache.org/docs/file-format/nestedencoding/)*.
+    Since our data has a regular tabular format and the values are not nullable, these
+    bytes are skipped when writing the file (*[*https://parquet.apache.org/docs/file-format/data-pages/*](https://parquet.apache.org/docs/file-format/data-pages/)*).*
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: '[PRE16]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE17]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The generated values finally appear, in plain text and not encoded (as specified
+    when writing the Parquet file). However, to optimize the columnar format, it is
+    recommended to use one of the following encoding algorithms: dictionary encoding,
+    run length encoding (RLE), or delta encoding (the latter being reserved for int32
+    and int64 types), followed by compression using gzip or snappy (available codecs
+    are listed [here](https://parquet.apache.org/docs/file-format/data-pages/compression/)).
+    Since encoded pages contain similar values (all addresses, all decimal numbers,
+    etc.), compression ratios can be particularly advantageous.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'As documented in the [specification](https://parquet.apache.org/docs/file-format/data-pages/encodings/),
+    when character strings (BYTE_ARRAY) are not encoded, each value is preceded by
+    its size represented as a 4-byte integer. This can be observed in the previous
+    output:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/a8be0e719ef5e64a21420ddb32463c99.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'To read all the values (for example, the first 10), the loop is rather simple:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE18]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE19]'
+  prefs: []
+  type: TYPE_PRE
+- en: And there we have it! We have successfully recreated, in a very simple way,
+    how a specialized library would read a Parquet file. By understanding its building
+    blocks including headers, footers, row groups, and data pages, we can better appreciate
+    how features like predicate pushdown and partition pruning deliver such impressive
+    performance benefits in data-intensive environments. I am convinced knowing how
+    Parquet works under the hood helps making better decisions about storage strategies,
+    compression choices, and performance optimization.
+  prefs: []
+  type: TYPE_NORMAL
+- en: All the code used in this article is available on my GitHub repository at [https://github.com/kili-mandjaro/anatomy-parquet](https://github.com/kili-mandjaro/anatomy-parquet),
+    where you can explore more examples and experiment with different Parquet file
+    configurations.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Whether you are building data pipelines, optimizing query performance, or simply
+    curious about data storage formats, I hope this deep dive into Parquet’s inner
+    structures has provided valuable insights for your data engineering journey.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '*All images are by the author.*'
+  prefs: []
+  type: TYPE_NORMAL

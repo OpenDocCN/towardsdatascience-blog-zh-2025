@@ -1,0 +1,429 @@
+- en: Federated Learning and Custom Aggregation Schemes
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 原文：[https://towardsdatascience.com/federated-learning-and-custom-aggregation-schemes/](https://towardsdatascience.com/federated-learning-and-custom-aggregation-schemes/)
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: <mdspan datatext="el1760590418549" class="mdspan-comment">Who Should</mdspan>
+    Read This Document?
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: This document is for **machine learning practitioners, researchers, and engineers**
+    interested in exploring **custom aggregation schemes** in federated learning.
+    It is particularly useful for those who want to design, test, and analyze new
+    aggregation methods in real, distributed environments.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Introduction
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: '**Machine Learning (ML)** continues to drive innovation across diverse domains
+    such as healthcare, finance, and defense. However, while ML models rely heavily
+    on large volumes of centralized high-quality data, concerns around data privacy,
+    ownership, and regulatory compliance remain significant barriers.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Federated Learning (FL)** addresses these challenges by enabling model training
+    across distributed datasets, allowing data to remain decentralized while still
+    contributing to a shared global model. This decentralized approach makes FL especially
+    valuable in sensitive domains where centralizing data is impractical or restricted.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: To fully leverage FL, understanding and designing **custom aggregation** schemes
+    is important. Effective aggregation not only influences model accuracy and robustness
+    but also handles issues such as data heterogeneity, client reliability, and adversarial
+    behavior. Analyzing and building tailored aggregation methods is, therefore, a
+    key step toward optimizing performance and ensuring fairness in federated settings.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In my [previous article](https://towardsdatascience.com/fighting-back-against-attacks-in-federated-learning/),
+    we explored the cyberattack landscape in federated learning and how it differs
+    from traditional centralized ML. That discussion introduced [Scaleout](https://www.scaleoutsystems.com/)’s
+    open-source [attack simulation toolkit](https://github.com/Dackeval/fedn_atttack_simulator/tree/K8),
+    which helps researchers and practitioners analyze the impact of various attack
+    types and evaluate the limitations of existing mitigation schemes, especially
+    under challenging conditions such as extreme data imbalance, non-IID distributions,
+    and the presence of stragglers or late joiners.
+  prefs: []
+  type: TYPE_NORMAL
+- en: However, that first article did not cover how to design, implement, and test
+    your own schemes in live, distributed environments.
+  prefs: []
+  type: TYPE_NORMAL
+- en: This may sound complex, but this article offers a quick, step-by-step guide
+    covering the basic concepts needed to design and develop custom aggregation schemes
+    for real-world federated settings.
+  prefs: []
+  type: TYPE_NORMAL
+- en: What are *Server Functions? *
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: '**Custom Aggregators** are functions that run on the server side of a federated
+    learning setup. They define how model updates from clients are processed, such
+    as aggregation, validation, or filtering, before producing the next global model.
+    **Server Function** is the term used in the Scaleout Edge AI platform to refer
+    to custom aggregators.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Beyond simple aggregation, Server Functions enable researchers and developers
+    to design new schemes to include privacy preservation, fairness, robustness, and
+    convergence efficiency. By customizing this layer, one can also experiment with
+    innovative defense mechanisms, adaptive aggregation rules, or optimization methods
+    tailored to specific data and deployment scenarios.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Server Functions are the mechanism in the Scaleout Edge AI platform for implementing
+    custom aggregation schemes. In addition to this flexibility, the platform includes
+    four built-in aggregators: FedAvg (default), FedAdam (FedOpt), FedYogi(FedOpt),
+    and FedAdaGrad(FedOpt). The implementation of the methods from the [FedOpt family](https://arxiv.org/pdf/2003.00295.pdf)
+    follows the approach described in the paper. For more details, please refer to
+    the [platform’s documentation](https://docs.scaleoutsystems.com/en/stable/aggregators.html).'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Building A Custom Aggregation Scheme
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: In this blog post, **I will demonstrate how you can build and test your own
+    attack mitigation scheme using Scaleout’s Edge AI platform.** One of the key enablers
+    for this is the platform’s *Server Function* feature.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Within the scope of this post, the focus will be on how to develop and execute
+    a custom aggregation process in a geographically distributed setting. I will skip
+    the basic setup and assume you are already familiar with the Scaleout platform.
+    If you’re just getting started, here are some useful resources:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Quickstart FL Example: [https://docs.scaleoutsystems.com/en/stable/quickstart.html](https://docs.scaleoutsystems.com/en/stable/quickstart.html)'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Framework Architecture: [https://docs.scaleoutsystems.com/en/stable/architecture.html](https://docs.scaleoutsystems.com/en/stable/architecture.html)'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Client API Reference: [https://docs.scaleoutsystems.com/en/stable/apiclient.html](https://docs.scaleoutsystems.com/en/stable/apiclient.html) Server'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Function Guide: [https://docs.scaleoutsystems.com/en/stable/serverfunctions.html](https://docs.scaleoutsystems.com/en/stable/serverfunctions.html)'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Example: Label-Flipping Attack'
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: Let’s consider a concrete attack, Label-Flipping. In this scenario, a malicious
+    client intentionally alters the labels in its local dataset (for example, flipping
+    “cat” to “dog”). When these poisoned updates are sent to the server, the global
+    model learns incorrect patterns, leading to reduced accuracy and reliability.
+  prefs: []
+  type: TYPE_NORMAL
+- en: For this experiment, we used the [MNIST](http://yann.lecun.com/exdb/mnist/)
+    open source dataset, divided into six partitions, each assigned to a separate
+    client. **client-6 acts as a malicious participant by flipping labels in its local
+    data, using it for training, and sending the resulting local model to the aggregator.**
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/56dd743d77893793def026164e336062.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Connected Clients View on Scaleout’s Edge Platform (Image created by the author)
+  prefs: []
+  type: TYPE_NORMAL
+- en: '| Malicious Client | ID |'
+  prefs: []
+  type: TYPE_TB
+- en: '| --- | --- |'
+  prefs: []
+  type: TYPE_TB
+- en: '| client-6 | 07505d04-08a5-4453-ad55-d541e9e4ef57 |'
+  prefs: []
+  type: TYPE_TB
+- en: Here you can see an example of a data point (a grayscale image) from client-6,
+    where the labels have been intentionally flipped. By altering the labels, this
+    client attempts to corrupt the global model during the aggregation process.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/281ed22271a61368692bdb787ad319c5.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: As an example, in Client-6’s modified dataset, the label of an image originally
+    marked as *9* was changed to *5* (image created by the author).
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Task**'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Prevent client-6 from interfering with the development of the global model.**'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Mitigation with Cosine Similarity
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'To counter this, we use a **cosine similarity-based approach** as an example.
+    The idea is straightforward: compare each client’s update vector with the global
+    model (Step 1). If the similarity score is below a predefined threshold (s̄ᵢ <
+    𝓣), the update is likely from a malicious client (Steps 2–4). In the final step
+    (Step 5), that client’s contribution is excluded from the aggregation process,
+    which in this case uses a weighted federated averaging scheme (FedAVG).'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/d7006b6d4a9beebb7bce923def118bc8.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: A mathematical representation of the implemented method (image created by the
+    author).
+  prefs: []
+  type: TYPE_NORMAL
+- en: '***Note**: This is a straightforward attack mitigation scheme, primarily intended
+    to demonstrate the flexibility in supporting custom aggregation in realistic federated
+    learning scenarios. The same scheme may not be effective for highly challenging
+    cases, such as those with imbalanced datasets or non-IID conditions.*'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The **Python implementation** below illustrates the custom aggregator workflow:
+    identifying online clients (Step 1), computing cosine-similarity scores (Steps
+    2–3), excluding the malicious client (Step 4), and performing federated weighted
+    averaging (Step 5).'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Step 1**'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE0]'
+  prefs: []
+  type: TYPE_PRE
+- en: '**Step 2 and 3**'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE1]'
+  prefs: []
+  type: TYPE_PRE
+- en: '**Step 4**'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE2]'
+  prefs: []
+  type: TYPE_PRE
+- en: '**Step 5**'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE3]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Full code is available at Github: [https://github.com/sztoor/server_functions_cosine_similarity_example.git](https://github.com/sztoor/server_functions_cosine_similarity_example.git)'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Step-by-Step Activation of Server Functions
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: Log in to **Scaleout Studio** and create a new project.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Upload the **Compute Package** and **Seed Model** to the project.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Connect clients to the Studio by installing Scaleout’s *client-side libraries*
+    via **pip** ( *# pip install fedn*) . I have connected six clients.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '**Note:** For Steps 1–3, please refer to the [Quick Start Guide](https://docs.scaleoutsystems.com/en/stable/quickstart.html)
+    for detailed instructions.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Clone the Github repository from the provided link. This will give you two
+    Python files:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '*server_functions.py* – contains the cosine similarity–based aggregation scheme.'
+  prefs:
+  - PREF_IND
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '*scaleout_start_session.py* – connects to the Studio, pushes the local server_function,
+    and starts a training session based on predefined settings (e.g., 5 rounds, 180-second
+    round timeout).'
+  prefs:
+  - PREF_IND
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Execute scaleout_start_session.py script.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: For full details about these steps, refer to the official [*Server Functions*](https://docs.scaleoutsystems.com/en/stable/serverfunctions.html)
+    Guide.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Result and Discussion
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: The steps involved when running *scaleout_start_session.py* are outlined below.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In this setup, six clients were connected to the studio, with **client-6** using
+    a deliberately flipped dataset to simulate malicious behavior. The logs from Scaleout
+    Studio provide a detailed view of the *Server Function* execution and how the
+    system responds during aggregation. In **Section 1**, the logs show that the server
+    successfully received models from all clients, confirming that communication and
+    model upload were functioning as expected. **Section 2** presents the similarity
+    scores for each client. These scores quantify how closely each client’s update
+    aligns with the overall trend, providing a metric for detecting anomalies.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Section 1**'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE4]'
+  prefs: []
+  type: TYPE_PRE
+- en: '**Section 2**'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE5]'
+  prefs: []
+  type: TYPE_PRE
+- en: '**Section 3**'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE6]'
+  prefs: []
+  type: TYPE_PRE
+- en: '**Section 4**'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE7]'
+  prefs: []
+  type: TYPE_PRE
+- en: '**Section 3** highlights that **client-6 (ID …e4ef57)** was identified as malicious.
+    The warning message indicates that this client would be excluded from the aggregation
+    process. This exclusion is justified by its extremely low similarity score of
+    –**0.1346**, the lowest among all clients, and by the threshold value (𝓣) set
+    in the server function. By removing client-6, the aggregation step ensures that
+    the global model is not adversely affected by outlier updates. **Section 4** then
+    lists the client IDs included in the aggregation, confirming that only the trusted
+    clients contributed to the updated global model.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Task Accomplished**'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**client-6 has been successfully excluded from the aggregation process using
+    the custom aggregation scheme.**'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Together with the log messages, the platform provides rich, per-client insights
+    that enhance understanding of client behavior. These include per-client training
+    loss and accuracy, global model performance metrics, and training times for each
+    client. Another key feature is the model trail, which tracks model updates over
+    time and enables a detailed analysis of how individual clients impact the global
+    model. Together, the sections and supplementary data provide a comprehensive view
+    of client contributions, clearly illustrating the distinction between normal clients
+    and the malicious **client-6 (ID …e4ef57)**, and demonstrating the effectiveness
+    of the server function in mitigating potential attacks.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/a5b9457465af679e402dfb92e15bb8a5.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Training accuracy for each client. Client-6 (ID …e4ef57) achieved the lowest
+    accuracy
+  prefs: []
+  type: TYPE_NORMAL
+- en: (image created by the author).
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/3d1969918d69d75b46c88f9f2e0bc824.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Training loss across all clients. Client-6 (ID …e4ef57) exhibits the highest
+    loss value (image created by the author).
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/74ec16133ab62579223178e63fb84359.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Global model accuracy over five consecutive rounds (image created by the author).
+  prefs: []
+  type: TYPE_NORMAL
+- en: The client-side training accuracy and loss plots highlight the performance of
+    each client. They show that client-6 deviates significantly from the others. **Including
+    it in the aggregation process would harm the global model’s performance.**
+  prefs: []
+  type: TYPE_NORMAL
+- en: Summary
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: This blog post highlights the importance of custom aggregators to address special
+    needs and enables the development of robust, efficient, and highly accurate models
+    in federated machine learning settings. It also emphasizes the value of leveraging
+    existing building blocks rather than starting entirely from scratch and spending
+    significant time on components that are not central to the core idea.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Federated Learning offers a powerful way to unlock datasets that are difficult
+    or even impossible to centralize in a single location. Studies like this demonstrate
+    that while the approach is highly promising, it also requires a careful understanding
+    of the underlying systems. Fortunately, there are ready-to-use platforms that
+    make it easier to explore real-world use cases, experiment with different aggregation
+    schenes, and design solutions tailored to specific needs.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Useful Links
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: '[Custom Server Functions in Scaleout Studio](https://www.youtube.com/watch?v=Rnfhfqy_Tts)'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '[Getting Started with Scaleout Studio](https://www.youtube.com/watch?v=tDknBCZGnTg)'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '[Federated Learning Explained: Concepts, Benefits, and Practical Applications](https://www.youtube.com/watch?v=MM7qA9VCykM)'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '[Cross-Device Federated Machine Learning Using Minimal Resources](https://www.youtube.com/watch?v=gWpcGdkcW20)'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '[Scalable federated machine learning with FEDn](https://ieeexplore.ieee.org/abstract/document/9826069), *2022
+    22nd IEEE International Symposium on Cluster, Cloud and Internet Computing (CCGrid)*.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'Author’s Details:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[Salman Toor](https://www.uu.se/en/contact-and-organisation/staff?query=N7-398)'
+  prefs: []
+  type: TYPE_NORMAL
+- en: CTO and Co-founder, [Scaleout](https://www.scaleoutsystems.com/).
+  prefs: []
+  type: TYPE_NORMAL
+- en: Associate Professor
+  prefs: []
+  type: TYPE_NORMAL
+- en: Department of Information Technology,
+  prefs: []
+  type: TYPE_NORMAL
+- en: Uppsala University, Sweden
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[LinkedIn](https://www.linkedin.com/in/salman-toor-1104b84/) [Google Scholar](https://scholar.google.com/citations?user=PIGlWyYAAAAJ&hl=en)'
+  prefs: []
+  type: TYPE_NORMAL

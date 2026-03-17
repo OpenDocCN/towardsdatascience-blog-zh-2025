@@ -1,0 +1,278 @@
+- en: Debugging the Dreaded NaN
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 原文：[https://towardsdatascience.com/debugging-the-dreaded-nan/](https://towardsdatascience.com/debugging-the-dreaded-nan/)
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: You are training your latest AI model, anxiously watching as the loss steadily
+    decreases when suddenly — boom! Your logs are flooded with NaNs (Not a Number)
+    — your model is irreparably corrupted and you’re left staring at your screen in
+    despair. To make matters worse, the NaNs don’t appear consistently. Sometimes
+    your model trains just fine; other times, it fails inexplicably. Sometimes it
+    will crash immediately, sometimes after many days of training.
+  prefs: []
+  type: TYPE_NORMAL
+- en: NaNs in deep learning workloads are amongst the most frustrating issues to encounter.
+    And because they often appear sporadically — triggered by a specific combination
+    of model state, input data, and stochastic factors — they can be incredibly difficult
+    to reproduce and debug.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Given the considerable cost of training AI models and the potential waste caused
+    by NaN failures, it is recommended to have dedicated tools for capturing and analyzing
+    NaN occurrences. In a [previous post](https://contributor.insightmediagroup.io/capturing-a-training-state-in-tensorflow-7d643e3fb20b/),
+    we discussed the challenge of debugging NaNs in a TensorFlow training workload.
+    We proposed an efficient scheme for capturing and reproducing NaNs and shared
+    a sample TensorFlow implementation. In this post, we adopt and demonstrate a similar
+    mechanism for debugging NaNs in PyTorch workloads. The general scheme is as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'On each training step:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Save a copy of the training input batch.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Check the gradients for NaN values. If any appear, save a checkpoint with the
+    current model weights before the model is corrupted. Also, save the input batch
+    and, if necessary, the stochastic state. Discontinue the training job.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Reproduce and debug the NaN occurrence by loading the saved experiment state.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Although this scheme can be easily implemented in native PyTorch, we will take
+    the opportunity to demonstrate some of the conveniences of [PyTorch Lightning](https://github.com/Lightning-AI/pytorch-lightning) —
+    a powerful open-source framework designed to streamline the development of machine
+    learning (ML) models. Built on PyTorch, Lightning abstracts away many of the boiler-plate
+    components of an ML experiment, such as training loops, data distribution, logging,
+    and more, enabling developers to focus on the core logic of their models.
+  prefs: []
+  type: TYPE_NORMAL
+- en: To implement our NaN capturing scheme, we will use [Lightning’s callback](https://lightning.ai/docs/pytorch/stable/extensions/callbacks.html) interface
+    — a dedicated structure that enables inserting custom logic at specific points
+    during the flow of execution.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Importantly, please do not view our choice of Lightning or any other tool or
+    technique that we mention as an endorsement of its use. The code that we will
+    share is intended for demonstrative purposes — please do not rely on its correctness
+    or optimality.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Many thanks to [Rom Maltser](https://www.linkedin.com/in/rom-maltser/?originalSubdomain=il) for
+    his contributions to this post.
+  prefs: []
+  type: TYPE_NORMAL
+- en: NaNCapture Callback
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: To implement our NaN capturing solution, we create a NaNCapture Lightning callback.
+    The constructor receives a directory path for storing/loading checkpoints and
+    sets up the NaNCapture state. We also define utilities for checking for NaNs,
+    storing checkpoints, and halting the training job.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE0]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Callback Function: on_train_batch_start'
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: We begin by implementing the [on_train_batch_start](https://lightning.ai/docs/pytorch/stable/extensions/callbacks.html#on-train-batch-start) hook
+    to store a copy of each input batch. In case of a NaN event, this batch will be
+    stored in the checkpoint.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Callback Function: on_before_optimizer_step'
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: Next we implement the [on_before_optimizer_step](https://lightning.ai/docs/pytorch/stable/extensions/callbacks.html#on-before-optimizer-step) hook.
+    Here, we check for NaN entries in all of the gradient tensors. If found, we store
+    a checkpoint with the uncorrupted model weights and halt the training.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE1]'
+  prefs: []
+  type: TYPE_PRE
+- en: Capturing the Training State
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: 'To enable reproducibility, we include the NaNCapture state in the checkpoint
+    by appending it to the training state dictionary. Lightning provides dedicated
+    utilities for saving and loading a [callback state](https://lightning.ai/docs/pytorch/stable/extensions/callbacks.html#save-callback-state):'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE2]'
+  prefs: []
+  type: TYPE_PRE
+- en: Reproducing the NaN Occurrence
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: We have described how our NaNCapture callback can be used to store the training
+    state that resulted in a NaN, but how do we reload this state in order to reproduce
+    the issue and debug it? To accomplish this, we leverage Lightning’s dedicated
+    data loading class, [LightningDataModule](https://lightning.ai/docs/pytorch/stable/data/datamodule.html).
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'DataModule Function: on_before_batch_transfer'
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: 'In the code block below, we extend the [LightningDataModule](https://lightning.ai/docs/pytorch/stable/data/datamodule.html) class
+    to allow injecting a fixed training input batch. This is achieved by overriding
+    the [on_before_batch_transfer](https://lightning.ai/docs/pytorch/stable/data/datamodule.html#on-before-batch-transfer) hook,
+    as shown below:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE3]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Callback Function: on_train_start'
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: The final step is modifying the [on_train_start](https://lightning.ai/docs/pytorch/stable/extensions/callbacks.html#on-train-start) hook
+    of our NaNCapture callback to inject the stored training batch into the [LightningDataModule](https://lightning.ai/docs/pytorch/stable/data/datamodule.html).
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE4]'
+  prefs: []
+  type: TYPE_PRE
+- en: In the next section we will demonstrate the end-to-end solution using a toy
+    example.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Toy Example
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: To test our new callback, we create a [resnet50](https://pytorch.org/vision/main/models/generated/torchvision.models.resnet50)-based
+    image classification model with a loss function deliberately designed to trigger
+    NaN occurrences.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Instead of using the standard [CrossEntropy](https://pytorch.org/docs/stable/generated/torch.nn.CrossEntropyLoss.html) loss,
+    we compute [binary_cross_entropy_with_logits](https://pytorch.org/docs/stable/generated/torch.nn.functional.binary_cross_entropy_with_logits.html) for
+    each class independently and divide the result by the number of samples belonging
+    to that class. Inevitably, we will encounter a batch in which one or more classes
+    are missing, leading to a divide-by-zero operation, resulting in NaN values and
+    corrupting the model.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The implementation below follows Lightning’s [introductory tutorial](https://lightning.ai/docs/pytorch/stable/starter/introduction.html).
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE5]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'We define a synthetic dataset and encapsulate it in our `InjectableDataModule`
+    class:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE6]'
+  prefs: []
+  type: TYPE_PRE
+- en: Finally, we initialize a Lightning [Trainer](https://lightning.ai/docs/pytorch/stable/common/trainer.html) with
+    our NaNCapture callback and call trainer.fit with our Lightning module and Lightning
+    DataModule.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE7]'
+  prefs: []
+  type: TYPE_PRE
+- en: After a number of training steps, a NaN event will occur. At this point a checkpoint
+    is saved with the full training state and the training is halted.
+  prefs: []
+  type: TYPE_NORMAL
+- en: When the script is run again the exact state that caused the NaN will be reloaded
+    allowing us to easily reproduce the issue and debug its root cause.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Performance Overhead
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: To assess the impact of our NaNCapture callback on runtime performance, we modified
+    our experiment to use [CrossEntropyLoss](https://pytorch.org/docs/stable/generated/torch.nn.CrossEntropyLoss.html) (to
+    avoid NaNs) and measured the average throughput when running with and without
+    NaNCapture callback. The experiments were conducted on an [NVIDIA L40S GPU](https://www.nvidia.com/en-eu/data-center/l40s/),
+    with a [PyTorch 2.5.1 Docker](https://hub.docker.com/layers/pytorch/pytorch/2.5.1-cuda12.4-cudnn9-devel/images/sha256-14611869895df612b7b07227d5925f30ec3cd6673bad58ce3d84ed107950e014) image.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/074229c165b441d786daf55b0ca11c0b.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Overhead of NaNCapture Callback (by Author)
+  prefs: []
+  type: TYPE_NORMAL
+- en: For our toy model, the NaNCapture callback adds a minimal 1.5% overhead to the
+    runtime performance — a small price to pay for the valuable debugging capabilities
+    it provides.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Naturally, the actual overhead will depend on the specifics of the model and
+    runtime environment.
+  prefs: []
+  type: TYPE_NORMAL
+- en: How to Handle Stochasticity
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: The solution we have described henceforth will succeed in reproducing the training
+    state provided that the model does not include any randomness. However, introducing
+    stochasticity into the model definition is often critical for convergence. A common
+    example of a stochastic layer is [torch.nn.Dropout](https://pytorch.org/docs/stable/generated/torch.nn.Dropout.html).
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'You may find that your NaN event depends on the precise state of randomness
+    when the failure occurred. Consequently, we would like to enhance our NaNCapture
+    callback to capture and restore the random state at the point of failure. The
+    random state is determined by a number of libraries. In the code block below,
+    we attempt to capture the full state of randomness:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE8]'
+  prefs: []
+  type: TYPE_PRE
+- en: Importantly, setting the random state may not guarantee full [reproducibility](https://pytorch.org/docs/stable/notes/randomness.html#reproducibility).
+    The GPU owes its power to its massive parallelism. In some GPU operations, multiple
+    threads may read or write concurrently to the same memory locations resulting
+    in nondeterminism. PyTorch allows for some control over this via its [use_deterministic_algorithms](https://pytorch.org/docs/stable/generated/torch.use_deterministic_algorithms.html),
+    but this may impact the runtime performance. Additionally, there is a possibility
+    that the NaN event will not reproduced once this configuration setting is changed.
+    Please see the PyTorch documentation on [reproducibility](https://pytorch.org/docs/stable/notes/randomness.html#reproducibility) for
+    more details.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Summary
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: Encountering NaN failures is one of the most discouraging events that can happen
+    in machine learning development. These errors not only waste valuable computation
+    and development resources, but often indicate fundamental issues in the model
+    architecture or experiment design. Due to their sporadic, sometimes elusive nature,
+    debugging NaN failures can be a nightmare.
+  prefs: []
+  type: TYPE_NORMAL
+- en: This post introduced a proactive approach for capturing and reproducing NaN
+    errors using a dedicated Lightning callback. The solution we shared is a proposal
+    which can be modified and extended for your specific use case.
+  prefs: []
+  type: TYPE_NORMAL
+- en: While this solution may not address every possible NaN scenario, it significantly
+    reduces debugging time when applicable, potentially saving developers countless
+    hours of frustration and wasted effort.
+  prefs: []
+  type: TYPE_NORMAL

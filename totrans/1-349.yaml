@@ -1,0 +1,338 @@
+- en: How to Import Pre-Annotated Data into Label Studio and Run the Full Stack with
+    Docker
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 原文：[https://towardsdatascience.com/how-to-import-pre-annotated-data-into-label-studio-and-run-the-full-stack-with-docker/](https://towardsdatascience.com/how-to-import-pre-annotated-data-into-label-studio-and-run-the-full-stack-with-docker/)
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: <mdspan datatext="el1756253392400" class="mdspan-comment">Introduction</mdspan>
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: Dataset preparation for an object detection training workflow can take a long
+    time and often be frustrating. [Label Studio](https://labelstud.io), an open-source
+    data annotation tool, can lend a hand by providing an easy way to annotate datasets.
+    It supports a wide variety of annotation templates, including computer vision,
+    natural language processing, and audio or speech processing. However, we’ll focus
+    specifically on the object detection workflow.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'But what if you want to take advantage of pre-annotated open-source datasets,
+    such as the Pascal VOC dataset? In this article, I’ll show you how to easily import
+    those tasks into Label Studio’s format while setting up the entire stack — including
+    a PostgreSQL database, [MinIO](https://www.min.io/) object storage, an Nginx reverse
+    proxy, and the Label Studio backend. [MinIO](https://www.min.io/) is an S3-compatible
+    object storage service: you might use cloud-native storage in production, but
+    you can also run it locally for development and testing.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'In this tutorial, we’ll go through the following steps:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Convert Pascal VOC annotations** – transform bounding boxes from XML into
+    Label Studio tasks in JSON format.'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '**Run the full stack** – start Label Studio with PostgreSQL, MinIO, Nginx,
+    and the backend using Docker Compose.'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '**Set up a Label Studio project** – configure a new project inside the Label
+    Studio interface.'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '**Upload images and tasks to MinIO** – store your dataset in an S3-compatible
+    bucket.'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '**Connect MinIO to Label Studio** – add the cloud storage bucket to your project
+    so Label Studio can fetch images and annotations directly.'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Prerequisites
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: 'To follow this tutorial, make sure you have:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[**Docker and Docker Compose** installed and configured](https://docs.docker.com/desktop/setup/install/windows-install).'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '[The **Pascal VOC dataset** downloaded from Kaggle](https://www.kaggle.com/datasets/huanghanchina/pascal-voc-2012)
+    (Database Contents License).'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: (Optional) [Python 3.10 or higher](https://www.python.org/downloads) installed
+    on your system, which will be used for file conversion.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: (Optional) the **[AWS CLI](https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html)**
+    installed, if you want to automate object uploads to MinIO.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'From VOC to Label Studio: Preparing Annotations'
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: The Pascal VOC dataset has a folder structure where the train and test datasets
+    are already split. The *Annotations* folder contains the annotation files for
+    each image. In total, the training set includes 17,125 images, each with a corresponding
+    annotation file.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE0]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The XML snippet below, taken from one of the annotations, defines a bounding
+    box around an object labeled “person”. The box is specified using four pixel coordinates:
+    `xmin`, `ymin`, `xmax`, and `ymax`.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/332bdc38fe5ab76d5cafc17f84537e83.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: XML snippet from the Pascal VOC dataset (Image by Author)
+  prefs: []
+  type: TYPE_NORMAL
+- en: The illustration below shows the inner rectangle as the annotated bounding box,
+    defined by the top-left corner (`xmin`, `ymin`) and the bottom-right corner (`xmax`,
+    `ymax`), within the outer rectangle representing the image.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/f9305d8f47e16842380111a8bdf124c0.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Pascal VOC bounding box coordinates in pixel format (Image by Author)
+  prefs: []
+  type: TYPE_NORMAL
+- en: Label Studio expects each bounding box to be defined by its width, height, and
+    top-left corner, expressed as percentages of the image size. Below is a working
+    example of the converted JSON format for the annotation shown above.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE1]'
+  prefs: []
+  type: TYPE_PRE
+- en: As you can see in the JSON format, you also need to specify the location of
+    the image file — for example, a path in MinIO or an S3 bucket if you’re using
+    cloud storage.
+  prefs: []
+  type: TYPE_NORMAL
+- en: While preprocessing the data, I merged the entire dataset, even though it was
+    already divided into training and validation. This simulates a real-world scenario
+    where you typically begin with a single dataset and perform the splitting into
+    training and validation sets yourself before training.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Running the Full Stack with Docker Compose
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: I merged the `docker-compose.yml` and `docker-compose.minio.yml` files into
+    a simplified single configuration so the entire stack can run on the same network.
+    Both files were taken from the official [Label Studio GitHub repository](https://github.com/HumanSignal/label-studio).
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE2]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'This simplified Docker Compose file defines four core services with their volume
+    mappings:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**App** – runs the Label Studio backend itself.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Shares the **`mydata`** directory with Nginx, which stores projects, configurations,
+    and uploaded files.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'Uses a **bind mount**: `./mydata:/label-studio/data:rw` → maps a folder from
+    your host into the container.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Nginx** – acts as a reverse proxy for the Label Studio frontend and backend.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Shares the **`mydata`** directory with the App service.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**PostgreSQL (db)** – manages metadata and project information.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Stores persistent database files.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'Uses a **bind mount**: `${POSTGRES_DATA_DIR:-./postgres-data}:/var/lib/postgresql/data`.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**MinIO** – an S3-compatible object storage service.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Stores dataset objects such as images or JSON annotation tasks.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'Uses a **named volume**: `minio-data:/data`.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: When you mount host folders such as `./mydata` and `./postgres-data`, you need
+    to assign ownership on the host to the same user that runs inside the container.
+    Label Studio does not run as root — it uses a non-root user with **UID 1001**.
+    If the host directories are owned by a different user, the container won’t have
+    write access and you’ll run into *permission denied* errors.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'After creating these folders in your project directory, you can adjust their
+    ownership with:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE3]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Now that the directories are prepared, we can bring up the stack using Docker
+    Compose. Simply run:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE4]'
+  prefs: []
+  type: TYPE_PRE
+- en: It may take a few minutes to pull all the required images from Docker Hub and
+    set up Label Studio. Once the setup is complete, open [http://localhost:8080](http://localhost:8080)
+    in your browser to access the Label Studio interface. You need to create a new
+    account, and then you can log in with your credentials to access the interface.
+    You can enable a legacy API token by going to **Organization → API Token Settings**.
+    This token lets you communicate with the Label Studio API, which is especially
+    useful for automation tasks.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Set up a Label Studio project
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: Now we can create our first data annotation project on Label Studio, specifically
+    for an object detection workflow. But before starting to annotate your images,
+    you need to define the types of classes to choose from. In the Pascal VOC dataset,
+    there are 20 types of pre-annotated objects.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/468736d38cc3905335ede2f35d0ed309.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: XML-style labeling setup (Image by Author)
+  prefs: []
+  type: TYPE_NORMAL
+- en: Upload images and tasks to MinIO
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: You can open the MinIO user interface in your browser at **localhost:9000**,
+    and then log in using the credentials you specified under the relevant service
+    in the `docker-compose.yml` file.
+  prefs: []
+  type: TYPE_NORMAL
+- en: I created a bucket with folders, one of which is used for storing images and
+    another for JSON tasks formatted according to the instructions above.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/3ff2fa20054240b2eeeb0d82ab1f7bf0.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Screenshot of an example bucket in MinIO (Image by Author)
+  prefs: []
+  type: TYPE_NORMAL
+- en: We set up an S3-like service locally that allows us to simulate S3 cloud storage
+    without incurring any charges. If you want to transfer files to an S3 bucket on
+    AWS, it’s better to do this directly over the internet, considering the data transfer
+    costs. The good news is that you can also interact with your MinIO bucket using
+    the AWS CLI. To do this, you need to add a profile in `~/.aws/config` and provide
+    the corresponding credentials in `~/.aws/credentials` under the same profile name.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'And then, you can easily sync with your local folder using the following commands:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE5]'
+  prefs: []
+  type: TYPE_PRE
+- en: Connect MinIO to Label Studio
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: After all the data, including the images and annotations, has been uploaded,
+    we can move on to adding cloud storage to the project we created in the previous
+    step.
+  prefs: []
+  type: TYPE_NORMAL
+- en: From your project settings, go to **Cloud Storage** and add the required parameters,
+    such as the endpoint (which points to the service name in the Docker stack along
+    with the port number, e.g., `minio:9000`), the bucket name, and the relevant prefix
+    where the annotation files are stored. Each path inside the JSON files will then
+    point to the corresponding image.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/1da8b29892df053c45bf0e2dcf1b72c7.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Screenshot of the Cloud Storage settings (Image by Author)
+  prefs: []
+  type: TYPE_NORMAL
+- en: After verifying that the connection is working, you can sync your project with
+    the cloud storage. You may need to run the sync command multiple times since the
+    dataset contains 22,263 images. It may appear to fail at first, but when you restart
+    the sync, it continues to make progress. Eventually, all the Pascal VOC data will
+    be successfully imported into Label Studio.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/9d029fab824959d3fe385e92f27f52f2.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Screenshot of the task list (Image by Author)
+  prefs: []
+  type: TYPE_NORMAL
+- en: You can see the imported tasks with their thumbnail images in the task list.
+    When you click on a task, the image will appear with its pre-annotations.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/b351b77fff669d49a5ae9cf2286aa122.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Screenshot of an image with bounding boxes (Image by Author)
+  prefs: []
+  type: TYPE_NORMAL
+- en: Conclusions
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: In this tutorial, we demonstrated how to import the Pascal VOC dataset into
+    Label Studio by converting XML annotations into Label Studio’s JSON format, running
+    a full stack with Docker Compose, and connecting MinIO as S3-compatible storage.
+    This setup enables you to work with large-scale, pre-annotated datasets in a reproducible
+    and cost-effective way, all on your local machine. Testing your project settings
+    and file formats locally first will ensure a smoother transition when moving to
+    cloud environments.
+  prefs: []
+  type: TYPE_NORMAL
+- en: I hope this tutorial helps you kickstart your data annotation project with pre-annotated
+    data that you can easily expand or validate. Once your dataset is ready for training,
+    you can export all the tasks in popular formats such as COCO or YOLO.
+  prefs: []
+  type: TYPE_NORMAL

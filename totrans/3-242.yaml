@@ -1,0 +1,666 @@
+- en: Learning How to Play Atari Games Through Deep Neural Networks
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 原文：[https://towardsdatascience.com/learning-how-to-play-atari-games-through-deep-neural-networks/](https://towardsdatascience.com/learning-how-to-play-atari-games-through-deep-neural-networks/)
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: In July 1959, Arthur Samuel developed one of the first *agents* to play the
+    game of checkers. What constitutes an agent that plays checkers can be best described
+    in Samuel’s own words, “…a computer [that] can be programmed so that it will learn
+    to play a better game of checkers than can be played by the person who wrote the
+    program” [1]. The checkers’ agent tries to follow the idea of simulating every
+    possible move **given the current situation** and selecting the most *advantageous*
+    one i.e. one that brings the player closer to winning. The move’s “advantageousness*”*
+    is determined by an evaluation function, which the agent improves through experience.
+    Naturally, the concept of an agent is not restricted to the game of checkers,
+    and many practitioners have sought to match or surpass human performance in popular
+    games. Notable examples include IBM’s *Deep Blue* (which managed to defeat Garry
+    Kasparov, a chess world champion at the time), and Tesauro’s *TD-Gammon,* a **temporal-difference**
+    approach, where the evaluation function was modelled using a neural network. In
+    fact, *TD-Gammon*’s playing style was so uncommon that some experts even adopted
+    some strategies it conjured up [2].
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Unsurprisingly, research into creating such ‘agents’ only skyrocketed, with
+    novel approaches able to reach peak human performance in complex games. In this
+    post, we explore one such approach: the **DQN** approach introduced in 2013 by
+    Mnih et al, in which playing Atari games is approached through a synthesis of
+    **Deep Neural Networks** and **TD-Learning** (**NB:** the original paper came
+    out in 2013, but we will focus on the 2015 version which comes with some technical
+    improvements) [3, 4]. Before we continue, you should note that in the ever-expanding
+    space of new approaches, DQN has been superseded by faster and more refined state-of-the-art
+    methods. Yet, it remains an ideal stepping stone in the field of **Deep Reinforcement
+    Learning**, widely recognized for combining deep learning with reinforcement learning.
+    Hence, readers aiming to dive into Deep-RL are encouraged to begin with DQN.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'This post is sectioned as follows: first, I define the problem with playing
+    Atari games and explain why some traditional methods can be intractable. Finally,
+    I present the specifics of the DQN approach and dive into the technical implementation.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: The Problem At Hand
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: '*For the remainder of the post, I’ll assume that you know the basics of supervised
+    learning, neural networks (basic* [*FFNs*](https://d2l.ai/chapter_multilayer-perceptrons/index.html)
+    *and* [*CNNs*](https://d2l.ai/chapter_convolutional-neural-networks/)*) and also
+    basic reinforcement learning concepts (Bellman equations, TD-learning, Q-learning
+    etc) If some of these RL concepts are foreign to you, then this* [*playlist*](https://www.youtube.com/watch?v=NFo9v_yKQXA&list=PLzvYlJMoZ02Dxtwe-MmH4nOB5jYlMGBjr&ab_channel=MutualInformation)
+    *is a good introduction.*'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/cedb36f984cb85aa2ef98aa752a8b60f.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'Figure 2: Pong as shown in the ALE environment. [All media hereafter is created
+    by the author unless otherwise noted]'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '*Atari* is a nostalgia-laden term, featuring iconic games such as *Pong, Breakout,
+    Asteroids* and many more. In this post, we restrict ourselves to Pong. Pong is
+    a 2-player game, where each player controls a paddle and can use said paddle to
+    hit the incoming ball. Points are scored when the opponent is unable to return
+    the ball, in other words, the ball goes past them. A player wins when they reach
+    21 points.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Considering the sequential nature of the game, it might be appropriate to frame
+    the problem as an RL problem, and then apply one of the solution methods. We can
+    frame the game as an MDP:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/127b6e48de7ea1229ab1c787bed3137f.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: The states would represent the current game state (where the ball or player
+    paddle is etc, analogous to the idea of a search state). The rewards encapsulate
+    our idea of winning and the actions correspond to the buttons on the Atari 2600
+    console. Our goal now becomes finding a policy
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/f4ce914c50b31f2abb1a23075c90a9eb.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: also known as the *optimal policy*. Let’s see what might happen if we try to
+    train an agent using some classical RL algorithms.
+  prefs: []
+  type: TYPE_NORMAL
+- en: A straightforward solution might entail solving the problem using a tabular
+    approach. We could enumerate all states (and actions) and associate each state
+    with a corresponding state or state-action value. We could then apply one of the
+    classical RL methods (Monte-Carlo, TD-Learning, Value Iteration etc), taking a
+    dynamic programming approach. However, employing this approach faces large pitfalls
+    rather quickly. What do we consider as states? How many states do we have to enumerate?
+  prefs: []
+  type: TYPE_NORMAL
+- en: It quickly becomes quite difficult to answer these questions. Defining a state
+    becomes difficult as many elements are in play when considering the idea of a
+    state (i.e. the states need to be Markovian, encapsulate a search state etc).
+    What about visual output (frames) to represent a state? After all this is how
+    we as humans interact with Atari games. We see frames, deduce information regarding
+    the game state and then choose the appropriate action. However, there are impossibly
+    many states when using this representation, which would make our tabular approach
+    quite intractable, memory-wise.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Now for the sake of argument imagine that we have enough memory to hold a table
+    of this size. Even then we would need to explore all the states a good number
+    of times to get good approximations of the value function. We would need to *explore*
+    all possible states (or state-action) enough times to arrive at a useful value.
+    Herein lies the runtime hurdle; it would be quite infeasible for the values to
+    converge for all the states in the table in a reasonable amount of time as we
+    have infinite states.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Perhaps instead of framing it as a reinforcement learning problem, can we instead
+    rephrase it into a supervised learning problem? Perhaps a formulation in which
+    the states are samples and the labels are the actions performed. Even this perspective
+    brings forth new problems. Atari games are inherently sequential, each state is
+    sampled based on the previous. This breaks the i.i.d assumptions applied in supervised
+    learning, negatively affecting supervised learning-based solutions. Similarly,
+    we would need to create a hand-labelled dataset, perhaps employing a human expert
+    to hand label actions for each frame. This would be expensive and laborious, and
+    still might yield insufficient results.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Solely relying on either supervised learning or RL may lead to inefficient learning,
+    whether due to computational constraints or suboptimal policies. This calls for
+    a more efficient approach to solving Atari games.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'DQN: Intuition & Implementation'
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: '*I assume you have some basic knowledge of PyTorch, Numpy and Python, though
+    I’ll try to be as articulate as possible. For those unfamiliar, I recommend consulting:*
+    [*pytorch*](https://pytorch.org/tutorials/beginner/deep_learning_60min_blitz.html)
+    *&* [*numpy*](https://numpy.org/devdocs/user/absolute_beginners.html)*. *'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Deep-Q Networks aim to overcome the aforementioned barriers through a variety
+    of techniques. Let’s go through each of the problems step-by-step and address
+    how DQN mitigates or solves these challenges.
+  prefs: []
+  type: TYPE_NORMAL
+- en: It’s quite hard to come up with a formal state definition for Atari games due
+    to their diversity. DQN is designed to work for most Atari games, and as a result,
+    we need a stated formalization that is compatible with said games. To this end,
+    the visual representation (pixel values) of the games at any given moment are
+    used to fashion a state. Naturally, this entails a continuous state space. This
+    connects to our previous discussion on potential ways to represent states.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/81d752f3a7fd85cc8631fc737d09528d.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'Figure 3: The function approximation visualized. Image from [3].'
+  prefs: []
+  type: TYPE_NORMAL
+- en: The challenge of continuous states is solved through *function approximation.*
+    Function approximation (FA) aims to approximate the state-action value function
+    directly using a function approximation. Let’s go through the steps to understand
+    what the FA does.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Imagine that we have a network that given a state outputs the value of being
+    in said state and performing a certain action. We then select actions based on
+    the highest reward. However, this network would be short-sighted, only taking
+    into account one timestep. Can we incorporate possible rewards from further down
+    the line? Yes we can! This is the idea of the *expected return*. From this view,
+    the FA becomes quite simple to understand; we aim to find a function:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/828b976ebc3395781cbd3581a2d2a6a6.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: In other words, a function which outputs the expected return of being in a given
+    state after performing an action*. *
+  prefs: []
+  type: TYPE_NORMAL
+- en: This idea of approximation becomes crucial due to the continuous nature of the
+    state space. By using a FA, we can exploit the idea of generalization. States
+    close to each other (similar pixel values) will have similar Q-values, meaning
+    that we don’t need to cover the entire (infinite) state space, greatly lowering
+    our computational overhead.
+  prefs: []
+  type: TYPE_NORMAL
+- en: DQN employs FA in tandem with *Q-learning.* As a small refresher, Q-learning
+    aims to find the expected return for being in a state and performing a certain
+    action using *bootstrapping*. Bootstrapping models the expected return that we
+    mentioned using the current Q-function. This ensures that we don’t need to wait
+    till the end of an episode to update our Q-function. Q-learning is also *0ff-policy*,
+    which means that the data we use to learn the Q-function is different from the
+    actual policy being learned. The resulting *Q-function* then corresponds to the
+    optimal Q-function and can be used to find the optimal policy (just find the action
+    that maximizes the Q-value in a given state). Moreover, Q-learning is a *model-free*
+    solution, meaning that we don’t need to know the dynamics of the environment (transition
+    functions etc) to learn an optimal policy, unlike in value iteration. Thus, DQN
+    is also off-policy and model-free.
+  prefs: []
+  type: TYPE_NORMAL
+- en: By using a neural network as our approximator, we need not construct a full
+    table containing all the states and their respective Q-values. Our neural network
+    will output the Q-value for being a given state and performing a certain action.
+    From this point on, we refer to the approximator as the Q-network.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/0efa455628dbaf37863b0c33b5226b03.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'Figure 4: DQN architecture. Note that the last layer must equal the number
+    of possible actions for the given game, in the case of Pong this is 6.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Since our states are defined by images, using a basic feed-forward network
+    (FFN) would incur a large computational overhead. For this specific reason, we
+    employ the use of a convolutional network, which is much better able to learn
+    the distinct features of each state. The CNNs are able to distill the images down
+    to a representation (this is the idea of representation learning), which is then
+    fed to a FFN. The neural network architecture can be seen above. Instead of returning
+    one value for:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/0204715717b888047c269147189b6448.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: we return an array with each value corresponding to a possible action in the
+    given state (for Pong we can perform 6 actions, so we return 6 values).
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/18d23f208fc2a87c3cd0989e8ee42375.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'Figure 5: MSE loss function, often used for regression tasks.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Recall that to train a neural network we need to define a loss function that
+    captures our goals. DQN uses the MSE loss function. For the predicted values we
+    the output of our Q-network. For the true values, we use the bootstrapped values.
+    Hence, our loss function becomes the following:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/967d123d6c834b022fe73bd2ac67ddeb.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: If we differentiate the loss function with respect to the weights we arrive
+    at the following equation.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/f043e3fe0ba2448d177200f0609bc2d8.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Plugging this into the stochastic gradient descent (SGD) equation, we arrive
+    at Q-learning[4].
+  prefs: []
+  type: TYPE_NORMAL
+- en: By performing SGD updates using the MSE loss function, we perform Q-learning.
+    However, this is an approximation of Q-learning, as we don’t update on a single
+    move but instead on a batch of moves. The expectation is simplified for expedience,
+    though the message remains the same.
+  prefs: []
+  type: TYPE_NORMAL
+- en: From another perspective, you can also think of the MSE loss function as nudging
+    the predicted Q-values as close to the bootstrapped Q-values (after all this is
+    what the MSE loss intends). This inadvertently mimics Q-learning, and slowly converges
+    to the optimal Q-function.
+  prefs: []
+  type: TYPE_NORMAL
+- en: By employing a function approximator, we become subject to the conditions of
+    supervised learning, namely that the data is i.i.d. But in the case of Atari games
+    (or MDPs) this condition is often not upheld. Samples from the environment are
+    sequential in nature, making them dependent on each other. Similarly, as the agent
+    improves the value function and updates its policy, the distribution from which
+    we sample also changes, violating the condition of sampling from an identical
+    distribution.
+  prefs: []
+  type: TYPE_NORMAL
+- en: To solve this the authors of DQN capitalize on the idea of an *experience replay*.
+    This concept is core to keep the training of DQN stable and convergent. An experience
+    replay is a buffer which stores the tuple *(s, a, r, s’, d)* where *s, a, r, s’*
+    are returned after performing an action in an MDP, and *d* is a boolean representing
+    whether the episode has finished or not. The replay has a maximum capacity which
+    is defined beforehand. It might be simpler to think of the replay as a queue or
+    a FIFO data structure; old samples are removed to make room for new samples. The
+    experience replay is used to sample a random batch of tuples which are then used
+    for training.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The experience replay helps with the alleviation of two major challenges when
+    using neural network function approximators with RL problems. The first deals
+    with the independence of the samples. By **randomly** sampling a batch of moves
+    and then using those for training we decouple the training process from the sequential
+    nature of Atari games. Each batch may have actions from different timesteps (or
+    even different episodes), giving a stronger semblance of independence.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Secondly, the experience replay addresses the issue of non-stationarity. As
+    the agent learns, changes in its behaviour are reflected in the data. This is
+    the idea of *non-stationarity;* the distribution of data changes over time. By
+    reusing samples in the replay and using a FIFO structure, we limit the adverse
+    effects of non-stationarity on training. The distribution of the data still changes,
+    but slowly and its effects are less impactful. Since Q-learning is an off-policy
+    algorithm, we still end up learning the optimal policy, making this a viable solution.
+    These changes allow for a more stable training procedure.
+  prefs: []
+  type: TYPE_NORMAL
+- en: As a serendipitous side effect, the experience replay also allows for better
+    data efficiency. Before training examples were discarded after being used for
+    a single update step. However, through the use of an experience replay, we can
+    reuse moves that we have made in the past for updates.
+  prefs: []
+  type: TYPE_NORMAL
+- en: A change made in the 2015 Nature version of DQN was the introduction of a target
+    network. Neural networks are fickle; slight changes in the weights can introduce
+    drastic changes in the output. This is unfavourable for us, as we use the outputs
+    of the Q-network to bootstrap our targets. If the targets are prone to large changes,
+    it will destabilize training, which naturally we want to avoid. To alleviate this
+    issue, the authors introduce a *target network*, which copies the weights of the
+    Q-network every set amount of timesteps. By using the target network for bootstrapping,
+    our bootstrapped targets are less unstable, making training more efficient.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Lastly, the DQN authors stack four consecutive frames after executing an action.
+    This remark is made to ensure the Markovian property holds [9]. A singular frame
+    omits many details of the game state such as the velocity and direction of the
+    ball. A stacked representation is able to overcome these obstacles, providing
+    a holistic view of the game at any given timestep.
+  prefs: []
+  type: TYPE_NORMAL
+- en: With this, we have covered most of the major techniques used for training a
+    DQN agent. Let’s go over the training procedure. The procedure will be more of
+    an overview, and we’ll iron out the details in the implementation section.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/69ba01f335e41eea33d959a74997e393.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'Figure 6: Training procedure to train a DQN agent.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: One important clarification arises from step 2\. In this step, we perform a
+    process called ε-greedy action selection. In ε-greedy, we randomly choose an action
+    with probability ε, and otherwise choose the best possible action (according to
+    our learned Q-network). Choosing an appropriate ε allows for the sufficient exploration
+    of actions which is crucial to converge to a reliable Q-function. We often start
+    with a high ε and slowly decay this value over time.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Implementation
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: If you want to follow along with my implementation of DQN then you will need
+    the following libraries (apart from Numpy and PyTorch). I provide a concise explanation
+    of their use.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[**Arcade Learning Environment**](https://ale.farama.org/index.html) → ALE
+    is a framework that allows us to interact with Atari 2600 environments. Technically
+    we interface ALE through [gymnasium](https://gymnasium.farama.org/), an API for
+    RL environments and benchmarking.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '[**StableBaselines3**](https://stable-baselines3.readthedocs.io/en/master/)
+    → SB3 is a deep reinforcement learning framework with a backend designed in Pytorch.
+    We will only need this for some preprocessing wrappers.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Let’s import all of the necessary libraries.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE0]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'First, we construct an environment, using the ALE framework. Since we are working
+    with pong we create an environment with the name `PongNoFrameskip-v4`. With this,
+    we can create an environment using the following code:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE1]'
+  prefs: []
+  type: TYPE_PRE
+- en: The `rgb_array` parameter tells ALE to return pixel values instead of RAM codes
+    (which is the default). The code to interact with the Atari becomes extremely
+    simple with `gym`. The following excerpt encapsulates most of the utilities that
+    we will need from `gym`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE2]'
+  prefs: []
+  type: TYPE_PRE
+- en: With this, we are given states (we name them observations) with the shape (210,
+    160, 3). Hence the states are RGB images with the shape 210×160\. An example can
+    be seen in Figure 2\. When training our DQN agent, an image of this size adds
+    unnecessary computational overhead. A similar observation can be made about the
+    fact that the frames are RGB (3 channels).
+  prefs: []
+  type: TYPE_NORMAL
+- en: To solve this, we downsample the frame down to 84×84 and transform it into grayscale.
+    We can do this by employing a wrapper from SB3, which does this for us. Now every
+    time we perform an action our output will be in grayscale (with 1 channel) and
+    of size 84×84.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE3]'
+  prefs: []
+  type: TYPE_PRE
+- en: The wrapper above does more than downsample and turn our frame into grayscale.
+    Let’s go over some other changes the wrapper introduces.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Noop Reset** → The start state of each Atari game is deterministic, i.e.
+    you start at the same state each time the game ends. With this the agent may learn
+    to memorize a sequence of actions from the starting state, resulting in a sub-optimal
+    policy. To prevent this, we perform no actions for a set amount of timesteps in
+    the beginning.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Frame Skipping** → In the ALE environment each frame needs an action. Instead
+    of choosing an action at each frame, we select an action and repeat it for a set
+    number of timesteps. This is the idea of frame skipping and allows for smoother
+    transitions.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Max-pooling** → Due to the manner in which ALE/Atari renders its frames and
+    the downsampling, it is possible that we encounter flickering. To solve this we
+    take the max over two consecutive frames.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Terminal Life on Loss** → Many Atari games do not end when the player dies.
+    Consider Pong, no player wins until the score hits 21\. However, by default agents
+    might consider the loss of life as the end of an episode, which is undesirable.
+    This wrapper counteracts this and ends the episode when the game is truly over.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Clip Reward** → The gradients are highly sensitive to the magnitude of the
+    rewards. To avoid unstable updates, we clip the rewards to be between {-1, 0,
+    1}.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Apart from these we also introduce an additional frame stack wrapper (`FrameStack`).
+    This performs what was discussed above, stacking 4 frames on top of each to keep
+    the states Markovian. The ALE environment returns LazyFrames, which are designed
+    to be more memory efficient, as the same frame might occur multiple times. However,
+    they are not compatible with many of the operations that we perform throughout
+    the training procedure. To convert LazyFrames into usable objects, we apply a
+    custom wrapper which converts an observation to Numpy before returning it to us.
+    The code is shown below.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE4]'
+  prefs: []
+  type: TYPE_PRE
+- en: Let’s combine all of the wrappers into one function that returns an environment
+    that does all of the above.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE5]'
+  prefs: []
+  type: TYPE_PRE
+- en: These changes are derived from the 2015 Nature paper and help to stabilize training
+    [3]. The interfacing with `gym` remains the same as shown above. An example of
+    the preprocessed states can be seen in Figure 7.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/addcfc0e6bae2f1fcf2e1a614814d5d5.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'Figure 7: Preprocessed successive Atari frames; each frame is preprocessed
+    by turning the image from RGB to grayscale, and downsampling the size of the image
+    from 210×160 pixels to 84×84 pixels.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Now that we have an appropriate environment let’s move on to create the replay
+    buffer.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE6]'
+  prefs: []
+  type: TYPE_PRE
+- en: The replay buffer works by allocating space in the memory for the given capacity.
+    We maintain a pointer that keeps track of the number of objects added. Every time
+    a new tuple is added we replace the oldest tuples with the new ones. To sample
+    a minibatch, we first randomly sample a minibatch in `numpy` and then convert
+    it into `torch` tensors, also loading it to the appropriate device.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Some of the aspects of the replay buffer are inspired by [8]. The replay buffer
+    proved to be the biggest bottleneck in training the agent, and thus small speed-ups
+    in the code proved to be monumentally important. An alternative strategy which
+    uses an `deque` object to hold the tuples can also be used. If you are creating
+    your own buffer, I would emphasize that you spend a little more time to ensure
+    its efficiency.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We can now use this to create a function that creates a buffer and preloads
+    a given number of tuples with a random policy.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE7]'
+  prefs: []
+  type: TYPE_PRE
+- en: The function is quite straightforward, we create a buffer and environment object
+    and then preload the buffer using a random policy. Note that we squeeze the observations
+    to remove the redundant color channel. Let’s move on to the next step and define
+    the function approximator.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE8]'
+  prefs: []
+  type: TYPE_PRE
+- en: That covers the model architecture. I used a linear ε-decay scheme, but feel
+    free to try another. We can also create an auxiliary class that keeps track of
+    important metrics. The class keeps track of rewards received for the last few
+    episodes along with the respective lengths of said episodes.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE9]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Great! Now we have everything we need to start training our agent. Let’s define
+    the training function and go over how it works. Before that, we need to create
+    the necessary objects to pass into our training function along with some hyperparameters.
+    A small note: in the paper the authors use RMSProp, but instead we’ll use Adam.
+    Adam proved to work for me with the given parameters, but you are welcome to try
+    RMSProp or other variations.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE10]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE11]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The training procedure closely follows Figure 6 and the algorithm described
+    in the paper [4]. We first create the necessary objects such as the loss function
+    etc and reset the environment. Then we can start the training loop, by using the
+    Q-network to give us an action based on the ε-greedy policy. We simulate the environment
+    one step forward using the action and push the resultant tuple onto the replay.
+    If the update frequency condition is met, we can proceed with a training step.
+    The motivation behind the update frequency element is something I am not 100%
+    confident in. Currently, the explanation I can provide revolves around computational
+    efficiency: training every 4 steps instead of every step majorly speeds up the
+    algorithm and seems to work relatively well. In the update step itself, we sample
+    a minibatch of tuples and run the model forward to produce predicted Q-values.
+    We then create the target values (the bootstrapped true labels) using the piecewise
+    function in step 5 in Figure 6\. Performing an SGD step becomes quite straightforward
+    from this point, since we can rely on [autograd](https://pytorch.org/tutorials/beginner/blitz/autograd_tutorial.html)
+    to compute the gradients and the optimizer to update the parameters.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: If you followed along until now, you can use the following test function to
+    test your saved model.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE12]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Here’s how you can use it:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE13]'
+  prefs: []
+  type: TYPE_PRE
+- en: That’s everything for the code! You can see a trained agent below in Figure
+    8\. It behaves quite similar to a human might play Pong, and is able to (consistently)
+    beat the AI on the easiest difficulty. This naturally invites the question, how
+    well does it perform on higher difficulties? Try it out using your own agent or
+    my trained one!
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/9ecb6f9a53ef0c44303626134d7d944a.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'Figure 8: DQN agent playing Pong.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: An additional agent was trained on the game Breakout as well, the agent can
+    be seen in Figure 9\. Once again, I used the default mode and difficulty. It might
+    be interesting to see how well it performs in different modes or difficulties.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/fec58e5bc48eeec4a506ca4f372473c9.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'Figure 9: DQN agent playing Breakout.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Summary**'
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: DQN solves the issue of training agents to play Atari games. By using a FA,
+    experience replay etc, we are able to train an agent that mimics or even surpasses
+    human performance in Atari games [3]. Deep-RL agents can be finicky and you might
+    have noticed that we use a **lot** of techniques to ensure that training is stable.
+    If things are going wrong with your implementation it might not hurt to look at
+    the details again.
+  prefs: []
+  type: TYPE_NORMAL
+- en: If you want to check out the code for my implementation you can use this [link](https://github.com/aryangarg794/DQN-DRQN).
+    The repo also contains code to train your own model on the game of your choice
+    (as long as it’s in ALE), as well as the trained weights for both Pong and Breakout.
+  prefs: []
+  type: TYPE_NORMAL
+- en: I hope this was a helpful introduction to training DQN agents. To take things
+    to the next level maybe you can try to tweak details to beat the higher difficulties.
+    If you want to look further, there are many extensions to DQN you can explore,
+    such as Dueling DQNs, Prioritized Replay etc.
+  prefs: []
+  type: TYPE_NORMAL
+- en: References
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: '[1] A. L. Samuel, “Some Studies in Machine Learning Using the Game of Checkers,”
+    *IBM Journal of Research and Development*, vol. 3, no. 3, pp. 210–229, 1959\.
+    doi:10.1147/rd.33.0210.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[2] Sammut, Claude; Webb, Geoffrey I., eds. (2010), [“TD-Gammon”](https://doi.org/10.1007/978-0-387-30164-8_813),
+    *Encyclopedia of Machine Learning*, Boston, MA: Springer US, pp. 955–956, [doi](https://en.wikipedia.org/wiki/Doi_(identifier)):[10.1007/978–0–387–30164–8_813](https://doi.org/10.1007%2F978-0-387-30164-8_813),
+    [ISBN](https://en.wikipedia.org/wiki/ISBN_(identifier)) [978–0–387–30164–8](https://en.wikipedia.org/wiki/Special:BookSources/978-0-387-30164-8),
+    retrieved 2023–12–25'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[3] Mnih, Volodymyr, Koray Kavukcuoglu, David Silver, Andrei A. Rusu, Joel
+    Veness, Marc G. Bellemare, … and Demis Hassabis. “Human-Level Control through
+    Deep Reinforcement Learning.” *Nature* 518, no. 7540 (2015): 529–533\. [https://doi.org/10.1038/nature14236](https://doi.org/10.1038/nature14236)'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[4] Mnih, Volodymyr, Koray Kavukcuoglu, David Silver, Andrei A. Rusu, Joel
+    Veness, Marc G. Bellemare, … and Demis Hassabis. “Playing Atari with Deep Reinforcement
+    Learning.” *arXiv preprint arXiv:1312.5602* (2013). [https://arxiv.org/abs/1312.5602](https://arxiv.org/abs/1312.5602)'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[5] Sutton, Richard S., and Andrew G. Barto. *Reinforcement Learning: An Introduction*.
+    2nd ed., MIT Press, 2018.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[6] Russell, Stuart J., and Peter Norvig. *Artificial Intelligence: A Modern
+    Approach*. 4th ed., Pearson, 2020.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[7] Goodfellow, I., Bengio, Y., & Courville, A. (2016). *Deep Learning*. MIT
+    Press.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[8] Bailey, Jay. Deep Q-Networks Explained. 13 Sept. 2022, [www.lesswrong.com/posts/kyvCNgx9oAwJCuevo/deep-q-networks-explained](http://www.lesswrong.com/posts/kyvCNgx9oAwJCuevo/deep-q-networks-explained).'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[9] Hausknecht, M., & Stone, P. (2015). Deep recurrent Q-learning for partially
+    observable MDPs. *arXiv preprint arXiv:1507.06527*. [https://arxiv.org/abs/1507.06527](https://arxiv.org/abs/1507.06527)'
+  prefs: []
+  type: TYPE_NORMAL

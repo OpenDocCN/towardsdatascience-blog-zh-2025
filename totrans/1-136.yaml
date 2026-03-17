@@ -1,0 +1,767 @@
+- en: 'MobileNetV3 Paper Walkthrough: The Tiny Giant Getting Even Smarter'
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 原文：[https://towardsdatascience.com/mobilenetv3-paper-walkthrough-the-tiny-giant-getting-even-smarter/](https://towardsdatascience.com/mobilenetv3-paper-walkthrough-the-tiny-giant-getting-even-smarter/)
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: <mdspan datatext="el1761970148813" class="mdspan-comment">Introduction</mdspan>
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'Welcome back to the Tiny Giant series — a series where I share what I learned
+    about MobileNet architectures. In the past two articles I covered MobileNetV1
+    and MobileNetV2\. Check out references [1] and [2] if you’re interested in reading
+    them. In today’s article I would like to continue with the next version of the
+    model: MobileNetV3.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'MobileNetV3 was first proposed in a paper titled “*Searching for MobileNetV3*”
+    written by Howard *et al.* in 2019 [3]. Just a quick review: the main idea of
+    the first MobileNet version was replacing full-convolutions with depthwise separable
+    convolutions, which reduced the number of params by nearly 90% compared to its
+    standard CNN counterpart. In the second MobileNet version, the authors introduced
+    the so-called *inverted residual* and *linear bottleneck* mechanisms, which they
+    integrated into the original MobileNetV1 building blocks. Now in the third MobileNet
+    version, the authors attempted to push the performance of the network even further
+    by incorporating *Squeeze-and-Excitation* (SE) modules and *hard activation functions*
+    into the building blocks. Additionally, the overall structure of MobileNetV3 itself
+    is partially designed using NAS (*Neural Architecture Search*), in which it essentially
+    works somewhat like a parameter tuning that operates on the architectural level
+    by maximizing accuracy while minimizing latency. However, note that in this article
+    I won’t go into how NAS works in detail. Instead, I will focus on the final design
+    of MobileNetV3 proposed in the paper.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '* * *'
+  prefs: []
+  type: TYPE_NORMAL
+- en: The Detailed MobileNetV3 Architecture
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: The authors propose two variants of this model which they refer to as MobileNetV3-Large
+    and MobileNetV3-Small. You can see the details of the two architectures in Figure
+    1 below.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/0634d0455d36b50e03f27c812d91fd71.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Figure 1\. The MobileNetV3-Large (left) and MobileNetV3-Small (right) architectures
+    [3].
+  prefs: []
+  type: TYPE_NORMAL
+- en: Taking a closer look at the architecture, we can see that the two networks mainly
+    consist of *bneck* (*bottleneck*) blocks. The configuration of the blocks themselves
+    is described in columns *exp size*, *#out*, *SE*, *NL*, and *s*. The internal
+    structure of these blocks as well as the corresponding parameter configurations
+    will be discussed further in the following subsection.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '* * *'
+  prefs: []
+  type: TYPE_NORMAL
+- en: The Bottleneck
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: MobileNetV3 uses the modified version of the building blocks used in MobileNetV2\.
+    As I’ve mentioned earlier, what makes the two different is the presence of SE
+    module and the use of hard activation function. You can see the two building blocks
+    in Figure 2, with MobileNetV2 at the top and MobileNetV3 at the bottom.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/7e4013cb746ff013f1fd2b2e9f138d6d.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Figure 2\. The MobileNetV2 (top) and MobileNetV3 (bottom) building blocks [3].
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Notice that the first two convolution layers in both building blocks are basically
+    the same: a pointwise convolution followed by a depthwise convolution. The former
+    is used for expanding the number of channels to *exp size* (*expansion size*),
+    whereas the latter is responsible to process each channel of the resulting tensor
+    independently. The only difference between the two building blocks lies in the
+    activation functions used, which they refer to as *NL* (*Nonlinearity*). In MobileNetV2,
+    the activation functions placed after the two convolution layers are set fixed
+    to ReLU6, whereas in MobileNetV3 it can either be ReLU6 or *hard-swish*. The *RE*
+    and *HS* you saw earlier in Figure 1 basically refer to these two types of activations.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Next, in MobileNetV3 we place the SE module after the depthwise convolution
+    layer. If you’re not yet familiar with SE module, it is essentially a kind of
+    building block we can attach in any kind of CNN-based model. This component is
+    useful for giving weights to different channels, allowing the model to pay more
+    attention to the important channels only. I actually have a separate article discussing
+    the SE module in detail. Click on the link at reference number [4] if you want
+    to read that one. It is important to note that the SE module used here is slightly
+    different, in that the last FC layer uses *hard-sigmoid* rather than the standard
+    sigmoid activation function. (I’ll talk more about the hard activations used in
+    MobileNetV3 later in the subsequent subsection.)  In fact, the SE module itself
+    is not always included in every bottleneck block. If you go back to Figure 1,
+    you’ll notice that some of the bottleneck blocks have a checkmark in the *SE*
+    column, indicating that the SE module is applied. On the other hand, some blocks
+    don’t include the module, which might probably be because the NAS process didn’t
+    find any performance improvement from using SE modules in those blocks.
+  prefs: []
+  type: TYPE_NORMAL
+- en: As the SE module has been connected, we need to place another pointwise convolution,
+    which is responsible to adjust the number of output channels according to the
+    *#out* column in Figure 1\. This pointwise convolution does not include any activation
+    function, aligning with the *linear bottleneck* design originally introduced in
+    MobileNetV2.  I actually need to clarify something here. If you take a look at
+    the MobileNetV2 building block in Figure 2 above, you’ll notice that the last
+    pointwise convolution has a ReLU6 placed on it. I believe this is a mistake made
+    by the authors, because according to the MobileNetV2 paper [6], the ReLU6 should
+    be in the first pointwise convolution at the beginning of the block instead.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Last but not least, notice that there is also a residual connection that skips
+    across all layers in the bottleneck block. This connection is only present when
+    the output tensor has the exact same dimensions as the input, i.e., when the number
+    of input and output channels is the same and when the *s* (stride) is 1.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Hard-Sigmoid and Hard-Swish
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: The activation functions used in MobileNetV3 are not commonly found in other
+    deep learning models. To start with, let’s look at the *hard-sigmoid* activation
+    first, which is the one used in the SE module as a replacement for the conventional
+    sigmoid. Take a look at Figure 3 below to see the difference between the two.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/7ee6190c190cfd5fa14cfb329383d742.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Figure 3\. The sigmoid and the hard-sigmoid activation functions [3].
+  prefs: []
+  type: TYPE_NORMAL
+- en: Here you might probably be wondering, why don’t we just use the conventional
+    sigmoid? Why do we really need to use piecewise linear function that appears less
+    smooth instead? To answer this question, we need to understand the mathematical
+    definition of a sigmoid function in advance, which I provide in Figure 4 below.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/38232634a4cb114c4f448235f12ac047.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Figure 4\. The equation of the standard sigmoid function [5].
+  prefs: []
+  type: TYPE_NORMAL
+- en: We can clearly see in the above figure that the sigmoid function originally
+    involves an exponential term in the denominator. In fact, this term causes the
+    function to be computationally expensive, which in turn makes the activation function
+    less suitable for low-power devices. Not only that, the output of the sigmoid
+    function itself is a high-precision floating-point value, which is also not preferable
+    for low-power devices due to their limited support for handling such values.
+  prefs: []
+  type: TYPE_NORMAL
+- en: If you look at Figure 3 again, you might think that the hard-sigmoid function
+    is directly derived from the original sigmoid.  In fact, that’s actually not quite
+    right. Despite having a similar shape, hard-sigmoid is basically constructed using
+    ReLU6 instead, which can formally be expressed in Figure 5 below. Here you can
+    see that the equation is much simpler as it only consists of basic arithmetic
+    operations and clipping, allowing it to be processed much faster.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/dd84efa6fbeac248044e6312b02f6025.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Figure 5\. The equation of the hard sigmoid function [5].
+  prefs: []
+  type: TYPE_NORMAL
+- en: The next activation function we are going to utilize in MobileNetV3 is the so-called
+    *hard-swish*, which will be implemented after each of the first two convolution
+    layers in the bottleneck block. Just like sigmoid and hard-sigmoid, the graph
+    of the hard-swish function appears to be similar to the original one.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/016f8fab6df25a9bf27bad24cfb1e706.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Figure 6\. The swish and hard-swish activation functions [3].
+  prefs: []
+  type: TYPE_NORMAL
+- en: The original swish function itself can mathematically be expressed in the equation
+    in Figure 7\. Again, since the equation involves sigmoid, it will definitely slow
+    down the computation. Hence, to speed up the process, we can simply replace the
+    sigmoid function with hard-sigmoid we just discussed. By doing so, we now have
+    the hard version of the swish activation function as shown in Figure 8.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/2ff26a7cba5d42913999ef542f909cb7.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Figure 7\. The equation of the swish activation function [5].
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/29a4622c092721b9bc860f43f967ac38.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Figure 8\. The equation of the hard-swish activation function [5].
+  prefs: []
+  type: TYPE_NORMAL
+- en: '* * *'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Some Experimental Results
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: Before we get into the experimental results, you need to know that there are
+    two parameters in MobileNetV3 that allow us to adjust the model size according
+    to our needs. These two parameters are *width multiplier* and *input resolution*,
+    which in MobileNetV1 are known as *α* and *ρ*, respectively. Although we can technically
+    adjust the value for the two freely, the authors already provided several numbers
+    we can use. For the *width multiplier*, we can set it to either 0.35, 0.5, 0.75,
+    1.0, or 1.25, where using a value smaller than 1.0 causes the model to have fewer
+    number of channels than those disclosed in Figure 1, effectively reducing the
+    model size. For instance, if we set this parameter to 0.35, then the model will
+    only have 35% of its default width (i.e., channel count) throughout the entire
+    network.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Meanwhile, the input resolution can either be 96, 128, 160, 192, 224, or 256,
+    which as the name suggests, it directly controls the spatial dimension of the
+    input image. It is worth noting that even though using a small input size reduces
+    the number of operations during inference, it does not affect the model size at
+    all. So, if your objective is to reduce model size, you need to adjust the *width
+    multiplier*, whereas if your goal is to lower computational cost, you can play
+    around with both the *width multiplier* and *input resolution*.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Now looking at the experimental results in Figure 9, we can clearly see that
+    MobileNetV3 outperforms MobileNetV2 in terms of accuracy at similar latency. The
+    MobileNetV3-Small of default configuration (i.e., *width multiplier* 1.0 and *input
+    resolution* 224×224) indeed has a lower accuracy than the largest MobileNetV2
+    variant. But if you take the default MobileNetV3-Large into account, it got an
+    easy win over the largest MobileNetV2 both in terms of accuracy and latency. Additionally,
+    we can still push the accuracy of MobileNetV3 even further by enlarging the model
+    size by 1.25 times (the blue datapoint at the top right), but keep in mind that
+    doing so significantly sacrifices computational speed.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/9c8b198fbd2c4e2dcb3aab576cb68500.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Figure 9\. Performance comparison between MobileNetV3-Large, MobileNetV3-Small,
+    and MobileNetV2 [3].
+  prefs: []
+  type: TYPE_NORMAL
+- en: The authors also conducted a comparative analysis with other lightweight models,
+    of which the results are shown in the table in Figure 10.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/f23d36a21ffd92019bbc29f824c0d41c.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Figure 10\. Performance comparison of MobileNetV3 with other lightweight models [3].
+  prefs: []
+  type: TYPE_NORMAL
+- en: The rows of the table above are divided into two groups, where the upper group
+    is used to compare models with complexity similar to MobileNetV3-Large, while
+    the lower group consists of models comparable to MobileNetV3-Small. Here you can
+    see that both V3-Large and V3-Small obtained the best accuracy on ImageNet within
+    their respective groups. It is worth noting that although MnasNet-A1 and V3-Large
+    have the exact same accuracy, the number of operations (*MAdds*) of the former
+    model is higher, which results in higher latency, as seen in columns *P-1*, *P-2*,
+    and *P-3* (measured in milliseconds). In case you’re wondering, the labels *P-1*,
+    *P-2*, and *P-3* essentially correspond to different Google Pixel series used
+    to test the actual computational speed. Next, it is necessary to acknowledge that
+    both MobileNetV3 variants have the highest parameter count (the *params* column)
+    compared to other models in their group. However, this does not seem to be a major
+    concern for the authors as the primary goal of MobileNetV3 is to minimize computational
+    latency, even if that means having a slightly bigger model.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The next experiment the authors conducted was about the effects of value quantization,
+    i.e., a technique that reduces the precision of floating-point numbers to speed
+    up computation. While the networks already incorporate hard activation functions,
+    which are compatible with quantized values, this experiment takes quantization
+    a step further by applying it to the entire network to see how much the speed
+    improves. The experimental results when value quantization was applied are shown
+    in Figure 11 below.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/ae767ef11848a7804aea5710e5bf740d.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Figure 11\. The accuracy and latency of MobileNetV2 and MobileNetV3 when using
+    quantized values [3].
+  prefs: []
+  type: TYPE_NORMAL
+- en: If you compare the results of V2 and V3 in Figure 11 with the corresponding
+    models in Figure 10, you’ll notice that there is a decrease in latency, proving
+    that the use of low-precision numbers does improve computational speed. However,
+    it is important to keep in mind that this also leads to a decrease in accuracy.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '* * *'
+  prefs: []
+  type: TYPE_NORMAL
+- en: MobileNetV3 Implementation
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'I think all the explanations above cover pretty much everything you need to
+    know about the theory behind MobileNetV3\. Now in this section I am going to bring
+    you into the most fun part of this article: implementing MobileNetV3 from scratch.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: As always, the very first thing we do is importing the required modules.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE0]'
+  prefs: []
+  type: TYPE_PRE
+- en: Afterwards, we need to initialize the configurable parameters of the model,
+    namely `WIDTH_MULTIPLIER`, `INPUT_RESOLUTION`, and `NUM_CLASSES`, as shown in
+    Codeblock 2 below. I believe the first two variables are straightforward as I’ve
+    explained them thoroughly in the previous section. Here I decided to assign default
+    values for the two. You can definitely change these numbers based on the values
+    provided in the paper if you want to adjust the complexity of the model. Next,
+    the third variable corresponds to the number of output neurons in the classification
+    head. Here I set it to 1000 because the model is originally trained on the ImageNet-1K
+    dataset. It is worth noting that the MobileNetV3 architecture is actually not
+    limited to classification tasks only. Instead, it can also be used for object
+    detection and semantic segmentation as demonstrated in the paper. However, since
+    the focus of this article is to implement the backbone, let’s just use the standard
+    classification head for the output layer to keep things simple.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE1]'
+  prefs: []
+  type: TYPE_PRE
+- en: What we are going to do next is to wrap the repeating components into separate
+    classes. By doing this, we will later be able to simply instantiate them whenever
+    needed instead of rewriting the same code over and over again. Now let’s begin
+    with the Squeeze-and-Excitation module first.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '* * *'
+  prefs: []
+  type: TYPE_NORMAL
+- en: The Squeeze-and-Excitation Module
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: The implementation of this component is shown in Codeblock 3\. I am not going
+    to get very deep into the code since it is almost exactly the same as the one
+    in my previous article [4]. However, generally speaking, this code works by representing
+    each input channel with a single number (line `#(1)`), processing the resulting
+    vector with a sequence of linear layers (`#(2–3)`), then converting it into a
+    weight vector (`#(4)`). Keep in mind that in the original SE module we typically
+    use the standard sigmoid activation function to obtain the weight vector, but
+    here in MobileNetV3 we use hard-sigmoid instead. This weight vector will then
+    be multiplied with the original tensor, which by doing so we can reduce the influence
+    of channels that do not give contribution to the final output (`#(5)`).
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE2]'
+  prefs: []
+  type: TYPE_PRE
+- en: Now let’s check if the above code works properly by creating an `SEModule` instance
+    and passing a dummy tensor through it. See Codeblock 4 below for the details.
+    Here I configure the SE module to accept a 512-channel image for the input. Meanwhile,
+    the `r` (*reduction ratio*) parameter is set to 4, meaning that the vector length
+    between the two FC layers is going to be 4 times smaller than that of its input
+    and output. It might be worth knowing that this number is different from the one
+    mentioned in the original Squeeze-and-Excitation paper [7], where *r = 16* is
+    said to be the sweet spot for balancing accuracy and complexity.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE3]'
+  prefs: []
+  type: TYPE_PRE
+- en: If the code above produces the following output, it confirms that our SE module
+    implementation is correct as it successfully passed the input tensor through all
+    layers within the entire SE module.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE4]'
+  prefs: []
+  type: TYPE_PRE
+- en: '* * *'
+  prefs: []
+  type: TYPE_NORMAL
+- en: The Convolution Block
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: The next component I am going to create is the one wrapped in the `ConvBlock`
+    class, which the detailed implementation can be seen in Codeblock 5\. In fact,
+    this is actually just a standard convolution layer, but we don’t simply use `nn.Conv2d`
+    because in CNN we typically use the *Conv-BN-ReLU* structure. Hence, it will be
+    convenient if we just group these three layers together within a single class.
+    However, instead of actually following this standard structure, we are going to
+    customize it to match the requirements for the MobileNetV3 architecture.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE5]'
+  prefs: []
+  type: TYPE_PRE
+- en: There are several parameters you need to pass to instantiate a `ConvBlock` instance.
+    The first five ones (`#(1–5)`) are pretty straightforward as they are basically
+    just the standard parameters for the `nn.Conv2d` layer. Here I set the `groups`
+    parameter to be configurable (`#(6)`) so that this class can be flexibly used
+    not only for standard convolutions but also for depthwise convolutions. Next,
+    at line `#(7)` I create a parameter called `batchnorm`, which determines whether
+    or not a `ConvBlock` instance implements a batch normalization layer. This is
+    essentially done because there are some cases where we don’t implement this layer,
+    i.e., in the last two convolutions with *NBN* label (which stands for *no batch
+    normalization*) in Figure 1\. The last parameter we have here is the activation
+    function (`#(8)`). Later on, there will be cases that require us to set it to
+    either `nn.ReLU6()`, `nn.Hardswish()` or `nn.Identity()` (no activation).
+  prefs: []
+  type: TYPE_NORMAL
+- en: Inside the `__init__()` method, there are two things happening if we change
+    the input argument for the `batchnorm` parameter. When we set it to `True`, firstly,
+    the bias term of the convolution layer will be deactivated (`#(9)`), and secondly,
+    `bn` will be an `nn.BatchNorm2d()` layer (`#(10)`). The bias term will not be
+    used in this case because applying batch normalization after convolution will
+    cancel it out. So, there is basically no point of utilizing bias in the first
+    place. Meanwhile, if we set the `batchnorm` parameter to `False`, the `bias` variable
+    is going to be `True` since in this situation it will not be canceled out. The
+    `bn` itself will just be an identity layer, meaning that it won’t do anything
+    to the tensor.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Regarding the `forward()` method (`#(11)`), I don’t think I need to explain
+    anything because what we do here is just passing a tensor through the layers sequentially.
+    Now let’s just move on to Codeblock 6 to see whether our `ConvBlock` implementation
+    is correct. Here I try to create two `ConvBlock` instances, where the first one
+    uses default `batchnorm` and `activation`, whereas the second one omits the batch
+    normalization layer (`#(1)`) and uses hard-swish activation function (`#(2)`).
+    Instead of passing a tensor through them, here I want you to see in the resulting
+    output that our code correctly implements both structures according to the input
+    arguments we pass.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE6]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE7]'
+  prefs: []
+  type: TYPE_PRE
+- en: '* * *'
+  prefs: []
+  type: TYPE_NORMAL
+- en: The Bottleneck
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: 'As the `SEModule` and the `ConvBlock` are done, we can now move on to the main
+    component of the MobileNetV3 architecture: the bottleneck. What we essentially
+    do in the bottleneck is just placing one layer after another which the general
+    structure is shown earlier in Figure 2\. In the case of MobileNetV2, it only consists
+    of three convolution layers, whereas here in MobileNetV3 we have an additional
+    SE block placed between the second and the third convolutions. Look at Codeblock
+    7a and 7b to see how I implement the bottleneck block for MobileNetV3.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE8]'
+  prefs: []
+  type: TYPE_PRE
+- en: The input parameters of the `Bottleneck` class look similar to those of the
+    `ConvBlock` class at a glance. This definitely makes sense because we will indeed
+    use them to instantiate `ConvBlock` instances inside the `Bottleneck`. However,
+    if you take a closer look at them again, you will notice that there are some other
+    parameters you haven’t seen before, namely `se` (`#(1)`) and `exp_size` (`#(2)`).
+    Later on, the input arguments for these parameters will be obtained from the configuration
+    provided in the table in Figure 1.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Inside the `__init__()` method, what we need to do first is to check whether
+    the input and output tensor dimensions are the same using the code at line `#(3)`.
+    By doing this, we will have our `add` variable containing either `True` or `False`.
+    This dimensionality checking is important because we need to decide whether or
+    not we perform element-wise summation between the two to implement the skip-connection
+    that skips through all layers within the bottleneck block.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Next, let’s now instantiate the layers themselves, of which the first two are
+    a pointwise convolution (`conv0`) and a depthwise convolution (`conv1`). For `conv0`,
+    we need to set the kernel size to 1×1 (`#(6)`), whereas for `conv1` the kernel
+    size should match the one in the input argument (`#(9)`), which can either be
+    3×3 or 5×5\. It is necessary to apply padding in the `ConvBlock` to prevent the
+    image size from shrinking after every convolution operation. For kernel sizes
+    of 1×1, 3×3, and 5×5, the required padding values are 0, 1, and 2, respectively.
+    Talking about the number of channels, `conv0` is responsible to expand it from
+    `in_channels` to `exp_size` (`#(4–5)`). Meanwhile, the number of input and output
+    channels of `conv1` are exactly the same (`#(7–8)`). In addition to the `conv1`
+    layer, the `groups` parameter should be set to `exp_size` (`#(10)`) because we
+    want each input channel to be processed independently of each other.
+  prefs: []
+  type: TYPE_NORMAL
+- en: After the first two convolution layers are done, what we need to instantiate
+    next is the Squeeze-and-Excitation module (`#(11)`). Here we need to set the input
+    channel count to `exp_size`, matching with the tensor size produced by the `conv1`
+    layer. Remember that SE module is not always used, hence the instantiation of
+    this component should be done within a condition, where it will actually be instantiated
+    only when the `se` parameter is `True`. Otherwise, it will just be an identity
+    layer.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Finally, the last convolution layer (`conv2`) is responsible to map the number
+    of output channels from `exp_size` to `out_channels` (`#(12–13)`). Just like the
+    `conv0` layer, this one is also a pointwise convolution, hence we set the kernel
+    size to 1×1 (`#(14)`) so that it only focuses on aggregating information along
+    the channel dimension. The activation function of this layer is set fixed to `nn.Identity()`
+    (`#(15)`) because here we will implement the idea of linear bottleneck.
+  prefs: []
+  type: TYPE_NORMAL
+- en: And that’s pretty much everything for the layers within the bottleneck block.
+    All we need to do afterwards is to create the flow of the network in the `forward()`
+    method as shown in Codeblock 7b below.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE9]'
+  prefs: []
+  type: TYPE_PRE
+- en: Now I would like to test the `Bottleneck` class we just created by simulating
+    the third row of the MobileNetV3-Large architecture in the table in Figure 1\.
+    Look at the Codeblock 8 below to see how I do this. If you go back to the architectural
+    details, you will notice that this bottleneck accepts a tensor of size 16×112×112
+    (`#(7)`). In this case, the bottleneck block is configured to expand the number
+    of channels to 64 (`#(3)`) before eventually shrinking it to 24 (`#(1)`). The
+    kernel size of the depthwise convolution is set to 3×3 (`#(2)`) and the stride
+    is set to 2 (`#(4)`) which will reduce the spatial dimension by half. Here we
+    use ReLU6 for the activation function (`#(6)`) of the first two convolutions.
+    Lastly, SE module will not be implemented (`#(5)`) since there is no checkmark
+    in the *SE* column in the table.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE10]'
+  prefs: []
+  type: TYPE_PRE
+- en: If you run the above code, the following output should appear on your screen.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE11]'
+  prefs: []
+  type: TYPE_PRE
+- en: This output confirms that our implementation is correct in terms of the tensor
+    shape, where the spatial dimension halves from 112×112 to 56×56 while the number
+    of channels correctly expands from 16 to 64 and then reduces from 64 to 24\. Talking
+    more specifically about the SE module, we can see in the above output that the
+    tensor is still passed through this component despite we have set the `se` parameter
+    to `False`. In fact, if you try to print out the detailed architecture of this
+    bottleneck like what I do in Codeblock 9, you will see that `semodule` is just
+    an identity layer, which effectively makes this structure behave as if we’re passing
+    the output of `conv1` directly to `conv2`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE12]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE13]'
+  prefs: []
+  type: TYPE_PRE
+- en: The above bottleneck is going to behave differently if we instantiate it with
+    the `se` parameter set to `True`. In Codeblock 10 below, I try to create the bottleneck
+    block in the fifth row in the MobileNetV3-Large architecture. In this case, if
+    you print out the detailed structure, you will see that `semodule` consists of
+    all layers in the `SEModule` class we created earlier instead of just being an
+    identity layer like before.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE14]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE15]'
+  prefs: []
+  type: TYPE_PRE
+- en: '* * *'
+  prefs: []
+  type: TYPE_NORMAL
+- en: The Complete MobileNetV3
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: As all components have been created, what we need to do next is to construct
+    the main class of the MobileNetV3 model. But before doing so, I would like to
+    initialize a list that stores the input arguments used for instantiating the bottleneck
+    blocks as shown in Codeblock 11 below. Keep in mind that these arguments are written
+    according to the MobileNetV3-Large version. You’ll need to adjust the values in
+    the `BOTTLENECKS` list if you want to create the small version instead.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE16]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The arguments listed above are structured in the following order (from left
+    to right): *in channels*, *out channels*, *kernel size*, *expansion size*, *SE*,
+    *activation*, *stride*, and *padding*. Keep in mind that *padding* is not explicitly
+    stated in the original table, but I include it here because it is required as
+    an input when instantiating the bottleneck blocks.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Now let’s actually create the MobileNetV3 class. See the code implementation
+    in Codeblocks 12a and 12b below.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE17]'
+  prefs: []
+  type: TYPE_PRE
+- en: Notice in Figure 1 that we initially start from the standard convolution layer.
+    In the above codeblock, I refer to this layer as `first_conv` (`#(1)`). It is
+    worth noting that the input arguments for this layer are not included in the `BOTTLENECKS`
+    list, hence we need to define them manually. Remember to multiply the channel
+    counts at each step by `WIDTH_MULTIPLIER` since we want the model size to be adjustable
+    through that variable. Next, we initialize a placeholder named `blocks` for storing
+    all the bottleneck blocks (`#(2)`). With a simple loop at line `#(3)`, we will
+    iterate through all items in the `BOTTLENECKS` list to actually instantiate the
+    bottleneck blocks and append them one by one to `blocks`. In fact, this loop constructs
+    the majority of the layers in the network, as it covers nearly all components
+    listed in the table.
+  prefs: []
+  type: TYPE_NORMAL
+- en: As the sequence of bottleneck blocks is done, we will now continue with the
+    next convolution layer, which I refer to as `second_conv` (`#(4)`). Again, since
+    the configuration parameters for this layer are not stored in the `BOTTLENECKS`
+    list, we need to manually hard-code them. The output of this layer will then be
+    passed through a global average pooling layer (`#(5)`) which will drop the spatial
+    dimension to 1×1\. Afterwards, we connect this layer to two consecutive pointwise
+    convolutions (`#(6)` and `#(8)`) with a dropout layer in between (`#(7)`).
+  prefs: []
+  type: TYPE_NORMAL
+- en: Talking more specifically about the two convolutions, it is important to know
+    that applying a 1×1 convolution on a tensor that has a 1×1 spatial dimension is
+    essentially equivalent to applying an FC layer to a flattened tensor, where the
+    number of channels will correspond to the number of neurons. This is the reason
+    that I set the output channel count of the last layer equal to the number of classes
+    in the dataset (`#(9)`). The `batchnorm` parameter of both `third_conv` and `output`
+    layers are set to `False`, as suggested in the architecture.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Meanwhile, the activation function of `third_conv` is set to `nn.Hardswish()`,
+    whereas the `output` layer uses `nn.Identity()`, which is equivalent to not applying
+    any activation function at all. This is essentially done because during training
+    softmax is already included in the loss function (`nn.CrossEntropyLoss()`). Later
+    in the inference phase, we need to replace `nn.Identity()` with `nn.Softmax()`
+    in the `output` layer so that the model will directly return the probability score
+    of each class.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Next, let’s take a look at the `forward()` method below, which I won’t explain
+    any further since I think it is pretty easy to understand.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE18]'
+  prefs: []
+  type: TYPE_PRE
+- en: The code in Codeblock 13 demonstrates how we initialize a MobileNetV3 instance
+    and pass a dummy tensor through it. Remember that here we use the default input
+    resolution, so we can basically think of the tensor as a batch of a single RGB
+    image of size 224×224.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE19]'
+  prefs: []
+  type: TYPE_PRE
+- en: And below is what the resulting output looks like, in which the tensor dimension
+    after each block matches exactly with the MobileNetV3-Large architecture in Figure
+    1.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE20]'
+  prefs: []
+  type: TYPE_PRE
+- en: In order to ensure that our implementation is correct, we can print out the
+    number of parameters contained in the model using the following code.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE21]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE22]'
+  prefs: []
+  type: TYPE_PRE
+- en: Here you can see that this model contains around 5.5 million parameters, in
+    which this is approximately the same as the one disclosed in the original paper
+    (see Figure 10). Furthermore, the parameter count given in the PyTorch documentation
+    is also similar to this number as you can see in Figure 12 below. Based on these
+    facts, I believe I can confirm that our MobileNetV3-Large implementation is correct.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/ab148e1d999080fc6082b60ceb0c7ea5.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Figure 12\. The details of the MobileNetV3-Large model from the official PyTorch
+    documentation [8].
+  prefs: []
+  type: TYPE_NORMAL
+- en: '* * *'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Ending
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: Well, that’s pretty much everything about the MobileNetV3 architecture. Here
+    I encourage you to actually train this model from scratch on any datasets you
+    want. Not only that, I also want you to play around with the parameter configurations
+    of the bottleneck blocks to see whether we can still improve the performance of
+    MobileNetV3 even further.  By the way, the code used in this article is also available
+    in my GitHub repo, which you can find in the link at reference number [9].
+  prefs: []
+  type: TYPE_NORMAL
+- en: Thank you for reading. Feel free to reach me through LinkedIn [10] if you spot
+    any mistake in my explanation or in the code. See ya in my next article!
+  prefs: []
+  type: TYPE_NORMAL
+- en: '* * *'
+  prefs: []
+  type: TYPE_NORMAL
+- en: References
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: '[1] Muhammad Ardi. MobileNetV1 Paper Walkthrough: The Tiny Giant. AI Advances.
+    [https://medium.com/ai-advances/mobilenetv1-paper-walkthrough-the-tiny-giant-987196f40cd5](https://medium.com/ai-advances/mobilenetv1-paper-walkthrough-the-tiny-giant-987196f40cd5)
+    [Accessed October 24, 2025].'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[2] Muhammad Ardi. MobileNetV2 Paper Walkthrough: The Smarter Tiny Giant. Towards
+    Data Science. [https://towardsdatascience.com/mobilenetv2-paper-walkthrough-the-smarter-tiny-giant/](https://towardsdatascience.com/mobilenetv2-paper-walkthrough-the-smarter-tiny-giant/)
+    [Accessed October 24, 2025].'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[3] Andrew Howard *et al.* Searching for MobileNetV3\. Arxiv. [https://arxiv.org/abs/1905.02244](https://arxiv.org/abs/1905.02244)
+    [Accessed May 1, 2025].'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[4] Muhammad Ardi. SENet Paper Walkthrough: The Channel-Wise Attention. AI
+    Advances. [https://medium.com/ai-advances/senet-paper-walkthrough-the-channel-wise-attention-8ac72b9cc252](https://medium.com/ai-advances/senet-paper-walkthrough-the-channel-wise-attention-8ac72b9cc252)
+    [Accessed October 24, 2025].'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[5] Image created originally by author.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[6] Mark Sandler *et al.* MobileNetV2: Inverted Residuals and Linear Bottlenecks.
+    Arxiv. [https://arxiv.org/abs/1801.04381](https://arxiv.org/abs/1801.04381) [Accessed
+    May 12, 2025].'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[7] Jie Hu *et al.* Squeeze and Excitation Networks. Arxiv. [https://arxiv.org/abs/1709.01507](https://arxiv.org/abs/1709.01507)
+    [Accessed May 12, 2025].'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[8] Mobilenet_v3_large. PyTorch. [https://docs.pytorch.org/vision/main/models/generated/torchvision.models.mobilenet_v3_large.html#torchvision.models.mobilenet_v3_large](https://docs.pytorch.org/vision/main/models/generated/torchvision.models.mobilenet_v3_large.html#torchvision.models.mobilenet_v3_large)
+    [Accessed May 12, 2025].'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[9] MuhammadArdiPutra. The Tiny Giant Getting Even Smarter — MobileNetV3\.
+    GitHub. [https://github.com/MuhammadArdiPutra/medium_articles/blob/main/The%20Tiny%20Giant%20Getting%20Even%20Smarter%20-%20MobileNetV3.ipynb](https://github.com/MuhammadArdiPutra/medium_articles/blob/main/The%20Tiny%20Giant%20Getting%20Even%20Smarter%20-%20MobileNetV3.ipynb)
+    [Accessed May 12, 2025].'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[10] Muhammad Ardi Putra. LinkedIn. [https://www.linkedin.com/in/muhammad-ardi-putra-879528152/](https://www.linkedin.com/in/muhammad-ardi-putra-879528152/)
+    [Accessed May 12, 2025].'
+  prefs: []
+  type: TYPE_NORMAL

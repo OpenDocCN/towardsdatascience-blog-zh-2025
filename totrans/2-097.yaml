@@ -1,0 +1,542 @@
+- en: End-to-End AWS RDS Setup with Bastion Host Using Terraform
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 原文：[https://towardsdatascience.com/end-to-end-aws-rds-setup-with-bastion-host-using-terraform/](https://towardsdatascience.com/end-to-end-aws-rds-setup-with-bastion-host-using-terraform/)
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: Introduction
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: <mdspan datatext="el1753672648786" class="mdspan-comment">In</mdspan> any data
+    pipeline, data sources — especially databases — are the backbone. To simulate
+    a realistic pipeline, I needed a secure, reliable database environment to serve
+    as the source of truth for downstream ETL jobs.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Rather than provisioning this manually, I chose to **automate everything** using
+    **Terraform**, aligning with modern data engineering and DevOps best practices.
+    This not only saved time but also ensured the environment could be easily recreated,
+    scaled, or destroyed with a single command — just like in production. **And if
+    you’re working on the AWS Free Tier, this is even more important — automation
+    ensures you can clean up everything without forgetting a resource that might generate
+    costs.**
+  prefs: []
+  type: TYPE_NORMAL
+- en: Prerequisites
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'To follow along with this project, you’ll need the following tools and setup:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Terraform** installed [https://developer.hashicorp.com/terraform/install](https://developer.hashicorp.com/terraform/install)'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**AWS CLI & IAM Setup**'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Install the AWS CLI
+  prefs:
+  - PREF_IND
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'Follow the official guide here: [https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html](https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html)'
+  prefs:
+  - PREF_IND
+  - PREF_IND
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'Create an IAM user with programmatic access that has permission to:'
+  prefs:
+  - PREF_IND
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Attach the policy **`AdministratorAccess`** (or create a custom policy with
+    limited permissions to create all the resources included)
+  prefs:
+  - PREF_IND
+  - PREF_IND
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Download the Access Key ID and Secret Access Key
+  prefs:
+  - PREF_IND
+  - PREF_IND
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Configure the AWS CLI
+  prefs:
+  - PREF_IND
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**An AWS Key Pair**'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Required to SSH into the bastion host. You can create one in the AWS Console
+    under EC2 > Key Pairs.
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: '**A Unix-based environment** (Linux/macOS, or WSL for Windows)'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: This ensures compatibility with the shell script and Terraform commands.
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: 'Getting Started: What We’re Building'
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: Let’s walk through how to build a **secure and automated AWS database setup**
+    using Terraform.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Infrastructure Overview
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'This project provisions a complete, production-style AWS environment using
+    Terraform. The following resources will be created:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Networking
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: A **custom VPC** with a CIDR block (`10.0.0.0/16`)
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Two private subnets** in different Availability Zones (for the RDS instance)'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**One public subnet** (for the bastion host)'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Internet Gateway** and **Route Tables** for public subnet routing'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: A **DB Subnet Group** for multi-AZ RDS deployment
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Compute
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: A **bastion EC2 instance** in the public subnet
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Used to SSH into the private subnets and access the database securely
+  prefs:
+  - PREF_IND
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Provisioned with a custom security group allowing only port 22 (SSH) access
+  prefs:
+  - PREF_IND
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Database
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: A **MySQL RDS instance**
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Deployed in private subnets (not accessible from the public internet)
+  prefs:
+  - PREF_IND
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Configured with a dedicated security group that allows access only from the
+    bastion host
+  prefs:
+  - PREF_IND
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Security
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: '**Security groups**:'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'Bastion SG: allows inbound SSH (port 22) from your IP'
+  prefs:
+  - PREF_IND
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'RDS SG: allows inbound MySQL (port 3306) from the bastion’s SG'
+  prefs:
+  - PREF_IND
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Automation
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: 'A **setup script** (`setup.sh`) that:'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Exports Terraform variables
+  prefs:
+  - PREF_IND
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Modular Design With Terraform
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: I broke the infrastructure into modules like network, bastion and rds. This
+    allows me to reuse, scale and test different components independently.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The following diagram illustrates how Terraform understands and structures the
+    dependencies between different components of the infrastructure, where each node
+    represents a resource or module.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'This visualization helps verify that:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Resources are properly connected (e.g., the RDS instance depends on private
+    subnets),
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Modules are isolated yet interoperable (e.g., `network`, `bastion`, and `rds`),
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: There are no circular dependencies.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '![](../Images/a396d48e2147e621c066cae4b1ee669f.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Terraform Dependency Graph (Image by Author)
+  prefs: []
+  type: TYPE_NORMAL
+- en: To maintain the above-mentioned modular configuration, I structured the project
+    accordingly and provided explanations for each component to clarify their roles
+    within the setup.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE0]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'With the modular structure in place, the `main.tf` file is located in the `rds-bastion`
+    directory acts as the **orchestrator**. It ties together the core components:
+    the network, the RDS database, and the bastion host. Each module is invoked with
+    required inputs, most of which are defined in `variables.tf` or passed via environment
+    variables (`TF_VAR_*`).'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE1]'
+  prefs: []
+  type: TYPE_PRE
+- en: In this modular setup, each infrastructure component is loosely coupled but
+    connected through well-defined **inputs and outputs**.
+  prefs: []
+  type: TYPE_NORMAL
+- en: For example, after provisioning the **VPC and subnets** in the `network` module,
+    I retrieve their IDs using its **outputs**, and pass them as **input variables**
+    to other modules like `rds` and `bastion`. This avoids hardcoding and enables
+    Terraform to dynamically **resolve dependencies** and **build the dependency graph**
+    internally.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In some cases (such as within the `bastion` module), I also use `data` sources
+    to **reference existing resources** created by previous modules, instead of recreating
+    or duplicating them.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The **dependency between modules** relies on the correct **definition and exposure
+    of outputs** from previously created modules. These outputs are then passed as
+    input variables to dependent modules, enabling Terraform to build an internal
+    dependency graph and orchestrate the correct creation order.
+  prefs: []
+  type: TYPE_NORMAL
+- en: For example, the `network` module **exposes** the VPC ID and subnet IDs using
+    `outputs.tf`. These values are then **consumed** by downstream modules like `rds`
+    and `bastion` through the `main.tf` file of the root configuration.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Below is how this works in practice:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Inside `modules/network/outputs.tf`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE2]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Inside `modules/bastion/variables.tf`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE3]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Inside `modules/bastion/network.tf`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE4]'
+  prefs: []
+  type: TYPE_PRE
+- en: To provision the RDS instance, I created **two private subnets in different
+    Availability Zones**, as AWS requires **at least two subnets in separate AZs**
+    to set up a DB subnet group.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Although I met this requirement for correct configuration, I **disabled Multi-AZ
+    deployment** during RDS creation to **stay within the AWS Free Tier limits** and
+    **avoid additional costs**. This setup still simulates a production-grade network
+    layout while remaining cost-effective for development and testing.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Deployment Workflow
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: With all the modules properly wired through inputs and outputs, and the infrastructure
+    logic encapsulated in reusable blocks, the next step is to **automate the provisioning
+    process**. Instead of manually passing variables each time, a helper script `setup.sh`
+    is used to export necessary environment variables (`TF_VAR_*`).
+  prefs: []
+  type: TYPE_NORMAL
+- en: Once the setup script is sourced, deploying the infrastructure becomes as simple
+    as running a few Terraform commands.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE5]'
+  prefs: []
+  type: TYPE_PRE
+- en: To streamline the Terraform deployment process, I created a helper script (`setup.sh`)
+    that automatically exports required environment variables using the `TF_VAR_`
+    naming convention. Terraform automatically picks up variables prefixed with `TF_VAR_`,
+    so this approach avoids hardcoding values in `.tf` files or requiring manual input
+    every time.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE6]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'After running `terraform apply`, Terraform will provision all the defined resources—VPC,
+    subnets, route tables, RDS instance, and Bastion host. Once the process completes
+    successfully, you’ll see output values similar to the following:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE7]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'These outputs are defined in the `outputs.tf` files of your modules and re-exported
+    in the root module (`rds-bastion/outputs.tf`). They are crucial for:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**SSH-ing into the Bastion Host**'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Connecting securely to the private RDS instance**'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Validating resource creation**'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Connecting to the RDS via Bastion Host and Seeding the Database
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'Now that the infrastructure is provisioned, the next step is to **seed the
+    MySQL database hosted on the RDS instance**. Since the database is inside a **private
+    subnet**, we cannot access it directly from our local machine. Instead, we’ll
+    use the **Bastion EC2 instance** as a jump host to:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Transfer the sample dataset (`mysqlsampledatabase.sql`) to the Bastion.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Connect from the Bastion to the RDS instance.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Import the SQL data to initialize the database.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: You may move two directories up from the Terraform main directory and send the
+    SQL content to the remote EC2 (Bastion) after reading the local SQL file inside
+    data directory.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE8]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Once the dataset is copied to the Bastion EC2 instance, the next step is to
+    SSH into the remote machine and :'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE9]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'After connecting, you can use the MySQL client (already installed if you used
+    `mariadb105` in your EC2 setup) to import the SQL file into your RDS database:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE10]'
+  prefs: []
+  type: TYPE_PRE
+- en: Enter the password when prompted.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Once the import is complete, you can connect to the RDS MySQL database again
+    to verify that the database and its tables have been successfully created.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Run the following command from within the Bastion host:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE11]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'After entering your password, you can list the available databases and tables:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/9e73f3012acb1d7afdea359c441b982e.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: List of databases (Image by Author)
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/87d3fab58bdad546b99137b0db610146.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: List of tables in the databases (Image by Author)
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'To ensure the dataset was properly imported into the RDS instance, I ran a
+    simple query:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/a0e103bd9da52d927ed8e64adc373a0d.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Query results from the customers table (Image by Author)
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'This returned a row from the `customers` table, confirming that:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: The database and tables were created successfully
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: The sample dataset was seeded into the RDS instance
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: The Bastion host and private RDS setup are working as intended
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: This completes the infrastructure setup and data import process.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Destroying the Infrastructure
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: Once you’re done testing or demonstrating your setup, it’s important to destroy
+    the AWS resources to **avoid unnecessary charges**.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Since everything was provisioned using Terraform, tearing down the entire infrastructure
+    is just as simple as running one command after navigating to your root configuration
+    directory:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE12]'
+  prefs: []
+  type: TYPE_PRE
+- en: Conclusion
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: In this project, I demonstrated how to provision a secure and production-like
+    database infrastructure using **Terraform** on AWS. Rather than exposing the database
+    to the public internet, I implemented best practices by placing the RDS instance
+    in **private subnets**, accessible only via a **bastion host** in a public subnet.
+  prefs: []
+  type: TYPE_NORMAL
+- en: By structuring the project with **modular Terraform configurations**, I ensured
+    each component—network, database, and bastion host—was **loosely coupled**, reusable,
+    and easy to manage. I also showcased how Terraform’s internal **dependency graph**
+    handles the orchestration and sequencing of resource creation seamlessly.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Thanks to infrastructure as code (IaC), the entire environment can be brought
+    up or torn down with a single command, making it ideal for **ETL prototyping**,
+    **data engineering practice**, or **proof-of-concept pipelines**. Most importantly,
+    this automation helps avoid unexpected costs by letting you destroy all resources
+    cleanly once you’re done.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'You can find the complete source code, Terraform configuration, and setup scripts
+    in my GitHub repository:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[https://github.com/YagmurGULEC/rds-ec2-terraform.git](https://github.com/YagmurGULEC/rds-ec2-terraform.git)'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Feel free to explore the code, clone the repo, and adapt it to your own AWS
+    projects. Contributions, feedback, and stars are always welcome!
+  prefs: []
+  type: TYPE_NORMAL
+- en: What’s Next?
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'You can extend this setup by:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Connecting an AWS Glue job to the RDS instance for ETL processing.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Adding monitoring for your RDS database and EC2 instance
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: References
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: The SQL script used in this project (`mysqlsampledatabase.sql`) comes from the
+    open-source MySQL Sample Database. [https://www.mysqltutorial.org/getting-started-with-mysql/mysql-sample-database](https://www.mysqltutorial.org/getting-started-with-mysql/mysql-sample-database/)
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Creating and connecting to a MySQL DB instance – [https://docs.aws.amazon.com/AmazonRDS/latest/UserGuide/CHAP_GettingStarted.CreatingConnecting.MySQL.html#CHAP_GettingStarted.Creating.MySQL.EC2](https://docs.aws.amazon.com/AmazonRDS/latest/UserGuide/CHAP_GettingStarted.CreatingConnecting.MySQL.html#CHAP_GettingStarted.Creating.MySQL.EC2)
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL

@@ -1,0 +1,891 @@
+- en: Where Are We with Shor’s Algorithm?
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 原文：[https://towardsdatascience.com/where-are-we-with-shors-algorithm/](https://towardsdatascience.com/where-are-we-with-shors-algorithm/)
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: <mdspan datatext="el1751674404623" class="mdspan-comment">Shor’s algorithm</mdspan>
+    was proposed by Peter Shor in a seminal paper [1] in 1995 as an algorithm for
+    factoring large numbers using quantum computing. In 2025, i.e. 30 years later,
+    early quantum processors are produced and made available to the public, making
+    it possible to test the algorithm for real. Can we successfully run Shor’s algorithm
+    on large numbers? The answer is well-known to be no, because this would require
+    quantum processors with thousands of qubits and very low quantum noise, and we
+    are not there yet. But what about small numbers? And, by the way, how do we implement
+    Shor’s algorithm concretely?
+  prefs: []
+  type: TYPE_NORMAL
+- en: In this post we give a guide to the implementation of Shor’s algorithm, with
+    a special emphasis on the realisation of the order-finding quantum circuit and
+    the modular arithmetic computations that are at the core of the algorithm. We
+    link a [git repository](https://github.com/benjamin-assel/qiskit-shor) with the
+    full implementation in Qiskit. Finally we run some simulations and provide the
+    results of actual computations on IBM quantum hardware, as of 2025.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In order to follow this post, it would be ideal if you know some basics of quantum
+    computing, namely qubit manipulations and standard unitary gate operations, and
+    a bit of linear algebra.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Disclaimer 1: Although I aim at a scientific level of rigorousness, this is
+    not an academic paper and I do not pretend to be an expert in the field.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Disclaimer 2: No artificial intelligence was used to produce this post.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: A breakthrough algorithm for number factoring
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: Shor’s algorithm is an algorithm which aims at finding a non-trivial factor
+    of an integer N. While it is easy to find a factor for a small enough N, by trying
+    possible values up to N^(1/2) for instance, the problem becomes impractical when
+    N is really big, like N ~ 2^(1000), simply because the search space becomes too
+    big. A human lifetime would not suffice to find a factor of such a large integer,
+    using a classical computer.
+  prefs: []
+  type: TYPE_NORMAL
+- en: If we denote by n = ⌈log[2](N)⌉ the number of digits to write N in binary notation,
+    [the best known ***classical*** algorithm](https://en.wikipedia.org/wiki/General_number_field_sieve)
+    has time complexity exp(c n^(1/3) (log n)^(2/3)), for some constant c, i.e. ***exponential***
+    time complexity. By “classical” algorithm one means an algorithm which can be
+    run on a traditional computer, namely an algorithm which is made of arithmetic
+    operations on numbers. This is basically all algorithms, except *quantum* algorithms.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Shor’s algorithm is a ***quantum*** algorithm, which means that it involves
+    operations on a quantum system, in this case on qubits. Moreover, it is a probabilistic
+    algorithm, which means that it is guaranteed to work with high probability, but
+    occasionally it can fail.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Shor’s algorithm is able to find a factor of N in time complexity O(n² log n)
+    with high probability, in its most efficient implementation, i.e. in ***polynomial***
+    time complexity. This is probably the most impressive example of a quantum algorithm
+    beating classical algorithms, so far.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Moreover, it happens that the problem of factoring large integers is at the
+    heart of public key cryptography and the [RSA algorithm](https://en.wikipedia.org/wiki/RSA_cryptosystem),
+    which is widely used today to secure Internet communications. Shor’s algorithm,
+    if successfully run on a quantum computer holding a few thousand qubits, could
+    break this encryption scheme. This makes it one of the most popular applications
+    in quantum computing.
+  prefs: []
+  type: TYPE_NORMAL
+- en: While we are still somewhat far from having a quantum computer with the capacity
+    to run Shor’s algorithm on large numbers, the current progress makes it possible
+    to try it on small numbers. So it is about time to take a deeper look at Shor’s
+    algorithm, see how it works, how we can actually implement it and run it on quantum
+    hardware.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Taking advantage of the [IBM quantum platform](https://quantum.cloud.ibm.com/),
+    which allows for a limited amount of free access to real quantum processors (QPUs),
+    I have implemented the full algorithm with the [Qiskit SDK](https://www.ibm.com/quantum/qiskit)
+    and tried it on small numbers. The full implementation is available in this [qiskit-shor
+    repository](https://github.com/benjamin-assel/qiskit-shor).
+  prefs: []
+  type: TYPE_NORMAL
+- en: Let’s dive now into the algorithm.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The algorithm
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: Introductions to Shor’s algorithm are numerous on the web (see e.g. [Wikipedia](https://en.wikipedia.org/wiki/Shor%27s_algorithm)).
+    We will only write down the algorithm itself and explain the ideas involved, but
+    **we will not explain why it works, nor give a proof of every statement**.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Consider a [composite](https://en.wikipedia.org/wiki/Composite_number) integer
+    N, i.e. an integer which admits non-trivial prime factors. Also require that N
+    is odd and is not the power of a prime number (in those cases, we can easily find
+    a non-trivial factor).
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Then, the algorithm steps are:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Choose a random integer 1 < A < N and compute gcd(A, N). If gcd(A, N) > 1, then
+    gcd(A, N) is a non-trivial factor of N and we are done (lucky case). Otherwise
+    A and N are coprime (typical case).
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Find the ***order*** of A in *Z*[N], i.e. the smallest integer 1 < r < N such
+    that A^r = 1 mod N, using the ***phase estimation*** quantum algorithm (see below).
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: If r is odd, go back to step 1 and choose another A. Otherwise, compute d =
+    gcd(A^(r/2) − 1, N). If d > 1, then d is a non-trivial factor of N. If not, start
+    again in step 1.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Peter Shor proposed this algorithm in a seminal paper [1] and proved that it
+    finds a factor of N in polynomial time, with high probability.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Among the steps listed above only the order finding step requires a quantum
+    operation. The other steps are classical operations, which are easily performed
+    on a classical computer.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The quantum algorithm consists in applying unitary operations on a set of qubits
+    representing numbers in binary notation. The integer
+  prefs: []
+  type: TYPE_NORMAL
+- en: \[ x = \sum_{i=0}^{m-1} x_i 2^i, \quad x_i \in \{0,1\} \,,\]
+  prefs: []
+  type: TYPE_NORMAL
+- en: is represented by the m-qubit state
+  prefs: []
+  type: TYPE_NORMAL
+- en: \[ |x\rangle = |x_0\rangle |x_1\rangle …|x_{m-1}\rangle \]
+  prefs: []
+  type: TYPE_NORMAL
+- en: For instance, the number 13 = 2⁰ +2² + 2³ in represented by the “quantum integer”
+    (4-qubit state) |13⟩ = |1⟩|0⟩|1⟩|1⟩.
+  prefs: []
+  type: TYPE_NORMAL
+- en: To find the order r of the integer A in *Z*[N], the idea of Shor’s algorithm
+    is to leverage the fact that the unitary operator
+  prefs: []
+  type: TYPE_NORMAL
+- en: '\[ U_A : x \rightarrow Ax \,\, \text{mod} \,\, N \]'
+  prefs: []
+  type: TYPE_NORMAL
+- en: admits eigenvalues of the form *exp*(2*π*i j/r), with 0 ≤ j < r, and that the
+    vector |1⟩ (the “quantum integer 1”) can be expressed as a linear combination
+    of the corresponding eigenvectors. The algorithm tries to estimate at least one
+    of the fraction j/r. This is referred to as *phase estimation*, as we estimate
+    the phase Φ = 2*π* j/r of an eigenvalue exp(iΦ) of the operator U[A].
+  prefs: []
+  type: TYPE_NORMAL
+- en: We will provide the actual quantum circuit that needs to be run in the next
+    section. The quantum algorithm consists in running this circuit and measuring
+    its m output bits, forming a number k in binary notation. This number k is such
+    that k/2^m should be close to j/r for some 0 ≤ j < r , with high probability.
+    Unless we end up in some unlucky case (like j=0), we can extract the value of
+    r by finding the fraction of the form a/b, with b < N, closest to k/2^m and identifying
+    r=b (there are libraries doing this efficiently). Typically, one would run the
+    order finding circuit and measure its outcomes many times to find r with very
+    large probability. The expectation is that the distribution of outputs k/2^m should
+    have peaks (of same magnitude) at all the values j/r, for 0 ≤ j < r.
+  prefs: []
+  type: TYPE_NORMAL
+- en: All the classical operations are easy to implement and they can be run in log
+    N time, so we only need to worry about the realisation and running of the order-finding
+    quantum circuit. Let’s see how it looks.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Order-finding quantum circuit
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: The order-finding circuit is depicted in the following figure. Several modifications
+    can be brought to the circuit to improve its efficiency, but let’s leave this
+    for later.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/68793394c75c5ef4c6fbf29ba2389b1d.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Order finding circuit. Figure from Beauregard [2]. The variable *a* corresponds
+    to the integer A in the text.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'There are two groups of qubits: one group of n qubits initialised to the quantum
+    integer state |1⟩, i.e. |x⟩ with x=1, called the *target* qubits (lower qubits
+    in the figure), and another group of 2n qubits, called the *control* qubits (upper
+    qubits in the figure). The control qubits are initialised to the superposition
+    of all integer states, using Hadamard gates,'
+  prefs: []
+  type: TYPE_NORMAL
+- en: \[ (H|0\rangle)^{\otimes 2n} = \left( \frac{|0\rangle + |1\rangle}{\sqrt 2}\right)^{\otimes
+    2n} = \frac{1}{2^n} \sum_{x =0}^{2^{2n}-1} |x\rangle \]
+  prefs: []
+  type: TYPE_NORMAL
+- en: and are then used as control qubits for unitary operations U[D] acting on the
+    target qubits sequentially,
+  prefs: []
+  type: TYPE_NORMAL
+- en: \[
+  prefs: []
+  type: TYPE_NORMAL
+- en: CU_{D}|b\rangle|x\rangle = \left\{
+  prefs: []
+  type: TYPE_NORMAL
+- en: \begin{align}
+  prefs: []
+  type: TYPE_NORMAL
+- en: '& |0\rangle \, |x\rangle & \text{if $b = 0$} \\'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '& |1\rangle \, |Dx\, \text{mod}\, N\rangle & \text{if $b = 1$}'
+  prefs: []
+  type: TYPE_NORMAL
+- en: \end{align}
+  prefs: []
+  type: TYPE_NORMAL
+- en: \right.
+  prefs: []
+  type: TYPE_NORMAL
+- en: \,,
+  prefs: []
+  type: TYPE_NORMAL
+- en: \]
+  prefs: []
+  type: TYPE_NORMAL
+- en: with D taking values
+  prefs: []
+  type: TYPE_NORMAL
+- en: \[ D = A^{2^i} \, \text{mod} \, N \,, \quad i = 0, …, 2n-1, \]
+  prefs: []
+  type: TYPE_NORMAL
+- en: Finally the control qubits are transformed by an inverse QFT gate and are all
+    measured (indicated by circles with “m” in the figure).
+  prefs: []
+  type: TYPE_NORMAL
+- en: One could replace the number of control qubits 2n by another number of control
+    qubits m. The more control qubits, the better will be the estimated phase k/2^m
+    of the U[A] operator. The choice m=2n is a compromise between precision and circuit
+    size.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Why this circuit performs phase estimation is the topic of many introductions
+    to Shor’s algorithm. The [IBM lecture](https://learning.quantum.ibm.com/course/fundamentals-of-quantum-algorithms/phase-estimation-and-factoring)
+    is a very good place to study this topic.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In the above circuit, all ingredients are easily implemented in the Qiskit SDK,
+    except for the unitary operator U[A] (and its controlled version CU[A]). This
+    is where all the difficulty stands. The majority of academic research on Shor’s
+    algorithm revolves around optimising the implementation of U[A]. The above depiction
+    of the order finding circuit suggests that 3n qubits are enough to implement the
+    quantum algorithm, but the U[A] gate itself actually requires n + c extra qubits,
+    termed *ancilla*ry or *ancilla* qubits (the exact constant c depends on the chosen
+    implementation).
+  prefs: []
+  type: TYPE_NORMAL
+- en: Before discussing the circuit implementation of U[A], let us mention that there
+    is an important simplification of the above circuit. The 2n control qubits can
+    be replaced by a single qubit (!), which undergoes a series of unitary gate actions,
+    measurements and reset, leading to a large reduction in the number of qubits required
+    to run Shor’s algorithm, but at the price of introducing control flow operations,
+    namely gate actions depending on intermediate measurements. While this may look
+    like a cheap price to pay in theory, in practice control flow gates are operationally
+    more complex to handle than standard unitary operations. The “one-control-qubit”
+    circuit is depicted in the following figure.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/4feee9810ab221d1a57a53d0d9c9b330.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: One-control order finding circuit. Figure from Beauregard [2]
+  prefs: []
+  type: TYPE_NORMAL
+- en: where m[i] ∈ {0, 1} are successive measurement values of the unique control
+    qubit, and X^m is the X gate (= NOT gate) if m=1, or the identity gate if m=0\.
+    Applying X^m resets the control qubit to |0⟩. The R[i] are phase gates (= RZ rotation
+    gates) with phase parameters depending on all the previous measurement values.
+    The details and the explanations for this simplification can be found, for instance,
+    in [3].
+  prefs: []
+  type: TYPE_NORMAL
+- en: The U[A] gate and quantum modular arithmetics
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: '*Note: This section is more technical. Some readers might want to skip this
+    part on a first read and go directly to the next section.*'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Let us now focus on the circuit implementing the unitary action
+  prefs: []
+  type: TYPE_NORMAL
+- en: '\[ U_A : x \rightarrow Ax \,\, \text{mod} \,\, N \]'
+  prefs: []
+  type: TYPE_NORMAL
+- en: The insightful reader might ask whether this is really a unitary operation,
+    as the operation does not look very bijective, due to the modulo N operation.
+    This is quite an important point, as, using only unitary gates, we can only implement
+    unitary operations. The fact is that U[A], acting on the space of integers in
+    [0, N), is a bijective function, if and only if A and N are coprime integers,
+    which is true for the values considered in Shor’s algorithm. The inverse operation
+    is U[B], with B the inverse of A in *Z*[N], i.e. B is an integer such that BA
+    = 1 mod N. The fact that A and N are coprime guarantees the existence of B.
+  prefs: []
+  type: TYPE_NORMAL
+- en: So it is theoretically possible to build a unitary operator U[A] acting on the
+    space S spanned by the vectors |x⟩, with 0 ≤ x < N. In the order-finding circuit,
+    a sequence of (controlled) U[D] operations, with various values of D, are applied
+    to the initial state |1⟩, which is in S. The action of U[A] on states |x⟩, with
+    x ≥ N, does not matter, as this case will not occur. We can ignore how our U[A]
+    gate circuit acts on those larger integer states.
+  prefs: []
+  type: TYPE_NORMAL
+- en: To keep the presentation short enough, we will only present the most important
+    features of the implementation of U[A], leaving some pointers to relevant papers
+    to the interested reader.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The important building block that needs to be implemented is the modular addition:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '\[ \text{add}(Y,N): \quad |x\rangle \rightarrow |(x+Y) \, \text{mod} \, N \rangle
+    \]'
+  prefs: []
+  type: TYPE_NORMAL
+- en: with 0 ≤ Y < N  a “classical” integer, i.e. a given parameter, and 0 ≤ x < N 
+    a “quantum” integer, i.e. an integer represented by the quantum state |x⟩, as
+    described in previous sections. To implement this operation, we need at least
+    n = ⌈log[2](N)⌉ qubits to represent quantum integers modulo N, so we will assume
+    that n is the size of the quantum register we work with, i.e. the number of qubits
+    holding x. This means we can represent quantum integers between 0 and 2^n-1.
+  prefs: []
+  type: TYPE_NORMAL
+- en: There are two “schools of thought” for implementing this operation. The “Clifford+T”
+    approach uses only the gates NOT, H, S, S^(-1), CNOT and Toffoli, while the “Quantum
+    Fourier Transform” (QFT) approach performs addition via parametrised phase gates
+    P(λ) on the Fourier space representation of the input integer (more on this below).
+  prefs: []
+  type: TYPE_NORMAL
+- en: The Clifford+T approach essentially uses a somewhat straightforward “school-boy”
+    procedure, adding the bits of two quantum numbers written in binary notation and
+    keeping track of carry-over units in ancilla qubits. In the implementation [6],
+    the whole procedure requires around 10n gates and one ancilla qubit, and has depth
+    roughly 2n (these notions are discussed in the section on algorithm complexity
+    below). This approach can be adapted to adding a classical and a quantum number.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The QFT approach was proposed in the work of Draper [4]. It starts by acting
+    on |x⟩ with a QFT gate, which is composed of H and P(π/2^j) gates, producing a
+    superposition of states
+  prefs: []
+  type: TYPE_NORMAL
+- en: \[ QFT|x\rangle = \frac{1}{2^{n/2}} \sum_{y=0}^{2^n-1} e^{2i\pi \frac{xy}{2^n}}
+    |y\rangle \]
+  prefs: []
+  type: TYPE_NORMAL
+- en: In this representation, the addition of a classical number Y can be implemented
+    with n phase rotation gates acting on the n qubits of the register
+  prefs: []
+  type: TYPE_NORMAL
+- en: \[ \prod_{i=0}^{n-1} P\left(2\pi Y\frac{2^i}{2^n}\right) QFT|x\rangle = QFT|(x
+    + Y) \, \text{mod} \, 2^n \rangle \]
+  prefs: []
+  type: TYPE_NORMAL
+- en: The strategy is thus to sandwich phase rotations between a QFT and a QFT^(-1)
+    to implement the addition
+  prefs: []
+  type: TYPE_NORMAL
+- en: \[ |(x + Y)\, \text{mod}\, 2^n \rangle = QFT^{-1} \prod_{i=0}^{n-1} P\left(2\pi
+    Y\frac{2^i}{2^n}\right) QFT |x\rangle \]
+  prefs: []
+  type: TYPE_NORMAL
+- en: The implementation of *controlled* addition is obtained by replacing phase gates
+    by controlled phase gates.
+  prefs: []
+  type: TYPE_NORMAL
+- en: While the number of elementary gates in the QFT and QFT^(-1) operations is large,
+    O(n²) actually, the subsequent addition in Fourier space requires only n phase
+    gates which can operate in parallel. Several additions, or controlled additions,
+    can be implemented sequentially, along the execution of a quantum circuit, while
+    the quantum integer x is represented in Fourier space, via a sequence of (controlled)
+    phase rotations. Moreover, the whole QFT-adder gate does not require ancilla qubits.
+    This makes the QFT approach a preferred choice in many projects requiring quantum
+    adder circuits.
+  prefs: []
+  type: TYPE_NORMAL
+- en: A recent review by S. Wang et al [5] compares the different state-of-the-art
+    algorithms for quantum arithmetics and provides an extensive bibliography on the
+    topic.
+  prefs: []
+  type: TYPE_NORMAL
+- en: It is important to note that the addition operation described above is always
+    **modulo 2^n**. This is as expected, since we can only represent integers in the
+    range [0, 2^n) with n qubits. So the operation that is implemented so far is
+  prefs: []
+  type: TYPE_NORMAL
+- en: '\[ \text{add}(Y): \quad |x\rangle_n \rightarrow |x+Y\rangle_n := |(x + Y)\,
+    \text{mod}\, 2^n \rangle_n \]'
+  prefs: []
+  type: TYPE_NORMAL
+- en: where the subscript n indicates the number of qubits in the quantum register.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The next step is to implement the “modulo N” part. This is substantially harder
+    and requires a series of (controlled) additions and (controlled) subtractions.
+    The basic ideas have been described in the work of Beauregard [2].
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The steps proposed by Beauregard, with 0 ≤ Y < N and 0 ≤ x < N, are:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: With n = ⌈log[2](N)⌉, consider the n+1 qubit state |x⟩[n+1]. This is one more
+    qubit than necessary to hold x, i.e. there is one “overflow” qubit initialised
+    to |0⟩.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Add Y-N, using the add(Y-N) operation. This yields |x+Y-N⟩[n+1] if x+Y-N≥ 0,
+    or |2^(n+1)-x+N)⟩ if x+Y-N < 0 .
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Compute the sign of x+Y-N in an ancilla qubit |a⟩. This is done via a CNOT gate
+    acting on |a⟩ and controlled by the most significant bit (i.e. the overflow bit)
+    of the n+1-qubit register. After this step |a⟩ = |0⟩ if x+Y ≥ N and |a⟩ = |1⟩
+    if x+Y < N.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Add N back to n+1-qubit register, controlled on |a⟩, using a controlled add(N)
+    operation. The resulting state is |(x + Y) mod N⟩|a⟩.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'The following steps allow to reset the ancilla qubit to its initial state |0⟩:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Add -Y using an add(-Y) operation. After this step the n+1-register is in the
+    state |x⟩ if x + Y < N, or in the state |2^(n+1)+x-N)⟩ if x+Y ≥ N.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'Reverse the ancilla bit controlled on the most significant bit of the n+1-qubit
+    register with a CNOT gate. After this step the ancilla bit is always in the state
+    |a⟩ = |1⟩. We reset it to |0⟩ by acting with a NOT gate: |a⟩ = NOT|1⟩ = |0⟩.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Add Y back using an add(Y) operation. This leads to the final state |(x + Y)
+    mod N⟩|0⟩.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: This may look a little involved, but this is arguably the simplest quantum algorithm
+    found so far to perform modular addition.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The last three steps, reverting the ancilla qubit |a⟩ back to its initial state
+    |0⟩, are important, if the ancilla qubit is to be re-used in subsequent modular
+    addition operations, which is the case in Shor’s algorithm. Alternatively, one
+    could use new ancilla qubits for each modular addition, reducing the depths and
+    gate counts of the full order-finding circuit, at the cost of increasing the number
+    of qubits. Minimising the number of qubits is usually the primary objective, as
+    current quantum processors have a limited number of qubits (more on this below).
+  prefs: []
+  type: TYPE_NORMAL
+- en: The implementation of the *controlled* modular addition is obtained by replacing
+    each addition/subtraction of a factor Y, by a controlled addition/subtraction.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The next step is to implement the operation
+  prefs: []
+  type: TYPE_NORMAL
+- en: \[ |x\rangle |y\rangle -> |x\rangle|(y+Ax) \,\text{mod}\, N\rangle \]
+  prefs: []
+  type: TYPE_NORMAL
+- en: where 0 ≤ y < N is another quantum integer. This is done by decomposing the
+    modular addition y ↦ (y + Ax) mod N into a sequence of modular additions y ↦ (y
+    + 2^iA) mod N, implemented as add(2^iA, N)|y⟩ = |(y + 2^iA) mod N⟩, controlled
+    on the i-th bit |x[i]⟩ of x = Σ[i] x[i] 2^i. As we saw, the modular addition requires
+    an overflow qubit and an ancilla qubit, so the true operation we implement with
+    this prescription is
+  prefs: []
+  type: TYPE_NORMAL
+- en: '\[ V_A: |x\rangle_n |y\rangle_{n+1} |0\rangle \rightarrow |x\rangle_n |(y+Ax)
+    \, \text{mod}\, N\rangle_{n+1} |0\rangle \]'
+  prefs: []
+  type: TYPE_NORMAL
+- en: with subscripts indicating the number of qubits.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Finally the U[A] operation is realised with
+  prefs: []
+  type: TYPE_NORMAL
+- en: \[
+  prefs: []
+  type: TYPE_NORMAL
+- en: \begin{align}
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'U_A \, : \quad'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '|x\rangle_n |0\rangle_{n+1} |0\rangle  &\rightarrow |x\rangle_n |Ax\,\text{mod}\,
+    N\rangle_{n+1} |0\rangle \\'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '&\rightarrow |Ax\,\text{mod}\, N\rangle_n |x\rangle_{n+1} |0\rangle \\'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '&\rightarrow |Ax\,\text{mod}\, N\rangle_n |0\rangle_{n+1} |0\rangle'
+  prefs: []
+  type: TYPE_NORMAL
+- en: \end{align}
+  prefs: []
+  type: TYPE_NORMAL
+- en: \]
+  prefs: []
+  type: TYPE_NORMAL
+- en: The first step is the V[A] operation. The second step uses SWAP gates to exchange
+    the two sets of n qubits. Note that the overflow qubit of the middle state is
+    not swapped (it is in the |0> state at this stage). The third step is the V[-B]
+    operation with B = A^(-1), the inverse of A in *Z*[N], using the fact that (x
+    – BAx) mod N = (x – x) mod N = 0. This is the first and only place where the condition
+    that A and N are coprime integers is used (otherwise B does not exist).
+  prefs: []
+  type: TYPE_NORMAL
+- en: Counting the number of qubits used, we see that the full U[A] operation requires
+    2n+2 qubits.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Quantum complexity analysis
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'The “complexity” of a quantum algorithm is usually expressed in terms of three
+    quantities: the number of qubits used, the number of gates used and the depth
+    of the circuit.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: The **number of qubits** used is a clear notion. It is important as quantum
+    processors still have a limited number of qubits to work with (typically in the
+    hundreds as of 2025).
+  prefs: []
+  type: TYPE_NORMAL
+- en: The **number of gates** is a more fuzzy notion and often refers to the number
+    of single-qubit and two-qubit gates such as H, NOT, P, SWAP, CNOT. This can be
+    deceptive as the physical implementation of those gates may require several “physical”
+    gates, representing qubit operations implemented at the hardware level. Typically
+    two-qubit gates, such as SWAP and CNOT, between distant qubits require a chain
+    of physical two-qubit gates acting on neighbouring qubits. The number of physical
+    gates depends on the “connectivity” of the quantum processors, namely which two-qubit
+    operations are allowed physically. Those correspond to operations on nearby qubits.
+    Even single-qubit gates, such as the Hadamard gate, may require several physical
+    single-qubit gates.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Since the set of physical gates and the hardware connectivity vary from one
+    provider to the other, most of academic research simply focuses on counting the
+    number of “basic” single-qubit and two-qubit gates.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The **depth** of the quantum circuit refers to the number of sequential operations
+    on the qubits necessary to reach the final measurement step. The more parallelised
+    operations on qubits there are, the lower is the depth. The depth can be roughly
+    visualised as the length of the circuit in a pictorial representation. It is important
+    to minimise the depth of a quantum circuit because the quantum coherence of qubits
+    diminishes with the depth. The more sequential operations there are, the longer
+    it takes to run the circuit before measuring its outcomes and the more time there
+    is for qubits to interact with the environment and loose their coherence.
+  prefs: []
+  type: TYPE_NORMAL
+- en: If we take a look at our implementation of U[A] , we see that it requires (at
+    least) 2n+2 qubits. The number of gates we used is O(n³) (a factor n² comes from
+    using the QFT gate) and the depth is O(n²) (a factor n comes from using the QFT
+    gate).
+  prefs: []
+  type: TYPE_NORMAL
+- en: The total order-finding circuit requires one more ancilla qubit, if we use the
+    1-control qubit simplification, and performs O(n) sequential U[A] operations,
+    so the total number of qubits required is 2n+3 (4n+2 if we use the circuit with
+    2n control qubits), the total number of gates is O(n⁴) and the depth is O(n³).
+  prefs: []
+  type: TYPE_NORMAL
+- en: There is one more standard simplification, which is to use an approximate QFT
+    transformation using only O(n log n) gates, instead of O(n²). This makes the evaluation
+    of the order-finding fraction k/2^(2n) a bit less precise, but still good enough
+    for running Shor’s algorithm with high success probability. This brings down the
+    number of gates to O(n³ log n).
+  prefs: []
+  type: TYPE_NORMAL
+- en: Many research papers have come with small improvements on these numbers, but
+    no major breakthrough to my knowledge.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Overall the cost of running the algorithm, both in terms of number of qubits
+    and number of operations is polynomial in n, which was the promise of Shor’s algorithm,
+    showing a quantum advantage on the factoring task for very large integers N.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Simulations and runs on IBM quantum hardware
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: So far everything we discussed was theoretical, and known 20 years ago. Today
+    several companies are trying to develop quantum processors which could in principle
+    run Shor’s algorithm. In particular the [IBM Quantum Platform](https://quantum.cloud.ibm.com/)
+    offers the possibility to perform a limited of number of quantum computations
+    for free on quantum processors (QPUs) with 128 qubits.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The Qiskit SDK provides a convenient interface to implement quantum circuits,
+    perform simulations and run the circuits on IBM quantum hardware. The learning
+    platform offers an [introduction to Qiskit](https://learning.quantum.ibm.com/learning-path/getting-started-with-qiskit)
+    for newcomers.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE0]'
+  prefs: []
+  type: TYPE_PRE
+- en: To run Shor’s algorithm, we use the open-source *[qiskit-shor](https://github.com/benjamin-assel/qiskit-shor)*
+    library, implemented by the author of this post. We invite any reader interested
+    in the exact implementation to take a look at the linked repository.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The *[qiskit-shor](https://github.com/benjamin-assel/qiskit-shor)* API has
+    two functions: *find_order(A, N)* running the order-finding circuit and returning
+    the order r of A in *Z*[N] , together with the distribution of measured outputs,
+    and *find_factor(N)* which runs Shor’s algorithm in full and returns a factor
+    of N, if one was found.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: To increase the chances of success, we run the order-finding circuit many times,
+    between 100 and 1000 times, and observe a distribution of measured outputs. From
+    this distribution, we consider the top 10 most frequent values to try and extract
+    the order.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The library implements both the order-finding circuit with 2n control qubits
+    and the optimised version with one control qubit. However, we mostly use the less
+    optimal version with 2n control qubits, as the IBM platform has stricter usage
+    limitations for circuits using control flow operations.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Simulations
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: After cloning the *[qiskit-shor](https://github.com/benjamin-assel/qiskit-shor)*
+    repository, we can start with running simulations, using the qiskit Aer simulator.
+    We run simulations without noise, to test the code. We will work only with small
+    integers as simulating a quantum state of many qubits on a classical computer
+    is computationally intensive and we only want to illustrate the above presentation
+    with simple examples.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE1]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE2]'
+  prefs: []
+  type: TYPE_PRE
+- en: '![](../Images/1a1b439ed50a27b08dc5be4f10d42bfe.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Histogram of the measured output values of the order-finding circuit with A=7
+    and N=15, using Qiskit Aer simulations (100 runs)
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The function returns the order 4, which is correct, 7⁴ = 1 mod 15\. The output
+    distribution shows four values for the returned integer k: 00000000, 01000000,
+    1000000, 11000000, corresponding to the binary notation of the integers 0, 2⁶,
+    2⁷ and 2⁶+2⁷ respectively. The output has 2n=8 qubits, with n=⌈log[2](15)⌉=4\.
+    The distribution of approximate fractions k/2⁸ has values 0, 1/4, 1/2, 3/4, with
+    similar number of occurrences. These correspond to the expected phases estimates
+    j/4, j=0, 1, 2, 3, of the operator U[7]. The common denominator 4 of these fractions
+    gives us the order of 7 in *Z*[15] .'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Let us look at a second example and search for the order of 5 in *Z*[21].
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE3]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE4]'
+  prefs: []
+  type: TYPE_PRE
+- en: '![](../Images/189a46f77421e24bcdfcae951e8003cd.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Distribution of the order-finding circuit outputs (500 runs) for A=5, N=21.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The quantum search returns the correct value 6\. The distribution of outputs
+    has more outcomes and importantly shows some peaks. Replacing the histogram bin
+    labels by the corresponding fractions k/2^(10) (rounded to 4 decimals) the histogram
+    becomes
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/66a759b37a3a5dffd3857c94b0fb3e44.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Same distribution, labeled with estimated phases k/2^(10)
+  prefs: []
+  type: TYPE_NORMAL
+- en: We see that there are peaks at 0, 1/6, 1/3, 1/2, 2/3 and 5/6, which are all
+    the values of the form j/6, j =0, 1, 2, 3, 4, 5 (the peaks do not appear regularly
+    spaced in the figure, due to bins with zero outcomes dropping). The values j/6
+    correspond to the eigenvalues of the unitary operator U[5], with 6 being the order
+    of 5 in Z[21], as expected.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We can simulate the full algorithm for completeness and extract non-trivial
+    factors for N=15 and N=21\. The following code runs Shor’s algorithm with a maximum
+    of 3 trial values for A, stopping if a factor of N is found. Each trial consists
+    in running 100 times the order-finding circuit.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE5]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE6]'
+  prefs: []
+  type: TYPE_PRE
+- en: The value A=4 was randomly selected, then the order 2 was found, finally the
+    factor 3 of N=15 was returned.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE7]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE8]'
+  prefs: []
+  type: TYPE_PRE
+- en: The value A=17 was tried first, getting the order 6, but gcd(A^(r/2) – 1, N)
+    = gcd(4912, 21) = 1, so this does not give a factor of 21\. The value 19 was tried
+    next, getting the order 6 again. This time gcd(A^(r/2) – 1, N) = gcd(6858, 21)
+    = 3, giving the factor 3 of 21.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Quantum runs
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: Now that we are convinced that the order-finding circuit is correctly implemented,
+    we can try to run it on actual QPUs.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE9]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE10]'
+  prefs: []
+  type: TYPE_PRE
+- en: Let us now try to find the order of 7 in *Z*[15], as in the simulation above.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE11]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE12]'
+  prefs: []
+  type: TYPE_PRE
+- en: '![](../Images/66bbc946f4b41bad9b0aa9ec9004d14f.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: The correct order 4 of 7 in Z[15] is returned, but the distribution of outcomes
+    is far from the one in the simulation, which had only 4 observed values. Here
+    almost all values between 0 and 2⁸-1 appear, making the plot rather unreadable.
+    There are some small peaks, but the result is largely dominated by noise. It is
+    somewhat miraculous that from the 10 most frequent values, the algorithm is able
+    to extract the correct order.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Other runs for different values of A, for N=15 or N=21, produce similar noisy
+    data. This is because the quantum hardware is subject to quantum noise interfering
+    with unitary gate operations. The more gates there are, the more noise there is.
+    In the N=15 order finding circuit, our implementation has already 2482 gates.
+    This is way to much for the current quantum computation capacities.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE13]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE14]'
+  prefs: []
+  type: TYPE_PRE
+- en: We can try a case with fewer qubits, by searching for the order of 5 in *Z*[6],
+    using the one-control qubit optimised circuit.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE15]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE16]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE17]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE18]'
+  prefs: []
+  type: TYPE_PRE
+- en: '![](../Images/70246c2da54c8fb66a6bc046427220ca.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: The correct order 2 is returned, but the distribution is still dominated by
+    the quantum noise.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Concluding thoughts
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: We have given a tentatively complete presentation of the implementation of Shor’s
+    algorithm, including a somewhat detailed description of the quantum modular arithmetic
+    operations involved. Using the implementation of the [qiskit-shor](https://github.com/benjamin-assel/qiskit-shor)
+    module, we have run some simulations and some actual quantum computations on the
+    IBM Quantum platform. The quantum computations turned out to be dominated by quantum
+    noise, making it impossible, for the time being, to run Shor’s algorithm and extract
+    meaningful results.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The implementation we used was naive, in the sense that it did not include state-of-the-art
+    optimisation. But the observed noisy outputs of this naive implementation when
+    running Shor’s algorithm for very small values of N, indicates that similar results
+    would be obtained, even with extra circuit optimisations.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In the future it might become more realistic to run Shor’s algorithm successfully.
+    The enormous progress in quantum hardware capacities in the recent years leave
+    us with decent hopes to see this happen in a few years time.
+  prefs: []
+  type: TYPE_NORMAL
+- en: References
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: '[1] [Original paper](https://arxiv.org/abs/quant-ph/9508027): Shor, P. W. (1999).
+    *Polynomial-time algorithms for prime factorization and discrete logarithms on
+    a quantum computer*. SIAM review, 41(2), 303-332.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[2] S. Beauregard, *Circuit for Shor’s algorithm using 2n+ 3 qubits*. arxiv:
+    quant-ph/0205095.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[3] Parker, S., & Plenio, M. B. (2000). *Efficient factorization with a single
+    pure qubit and log N mixed qubits*. Physical Review Letters, 85(14), 3049\. arxiv:
+    quant-ph/0001066.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[4] T. Draper, *Addition on a Quantum Computer*, arxiv preprint: quant-ph/0008033'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[5] S. Wang et al, *A Comprehensive Study of Quantum Arithmetic Circuits*,
+    arxiv: quant-ph/2406.03867.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[6] S. Cuccaro et al, *A new quantum ripple-carry addition circuit*, arxiv:
+    quant-ph/0410184.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '* * *'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '*Unless otherwise noted, all images are by the author*.'
+  prefs: []
+  type: TYPE_NORMAL

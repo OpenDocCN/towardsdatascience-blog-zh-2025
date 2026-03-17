@@ -1,0 +1,558 @@
+- en: A Caching Strategy for Identifying Bottlenecks on the Data Input Pipeline
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 原文：[https://towardsdatascience.com/a-caching-strategy-for-identifying-bottlenecks-on-the-data-input-pipeline/](https://towardsdatascience.com/a-caching-strategy-for-identifying-bottlenecks-on-the-data-input-pipeline/)
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: '<mdspan datatext="el1750962830720" class="mdspan-comment">Performance bottlenecks</mdspan>
+    in the data input pipeline of a machine learning model running on a GPU can be
+    particularly frustrating. In most workloads, the host (CPU) and the device (GPU)
+    work in tandem: the CPU is responsible for preparing and feeding data, while the
+    GPU handles the heavy lifting — executing the model, performing backpropagation
+    during training, and updating weights.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: In an ideal situation, we want the GPU — the most expensive component of our
+    AI/ML infrastructure — to be highly utilized. This leads to faster development
+    cycles, lower training costs, and reduced latency in deployment. To achieve this,
+    the GPU must be continuously fed with input data. In particular, we would like
+    to prevent the onset of “GPU starvation” — a situation in which our most expensive
+    resource lays idle while it waits for input data. Unfortunately, “GPU starvation”
+    due to bottlenecks in the data input pipeline is quite common and can dramatically
+    reduce system efficiency. As such, it’s important for AI/ML developers to have
+    reliable tools and strategies for diagnosing and addressing such issues.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'This post — the eighth in our series on the topic of [PyTorch Model Performance
+    Analysis and Optimization](https://towardsdatascience.com/pytorch-model-performance-analysis-and-optimization-10c3c5822869/) —
+    introduces a simple caching strategy for identifying bottlenecks in the data input
+    pipeline. As in earlier posts, we aim to reinforce two key ideas:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: AI/ML developers must take responsibility for the runtime performance of their
+    models.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: You do not need to be a CUDA or systems expert to implement significant performance
+    optimizations.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: We’ll start by outlining some of the common causes of GPU starvation. Then we’ll
+    introduce our caching-based strategy for identifying and analyzing input pipeline
+    performance issues. We’ll close by reviewing a set of practical tools, tricks,
+    and techniques (TTTs) for overcoming performance bottlenecks in the data input
+    pipeline.
+  prefs: []
+  type: TYPE_NORMAL
+- en: To facilitate our discussion we will define a toy PyTorch model and an associated
+    data input pipeline. The code that we will share is intended for demonstrative
+    purposes — please do not rely on its correctness or optimality. Furthermore, please
+    do not our mention of any tool, or technique as an endorsement of its use.
+  prefs: []
+  type: TYPE_NORMAL
+- en: A Toy PyTorch Model
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'We define a simple PyTorch-based image classification model model:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE0]'
+  prefs: []
+  type: TYPE_PRE
+- en: We define a synthetic dataset with a number of transformations — intentionally
+    designed to include a severe input pipeline bottleneck. For more details on the
+    dataset definition please see [this post](https://towardsdatascience.com/solving-bottlenecks-on-the-data-input-pipeline-with-pytorch-profiler-and-tensorboard-5dced134dbe9/#7fbd-af822198c08).
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE1]'
+  prefs: []
+  type: TYPE_PRE
+- en: Next, we define the model, loss function, optimizer, training step, and training
+    loop, which we wrap with a [PyTorch Profiler context manager](https://pytorch.org/docs/stable/profiler.html#torch.profiler.profile) to
+    capture performance data.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE2]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'For our experiments, we use an [Amazon EC2 g5.xlarge](https://aws.amazon.com/ec2/instance-types/g5/) instance
+    (containing an NVIDIA A10G GPU and 4 vCPUs) running a [PyTorch (2.6) Deep Learning
+    AMI](https://aws.amazon.com/releasenotes/aws-deep-learning-ami-gpu-pytorch-2-6-ubuntu-22-04/) (DLAMI).
+    Running our toy script in this environment results in an average throughput of
+    0.89 steps per second, an underwhelming GPU utilization of 22%, and in the following
+    profiling trace:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/ad388668ef5a4bf7be0f12a374005f08.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Profiling Trace of GPU Starvation (by Author)
+  prefs: []
+  type: TYPE_NORMAL
+- en: As discussed in detail in a [previous post](https://towardsdatascience.com/solving-bottlenecks-on-the-data-input-pipeline-with-pytorch-profiler-and-tensorboard-5dced134dbe9/#7fbd-af822198c08),
+    the profiling trace shows a clear pattern of GPU starvation — where the GPU spends
+    most of its time waiting for data from the PyTorch DataLoader. This suggests that
+    there is a performance bottleneck in the data input pipeline, which prevents input
+    batches from being prepared quickly enough to keep the GPU fully occupied. Importantly,
+    input pipeline performance issues can stem from a variety of sources. In the case
+    of our toy example, the cause of the bottleneck is not apparent from the trace
+    captured above.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'A brief note for readers/developers that (despite all of our lecturing) remain
+    aversive to the use of PyTorch Profiler: The data caching-based technique we will
+    discuss below will present an alternative way of identifying GPU starvation —
+    so do not despair.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: GPU Starvation — Finding the Root Cause
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: In this section, we briefly review common causes of performance bottlenecks
+    on the input data pipeline.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Recall, that in a typical model execution flow:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Raw data is is loaded or streamed from storage (e.g., local RAM or disk, a remote
+    network file system, or a cloud-based object store such as [Amazon S3](https://aws.amazon.com/s3/) or [Google
+    Cloud Storage](https://cloud.google.com/storage)).
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: It is then preprocessed on the CPU.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Finally, the processed data is copied to the GPU for inference or training.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: 'Correspondingly, bottlenecks can emerge at each of the following stages:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Slow data retrieval:** There are multiple factors that can limit how quickly
+    raw data can be retrieved by the CPU, including: the choice of storage backend
+    (e.g., cloud storage vs. local SSD), the available network bandwidth, the data
+    format, and more.'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '**CPU resource exhaustion or misuse**: Preprocessing tasks — such as data augmentation,
+    image transformations, or decompression — can be CPU-intensive. When the number
+    or complexity of these operations exceeds the available CPU capacity, or if the
+    CPU resources are managed inefficiently (e.g., an in-optimal choice of number
+    of workers), a bottleneck can occur. It’s worth noting that CPUs are also responsible
+    for other model-related duties like loading GPU kernels, memory management, metric
+    reporting, and more.'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '**Host-to-device transfer bottlenecks**: Once data is processed, it must be
+    transferred to the GPU. This can become a bottleneck if data batches are large
+    relative to the CPU-GPU memory bandwidth, or if the memory copying is performed
+    inefficiently (e.g., individual samples are copied rather than full batches).'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: The Limitation of Performance Profilers
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: A common way to identify data pipeline bottlenecks is by using a performance
+    profiler. In part 4 of this series, [Solving Bottlenecks on the Data Input Pipeline
+    with PyTorch Profiler and TensorBoard](https://towardsdatascience.com/solving-bottlenecks-on-the-data-input-pipeline-with-pytorch-profiler-and-tensorboard-5dced134dbe9/#7fbd-af822198c08),
+    we demonstrated how to do this using PyTorch’s built-in profiler. However, given
+    that the input data pipeline runs on the CPU, any [Python profiler](https://docs.python.org/3/library/profile.html) could
+    be used.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The problem with this approach is that we typically use multiple worker processes
+    for data loading, making performance profiling particularly complex. In our [previous
+    post](https://towardsdatascience.com/solving-bottlenecks-on-the-data-input-pipeline-with-pytorch-profiler-and-tensorboard-5dced134dbe9/#7fbd-af822198c08),
+    we overcame this by running the data-loading and the model execution in a single
+    process (i.e., we set the *num_workers* argument of the [*DataLoader*](https://docs.pytorch.org/docs/stable/data.html#torch.utils.data.DataLoader)constructor
+    to zero). However, this is a highly intrusive configuration change that can have
+    a significant impact on the overall performance of our model.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The caching-based method we present in this post aims to pinpoint the source
+    of the performance bottleneck in a far less intrusive manner. In particular, it
+    will enable us to measure the model performance without altering the multi-worker
+    data-loading behavior.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Bottleneck Detection via Caching
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: In this section, we propose a multi-step approach for analyzing the performance
+    of the input data pipeline. We’ll demonstrate how this method can be applied to
+    our toy training workload to identify the causes of the GPU starvation.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Step 1: Cache a Batch on the Device'
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: We begin by creating a single input batch, copying it to the GPU, and then measuring
+    the runtime performance of the model when iterating over just that batch. This
+    provides a theoretical upper bound on the model’s throughput — i.e., the maximum
+    throughput achievable when the GPU is not data-starved.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'In the following code block we modify the training loop of our toy script so
+    that it runs on a single batch that is cached on the GPU:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE3]'
+  prefs: []
+  type: TYPE_PRE
+- en: The resultant average throughput is 3.45 steps per second — nearly 4 times higher
+    than our baseline result. Not only does this confirm a significant data pipeline
+    bottleneck, but it also quantifies its impact.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Bonus Tip: Profile and Optimize with Device-Cached Data**'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Running a profiler on a single batch cached on the GPU isolates the model execution
+    from the input pipeline. This helps you identify inefficiencies in the model’s
+    raw compute path. Ideally, GPU utilization here should approach 100%. In our case,
+    utilization is around 95%, which is acceptable.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Step 2: Cache a Batch on the Host (CPU)'
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: Next, we cache a single input batch on the host (CPU) instead of the device.
+    Now, each step includes both a memory copy from CPU to GPU and the model execution.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Since PyTorch’s [memory pinning](https://docs.pytorch.org/tutorials/intermediate/pinmem_nonblock.html) allows
+    for asynchronous data transfers, we expect the host-to-device memory copy for
+    batch *N+1* to overlap with the model execution on batch *N*. Consequently, our
+    expectation is that the throughput will be in the same ballpark as in the device-cached
+    case. If not, this would be a clear indication of a bottleneck in the host to
+    device memory copy.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The following block of code contains our application of this step to our toy
+    model:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE4]'
+  prefs: []
+  type: TYPE_PRE
+- en: The resultant throughput following this change is 3.33 steps per second — a
+    minor drop from the previous result — indicating that the host-to-device transfer
+    is not a bottleneck. We need to keep looking for the source of our performance
+    bottleneck.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Steps 3 and on: Cache at Intermediate Stages in the Data Pipeline'
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: We continue our search by “climbing” up the data input pipeline, caching at
+    various intermediate points to pinpoint the bottleneck. The precise application
+    of this process will vary based on the details of the pipeline. Suppose the pipeline
+    can be broken into *K *stages. If caching after stage *N* yields a significantly
+    worse throughput when caching after stage *N+1,* we can deduce that that the inclusion
+    of the processing of stage *N+1* is what is slowing us down.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Step 3a: Cache a Single Processed Sample** In the code block below, we modify
+    our dataset to cache one fully processed sample. This simulates a pipeline that
+    includes data collation and the CPU to GPU data copy.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE5]'
+  prefs: []
+  type: TYPE_PRE
+- en: The resultant throughput is 3.23 steps per second— still far higher than our
+    baseline of 0.89\. We still have not found the culprit.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Step 3b: Cache Raw Data (Before Transformation)** Next, we modify the dataset
+    so as to cache the raw data (e.g., unprocessed image files). The input data pipeline
+    now includes the data transformations, data collation, and the CPU to GPU data
+    copy.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE6]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'This time, the throughput drops sharply — all the way down to 1.72 steps per
+    second. We have found our first culprit: the data transformation function.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Interim Results
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: 'Here’s a summary of the experiments so far:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/ba870a1bf53a51dc497a47b3af023d46.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Caching Experiment Results (by Author)
+  prefs: []
+  type: TYPE_NORMAL
+- en: The results point to a significant slowdown introduced by the data transformation
+    step. The gap between the raw data caching result and the baseline also suggests
+    that raw data loading may be another culprit. Let’s begin with the data processing
+    bottleneck.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Optimizing the Data Transformation
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: We now proceed with our newfound discovery of a performance bottleneck in the
+    data processing function. The next logical step would be to break the *transform *function
+    into individual components and apply our caching technique to each one in order
+    to derive more insight into the precise sources of our GPU starvation. For the
+    sake of brevity, we will skip ahead and apply the data processing optimizations
+    discussed in our previous post, [Solving Bottlenecks on the Data Input Pipeline
+    with PyTorch Profiler and TensorBoard](https://towardsdatascience.com/solving-bottlenecks-on-the-data-input-pipeline-with-pytorch-profiler-and-tensorboard-5dced134dbe9/#7fbd-af822198c08).
+    Please see there for details.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Following the data transformation optimizations, the throughput of the cached
+    raw data experiment shoots up to 3.23\. We have eliminated the bottleneck in the
+    data processing function.
+  prefs: []
+  type: TYPE_NORMAL
+- en: However, our new baseline throughput (without caching) becomes 1.28 steps per
+    second, indicating that there remains a bottleneck in the raw data loading. This
+    is similar to the end result we reached in our [previous post](https://towardsdatascience.com/solving-bottlenecks-on-the-data-input-pipeline-with-pytorch-profiler-and-tensorboard-5dced134dbe9/#7fbd-af822198c08).
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/376e83e0927181d7793d0023c099a521.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Throughput Following Transform Optimization (by Author)
+  prefs: []
+  type: TYPE_NORMAL
+- en: Optimizing Raw Data Loading
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: To resolve the remaining bottleneck, we simulate the optimization demonstrated
+    in part 5 of this series, [How to Optimize Your DL Data-Input Pipeline with a
+    Custom PyTorch Operator](https://medium.com/data-science/how-to-optimize-your-dl-data-input-pipeline-with-a-custom-pytorch-operator-7f8ea2da5206).
+    We do this by reducing the size of our initial random image from 1024×1024 to
+    256×256\. Following, this change the end to end (un-cached) training step increases
+    to 3.23\. Problem solved!
+  prefs: []
+  type: TYPE_NORMAL
+- en: Important Caveats
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: We conclude with a few important notes and caveats.
+  prefs: []
+  type: TYPE_NORMAL
+- en: A drop in throughput resulting from inclusion of a certain data-processing step
+    in the data pipeline, does not necessarily mean that it is that specific step
+    that requires optimization. It is entirely possible that it is another step CPU
+    utilization near the limit, and the new step just tipped it over.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: If your input data varies in size, throughput from a single cached data sample
+    or batch of samples may not reflect real-world performance.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: The same caveat applies if the AI model includes dynamic, data-dependent , features,
+    e.g., if components of the model graph are dependent on the input data.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Tips, Tricks, and Techniques for Addressing Bottlenecks on the Data Input Pipeline
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'We conclude this post with a list of tips, tricks, and techniques for optimizing
+    the data input pipeline of PyTorch-based AI models. This list is by no means exhaustive
+    — numerous additional optimizations exist depending on your specific use case
+    and infrastructure. We divide the optimizations into three categories:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Optimizing Raw Data Entry/Retrieval
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Optimizing Data Processing
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Optimizing Host-to-Device Data Transfer
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Optimizing Raw Data Entry/Retrieval
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: 'Efficient data loading starts with fast and reliable access to raw data. The
+    following tips can help:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Choose an instance type with sufficient network ingress bandwidth.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Use a fast and cost-effective data storage solution. Local SSDs are fast but
+    expensive. Cloud-based solutions like S3 offer scalability, but may introduce
+    latency.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Maximize storage network egress. Consider partitioning datasets in S3 or tuning
+    parallel downloads to reduce throttling.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Consider raw data compression. Compressing files can reduce transfer time —
+    but watch out for increased CPU cost during decompression.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Group small samples into larger files. This can reduce overhead associated with
+    opening and closing many files.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Use optimized data transfer tools. For example, s5cmd can significantly outperforms
+    AWS CLI for bulk S3 downloads.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Tune data retrieval parameters. Adjusting chunk size or concurrency settings
+    can greatly impact read performance.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Addressing Data Processing Bottlenecks
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: Tune the number of data loading workers and prefetch factor.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Whenever possible, offload data-processing to the data preparation phase.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Choose an instance type with an optimal CPU/GPU compute ratio.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Optimize the order of transformations. For example, applying a crop before blurring
+    will be faster blurring the full sized image and only then cropping.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Leverage Python acceleration libraries. For example, Numba and JAX can speed
+    up pure Python operations via JIT compilation.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Create custom PyTorch CPU operators where appropriate (e.g., see [here](https://medium.com/data-science/how-to-optimize-your-dl-data-input-pipeline-with-a-custom-pytorch-operator-7f8ea2da5206)).
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Consider adding auxiliary CPUs (data servers) — (e.g., see [here](https://medium.com/data-science/effective-load-balancing-with-ray-on-amazon-sagemaker-d3b9020679d3)).
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Move GPU-friendly transforms to the GPU graph. Some transforms (e.g., normalization)
+    can be done post-loading on the GPU for better overlap.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Tune OS-level thread and memory configurations.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Optimizing the Host to Device Data Copy
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: Use [memory pinning and non-blocking data copies](https://docs.pytorch.org/tutorials/intermediate/pinmem_nonblock.html) to
+    prefetch data directly onto the GPU. Also see the dedicated [CudaDataPrefetcher](https://docs.pytorch.org/tnt/stable/utils/generated/torchtnt.utils.data.CudaDataPrefetcher.html#torchtnt.utils.data.CudaDataPrefetcher) offered
+    by [TorchTNT](https://docs.pytorch.org/tnt/stable/).
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Postpone int8 to float32 datatype conversions to the GPU to reduce memory copy
+    payload by a factor of 4.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: If your model is using lower precision floats (e.g., fp16/bfloat16) cast the
+    floats on the CPU to reduce payload by half.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Postpone unpacking of one-hot vectors to the GPU — i.e., keep them as label
+    ids until the last possible moment.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: If you have many binary values, consider using bitmasks to compress the payload.
+    For example, if you have 8 binary maps, consider compressing them into a single
+    uint8.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: If your input data is sparse, consider using [sparse data representations](https://docs.pytorch.org/docs/stable/sparse.html).
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Avoid unnecessary padding. While zero-padding is a popular technique for dealing
+    with variable sized input samples, it can significantly increase the size of the
+    memory copy. Consider alternative options (e.g., see [here](https://medium.com/data-science/optimizing-transformer-models-for-variable-length-input-sequences-19fb88fddf71)).
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Make sure you are not copying data that you do not actually need on the GPU!!
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Summary
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: While GPUs are considered essential for modern day AI/ML development they come
+    at a steep price. Once you’ve decided to make the necessary investment into their
+    acquisition, you will want to make sure they are being used as much as possible.
+    The last thing you want is for your GPU to sit idle, waiting for input data due
+    to a preventable bottleneck elsewhere in the pipeline.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Unfortunately, such inefficiencies are all too common. In this post, we introduced
+    a simple technique for diagnosing these issues by iteratively caching data at
+    different stages of the input pipeline. By isolating the runtime impact of each
+    pipeline component, this method helps identify specific bottlenecks — whether
+    in raw data loading, preprocessing, or host-to-device transfer.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Of course, the exact implementation will vary across projects and pipelines,
+    but we hope this strategy provides a useful framework for diagnosing and resolving
+    performance issues in your own AI/ML workflows.
+  prefs: []
+  type: TYPE_NORMAL

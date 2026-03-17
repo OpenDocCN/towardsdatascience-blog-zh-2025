@@ -1,0 +1,367 @@
+- en: Retrieval Augmented Generation in SQLite
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 原文：[https://towardsdatascience.com/retrieval-augmented-generation-in-sqlite/](https://towardsdatascience.com/retrieval-augmented-generation-in-sqlite/)
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: '*This**is the second in a two-part series on using SQLite for machine learning.
+    In my* [*last article*](https://towardsdatascience.com/sqlite-in-production-dreams-becoming-reality-94557bec095b/)*,
+    I dove into how SQLite is rapidly becoming a production-ready database for web
+    applications. In this article, I will discuss how to perform retrieval-augmented-generation
+    using SQLite.*'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '*If you’d like a custom web application with generative AI integration, visit*
+    [*losangelesaiapps.com*](https://losangelesaiapps.com/)'
+  prefs: []
+  type: TYPE_NORMAL
+- en: The code referenced in this article can be found [here](https://github.com/EdIzaguirre/sqlite_vec_tutorial?tab=readme-ov-file).
+  prefs: []
+  type: TYPE_NORMAL
+- en: '* * *'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'When I first learned how to perform retrieval-augmented-generation (RAG) as
+    a budding data scientist, I followed the *traditional path*. This usually looks
+    something like:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Google retrieval-augmented-generation and look for tutorials
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Find the most popular framework, usually LangChain or LlamaIndex
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Find the most popular cloud vector database, usually Pinecone or Weaviate
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Read a bunch of docs, put all the pieces together, and success!
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: In fact I actually [wrote an article](https://towardsdatascience.com/how-to-build-a-rag-system-with-a-self-querying-retriever-in-langchain-16b4fa23e9ad/)
+    about my experience building a RAG system in LangChain with Pinecone.
+  prefs: []
+  type: TYPE_NORMAL
+- en: There is nothing terribly wrong with using a RAG framework with a cloud vector
+    database. However, I would argue that for first time learners it overcomplicates
+    the situation. Do we really need an entire framework to learn how to do RAG? Is
+    it necessary to perform API calls to cloud vector databases? These databases act
+    as black boxes, which is never good for learners (or frankly for anyone).
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'In this article, I will walk you through how to perform RAG on the simplest
+    stack possible. In fact, this ‘stack’ is just SQLite with the sqlite-vec extension
+    and the OpenAI API for use of their embedding and chat models. I recommend you
+    [re](https://medium.com/towards-data-science/sqlite-in-production-dreams-becoming-reality-94557bec095b)[ad
+    part](https://towardsdatascience.com/sqlite-in-production-dreams-becoming-reality-94557bec095b/)
+    [1](https://medium.com/towards-data-science/sqlite-in-production-dreams-becoming-reality-94557bec095b)
+    of this series to get a deep dive on SQLite and how it is rapidly becoming production
+    ready for web applications. For our purposes here, it is enough to understand
+    that SQLite is the simplest kind of database possible: a single file in your repository.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: So ditch your cloud vector databases and your bloated frameworks, and let’s
+    do some RAG.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '* * *'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**SQLite-Vec**'
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: One of the powers of the SQLite database is the use of **extensions**. For those
+    of us familiar with Python, extensions are a lot like libraries. They are modular
+    pieces of code written in C to extend the functionality of SQLite, making things
+    that were once impossible possible. One popular example of a SQLite extension
+    is the [Full-Text Search (FTS)](https://www.sqlite.org/fts5.html) extension. This
+    extension allows SQLite to perform efficient searches across large volumes of
+    textual data in SQLite. Because the extension is written purely in C, we can run
+    it anywhere a SQLite database can be run, including Raspberry Pis and browsers.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In this article I will be going over the extension known as [sqlite-vec](https://github.com/asg017/sqlite-vec).
+    This gives SQLite the power of performing **vector search**. Vector search is
+    similar to full-text search in that it allows for efficient search across textual
+    data. However, rather than search for an exact word or phrase in the text, vector
+    search has a semantic understanding. In other words, searching for “horses” will
+    find matches of “equestrian”, “pony”, “Clydesdale”, etc. Full-text search is incapable
+    of this.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'sqlite-vec makes use of **virtual tables**, as do most extensions in SQLite.
+    A virtual table is similar to a regular table, but with additional powers:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Custom Data Sources:** The data for a standard table in SQLite is housed
+    in a single db file. For a virtual table, the data can be housed in external sources,
+    for example a CSV file or an API call.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Flexible Functionality:** Virtual tables can add specialized indexing or
+    querying capabilities and support complex data types like JSON or XML.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Integration with SQLite Query Engine:** Virtual tables integrate seamlessly
+    with SQLite’s standard query syntax e.g. `SELECT` , `INSERT`, `UPDATE`, and `DELETE`
+    options. Ultimately it is up to the writers of the extensions to support these
+    operations.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Use of Modules:** The backend logic for how the virtual table will work is
+    implemented by a **module** (written in C or another language).'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'The typical syntax for creating a virtual table looks like the following:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE0]'
+  prefs: []
+  type: TYPE_PRE
+- en: The important part of this statement is `my_extension_module()`. This specifies
+    the module that will be powering the backend of the `my_table` virtual table.
+    In sqlite-vec we will use the `vec0` module.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Code Walkthrough**'
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: The code for this article can be found [here](https://github.com/EdIzaguirre/sqlite_vec_tutorial).
+    It is a simple directory with the majority of files being .txt files that we will
+    be using as our dummy data. Because I am a physics nerd, the majority of the files
+    pertain to physics, with just a few files relating to other random fields. I will
+    not present the full code in this walkthrough, but instead will highlight the
+    important pieces. Clone my repo and play around with it to investigate the full
+    code. Below is a tree view of the repo. Note that `my_docs.db` is the single-file
+    database used by SQLite to manage all of our data.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE1]'
+  prefs: []
+  type: TYPE_PRE
+- en: Step 1 is to install the necessary libraries. Below is our `requirements.txt`
+    file. As you can see it has only three libraries. I recommend creating a virtual
+    environment with the latest Python version (3.13.1 was used for this article)
+    and then running `pip install -r requirements.txt` to install the libraries.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE2]'
+  prefs: []
+  type: TYPE_PRE
+- en: Step 2 is to create an [OpenAI API key](https://platform.openai.com/docs/overview)
+    if you don’t already have one. We will be using OpenAI to generate embeddings
+    for the text files so that we can perform our vector search.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE3]'
+  prefs: []
+  type: TYPE_PRE
+- en: Step 3 is to load the sqlite-vec extension into SQLite. We will be using Python
+    and SQL for our examples in this article. Disabling the ability to load extensions
+    immediately after loading your extension is a good security practice.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE4]'
+  prefs: []
+  type: TYPE_PRE
+- en: '`documents` is a virtual table with three columns:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '`sample_embedding` : 1536-dimension float that will store the embeddings of
+    our sample documents.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '`file_name` : Text that will house the name of each file we store in the database.
+    Note that this column and the following have a + symbol in front of them. This
+    indicates that they are **auxiliary fields.** Previously in sqlite-vec only embedding
+    data could be stored in the virtual table. However, recently [an update was pushed](https://github.com/asg017/sqlite-vec/issues/121?utm_source=chatgpt.com)
+    that allows us to add fields to our table that we don’t really want embedded.
+    In this case we are adding the content and name of the file in the same table
+    as our embeddings. This will allow us to easily see what embeddings correspond
+    to what content easily while sparing us the need for extra tables and JOIN statements.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '`content` : Text that will store the content of each file.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'Now that we have our virtual table set up in our SQLite database, we can begin
+    converting our text files into embeddings and storing them in our table:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE5]'
+  prefs: []
+  type: TYPE_PRE
+- en: We essentially loop through each of our .txt files, embedding the content from
+    each file, and then using an `INSERT INTO` statement to insert the `embedding`,
+    `file_name`, and `content` into `documents` virtual table. A commit statement
+    at the end ensures the changes are persisted. Note that we are using `serialize_float32`
+    here from the sqlite-vec library. SQLite itself does not have a built-in vector
+    type, so it stores vectors as binary large objects (BLOBs) to save space and allow
+    fast operations. Internally, it uses Python’s `struct.pack()` function, which
+    converts Python data into C-style binary representations.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Finally, to perform RAG, you then use the following code to do a K-Nearest-Neighbors
+    (KNN-style) operation. **This is the heart of vector search. **
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE6]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'We begin by taking in a query from the user, in this case *“What is general
+    relativity?”* and embedding that query using the same embedding model as before.
+    We then perform a SQL operation. Let’s break this down:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The `SELECT` statement means the retrieved data will have three columns: `file_name`,
+    `content`, and `distance`. The first two we have already mentioned. `Distance`
+    will be calculated during the SQL operation, more on this in a moment.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: The `FROM` statement ensures you are pulling data from the `documents` table.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: The `WHERE embedding MATCH ?` statement performs a similarity search between
+    all of the vectors in your database and the query vector. The returned data will
+    include a `distance` column. This distance is just a floating point number measuring
+    the similarity between the query and database vectors. The higher the number,
+    the closer the vectors are. [sqlite-vec](https://alexgarcia.xyz/sqlite-vec/api-reference.html#distance)
+    provides a few options for how to calculate this similarity.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: The `ORDER BY distance` makes sure to order the retrieved vectors in descending
+    order of similarity (high -> low).
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '`LIMIT 3` ensures we only get the top three documents that are nearest to our
+    query embedding vector. You can tweak this number to see how retrieving more or
+    less vectors affects your results.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Given our query of “*What is general relativity?”, t*he following documents
+    were pulled. It did a pretty good job!
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Top 3 most similar documents:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: (‘general_relativity.txt’, ‘Einstein’s theory of general relativity redefined
+    our understanding of gravity. Instead of viewing gravity as a force acting at
+    a distance, it interprets it as the curvature of spacetime around massive objects.
+    Light passing near a massive star bends slightly, galaxies deflect beams traveling
+    millions of light-years, and clocks tick at different rates depending on their
+    gravitational potential. This groundbreaking theory led to predictions like gravitational
+    lensing and black holes, phenomena later confirmed by observational evidence,
+    and it continues to guide our understanding of the cosmos.’, 0.8316285610198975)
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: (‘newton.txt’, ‘In classical mechanics, Newton’s laws of motion form the foundation
+    of how we understand the movement of objects. Newton’s first law, often called
+    the law of inertia, states that an object at rest remains at rest and an object
+    in motion continues in motion unless acted upon by an external force. This concept
+    extends into more complex physics problems, where analyzing net forces on objects
+    allows us to predict their future trajectories and behaviors. Over time, applying
+    Newton’s laws has enabled engineers and scientists to design safer vehicles, more
+    efficient machines, and even guide spacecraft through intricate gravitational
+    fields.’, 1.2036118507385254)
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: (‘quantum.txt’, ‘Quantum mechanics revolutionized our understanding of the microscopic
+    world. Unlike classical particles, quantum entities such as electrons can exhibit
+    both wave-like and particle-like behaviors. Phenomena like quantum superposition
+    suggest that particles can exist in multiple states at once, and the act of measurement
+    often “collapses” these states into one observed outcome. This strange and counterintuitive
+    theory underpins modern technologies like semiconductors and lasers, and it provides
+    a conceptual framework for emerging fields like quantum computing and cryptography.’,
+    1.251380205154419)
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: We can then stuff the context of the model with these three documents and have
+    it attempt to answer our question.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE7]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Here is what the model said:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: General relativity is a theory developed by Albert Einstein that redefines our
+    understanding of gravity. Instead of viewing gravity as a force acting at a distance,
+    general relativity interprets it as the curvature of spacetime caused by the presence
+    of mass. According to this theory, massive objects like stars and planets create
+    a distortion in the fabric of spacetime, and this curvature affects the motion
+    of other objects, including light, which can bend when it passes near a massive
+    body.
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: This is faithfully sticking to the documents we gave the model. Great job `4o-mini`!
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Conclusion**'
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: '`sqlite-vec` is a project sponsored by the Mozilla Builders Accelerator program,
+    so it has some significant backing behind it. Have to give a big thanks to [Alex
+    Garcia](https://alexgarcia.xyz/), the creator of `sqlite-vec` , for helping to
+    push the SQLite ecosystem and making ML possible with this simple database. This
+    is a well maintained library, with updates coming down the pipeline on a regular
+    basis. As of November 20th, they even [added filtering](https://alexgarcia.xyz/blog/2024/sqlite-vec-metadata-release/index.html)
+    by metadata! Perhaps I should re-do my aforementioned RAG article using SQLite
+    🤔.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: The extension also offers bindings for several popular programming languages,
+    including Ruby, Go, Rust, and more.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The fact that we are able to radically simplify our RAG pipeline to the bare
+    essentials is remarkable. To recap, there is no need for a database service to
+    be spun up and spun down, like Postgres, MySQL, etc. There is no need for API
+    calls to cloud vendors. If you deploy to a server directly via Digital Ocean or
+    Hetzner, you can even avoid [costly and unnecessary complexity](https://losangelesaiapps.com/ecosystem-of-middlemen/)
+    associated with managed cloud services like AWS, Azure, or Vercel.
+  prefs: []
+  type: TYPE_NORMAL
+- en: I believe this simple architecture can work for a variety of applications. It
+    is cheaper to use, easier to maintain, and faster to iterate on. Once you reach
+    a certain scale it will likely make sense to migrate to a more robust database
+    such as Postgres with the pgvector extension for RAG capabilities. For more advanced
+    capabilities such as chunking and document cleaning, a framework may be the right
+    choice. But for startups and smaller players, it’s SQLite to the moon.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Have fun trying out sqlite-vec for yourself!
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/7a685c13b6429bd3f63b9a11f3d19259.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Simple RAG architecture. Image by author.
+  prefs: []
+  type: TYPE_NORMAL

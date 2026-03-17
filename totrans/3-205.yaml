@@ -1,0 +1,363 @@
+- en: How to Train LLMs to “Think” (o1 & DeepSeek-R1)
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 原文：[https://towardsdatascience.com/how-to-train-llms-to-think-o1-deepseek-r1/](https://towardsdatascience.com/how-to-train-llms-to-think-o1-deepseek-r1/)
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: In September 2024, OpenAI released its o1 model, trained on large-scale reinforcement
+    learning, giving it “advanced reasoning” capabilities. Unfortunately, the details
+    of how they pulled this off were never shared publicly. Today, however, DeepSeek
+    (an AI research lab) has replicated this reasoning behavior and published the
+    full technical details of their approach. In this article, I will discuss the
+    key ideas behind this innovation and describe how they work under the hood.
+  prefs: []
+  type: TYPE_NORMAL
+- en: OpenAI’s o1 model marked a new paradigm for training large language models (LLMs).
+    It introduced so-called **“thinking” tokens**, which enable a sort of **scratch
+    pad that the model can use to think** **through problems** and user queries.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The major insight from o1 was performance improved with increased **test-time
+    compute**. This is just a fancy way of saying that **the more tokens a model generates,
+    the better its response**. The figure below, reproduced from OpenAI’s blog, captures
+    this point nicely.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Graphs displaying AIME accuracy scaling with train-time and test-time compute.](../Images/9c3779825d505296b62f01006fe4e2a4.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: AIME accuracy scaling with train-time and test-time compute, respectively. Plots
+    reillustrated from [1].
+  prefs: []
+  type: TYPE_NORMAL
+- en: In the plots above, the y-axes are model performance on AIME (math problems),
+    while the x-axes are various compute times. The left plot depicts the well-known
+    neural scaling laws that kicked off the LLM rush of 2023\. In other words, the **longer
+    a model is *trained* (i.e. train-time compute)**, the **better its performance**.
+  prefs: []
+  type: TYPE_NORMAL
+- en: On the right, however, we see a new type of scaling law. Here, **the more *tokens* a
+    model generates** **(i.e. test-time compute)**, **the better its performance**.
+  prefs: []
+  type: TYPE_NORMAL
+- en: “Thinking” tokens
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: A key feature of o1 is its so-called **“thinking” tokens**. These are **special
+    tokens introduced during post-training, which delimit the model’s chain of thought
+    (CoT)** reasoning (i.e., thinking through the problem). These special tokens are
+    important for two reasons.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**One**, they clearly demarcate where the model’s “thinking” starts and stops
+    so it can be easily parsed when spinning up a UI. **And two**, it produces a human-interpretable
+    readout of how the model “thinks” through the problem.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Although OpenAI disclosed that they used reinforcement learning to produce this
+    ability, the exact details of *how* they did it were not shared. Today, however,
+    we have a pretty good idea thanks to a recent publication from DeepSeek.
+  prefs: []
+  type: TYPE_NORMAL
+- en: DeepSeek’s paper
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'In January 2025, DeepSeek published “*DeepSeek-R1: Incentivizing Reasoning
+    Capability in LLMs via Reinforcement Learning*” [2]**.** While this paper caused
+    its fair share of pandemonium, its central contribution was **unveiling the secrets
+    behind o1**.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: It introduces two models: **DeepSeek-R1-Zero** and **DeepSeek-R1**. The former
+    was trained exclusively on reinforcement learning (RL), and the latter was a mixture
+    of Supervised Fine-tuning (SFT) and RL.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Although the headlines (and title of the paper) were about DeepSeek-R1, the
+    former model is important because, one, it generated training data for R1, and
+    two, it demonstrates striking emergent reasoning **abilities that were not taught
+    to the model**.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In other words, **R1-Zero *discovers* CoT and test-time compute scaling through
+    RL alone!** Let’s discuss how it works.
+  prefs: []
+  type: TYPE_NORMAL
+- en: DeepSeek-R1-Zero (RL only)
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: '**Reinforcement learning (RL)** is a machine learning approach in which, rather
+    than training models on explicit examples, **models learn through trial and error** [3].
+    It works by passing a reward signal to a model that has no explicit functional
+    relationship with the model’s parameters.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: This is similar to how we often learn in the real world. For example, if I apply
+    for a job and don’t get a response, I have to figure out what I did wrong and
+    how to improve. This is in contrast to supervised learning, which, in this analogy,
+    would be like the recruiter giving me specific feedback on what I did wrong and
+    how to improve.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'While using RL to train R1-Zero consists of many technical details, I want
+    to highlight 3 key ones: the **prompt template**, **reward signal**, and **GRPO** (Group
+    Relative Policy Optimization).'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 1) Prompt template
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: The **template** used for training is given below, where `{prompt}` is replaced
+    with a question from a dataset of (presumably) complex math, coding, and logic
+    problems. Notice the inclusion of `<answer>` and `<think>` tags via simple prompting.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE0]'
+  prefs: []
+  type: TYPE_PRE
+- en: Something that stands out here is the minimal and relaxed prompting strategy.
+    This was an intentional choice by DeepSeek to **avoid biasing model responses** and
+    to **observe its natural evolution during RL**.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 2) Reward signal
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: The RL **reward** has **two components**: **accuracy and format rewards**. Since
+    the training dataset consists of questions with clear right answers, a simple
+    rule-based strategy is used to evaluate response accuracy. Similarly, a rule-based
+    formatting reward is used to ensure reasoning tokens are generated in between
+    the thinking tags.
+  prefs: []
+  type: TYPE_NORMAL
+- en: It’s noted by the authors that a neural reward model isn’t used (i.e. rewards
+    are not computed by a neural net), because these may be prone to **reward hacking**.
+    In other words, the **LLM learns how to *trick* the reward model into maximizing
+    rewards** while decreasing downstream performance.
+  prefs: []
+  type: TYPE_NORMAL
+- en: This is just like how humans find ways to exploit any incentive structure to
+    maximize their personal gains while forsaking the original intent of the incentives.
+    This highlights the difficulty of producing good rewards (whether for humans or
+    computers).
+  prefs: []
+  type: TYPE_NORMAL
+- en: 3) GRPO (Group Relative Policy Optimization)
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: The final detail is how rewards are translated into model parameter updates.
+    This section is quite technical, so the enlightened reader can feel free to skip
+    ahead.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**GRPO** is an **RL approach that combines a collection of responses to update
+    model parameters**. To encourage stable training, the authors also incorporate
+    clipping and KL-divergence regularization terms into the loss function. Clipping
+    ensures optimization steps are not too big, and regularization ensures the model
+    predictions do not change too abruptly.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Here is the complete loss function with some (hopefully) helpful annotations.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Annotated GRPO loss function](../Images/1e7e2c1a499c35323ea2b245fcad17c6.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Annotated GRPO loss function. Image by author.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Results (emergent abilities)
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: The most striking result of R1-Zero is that, despite its minimal guidance, it
+    develops effective reasoning strategies that we might recognize.
+  prefs: []
+  type: TYPE_NORMAL
+- en: For example, it learns **implicitly through the RL to improve responses through
+    test-time compute** (recall the earlier insight from o1). This is depicted via
+    the plot below from the R1 paper [2].
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Graph demonstrating that average DeepSeek-R1-Zero response length increases
+    with additional training](../Images/8b5ad1f2d701060a216b907c5f32b5c6.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Average response length increases with additional training (and improved performance).
+    Screenshot from DeepSeek R1 paper [2].
+  prefs: []
+  type: TYPE_NORMAL
+- en: Another notable ability is reflecting on past responses with an uncanny human-like
+    internal monologue. Here is an example from R1-Zero. Notice the **long CoT and
+    additional verification step** before generating the final answer (I omitted some
+    parts because the response was very long).
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE1]'
+  prefs: []
+  type: TYPE_PRE
+- en: Problems with R1-Zero
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: Although the thinking tokens from R1-Zero give a human-readable window into
+    the model’s “thought process,” the authors report some issues. Namely, the learned
+    CoT sometimes suffers from **readability issues and language mixing**. Suggesting
+    (perhaps) that its reasoning begins to veer away from something easily interpretable
+    by humans.
+  prefs: []
+  type: TYPE_NORMAL
+- en: DeepSeek-R1 (SFT + RL)
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: To mitigate R1-Zero’s interpretability issues, the authors explore a multi-step
+    training strategy that **utilizes both supervised fine-tuning (SFT) and RL**.
+    This strategy results in **DeepSeek-R1**, a better-performing model that is getting
+    more attention today. The entire training process can be broken down into 4 steps.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Step 1: SFT with reasoning data'
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: To help get the model on the right track when it comes to learning how to reason,
+    the authors start with SFT. This **leverages 1000s of long CoT examples** from
+    various sources, including few-shot prompting (i.e., showing examples of how to
+    think through problems), directly prompting the model to use reflection and verification,
+    and refining synthetic data from R1-Zero [2].
+  prefs: []
+  type: TYPE_NORMAL
+- en: The **two key advantages** of this are, **one**, the desired response format
+    can be explicitly shown to the model, and **two**, seeing curated reasoning examples
+    unlocks better performance for the final model.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Step 2: R1-Zero style RL (+ language consistency reward)'
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: Next, an RL training step is applied to the model after SFT. This is done in
+    an **identical way as R1-Zero with an added component** to the reward signal that
+    incentivizes language consistently. This was added to the reward because R1-Zero
+    tended to mix languages, making it difficult to read its generations.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Step 3: SFT with mixed data'
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: At this point, the model likely has on par (or better) performance than R1-Zero
+    on reasoning tasks. However, this intermediate model wouldn’t be very practical
+    because it wants to reason about any input it receives (e.g., “hi there”), which
+    is unnecessary for factual Q&A, translation, and creative writing. That’s why
+    another SFT round is performed with both **reasoning (600k examples)** and **non-reasoning
+    (200k examples)** data.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The **reasoning data** here is generated from the resulting model from Step
+    2\. Additionally, examples are included which use an LLM judge to compare model
+    predictions to ground truth answers.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The **non-reasoning data** comes from two places. First, the SFT dataset used
+    to train DeepSeek-V3 (the base model). Second, synthetic data generated by DeepSeek-V3\.
+    Note that examples are included that do not use CoT so that the model doesn’t
+    use thinking tokens for every response.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Step 4: RL + RLHF'
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: Finally, another RL round is done, which includes (again) R1-Zero style reasoning
+    training and RL on human feedback. This latter component helps **improve the model’s
+    helpfulness and harmlessness**.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The result of this entire pipeline is DeepSeek-R1, which excels at reasoning
+    tasks and is an AI assistant you can chat with normally.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Accessing R1-Zero and R1
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: Another key contribution from DeepSeek is that the weights of the two models
+    described above (and many other distilled versions of R1) were made publicly available.
+    This means there are many ways to access these models, whether using an **inference
+    provider or running them locally**.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Here are a few places that I’ve seen these models.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[DeepSeek](https://www.deepseek.com/) (DeepSeek-V3 and DeepSeek-R1)'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '[Together](https://www.together.ai/) (DeepSeek-V3, DeepSeek-R1, and distillations)'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '[Hyperbolic](https://hyperbolic.xyz/) (DeepSeek-V3, DeepSeek-R1-Zero, and DeepSeek-R1)'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '[Ollama](https://ollama.com/) (local) (DeepSeek-V3, DeepSeek-R1, and distillations)'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '[Hugging Face](https://huggingface.co/) (local) (all of the above)'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Conclusions
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: The release of o1 introduced a new dimension by which LLMs can be improved: **test-time
+    compute**. Although OpenAI did not release its secret sauce for doing this, 5
+    months later, DeepSeek was able to replicate this reasoning behavior and publish
+    the technical details of its approach.
+  prefs: []
+  type: TYPE_NORMAL
+- en: While current reasoning models have limitations, this is a promising research
+    direction because it has demonstrated that reinforcement learning (without humans)
+    can **produce models that learn independently**. This (potentially) breaks the
+    implicit limitations of current models, which can only *recall *and* remix* information
+    previously seen on the internet (i.e., existing human knowledge).
+  prefs: []
+  type: TYPE_NORMAL
+- en: The promise of this new RL approach is that models can surpass human understanding
+    (on their own), leading to new scientific and technological breakthroughs that
+    might take us decades to discover (on our own).
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**🗞️ Get exclusive access to AI resources and project ideas**: [https://the-data-entrepreneurs.kit.com/shaw](https://the-data-entrepreneurs.kit.com/shaw)'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**🧑‍🎓 Learn AI in 6 weeks by building it**: [https://maven.com/shaw-talebi/ai-builders-bootcamp](https://maven.com/shaw-talebi/ai-builders-bootcamp?promoCode=AI25)'
+  prefs: []
+  type: TYPE_NORMAL
+- en: References
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: '[1] [Learning to reason with LLMs](https://openai.com/index/learning-to-reason-with-llms/)'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[2] [arXiv:2501.12948](https://arxiv.org/abs/2501.12948)** [cs.CL]**'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[3] [Deep Dive into LLMs Like ChatGPT](https://youtu.be/7xTGNNLPyMI)'
+  prefs: []
+  type: TYPE_NORMAL

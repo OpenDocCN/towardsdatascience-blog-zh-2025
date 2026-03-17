@@ -1,0 +1,984 @@
+- en: 'Diffusion Model Paper Walkthrough: The Art of Noise'
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 原文：[https://towardsdatascience.com/the-art-of-noise/](https://towardsdatascience.com/the-art-of-noise/)
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: '**<mdspan datatext="el1743642535607" class="mdspan-comment">Introduction</mdspan>**'
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: In my last several articles I talked about generative deep learning algorithms,
+    which mostly are related to text generation tasks. So, I think it would be interesting
+    to switch to generative algorithms for image generation now. We knew that nowadays
+    there have been plenty of deep learning models specialized for generating images
+    out there, such as Autoencoder, Variational Autoencoder (VAE), Generative Adversarial
+    Network (GAN) and Neural Style Transfer (NST). I actually got some of my writings
+    about these topics posted on Medium as well. I provide you the links at the end
+    of this article if you want to read them.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In today’s article, I would like to discuss the so-called *diffusion model *— one
+    of the most impactful models in the field of deep learning for image generation.
+    The idea of this algorithm was first proposed in the paper titled *Deep Unsupervised
+    Learning using Nonequilibrium Thermodynamics* written by Sohl-Dickstein *et al.*
+    back in 2015 [1]. Their framework was then developed further by Ho *et al.* in
+    2020 in their paper titled *Denoising Diffusion Probabilistic Models* [2]. *DDPM*
+    was later adapted by OpenAI and Google to develop DALLE-2 and Imagen, which we
+    knew that these models have impressive capabilities to generate high-quality images.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**How Diffusion Model Works**'
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: Generally speaking, diffusion model works by generating image from noise. We
+    can think of it like an artist transforming a splash of paint on a canvas into
+    a beautiful artwork. In order to do so, the diffusion model needs to be trained
+    first. There are two main steps required to be followed to train the model, namely
+    *forward diffusion* and *backward diffusion*.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/835ea2c8630817bd6009775bebdfb8f9.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Figure 1\. The forward and backward diffusion process [3].
+  prefs: []
+  type: TYPE_NORMAL
+- en: As you can see in the above figure, forward diffusion is a process where Gaussian
+    noise is applied to the original image iteratively. We keep adding the noise until
+    the image is completely unrecognizable, at which point we can say that the image
+    now lies in the *latent space*. Different from Autoencoders and GANs where the
+    latent space typically has a lower dimension than the original image, the latent
+    space in DDPM maintains the exact same dimensionality as the original one. This
+    noising process follows the principle of a Markov Chain, meaning that the image
+    at timestep *t* is affected only by timestep *t*-1\. Forward diffusion is considered
+    easy since what we basically do is just adding some noise step by step.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The second training phase is called backward diffusion, which our objective
+    here is to remove the noise little by little until we obtain a clear image. This
+    process follows the principle of the *reverse* Markov Chain, where the image at
+    timestep *t*-1 can only be obtained based on the image at timestep *t*. Such a
+    denoising process is really difficult since we need to guess which pixels are
+    noise and which ones belong to the actual image content. Thus, we need to employ
+    a neural network model to do so.
+  prefs: []
+  type: TYPE_NORMAL
+- en: DDPM uses U-Net as the basis of the deep learning architecture for backward
+    diffusion. However, instead of using the original U-Net model [4], we need to
+    make several modifications to it so that it will be more suitable for our task.
+    Later on, I am going to train this model on the MNIST Handwritten Digit dataset
+    [5], and we will see whether it can generate similar images.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Well, that was pretty much all the fundamental concepts you need to know about
+    diffusion models for now. In the next sections we are going to get even deeper
+    into the details while implementing the algorithm from scratch.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '* * *'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**PyTorch Implementation**'
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: We are going to start by importing the required modules. In case you’re not
+    yet familiar with the imports below, both `torch` and `torchvision` are the libraries
+    we’ll use for preparing the model and the dataset. Meanwhile, `matplotlib` and
+    `tqdm` will help us display images and progress bars.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE0]'
+  prefs: []
+  type: TYPE_PRE
+- en: As the modules have been imported, the next thing to do is to initialize some
+    config parameters. Look at the Codeblock 2 below for the details.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE1]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE2]'
+  prefs: []
+  type: TYPE_PRE
+- en: At the lines marked with `#(1)` and `#(2)` I set `IMAGE_SIZE` and `NUM_CHANNELS`
+    to 28 and 1, which these numbers are obtained from the image dimension in the
+    MNIST dataset. The `BATCH_SIZE`, `NUM_EPOCHS`, and `LEARNING_RATE` variables are
+    pretty straightforward, so I don’t think I need to explain them further.
+  prefs: []
+  type: TYPE_NORMAL
+- en: At line `#(3)`, the variable `NUM_TIMESTEPS` denotes the number of iterations
+    in the forward and backward diffusion process. Timestep 0 is the condition where
+    the image is in its original state (the leftmost image in Figure 1). In this case,
+    since we set this parameter to 1000, timestep number 999 is going to be the condition
+    where the image is completely unrecognizable (the rightmost image in Figure 1).
+    It is important to keep in mind that the choice of the number of timesteps involves
+    a tradeoff between model accuracy and computational cost. If we assign a small
+    value for `NUM_TIMESTEPS`, the inference time is going to be shorter, yet the
+    resulting image might not be really good since the model has fewer steps to refine
+    the image in the backward diffusion stage. On the other hand, increasing `NUM_TIMESTEPS`
+    will slow down the inference process, but we can expect the output image to have
+    better quality thanks to the gradual denoising process which results in a more
+    precise reconstruction.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Next, the `BETA_START` (`#(4)`) and `BETA_END` (`#(5)`) variables are used to
+    control the amount of Gaussian noise added at each timestep, whereas `TIME_EMBED_DIM`
+    (`#(6)`) is employed to determine the feature vector length for storing the timestep
+    information. Lastly, at line `#(7)` I assign `“cuda”` to the `DEVICE` variable
+    if PyTorch detects GPU installed in our machine. I highly recommend you run this
+    project on GPU since training a diffusion model is computationally expensive.
+    In addition to the above parameters, the values set for `NUM_TIMESTEPS`, `BETA_START`
+    and `BETA_END` are all adopted directly from the DDPM paper [2].
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The complete implementation will be done in several steps: constructing the
+    U-Net model, preparing the dataset, defining noise scheduler for the diffusion
+    process, training, and inference. We are going to discuss each of those stages
+    in the following sub-sections.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '* * *'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**The U-Net Architecture: Time Embedding**'
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: As I’ve mentioned earlier, the basis of a diffusion model is U-Net. This architecture
+    is used because its output layer is suitable to represent an image, which definitely
+    makes sense since it was initially introduced for image segmentation task at the
+    first place. The following figure shows what the original U-Net architecture looks
+    like.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/60509abfcb359bce4bff96b4abcf2f59.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Figure 2\. The original U-Net model proposed in [4].
+  prefs: []
+  type: TYPE_NORMAL
+- en: However, it is necessary to modify this architecture so that it can also take
+    into account the timestep information. Not only that, since we will only use MNIST
+    dataset, we also need to make the model smaller. Just remember the convention
+    in deep learning that simpler models are often more effective for simple tasks.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In the figure below I show you the entire U-Net model that has been modified.
+    Here you can see that the *time embedding* tensor is injected to the model at
+    every stage, which will later be done by element-wise summation, allowing the
+    model to capture the timestep information. Next, instead of repeating each of
+    the downsampling and the upsampling stages four times like the original U-Net,
+    in this case we will only repeat each of them twice. Additionally, it is worth
+    noting that the stack of downsampling stages is also known as the *encoder*, whereas
+    the stack of upsampling stages is often called the *decoder*.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/c68ef10780383824386d29fc6eed7053.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Figure 3\. The modified U-Net model for our diffusion task [3].
+  prefs: []
+  type: TYPE_NORMAL
+- en: Now let’s start constructing the architecture by creating a class for generating
+    the time embedding tensor, which the idea is similar to the *positional embedding*
+    in Transformer. See the Codeblock 3 below for the details.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE3]'
+  prefs: []
+  type: TYPE_PRE
+- en: What we basically do in the above code is to create a tensor of size `NUM_TIMESTEPS`
+    × `TIME_EMBED_DIM` (1000×32), where every single row of this tensor will contain
+    the timestep information. Later on, each of the 1000 timesteps will be represented
+    by a feature vector of length 32\. The values in the tensor themselves are obtained
+    based on the two equations in Figure 4\. In the Codeblock 3 above, these two equations
+    are implemented at line `#(1)` and `#(2)`, each forming a tensor having the size
+    of 1000×16\. Next, these tensors are combined using the code at line `#(3)` and
+    `#(4)`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Here I also print out every single step done in the above codeblock so that
+    you can get a better understanding of what is actually being done in the TimeEmbedding
+    class. If you still want more explanation about the above code, feel free to read
+    my previous post about Transformer which you can access through the link at the
+    end of this article. Once you clicked the link, you can just scroll all the way
+    down to the Positional Encoding section.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/b038e6f1b234c1a36195d5f329c314c0.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Figure 4\. The sinusoidal positional encoding formula from the Transformer paper
+    [6].
+  prefs: []
+  type: TYPE_NORMAL
+- en: Now let’s check if the `TimeEmbedding` class works properly using the following
+    testing code. The resulting output shows that it successfully produced a tensor
+    of size 1000×32, which is exactly what we expected earlier.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE4]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE5]'
+  prefs: []
+  type: TYPE_PRE
+- en: '* * *'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**The U-Net Architecture: DoubleConv**'
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: If you take a closer look at the modified architecture, you will see that we
+    actually got lots of repeating patterns, such as the ones highlighted in yellow
+    boxes in the following figure.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/f52f3c8c642ec3988ed562a591782c78.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Figure 5\. The processes done inside the yellow boxes will be implemented in
+    the `DoubleConv` class [3].
+  prefs: []
+  type: TYPE_NORMAL
+- en: These five yellow boxes share the same structure, where they consist of two
+    convolution layers with the time embedding tensor injected right after the first
+    convolution operation is performed. So, what we are going to do now is to create
+    another class named `DoubleConv` to reproduce this structure. Look at the Codeblock
+    5a and 5b below to see how I do that.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE6]'
+  prefs: []
+  type: TYPE_PRE
+- en: The two inputs of the `__init__()` method above gives us flexibility to configure
+    the number of input and output channels (`#(1)`) so that the `DoubleConv` class
+    can be used to instantiate all the five yellow boxes simply by adjusting its input
+    arguments. As the name suggests, here we initialize two convolution layers (line
+    `#(2)` and `#(6)`), each followed by a batch normalization layer and a ReLU activation
+    function. Keep in mind that the two normalization layers need to be initialized
+    separately (line `#(3)` and `#(7)`) since each of them has their own trainable
+    normalization parameters. Meanwhile, the ReLU activation function should only
+    be initialized once (`#(8)`) because it contains no parameters, allowing it to
+    be used multiple times in different parts of the network. At line `#(4)`, we initialize
+    the `TimeEmbedding` layer we created earlier, which will later be connected to
+    a standard linear layer (`#(5)`). This linear layer is responsible to adjust the
+    dimension of the time embedding tensor so that the resulting output can be summed
+    with the output from the first convolution layer in an element-wise manner.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Now let’s take a look at the Codeblock 5b below to better understand the flow
+    of the `DoubleConv` block. Here you can see that the `forward()` method accepts
+    two inputs: the raw image `x` and the timestep information `t` as shown at line
+    `#(1)`. We initially process the image with the first Conv-BN-ReLU sequence (`#(2–4)`).
+    This Conv-BN-ReLU structure is typically used when working with CNN-based models,
+    even if the illustration does not explicitly show the batch normalization and
+    the ReLU layers. Apart from the image, we then take the *t*-th timestep information
+    from our embedding tensor of the corresponding image (`#(5)`) and pass it through
+    the linear layer (`#(6)`). We still need to expand the dimension of the resulting
+    tensor using the code at line `#(7)` before performing element-wise summation
+    at line `#(8)`. Finally, we process the resulting tensor with the second Conv-BN-ReLU
+    sequence (`#(9–11)`).'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE7]'
+  prefs: []
+  type: TYPE_PRE
+- en: To see if our `DoubleConv` implementation works properly, we are going to test
+    it with the Codeblock 6 below. Here I want to simulate the very first instance
+    of this block, which corresponds to the leftmost yellow box in Figure 5\. To do
+    so, we need to we need to set the `in_channels` and `out_channels` parameters
+    to 1 and 64, respectively (`#(1)`). Next, we initialize two input tensors, namely
+    `x_test` and `t_test`. The `x_test` tensor has the size of 2×1×28×28, representing
+    a batch of two grayscale images having the size of 28×28 (`#(2)`). Keep in mind
+    that this is just a dummy tensor of random values which will be replaced with
+    the actual images from MNIST dataset later in the training phase. Meanwhile, `t_test`
+    is a tensor containing the timestep numbers of the corresponding images (`#(3)`).
+    The values for this tensor are randomly selected between 0 and `NUM_TIMESTEPS`
+    (1000). Note that the datatype of this tensor must be an integer since the numbers
+    will be used for indexing, as shown at line `#(5)` back in Codeblock 5b. Lastly,
+    at line `#(4)` we pass both `x_test` and `t_test` tensors to the `double_conv_test`
+    layer.
+  prefs: []
+  type: TYPE_NORMAL
+- en: By the way, I re-run the previous codeblocks with the `print()` functions removed
+    prior to running the following code so that the outputs will look neater.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE8]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE9]'
+  prefs: []
+  type: TYPE_PRE
+- en: The shape of our original input tensors can be seen at lines `#(1)` and `#(2)`
+    in the above output. Specifically at line `#(2)`, I also print out the two timesteps
+    that we selected randomly. In this example we assume that each of the two images
+    in the x tensor are already noised with the noise level from 468-th and 304-th
+    timesteps prior to being fed into the network. We can see that the shape of the
+    image tensor x changes to 2×64×28×28 after being passed through the first convolution
+    layer (`#(3)`). Meanwhile, the size of our time embedding tensor becomes 2×32
+    (`#(4)`), which is obtained by extracting rows 468 and 304 from the original embedding
+    of size 1000×32\. In order to allow element-wise summation to be performed (`#(6)`),
+    we need to map the 32-dimensional time embedding vectors into 64 and expand their
+    axes, resulting in a tensor of size 2×64×1×1 (`#(5)`) so that it can be broadcast
+    to the 2×64×28×28 tensor. After the summation is done, we then pass the tensor
+    through the second convolution layer, at which point the tensor dimension does
+    not change at all (`#(7)`).
+  prefs: []
+  type: TYPE_NORMAL
+- en: '* * *'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**The U-Net Architecture: Encoder**'
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: As we have successfully implemented the `DoubleConv` block, the next step to
+    do is to implement the so-called `DownSample` block. In Figure 6 below, this corresponds
+    to the parts enclosed in the red box.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/2aef8ffa16d21d562b0db1d565d59722.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Figure 6\. The parts of the network highlighted in red are the so-called `DownSample`
+    blocks [3].
+  prefs: []
+  type: TYPE_NORMAL
+- en: The purpose of a `DownSample` block is to reduce the spatial dimension of an
+    image, but it is important to note that at the same time it increases the number
+    of channels. In order to achieve this, we can simply stack a `DoubleConv` block
+    and a maxpooling operation. In this case the pooling uses 2×2 kernel size with
+    the stride of 2, causing the spatial dimension of the image to be twice as small
+    as the input. The implementation of this block can be seen in Codeblock 7 below.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE10]'
+  prefs: []
+  type: TYPE_PRE
+- en: Here I set the `__init__()` method to take number of input and output channels
+    so that we can use it for creating the two `DownSample` blocks highlighted in
+    Figure 6 without needing to write them in separate classes (`#(1)`). Next, the
+    `DoubleConv` and the maxpooling layers are initialized at line `#(2)` and `#(3)`,
+    respectively. Remember that since the `DoubleConv` block accepts image `x` and
+    the corresponding timestep `t` as the inputs, we also need to set the `forward()`
+    method of this `DownSample` block such that it accepts both of them as well (`#(4)`).
+    The information contained in x and t are then combined as the two tensors are
+    processed by the `double_conv` layer, which the output is stored in the variable
+    named `convolved` (`#(5)`). Afterwards, we now actually perform the downsampling
+    with the maxpooling operation at line `#(6)`, producing a tensor named `maxpooled`.
+    It is important to note that both the `convolved` and `maxpooled` tensors are
+    going to be returned, which is essentially done because we will later bring `maxpooled`
+    to the next downsampling stage, whereas the `convolved` tensor will be transferred
+    directly to the upsampling stage in the decoder through skip-connections.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Now let’s test the `DownSample` class using the Codeblock 8 below. The input
+    tensors used here are exactly the same as the ones in Codeblock 6\. Based on the
+    resulting output, we can see that the pooling operation successfully converted
+    the output of the `DoubleConv` block from 2×64×28×28 (`#(1)`) to 2×64×14×14 (`#(2)`),
+    indicating that our DownSample class works properly.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE11]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE12]'
+  prefs: []
+  type: TYPE_PRE
+- en: '* * *'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**The U-Net Architecture: Decoder**'
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: We need to introduce the so-called `UpSample` block in the decoder, which is
+    responsible for reverting the tensor in the intermediate layers to the original
+    image dimension. In order to maintain a symmetrical structure, the number of `UpSample`
+    blocks must match that of the `DownSample` blocks. Look at the Figure 7 below
+    to see where the two `UpSample` blocks are placed.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/19d045fe28a84240c76cb24f6857e7cf.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Figure 7\. The components inside the blue boxes are the so-called `UpSample`
+    blocks [3].
+  prefs: []
+  type: TYPE_NORMAL
+- en: Since both `UpSample` blocks are structurally identical, we can just initialize
+    a single class for them, just like the `DownSample` class we created earlier.
+    Look at the Codeblock 9 below to see how I implement it.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE13]'
+  prefs: []
+  type: TYPE_PRE
+- en: In the `__init__()` method, we use `nn.ConvTranspose2d` to upsample the spatial
+    dimension (`#(1)`). Both the kernel size and stride are set to 2 so that the output
+    will be twice as large (`#(2)`). Next, the `DoubleConv` block will be employed
+    to reduce the number of channels, while at the same time combining the timestep
+    information from the time embedding tensor (`#(3)`).
+  prefs: []
+  type: TYPE_NORMAL
+- en: The flow of this `UpSample` class is a bit more complicated than the `DownSample`
+    class. If we take a closer look at the architecture, we’ll see that that we also
+    have a skip-connection coming directly from the encoder. Thus, we need the `forward()`
+    method to accept another argument in addition to the original image `x` and the
+    timestep `t`, namely the residual tensor `connection` (`#(4)`). The first thing
+    we do inside this method is to process the original image `x` with the transpose
+    convolution layer (`#(5)`). In fact, not only upsampling the spatial size, but
+    this layer also reduces the number of channels at the same time. However, the
+    resulting tensor is then directly concatenated with `connection` in a channel-wise
+    manner (`#(6)`), causing it to seem like no channel reduction is performed. It
+    is important to know that at this point these two tensors are just concatenated,
+    meaning that the information from the two are not yet combined. We finally feed
+    these concatenated tensors to the `double_conv` layer (`#(7)`), allowing them
+    to share information to each other through the learnable parameters inside the
+    convolution layers.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The Codeblock 10 below shows how I test the `UpSample` class. The size of the
+    tensors to be passed through are set according to the second upsampling block,
+    i.e., the rightmost blue box in Figure 7.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE14]'
+  prefs: []
+  type: TYPE_PRE
+- en: In the resulting output below, if we compare the input tensor (`#(1)`) with
+    the final tensor shape (`#(2)`), we can clearly see that the number of channels
+    successfully reduced from 128 to 64, while at the same time the spatial dimension
+    increased from 14×14 to 28×28\. This essentially means that our `UpSample` class
+    is now ready to be used in the main U-Net architecture.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE15]'
+  prefs: []
+  type: TYPE_PRE
+- en: '* * *'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**The U-Net Architecture: Putting All Components Together**'
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: Once all U-Net components have been created, what we are going to do next is
+    to wrap them together into a single class. Look at the Codeblock 11a and 11b below
+    for the details.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE16]'
+  prefs: []
+  type: TYPE_PRE
+- en: You can see in the `__init__()` method above that we initialize two downsampling
+    (`#(1–2)`) and two upsampling (`#(4–5)`) blocks, which the number of input and
+    output channels are set according to the architecture shown in the illustration.
+    There are actually two additional components I haven’t explained yet, namely the
+    *bottleneck* (`#(3)`) and the *output* layer (`#(6)`). The former is essentially
+    just a `DoubleConv` block, which acts as the main connection between the encoder
+    and the decoder. Look at the Figure 8 below to see which components of the network
+    belong to the *bottleneck* layer. Next, the *output* layer is a standard convolution
+    layer which is responsible to turn the 64-channel image produced by the last `UpSampling`
+    stage into 1-channel only. This operation is done using a kernel of size 1×1,
+    meaning that it combines information across all channels while operating independently
+    at each pixel position.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/be41547dcfd954102c0dedece943eaf8.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Figure 8\. The bottleneck layer (the lower part of the model) acts as the main
+    bridge between the encoder and the decoder of U-Net [3].
+  prefs: []
+  type: TYPE_NORMAL
+- en: I guess the `forward()` method of the entire U-Net in the following codeblock
+    is pretty straightforward, as what we essentially do here is pass the tensors
+    from one layer to another — just don’t forget to include the skip connections
+    between the downsampling and upsampling blocks.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE17]'
+  prefs: []
+  type: TYPE_PRE
+- en: Now let’s see whether we have correctly constructed the U-Net class above by
+    running the following testing code.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE18]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE19]'
+  prefs: []
+  type: TYPE_PRE
+- en: We can see in the above output that the two downsampling stages successfully
+    converted the original tensor of size 1×28×28 (`#(1)`) into 64×14×14 (`#(2)`)
+    and 128×7×7 (`#(3)`), respectively. This tensor is then passed through the bottleneck
+    layer, causing its number of channels to expand to 256 without changing the spatial
+    dimension (`#(4)`). Lastly, we upsample the tensor twice before eventually shrinking
+    the number of channels to 1 (`#(5)`). Based on this output, it looks like our
+    model is working properly. Thus, it is now ready to be trained for our diffusion
+    task.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '* * *'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Dataset Preparation**'
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: 'As we have successfully created the entire U-Net architecture, the next thing
+    to do is to prepare the MNIST Handwritten Digit dataset. Before actually loading
+    it, we need to define the preprocessing steps first using the `transforms.Compose()`
+    method from Torchvision, as shown at line `#(1)` in Codeblock 13\. There are two
+    things we do here: converting the images into PyTorch tensors which also scales
+    the pixel values from 0–255 to 0–1 (`#(2)`), and normalize them so that the final
+    pixel values ranging between -1 and 1 (`#(3)`). Next, we download the dataset
+    using `datasets.MNIST()`. In this case, we are going to take the images from the
+    training data, hence we use `train=True` (`#(5)`). Don’t forget to pass the `transform`
+    variable we initialized earlier to the `transform` parameter (`transform=transform`)
+    so that it will automatically preprocess the images as we load them (`#(6)`).
+    Lastly, we need to employ `DataLoader` to load the images from `mnist_dataset`
+    (`#(7)`). The arguments I use for the input parameters are intended to randomly
+    pick `BATCH_SIZE` (2) images from the dataset in each iteration.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE20]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'In the following codeblock, I try to load a batch of images from the dataset.
+    In every iteration, `loader` provides both the images and the corresponding labels,
+    hence we need to store them in two separate variables: `images` and `labels`.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE21]'
+  prefs: []
+  type: TYPE_PRE
+- en: We can see in the resulting output below that the `images` tensor has the size
+    of 2×1×28×28 (`#(1)`), indicating that two grayscale images of size 28×28 have
+    been successfully loaded. Here we can also see that the length of the `labels`
+    tensor is 2, which matches the number of the loaded images (`#(2)`). Note that
+    in this case the labels are going to be completely ignored. My plan here is that
+    I just want the model to generate any number it previously seen from the entire
+    training dataset without even knowing what number it actually is. Lastly, this
+    output also shows that the preprocessing works properly, as the pixel values now
+    range between -1 and 1.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE22]'
+  prefs: []
+  type: TYPE_PRE
+- en: Run the following code if you want to see what the image we just loaded looks
+    like.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE23]'
+  prefs: []
+  type: TYPE_PRE
+- en: '![](../Images/3a56959f244f1e5e82f59b33221d147a.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Figure 9\. Output from Codeblock 15 [3].
+  prefs: []
+  type: TYPE_NORMAL
+- en: '* * *'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Noise Scheduler
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: In this section we are going to talk about how the forward and backward diffusion
+    are performed, which the process essentially involves adding or removing noise
+    little by little at each timestep. It is necessary to know that we basically want
+    a uniform amount of noise across all timesteps, where in the forward diffusion
+    the image should be completely full of noise exactly at timestep 1000, while in
+    the backward diffusion, we have to get the completely clear image at timestep
+    0\. Hence, we need something to control the noise amount for each timestep. Later
+    in this section, I am going to implement a class named `NoiseScheduler` to do
+    so. — This will probably be the most mathy section of this article, as I’ll display
+    many equations here. But don’t worry about that since we’ll focus on implementing
+    these equations rather than discussing the mathematical derivations.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Now let’s take a look at the equations in Figure 10 which I will implement in
+    the `__init__()` method of the `NoiseScheduler` class below.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/b122a1ca8cb157c2c3e522fedbdf726c.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Figure 10\. The equations we need to implement in the **__init__()** method
+    of the `<strong>NoiseScheduler</strong>` class [3].
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE24]'
+  prefs: []
+  type: TYPE_PRE
+- en: The above code works by creating multiple sequences of numbers, all of them
+    are basically controlled by `BETA_START` (0.0001), `BETA_END` (0.02), and `NUM_TIMESTEPS`
+    (1000). The first sequence we need to instantiate is the `betas` itself, which
+    is done using `torch.linspace()` (`#(1)`). What it essentially does is that it
+    generates a 1-dimensional tensor of length 1000 starting from 0.0001 to 0.02,
+    where every single element in this tensor corresponds to a single timestep. The
+    interval between each element is uniform, allowing us to generate uniform amount
+    of noise throughout all timesteps as well. With this `betas` tensor, we then compute
+    `alphas`, `alphas_cum_prod`, `sqrt_alphas_cum_prod` and `sqrt_one_minus_alphas_cum_prod`
+    based on the four equations in Figure 10\. Later on, these tensors will act as
+    the basis of how the noise is generated or removed during the diffusion process.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Diffusion is normally done in a sequential manner. However, the forward diffusion
+    process is deterministic, hence we can derive the original equation into a closed
+    form so that we can obtain the noise at a specific timestep without having to
+    iteratively add noise from the very beginning. The Figure 11 below shows what
+    the closed form of the forward diffusion looks like, where *x₀* represents the
+    original image while epsilon (*ϵ)* denotes an image made up of random Gaussian
+    noise. We can think of this equation as a weighted combination, where we combine
+    the clear image and the noise according to weights determined by the timestep,
+    resulting in an image with a specific amount of noise.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/becbbe821239cf1ae48323e9520783ec.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Figure 11\. The closed form of the forward diffusion process [3].
+  prefs: []
+  type: TYPE_NORMAL
+- en: The implementation of this equation can be seen in Codeblock 16b. In this `forward_diffusion()`
+    method, *x₀* and *ϵ* are denoted as `original` and `noise`. Here you need to keep
+    in mind that these two input variables are images, whereas `sqrt_alphas_cum_prod_t`
+    and `sqrt_one_minus_alphas_cum_prod_t` are scalars. Thus, we need to adjust the
+    shape of these two scalars (`#(1)` and `#(2)`) so that the operation at line `#(3)`
+    can be performed. The `noisy_image` variable is going to be the output of this
+    function, which I guess the name is self-explanatory.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE25]'
+  prefs: []
+  type: TYPE_PRE
+- en: Now let’s talk about backward diffusion. In fact, this one is a bit more complicated
+    than the forward diffusion since we need three more equations here. Before I give
+    you these equations, let me show you the implementation first. See the Codeblock
+    16c below.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE26]'
+  prefs: []
+  type: TYPE_PRE
+- en: Later in the inference phase, the `backward_diffusion()` method will be called
+    inside a loop that iterates `NUM_TIMESTEPS` (1000) times, starting from *t* =
+    999, continued with *t* = 998, and so on all the way to *t* = 0\. This function
+    is responsible to remove the noise from the image iteratively based on the `current_image`
+    (the image produced by the previous denoising step), the `predicted_noise` (the
+    noise predicted by U-Net in the previous step), and the timestep information `t`
+    (`#(1)`). In each iteration, noise removal is done using the equation shown in
+    Figure 12, which in Codeblock 16c, this corresponds to lines `#(4-5)`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/03205bfb93688608c349e2e17a4cce4b.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Figure 12\. The equation used for removing noise from the image [3].
+  prefs: []
+  type: TYPE_NORMAL
+- en: As long as we haven’t reached *t* = 0, we will compute the variance based on
+    the equation in Figure 13 (`#(7–8)`). This variance will then be used to introduce
+    another controlled noise to simulate the stochasticity in the backward diffusion
+    process since the noise removal equation in Figure 12 is a deterministic approximation.
+    This is essentially also the reason that we don’t calculate the variance once
+    we reached *t* = 0 (`#(6)`) since we no longer need to add more noise as the image
+    is completely clear already.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/b1515d81b2b918af0da58a1817618b74.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Figure 13\. The equation used to calculate variance for introducing controlled
+    noise [3].
+  prefs: []
+  type: TYPE_NORMAL
+- en: Different from `current_prediction` which aims to estimate the image of the
+    previous timestep (*xₜ₋₁*), the objective of the `denoised_image` tensor is to
+    reconstruct the original image (*x₀*). Thanks to these different objectives, we
+    need a separate equation to compute `denoised_image`, which can be seen in Figure
+    14 below. The implementation of the equation itself is written at line `#(2–3)`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/b890fcf67a061dcaa3a53b89e35b347b.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Figure 14\. The equation for reconstructing the original image [3].
+  prefs: []
+  type: TYPE_NORMAL
+- en: Now let’s test the `NoiseScheduler` class we created above. In the following
+    codeblock, I instantiate a `NoiseScheduler` object and print out the attributes
+    associated with it, which are all computed using the equation in Figure 10 based
+    on the values stored in the `betas` attribute. Remember that the actual length
+    of these tensors is `NUM_TIMESTEPS` (1000), but here I only print out the first
+    6 elements.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE27]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE28]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The above output indicates that our `__init__()` method works as expected.
+    Next, we are going to test the `forward_diffusion()` method. If you go back to
+    Figure 16b, you will see that `forward_diffusion()` accepts three inputs: original
+    image, noise image and the timestep number. Let’s just use the image from the
+    MNIST dataset we loaded earlier for the first input (`#(1)`) and a random Gaussian
+    noise of the exact same size for the second one (`#(2)`). Run the Codeblock 18
+    below to see what these two images look like.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE29]'
+  prefs: []
+  type: TYPE_PRE
+- en: '![](../Images/ef6ae0a38e61b8fc12759014f1a71eeb.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Figure 15\. The two images to be used as the original (left) and the noise image
+    (right). The one on the left is the same image I showed earlier in Figure 9 [3].
+  prefs: []
+  type: TYPE_NORMAL
+- en: As we already got the image and the noise ready, what we need to do afterwards
+    is to pass them to the `forward_diffusion()` method alongside the *t*. I actually
+    tried to run the Codeblock 19 below multiple times with *t* = 50, 100, 150, and
+    so on up to *t* = 300\. You can see in Figure 16 that the image becomes less clear
+    as the parameter increases. In this case, the image is going to be completely
+    filled by noise when the *t* is set to 999.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE30]'
+  prefs: []
+  type: TYPE_PRE
+- en: '![](../Images/a5272ec7202a78e2fec8fe29be76f8a4.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Figure 16\. The result of the forward diffusion process at t=50, 100, 150, and
+    so on until t=300 [3].
+  prefs: []
+  type: TYPE_NORMAL
+- en: Unfortunately, we cannot test the `backward_diffusion()` method since this process
+    requires us to have our U-Net model trained. So, let’s just skip this part for
+    now. I’ll show you how we can actually use this function later in the inference
+    phase.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '* * *'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Training
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: As the U-Net model, MNIST dataset, and the noise scheduler are ready, we can
+    now prepare a function for training. Before we do that, I instantiate the model
+    and the noise scheduler in Codeblock 20 below.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE31]'
+  prefs: []
+  type: TYPE_PRE
+- en: The entire training procedure is implemented in the `train()` function shown
+    in Codeblock 21\. Before doing anything, we first initialize the optimizer and
+    the loss function, which in this case we use Adam and MSE, respectively (`#(1–2)`).
+    What we basically want to do here is to train the model such that it will be able
+    to predict the noise contained in the input image, which later on, the predicted
+    noise will be used as the basis of the denoising process in the backward diffusion
+    stage. To actually train the model, we first need to perform forward diffusion
+    using the code at line `#(6)`. This noising process will be done on the `images`
+    tensor (`#(3)`) using the random noise generated at line `#(4)`. Next, we take
+    random number somewhere between 0 and `NUM_TIMESTEPS` (1000) for the `t` (`#(5)`),
+    which is essentially done because we want our model to see images of varying noise
+    levels as an approach to improve generalization. As the noisy images have been
+    generated, we then pass it through the U-Net model alongside the chosen `t` (`#(7)`).
+    The input `t` here is useful for the model as it indicates the current noise level
+    in the image. Lastly, the loss function we initialized earlier is responsible
+    to compute the difference between the actual noise and the predicted noise from
+    the original image (`#(8)`). So, the objective of this training is basically to
+    make the predicted noise as similar as possible to the noise we generated at line
+    `#(4)`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE32]'
+  prefs: []
+  type: TYPE_PRE
+- en: Now let’s run the above training function using the codeblock below. Sit back
+    and relax while waiting the training completes. In my case, I used Kaggle Notebook
+    with Nvidia GPU P100 turned on, and it took around 45 minutes to finish.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE33]'
+  prefs: []
+  type: TYPE_PRE
+- en: If we take a look at the loss graph, it seems like our model learned pretty
+    well as the value is generally decreasing over time with a rapid drop at early
+    stages and a more stable (yet still decreasing) trend in the later stages. So,
+    I think we can expect good results later in the inference phase.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE34]'
+  prefs: []
+  type: TYPE_PRE
+- en: '![](../Images/61a365d1aaf3f4d06a4f3e004d14f3f1.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Figure 17\. How the loss value decreases as the training goes [3].
+  prefs: []
+  type: TYPE_NORMAL
+- en: '* * *'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Inference
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: At this point we have already got our model trained, so we can now perform inference
+    on it. Look at the Codeblock 24 below to see how I implement the `inference()`
+    function.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE35]'
+  prefs: []
+  type: TYPE_PRE
+- en: At the line marked with `#(1)` I initialize an empty list which will be used
+    to store the denoising result every 100 timesteps (`#(7)`). This will later allow
+    us to see how the backward diffusion goes. The actual inference process is encapsulated
+    inside `torch.no_grad()` (`#(2)`). Remember that in diffusion models we generate
+    images from a completely random noise, which we assume that these images are initially
+    at *t* = 999\. To implement this, we can simply use `torch.randn()` as shown at
+    line `#(3)`. Here we initialize a tensor of size 64×1×28×28, indicating that we
+    are about to generate 64 images simultaneously. Next, we write a `for` loop that
+    iterates backwards starting from 999 to 0 (`#(4)`). Inside this loop, we feed
+    the current image and the timestep as the input for the trained U-Net and let
+    it predict the noise (`#(5)`). The actual backward diffusion is then performed
+    at line `#(6)`. At the end of the iteration, we should get new images similar
+    to the ones we have in our dataset. Now let’s call the `inference()` function
+    in the following codeblock.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE36]'
+  prefs: []
+  type: TYPE_PRE
+- en: As the inference completed, we can now see what the resulting images look like.
+    The Codeblock 26 below is used to display the first 42 images we just generated.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE37]'
+  prefs: []
+  type: TYPE_PRE
+- en: '![](../Images/fbd477bb21c0a0db50d51433d9331d22.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Figure 18\. The images generated by the diffusion model trained on the MNIST
+    Handwritten Digit dataset [3].
+  prefs: []
+  type: TYPE_NORMAL
+- en: If we take a look at the above codeblock, you can see that the indexer of `[-1]`
+    at line `#(1)` indicates that we only display the images from the last iteration
+    (which corresponds to timestep 0). This is the reason that the images you see
+    in Figure 18 are all free from noise. I do acknowledge that this might not be
+    the best of a result since not all the generated images are valid digit numbers. — But
+    hey, this instead indicates that these images are not merely duplicates from the
+    original dataset.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Here we can also visualize the backward diffusion process using the Codeblock
+    27 below. You can see in the resulting output in Figure 19 that we initially start
+    from a complete random noise, which gradually disappears as we move to the right.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE38]'
+  prefs: []
+  type: TYPE_PRE
+- en: '![](../Images/a64a4fba554ba527222d4162d7810246.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Figure 19\. What the image looks like at timestep 900, 800, 700 and so on until
+    timestep 0 [3].
+  prefs: []
+  type: TYPE_NORMAL
+- en: '* * *'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Ending
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: There are plenty of directions you can go from here. First, you might probably
+    need to tweak the parameter configurations in Codeblock 2 if you want better results.
+    Second, it is also possible to modify the U-Net model by implementing attention
+    layers in addition to the stack of convolution layers we used in the downsampling
+    and the upsampling stages. This does not guarantee you to obtain better results
+    especially for a simple dataset like this, but it’s definitely worth trying. Third,
+    you can also try to use a more complex dataset if you want to challenge yourself.
+  prefs: []
+  type: TYPE_NORMAL
+- en: When it comes to practical applications, there are actually lots of things you
+    can do with diffusion models. The simplest one might be for data augmentation.
+    With diffusion model, we can easily generate new images from a specific data distribution.
+    For example, suppose we are working on an image classification project, but the
+    number of images in the classes are imbalanced. To address this problem, it is
+    possible for us to take the images from the minority class and feed them into
+    a diffusion model. By doing so, we can ask the trained diffusion model to generate
+    a number of samples from that class as many as we want.
+  prefs: []
+  type: TYPE_NORMAL
+- en: And well, that’s pretty much everything about the theory and the implementation
+    of diffusion model. Thanks for reading, I hope you learn something new today!
+  prefs: []
+  type: TYPE_NORMAL
+- en: '*You can access the code used in this project through* [*this link*](https://github.com/MuhammadArdiPutra/medium_articles/blob/main/The%20Art%20of%20Noise.ipynb)*.
+    Here are also the links to my previous articles about* [*Autoencoder*](https://becominghuman.ai/the-deep-autoencoder-in-action-digit-reconstruction-bf177ccbb8c0)*,*
+    [*Variational Autoencoder (VAE)*](https://becominghuman.ai/using-variational-autoencoder-vae-to-generate-new-images-14328877e88d)*,*
+    [*Neural Style Transfer (NST)*](https://towardsdatascience.com/paper-walkthrough-neural-style-transfer-fc5c978cdaed)*,
+    and* [*Transformer*](https://towardsdatascience.com/paper-walkthrough-attention-is-all-you-need-80399cdc59e1)*.*'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '* * *'
+  prefs: []
+  type: TYPE_NORMAL
+- en: References
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: '[1] Jascha Sohl-Dickstein *et al*.Deep Unsupervised Learning using Nonequilibrium
+    Thermodynamics. Arxiv. [https://arxiv.org/pdf/1503.03585](https://arxiv.org/pdf/1503.03585)
+    [Accessed December 27, 2024].'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[2] Jonathan Ho *et al*. Denoising Diffusion Probabilistic Models. Arxiv. [https://arxiv.org/pdf/2006.11239](https://arxiv.org/pdf/2006.11239)
+    [Accessed December 27, 2024].'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[3] Image created originally by author.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[4] Olaf Ronneberger *et al*. U-Net: Convolutional Networks for Biomedical'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Image Segmentation. Arxiv. [https://arxiv.org/pdf/1505.04597](https://arxiv.org/pdf/1505.04597)
+    [Accessed December 27, 2024].
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[5] Yann LeCun *et al*. The MNIST Database of Handwritten Digits. [https://yann.lecun.com/exdb/mnist/](https://yann.lecun.com/exdb/mnist/)
+    [Accessed December 30, 2024] (Creative Commons Attribution-Share Alike 3.0 license).'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[6] Ashish Vaswani *et al*. Attention Is All You Need. Arxiv. [https://arxiv.org/pdf/1706.03762](https://arxiv.org/pdf/1706.03762)
+    [Accessed September 29, 2024].'
+  prefs: []
+  type: TYPE_NORMAL

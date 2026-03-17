@@ -1,0 +1,597 @@
+- en: 'Tool Masking: The Layer MCP Forgot'
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 原文：[https://towardsdatascience.com/tool-masking-the-layer-mcp-forgot/](https://towardsdatascience.com/tool-masking-the-layer-mcp-forgot/)
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: By Frank Wittkampf & Lucas Vieira
+  prefs: []
+  type: TYPE_NORMAL
+- en: <mdspan datatext="el1757011845328" class="mdspan-comment">Intro</mdspan>
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'MCP and similar services were a breakthrough in AI connectivity¹: a big leap
+    forward when we need to expose services quickly and almost effortlessly to an
+    LLM. But in that also lies the problem: this is bottom-up thinking. **“*Hey, why
+    don’t we expose everything, everywhere, all at once?*”**'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Raw exposure of APIs comes at a cost**: every tool surface pushed straight
+    into an agent bloats prompts, inflates choice entropy, and drags down execution
+    quality. A well-designed AI agent starts use-case down rather than tech-up. If
+    you would design your LLM call from scratch, you would never provide the full
+    unfiltered surface of an API. You’ve added unnecessary tokens, unrelated information,
+    more failure modes, and generally degraded quality. Empirically, broad tool definitions
+    consume large token budgets: e.g., one 28-parameter tool ≈1,633 tokens; 37 tools
+    ≈6,218 tokens, which degrades accuracy and increases latency/cost⁶.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: In our job, building Enterprise-scale AI solutions for the largest tech companies
+    (MSFT, AWS, Databricks, and many others), where we send millions of tokens a minute
+    to our AI providers, these **nuances matter**. If you optimize tool exposure,
+    that means you optimize your LLM execution context, which means you are improving
+    quality, accuracy, consistency, cost, and latency, *all at the same time*.
+  prefs: []
+  type: TYPE_NORMAL
+- en: This article will define the novel concept of **Tool masking**. Many people
+    will already have implicitly experimented with this, but it’s a topic not well
+    explored in online publications so far. Tool masking is an essential, and missing
+    layer in the current agentic stack. A tool mask shapes what the model actually
+    sees, both before and after execution, so your AI agent can not just be *connected*
+    but actually *enabled.*
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'So, rounding up our intro: **using raw MCP pollutes your LLM execution**. How
+    do you optimize the model-facing surface of a tool for a given agent or task?
+    You use tool masking. A simple concept, but as always, the devil is in the details.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: What MCP does well, and what it doesn’t
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'MCP gets a lot right. It’s an open protocol, and Anthropic refers to it as
+    the “USB-C for AI”. A way to connect LLM apps with external tools and data without
+    friction¹. It nails the basics: standardizing how tools, resources, and prompts
+    are described, discovered, and invoked, whether you’re using JSON-RPC over stdio
+    or streaming over HTTP². Auth is handled cleanly at the transport layer³. That’s
+    why you see it landing everywhere from OpenAI’s Agents SDK to Copilot in VS Code,
+    all the way to AWS guidance⁴. **MCP is real, and adoption is strong**.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: But it’s equally important to see what MCP doesn’t do – and that’s where the
+    gaps show up. **MCP’s focus is context exchange**. It doesn’t care how your app
+    or agent actually *uses* the context you pass in, or how you manage and shape
+    that context per agent or task. It exposes the full tool surface, but doesn’t
+    shape or filter it for quality or relevance. Per the architecture docs, MCP “focuses
+    solely on the protocol for context exchange. It does not dictate how AI applications
+    use LLMs or manage the provided context².” You get a discoverable catalog and
+    schemas, but no built-in mechanism in the *protocol* that allows to optimize how
+    the context is presented.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Note: Some SDKs now add optional filtering — for example, OpenAI’s Agents SDK
+    supports static/dynamic MCP tool filtering⁵ . This is a step in the right direction,
+    but still leaves too much on the table.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 1\. [Anthropic MCP overview](https://docs.anthropic.com/en/docs/mcp)
+  prefs: []
+  type: TYPE_NORMAL
+- en: 2\. [Model Context Protocol — Architecture](https://modelcontextprotocol.io/docs/learn/architecture)
+  prefs: []
+  type: TYPE_NORMAL
+- en: 3\. [MCP Spec — Authorization](https://modelcontextprotocol.io/specification/2025-03-26/basic/authorization)
+  prefs: []
+  type: TYPE_NORMAL
+- en: 4\. [OpenAI Agents SDK (MCP)](https://openai.github.io/openai-agents-python/mcp);
+    [VS Code MCP GA](https://github.blog/changelog/2025-07-14-model-context-protocol-mcp-support-in-vs-code-is-generally-available);
+    [AWS — Unlocking MCP](https://aws.amazon.com/blogs/machine-learning/unlocking-the-power-of-model-context-protocol-mcp-on-aws)
+  prefs: []
+  type: TYPE_NORMAL
+- en: '5\. [GitHub — PR #861 (MCP tool filtering)](https://github.com/openai/openai-agents-python/pull/861)'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 6\. [Medium — How many tools/functions can an AI Agent have?](https://achan2013.medium.com/how-many-tools-functions-can-an-ai-agent-has-21e0a82b7847)
+  prefs: []
+  type: TYPE_NORMAL
+- en: The Problem in Practice
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'To illustrate this, let’s take the (unofficial) Yahoo Finance API. Like many
+    APIs, it returns a giant JSON object filled with dozens of metrics. Powerful for
+    analysis, but overwhelming when your agent simply needs to retrieve one or two
+    key figures. To illustrate my point, here’s a snippet of what the agent might
+    receive when calling the API:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE0]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'For an agent, getting a 100 fields of data, among other tool output, is overwhelming:
+    irrelevant data, bloated prompts, and wasted tokens. It’s obvious that **accuracy
+    goes down as tool counts and schema sizes grow**; researchers have shown that
+    as the toolset expands, retrieval and invocation reliability drops sharply¹, and
+    inputting every tool into the LLM quickly becomes impractical due to context length
+    and latency constraints². This obviously depends on the model, but as models grow
+    more capable, tool demands are increasing as well. Even state-of-the-art models
+    still struggle to effectively select tools in large tool libraries³.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The problem is not limited to tool output. **The more important problem is
+    the API input schema**. Going back to our example, for the Yahoo Finance API,
+    you can request any combination of modules: assetProfile, financialData, price,
+    earningsTrend, and many more. If you expose this schema to your agent raw, through
+    MCP (or fastAPI, etc.), you’ve just massively polluted your agent context. At
+    massive scale, this becomes even more challenging; recent work notes that LLMs
+    operating on very large tool graphs require new approaches such as structured
+    scoping or graph-based methods⁴.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Tool definitions consume tokens in every conversation turn; empirical benchmarks
+    show that large, multi-parameter tools and **big toolsets quickly dominate your
+    prompt budget**⁵. Without a filtering or rewriting layer, the accuracy and efficiency
+    of your AI agent degrade⁶.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[Re-Invoke: Tool Invocation Rewriting for Zero-Shot Tool Retrieval](https://arxiv.org/abs/2408.01875)
+    *“Identifying the most relevant tools … becomes a key bottleneck as the toolset
+    size grows, hindering reliable tool utilization.”*'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[Towards Completeness-Oriented Tool Retrieval for LLMs](https://arxiv.org/abs/2405.16089)
+    *“…it is impractical to input all tools into LLMs due to length limitations and
+    latency constraints.*'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[Deciding Whether to Use Tools and Which to Use](https://arxiv.org/abs/2310.03128)
+    *“…the majority [of LLMs] still struggle to effectively select tools…”*'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[ToolNet: Connecting LLMs with Massive Tools via Tool Graph](https://arxiv.org/abs/2403.00839)
+    *“It remains challenging for LLMs to operate on a library of massive tools,”*
+    motivating graph-based scoping.'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[How many tools/functions can an AI Agent have?](https://achan2013.medium.com/how-many-tools-functions-can-an-ai-agent-has-21e0a82b7847)
+    (Feb 2025): reports that a tool with 28 params consumed 1,633 tokens; a set of
+    37 tools consumed 6,218 tokens.'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[Benchmarking Tool Retrieval for LLMs (ToolRet)](https://arxiv.org/abs/2503.01763)
+    Large-scale benchmark showing tool retrieval is hard even for strong IR models.'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: 'Here’s a sample tool definition if you expose the raw API without making a
+    custom tool for it (this has been shortened for readability):'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE1]'
+  prefs: []
+  type: TYPE_PRE
+- en: The Fix
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'Here’s the real unlock: *with tool masking, you’re in control of the surface
+    you present to your agent*. You aren’t forced to expose the entire API, and you
+    don’t have to recode your integrations for every new use case.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Want the agent to only ever fetch the latest stock quote? Build a mask that
+    presents just that action as a simple tool.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Need to support multiple distinct tasks, like fetching a quote, extracting only
+    revenue, or maybe toggling between price types? You can design **multiple narrow
+    tools**, each with its own mask on top of the same underlying tool handler.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Or, you might combine related actions into a single tool and give the agent
+    an explicit toggle or enum, whatever interface matches the agent’s context and
+    task.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Wouldn’t it be nicer if the agent only saw very simple, purpose-built tools,
+    like these?
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE2]'
+  prefs: []
+  type: TYPE_PRE
+- en: or
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE3]'
+  prefs: []
+  type: TYPE_PRE
+- en: The underlying code uses the same handler. No need to duplicate logic or force
+    the agent to reason about the full module surface. Just different masks for different
+    jobs — no module lists, no bloat, no recoding*.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '* This aligns with guidance to use only essential tools, minimize parameters,
+    and, where possible, activate tools dynamically for a given interaction.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: The power of tool masking
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'The point: **Tool masking is not just about hiding complexity.** It’s about
+    *designing the right agent-facing surface for the job at hand*.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: You can expose an API as one tool or many.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: You can tune what’s required, optional, or even fixed (hard-coded values).
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: You can present different masks to different agents, based on role, context,
+    or business logic.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: You can refactor the surface at any time — without rewriting the handler or
+    backend code.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: This isn’t just technical hygiene — it’s a strategic design decision. It lets
+    you ship cleaner, leaner, more robust agents that do exactly what’s needed, no
+    more and no less.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'This is the power of **tool masking**:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Start with a broad, messy API surface
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Define as many narrow masks as needed — one for each agent use case
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Present only what matters (and nothing more) to the model
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: The result? Smaller prompts, faster responses, fewer misfires — and agents that
+    get it right, every time. Why does this matter so much, especially at enterprise
+    scale?
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Choice entropy**: When the model is overloaded with options, it’s more likely
+    to misfire or select the wrong fields'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Performance**: Extra tokens mean higher cost, more latency, lower performance,
+    less accuracy, less consistency'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Enterprise scale**: When you’re sending millions of tokens per minute, small
+    inefficiencies quickly add up. Precision matters. Fault tolerance is lower. (*Large
+    tool outputs can also echo through histories and balloon spend*)¹'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 1\. [Everything Wrong with MCP](https://blog.sshh.io/p/everything-wrong-with-mcp)
+  prefs: []
+  type: TYPE_NORMAL
+- en: The Solution
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: At the heart of robust tool masking is a clean separation of concerns.
+  prefs: []
+  type: TYPE_NORMAL
+- en: First, you have the **tool handler** — this is the raw integration, whether
+    it’s a third-party API, internal service, or direct function call. The handler’s
+    job is simply to expose the *complete* capability surface, with all its power
+    and complexity.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Next comes the **tool mask**. The mask defines the *model-facing interface* — a
+    narrow schema, tailored input and output, and sensible defaults for the agent’s
+    use case or role. This is where the broad, messy surface of the underlying tool
+    is slimmed down to exactly what’s needed (and nothing more).
+  prefs: []
+  type: TYPE_NORMAL
+- en: In between sits the **tooling service**. This is the mediator that applies the
+    mask, validates the input, translates agent requests into handler calls, and validates
+    or sanitizes responses before returning them to the model.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/a83afd896f6860932a28cf754ad53883.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: '*^(High Level Overview— Tool Masks)*'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Ideally, you store and manage tool masks in the same place that you store all
+    your other agent/system prompts, because, in practice, presenting a tool to an
+    LLM is a form of prompt engineering.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Let’s review an example of an actual tool mask. Our definition of a tool mask
+    has evolved over the last few years¹. Starting as a simple filter, to a full enterprise
+    service, used by the largest tech companies in the world.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 1\. Initially (in 2023), we started with simple input/output adapters, but over
+    as we worked across several companies and many use cases, it has evolved to a
+    full prompt engineering surface.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Tool mask example
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: '[PRE4]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'The example above should speak for itself, but let’s highlight a few characteristics:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: The mask translates the input (provided by the AI agent) to a handler_input
+    (what the will API receive)
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: The handler for this particular tool is an API, it could just as well have been
+    any other service. The service could have other masks on top of it, which pull
+    other data out of the same API
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: The mask allows for Jinja*. This allows for powerful prompt engineering
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: A custom validation is very powerful if you want to add specific nudges that
+    steer the AI agent to self-correct its mistakes
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: The session_id and the module are hard-coded into the template. The AI agent
+    isn’t able to modify these
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '*Note: if you’re doing this in a nodeJS environment, EJS is great for this
+    as well.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: With this architecture, you can flexibly add, remove, or modify tool masks without
+    ever touching the underlying handler or agent code. Tool masking becomes a “configurable
+    prompt engineering” layer, supporting rapid iteration, testing, and robust, role-
+    or use-case-specific agent behavior.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Hey, it’s almost as if a tool has become a prompt…
+  prefs: []
+  type: TYPE_NORMAL
+- en: The Overlooked Prompt Engineering Surface
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: Tools are prompts. It’s interesting that in today’s AI blogs, there’s little
+    reference of it. An LLM receives text and then generates text. Tool names, tool
+    descriptions, and their input schemas are part of the incoming text. **Tools are
+    prompts, just with a special flavor.**
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'When your code makes an LLM call, the model reads the full prompt input, and
+    then decides whether and how to call a tool¹²³. If we conclude that tools are
+    essentially prompts, then I hope while you’re reading this you’re having the following
+    realization:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '*Tools need to be prompt engineered, and thus any prompt engineering technique
+    I have at my disposal also should be applied to my tooling:*'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '*Tools are context dependent! Tool descriptions should fit with the rest of
+    the prompt context.*'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '*Tool naming matters, a lot!*'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '*Tool input surface adds tokens and complexity, and thus needs to be optimized.*'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '*Similarly for the tool output surface.*'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '*The framing and phrasing of tool error responses matters, an agent will self-correct
+    if you provide it the right response.*'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: In practice, I see many examples where engineers provide extensive instructions
+    regarding a specific tool’s use in the main prompt of the agent. This is a practice
+    that we should question. **Should the instructions on how to use a tool reside
+    in the larger agent-prompt, or with the tool**? Some tools need only a short summary;
+    others benefit from richer guidance, examples, or edge-case notes so the model
+    selects them reliably and formats arguments correctly. With masking, you can adapt
+    the same underlying API to different agents and contexts by tailoring the tool
+    description and schema per mask. Keeping that guidance co-located with the tool
+    surface stabilizes the contract and avoids drifting chat prompts (see Anthropic’s
+    *Tool use* and *Best practices for tool definitions*). When you also specify output
+    structure, you improve consistency and parse-ability¹. **Masks make this editable
+    by prompt engineers instead of burying it in (Python) code**.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Operationally, we should treat masks as configurable prompts for tools. Practically,
+    we recommend that you store the masks in the same layer that hosts your prompts.
+    Ideally, this is a config system that supports templating (e.g., Jinja), variables,
+    and evaluation. Those concepts are equally usable for tool masks as for your regular
+    prompts. Additionally, we recommend you version them, scope by agent or role,
+    and use these tool masks to fix defaults, hide unused params, or split one broad
+    handler into multiple clear surfaces. Tool masks also have security benefits,
+    allowing specific params are provided by the system, instead of the LLM. (*Independent
+    critiques also highlight cost/safety risks from unbounded tool outputs. Yet another
+    reason to constrain surfaces⁴.*)
+  prefs: []
+  type: TYPE_NORMAL
+- en: Done well, masking extends prompt engineering to the tool boundary where the
+    model actually acts, yielding cleaner behavior and more consistent execution.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 1\. [Anthropic — Tool Use Overview](https://docs.anthropic.com/en/docs/agents-and-tools/tool-use/overview)
+  prefs: []
+  type: TYPE_NORMAL
+- en: 2\. [OpenAI — Tools Guide](https://platform.openai.com/docs/guides/tools)
+  prefs: []
+  type: TYPE_NORMAL
+- en: 3\. [OpenAI Cookbook — Prompting Guide](https://cookbook.openai.com/examples/gpt4-1_prompting_guide)
+  prefs: []
+  type: TYPE_NORMAL
+- en: 4\. [Everything Wrong with MCP](https://blog.sshh.io/p/everything-wrong-with-mcp)
+  prefs: []
+  type: TYPE_NORMAL
+- en: Design Patterns
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: A few simple patterns cover most masking needs. Start with the smallest surface
+    that works, then expand only when a task truly demands it.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Schema Shrink**: Limit parameters to what the task needs; constrain types
+    and ranges; prefill invariants.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Role-Scoped View**: Present different masks to different agents or contexts;
+    same handler, tailored surfaces.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Capability Gate**: Expose a focused subset of operations; split a mega-tool
+    into single-purpose tools; enforce allowlists.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Defaulted Args**: Set smart defaults and hide nonessential options to cut
+    tokens and variance.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**System-Provided Args**: Inject tenant, account, region, or policy values
+    from the system; the LLM cannot change them, which improves security and consistency.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Toggle/Enum Surface**: Combine related actions into one tool with an explicit
+    enum or mode; no free-text switches.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Typed Outputs**: Return a small, strict schema; normalize units and keys
+    for reliable parsing and evaluation.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Progressive Disclosure**: Ship the minimal mask first; add optional fields
+    via new mask versions only when needed.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Validation**: Allow custom input validation at tool mask level; set constructive
+    validation responses to guide the agent in the right direction'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Conclusion
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: Connectivity solved the what. Execution is the how. Services like MCP connect
+    tools. **Tool masking** makes them perform by shaping the model-facing surface
+    to fit the task and the agent that are working with it.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Think **use case down, not tech up**. One handler, many masks. Narrow inputs,
+    outputs, and experiment and prompt engineer your tool surface to perfection. Keep
+    the description with the tool, not buried in chat text or code. Treat masks as
+    configurable prompts that you can version, test, and assign per agent.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'If you expose raw surfaces, **you pay for entropy**: more tokens, slower latency,
+    lower accuracy, inconsistent behavior. Masks flip that curve. Smaller prompts.
+    Faster responses. Higher pass rates. Fewer misfires. The impact of this approach
+    compounds at enterprise scale. (*Even MCP advocates note that discovery lists
+    everything, without curation, and that agents send/consider too much data.*)'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**So, what to do?**'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Put a masking layer between agents and every broad API
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Try multiple masks on one handler, and customizing a mask to see how it impacts
+    performance
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Store masks with your prompts in config; version and iterate
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Move tool instructions into the tool surface, and out of system prompts.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Provide sensible defaults, and hide what the model should not touch
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Stop shipping mega tools. Ship surfaces. That is the layer MCP forgot. The step
+    that turns an agent from connected into **enabled**.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '*Drop us a comment on [LinkedIn](https://www.linkedin.com/in/wittkampf/) if
+    you liked this article!*'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '* * *'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '*About the authors:*'
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: Lucas and Frank have tightly worked together on AI infrastructure across several
+    companies (and advising a handful of others) – from some of the earliest multi-agent
+    teams, to LLM provider management, to document processing, to Enterprise AI automation.
+    We work at Databook, a cutting edge AI automation platform for the world’s largest
+    tech companies (MSFT, AWS, Databricks, SalesForce, and others), which we empower
+    with a range of solutions using passive/proactive/guided AI for real world, enterprise
+    production applications.
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL

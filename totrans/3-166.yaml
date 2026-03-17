@@ -1,0 +1,573 @@
+- en: Nine Pico PIO Wats with Rust (Part 2)
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 原文：[https://towardsdatascience.com/nine-pico-pio-wats-with-rust-part-2/](https://towardsdatascience.com/nine-pico-pio-wats-with-rust-part-2/)
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: This is Part 2 of an exploration into the unexpected quirks of programming the
+    Raspberry Pi Pico PIO with Rust. If you missed [Part 1](https://towardsdatascience.com/nine-pico-pio-wats-with-rust-part-1-9d062067dc25/),
+    we uncovered four *Wats* that challenge assumptions about register count, instruction
+    slots, the behavior of `pull noblock`, and smart yet cheap hardware.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Now, we continue our journey toward crafting a theremin-like musical instrument — a
+    project that reveals some of the quirks and perplexities of PIO programming. Prepare
+    to challenge your understanding of constants in a way that brings to mind a Shakespearean
+    tragedy.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Wat 5: Inconstant constants'
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: In the world of PIO programming, constants should be reliable, steadfast, and,
+    well, *constant*. But what if they’re not? This brings us to a puzzling Wat about
+    how the set instruction in PIO works—or doesn’t—when handling larger constants.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Much like Juliet doubting Romeo’s constancy, you might find yourself wondering
+    if PIO constants will, as she says, “prove likewise variable.”
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The problem: Constants are not as big as they seem'
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'Imagine you’re programming an ultrasonic range finder and need to count down
+    from 500 while waiting for the Echo signal to drop from high to low. To set up
+    this wait time in PIO, you might naïvely try to load the constant value directly
+    using `set`:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE0]'
+  prefs: []
+  type: TYPE_PRE
+- en: '*Aside: Don’t try to understand the crazy* *jmp* *operations here. We’ll discuss
+    those next in* ***Wat 6****.*'
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: 'But here’s the tragic twist: the set instruction in PIO is limited to constants
+    between 0 and 31\. Moreover, the star-crossed set instruction doesn’t report an
+    error. Instead, [it silently corrupts the entire PIO instruction](https://forums.raspberrypi.com/viewtopic.php?p=2289656#p2289173).
+    This produces a nonsense result.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Workarounds for inconstant constants
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'To address this limitation, consider the following approaches:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Read Values and Store Them in a Register:** We saw this approach in **Wat
+    1**. You can load your constant in the `osr` register, then transfer it to y.
+    For example:'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '[PRE1]'
+  prefs: []
+  type: TYPE_PRE
+- en: '**Shift and Combine Smaller Values:** Using the isr register and the in instruction,
+    you can build up a constant of any size. This, however, consumes time and operations
+    from your 32-operation budget (see [Part 1](https://towardsdatascience.com/nine-pico-pio-wats-with-rust-part-1-9d062067dc25/),
+    **Wat 2**).'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '[PRE2]'
+  prefs: []
+  type: TYPE_PRE
+- en: '**Slow Down the Timing**: Reduce the frequency of the state machine to stretch
+    delays over more system clock cycles. For example, lowering the state machine
+    speed from 125 MHz to 343 kHz reduces the timeout constant `182`,`216` to `500`.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Use Extra Delays and (Nested) Loops:** All instructions support an optional
+    delay, allowing you to add up to 31 extra cycles. (To generate even longer delays,
+    use loops — or even nested loops.)'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '[PRE3]'
+  prefs: []
+  type: TYPE_PRE
+- en: '**Use the “Subtraction Trick” to Generate the Maximum 32-bit Integer**:In **Wat
+    7**, we’ll explore a way to generate `4,294,967,295` (the maximum unsigned 32-bit
+    integer) via subtraction.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Much like Juliet cautioning against swearing by the inconstant moon, we’ve discovered
+    that PIO constants are not always as steadfast as they seem. Yet, just as their
+    story takes unexpected turns, so too does ours, moving from the inconstancy of
+    constants to the uneven nature of conditionals. In the next Wat, we’ll explore
+    how PIO’s handling of conditional jumps can leave you questioning its loyalty
+    to logic.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Wat 6: Conditionals through the looking-glass'
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'In most programming environments, logical conditionals feel balanced: you can
+    test if a pin is high or low, or check registers for equality or inequality. In
+    PIO, this symmetry breaks down. You can jump on pin high, but not pin low, and
+    on `x!=y`, but not `x==y`. The rules are whimsical — like Humpty Dumpty in *Through
+    the Looking-Glass*: “When I define a conditional, it means just what I choose
+    it to mean — neither more nor less.”'
+  prefs: []
+  type: TYPE_NORMAL
+- en: These quirks force us to rewrite our code to fit the lopsided logic, creating
+    a gulf between how we wish the code could be written and how we must write it.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The problem: Lopsided conditionals in action'
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'Consider a simple scenario: using a range finder, you want to count down from
+    a maximum wait time (y) until the ultrasonic echo pin goes low. Intuitively, you
+    might write the logic like this:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE4]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'And when processing the measurement, if we only wish to output values that
+    differ from the previous value, we would write:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE5]'
+  prefs: []
+  type: TYPE_PRE
+- en: Unfortunately, PIO doesn’t let you test `!pin` or `x==y` directly. You must
+    restructure your logic to accommodate the available conditionals, such as `pin`
+    and `x!=y`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The solution: The way it must be'
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'Given PIO’s limitations, we adapt our logic with a two-step approach that ensures
+    the desired behavior despite the missing conditionals:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Jump on the opposite conditional to skip two instructions forward.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Next, use an unconditional jump to reach the desired target.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: This workaround adds one extra jump (affecting the instruction limit), but the
+    additional label is cost-free.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Here is the rewritten code for counting down until the pin goes low:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE6]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'And here is the code for processing the measurement such that it will only
+    output differing values:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE7]'
+  prefs: []
+  type: TYPE_PRE
+- en: Lessons from Humpty Dumpty’s conditionals
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: In *Through the Looking-Glass*, Alice learns to navigate Humpty Dumpty’s peculiar
+    world — just as you’ll learn to navigate PIO’s Wonderland of lopsided conditions.
+  prefs: []
+  type: TYPE_NORMAL
+- en: But as soon as you master one quirk, another reveals itself. In the next Wat,
+    we’ll uncover a surprising behavior of jmp that, if it were an athlete, would
+    shatter world records.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Wat 7: Overshooting jumps'
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: In [Part 1](https://towardsdatascience.com/nine-pico-pio-wats-with-rust-part-1-9d062067dc25/)’s
+    **Wat 1** and **Wat 3**, we saw how `jmp x--` or `jmp y--` is often used to loop
+    a fixed number of times by decrementing a register until it reaches 0\. Straightforward
+    enough, right? But what happens when y is 0 and we run the following instruction?
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE8]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'If you guessed that it does **not** jump to `measure_echo_loop` and instead
+    falls through to the next instruction, you’re absolutely correct. But for full
+    credit, answer this: **What value does y have after the instruction?**'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The answer: **4,294,967,295.** Why? Because y is decremented **after** it is
+    tested for zero. *Wat!?*'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Aside: If this doesn’t surprise you, you likely have experience with C or C++
+    which distinguish between pre-increment (e.g., `++x`) and post-increment (e.g.,
+    x++) operations. The behavior of `jmp y--` is equivalent to a post-decrement,
+    where the value is tested *before* being decremented.'
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: This value, 4,294,967,295, is the maximum for a 32-bit unsigned integer. It’s
+    as if a track-and-field long jumper launches off the takeoff board but, instead
+    of landing in the sandpit, overshoots and ends up on another continent.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Aside:As foreshadowed in **Wat 5**, we can use this behavior intentionally to
+    set a register to the value 4,294,967,295.
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: Now that we’ve learned how to stick the landing with `jmp`, let’s see if we
+    can avoid getting stuck by the pins that PIO reads and sets.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Wat 8: Too many “pins”'
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: In Dr. Seuss’s *Too Many Daves*, Mrs. McCave had 23 sons, all named Dave, leading
+    to endless confusion whenever she called out their name. In PIO programming, `pin`
+    and `pins` can refer to completely different ranges of pins depending on the context.
+    It’s hard to know which Dave or Daves you’re talking to.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The problem: Pin ranges and subranges'
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'In PIO, both `pin` and `pins` instructions depend on **pin ranges** defined
+    in Rust, outside of PIO. However, individual instructions often operate on a **subrange**
+    of those pin ranges. The behavior varies depending on the command: the subrange
+    could be the first *n* pins of the range, all the pins, or just a specific pin
+    given by an index. To clarify PIO’s behavior, I created the following table:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/d7435c51cbd19be5bc68eb27e558132b.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: This table shows how PIO interprets the terms `pin` and `pins` in different
+    instructions, along with their associated contexts and configurations.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Example: Distance program for the range finder'
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'Here’s a PIO program for measuring the distance to an object using **Trigger**
+    and **Echo** pins. The key features of this program are:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Continuous Operation**: The range finder runs in a loop as fast as possible.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Maximum Range Limit**: Measurements are capped at a given distance, with
+    a return value of `4,294,967,295` if no object is detected.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Filtered Outputs**: Only measurements that differ from their immediate predecessor
+    are sent, reducing the output rate.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Glance over the program and notice that although it is working with two pins — **Trigger**
+    and **Echo** — throughout the program we only see `pin` and `pins`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE9]'
+  prefs: []
+  type: TYPE_PRE
+- en: '**Configuring Pins**'
+  prefs:
+  - PREF_H4
+  type: TYPE_NORMAL
+- en: 'To ensure the PIO program behaves as intended:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '`set pins, 0b1` should control the **Trigger** pin.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '`wait 1 pin 0` should monitor the **Echo** pin.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '`jmp pin echo_active` should also monitor the **Echo** pin.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'Here’s how you can configure this in Rust (followed by an explanation):'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE10]'
+  prefs: []
+  type: TYPE_PRE
+- en: The keys here are the `<strong>set_set_pins</strong>`, `<strong>set_in_pins</strong>`,
+    and **`set_jmp_pin`** methods on the Config struct.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '`set_in_pins`: Specifies the pins for **input operations**, such as wait(1,
+    pin, …). The “in” pins must be consecutive.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '`set_set_pins`: Configures the pin for **set operations**, like set(pins, 1).
+    The “set” pins must also be consecutive.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '`set_jmp_pin`: Defines the single pin used in **conditional jumps**, such as
+    `jmp(pin, ...)`.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'As described in the table, other optional inputs include:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '`set_out_pins`: Sets the consecutive pins for **output operations**, such as
+    out(pins, …).'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '`use_program`: Sets a) the loaded program and b) consecutive pins for **sideset
+    operations.** Sideset operations allow simultaneous pin toggling during other
+    instructions.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Configuring Multiple Pins**'
+  prefs:
+  - PREF_H4
+  type: TYPE_NORMAL
+- en: 'Although not required for this program, you can configure a range of pins in
+    PIO by providing a slice of consecutive pins. For example, suppose we had two
+    ultrasonic range finders:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE11]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'A single instruction can then control both pins:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE12]'
+  prefs: []
+  type: TYPE_PRE
+- en: This approach lets you efficiently apply bit patterns to multiple pins simultaneously,
+    streamlining control for applications involving multiple outputs.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '***Aside: The Word “Set” in Programming***'
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: ''
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: '*In programming, the word “set” is notoriously overloaded with multiple meanings.
+    In the context of PIO, “set” refers to something to which you can assign a value — such
+    as a pin’s state. It does* ***not*** *mean a collection of things, as it often
+    does in other programming contexts. When PIO refers to a collection, it usually
+    uses the term “range” instead. This distinction is crucial for avoiding confusion
+    as you work with PIO.*'
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: Lessons from Mrs. McCave
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: In *Too Many Daves*, Mrs. McCave lamented not giving her 23 Daves more distinct
+    names. You can avoid her mistake by clearly documenting your pins with meaningful
+    names — like **Trigger** and **Echo** — in your comments.
+  prefs: []
+  type: TYPE_NORMAL
+- en: But if you think handling these pin ranges is tricky, debugging a PIO program
+    adds an entirely new layer of challenge. In the next Wat, we’ll dive into the
+    kludgy debugging methods available. Let’s see just how far we can push them.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Wat 9: Kludgy debugging'
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: I like to debug with interactive breakpoints in VS Code. I also do **print debugging**,
+    where you insert temporary info statements to see what the code is doing and the
+    values of variables. Using the [**Raspberry Pi Debug Probe**](https://www.raspberrypi.com/documentation/microcontrollers/debug-probe.html)
+    and [**probe-rs**](https://probe.rs/), I can do both of these with regular Rust
+    code on the Pico.
+  prefs: []
+  type: TYPE_NORMAL
+- en: With PIO programming, however, I can do neither.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The fallback is **push-to-print debugging**. In PIO, you temporarily output
+    integer values of interest. Then, in Rust, you use `info!` to print those values
+    for inspection.
+  prefs: []
+  type: TYPE_NORMAL
+- en: For example, in the following PIO program, we temporarily add instructions to
+    push the value of `x` for debugging. We also include `set` and `out` to push a
+    constant value, such as 7, which must be between 0 and 31 inclusive.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE13]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Back in Rust, you can read and print these values to help understand what’s
+    happening in the PIO code ([full code](https://github.com/CarlKCarlK/pico_pio/blob/main/examples/distance_debug.rs)
+    and [project](https://github.com/CarlKCarlK/pico_pio/)):'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE14]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Outputs:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE15]'
+  prefs: []
+  type: TYPE_PRE
+- en: When push-to-print debugging isn’t enough, you can turn to hardware tools. I
+    bought my first oscilloscope (a **FNIRSI DSO152**, for $37). With it, I was able
+    to confirm the **Echo** signal was working. The **Trigger** signal, however, was
+    too fast for this inexpensive oscilloscope to capture clearly.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Using these methods — especially push-to-print debugging — you can trace the
+    flow of your PIO program, even without a traditional debugger.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '*Aside****:*** *In C/C++ (and potentially Rust), you can get closer to a full
+    debugging experience for PIO, for example, by using the* [***piodebug*** *project*](https://github.com/PaulAccisano/piodebug)*.*'
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: That concludes the nine Wats, but let’s bring everything together in a bonus
+    Wat.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Bonus Wat 10: Putting it all together'
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: Now that all the components are ready, it’s time to combine them into a working
+    theremin-like musical instrument. We need a Rust monitor program. This program
+    starts both PIO state machines — one for measuring distance and the other for
+    generating tones. It then waits for a new distance measurement, maps that distance
+    to a tone, and sends the corresponding tone frequency to the tone-playing state
+    machine. If the distance is out of range, it stops the tone.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Rust’s Place**: At the heart of this system is a function that maps distances
+    (from 0 to 50 cm) to tones (approximately **B2** to **F5**). This function is
+    simple to write in Rust, leveraging Rust’s floating-point math and exponential
+    operations. Implementing this in PIO would be virtually impossible due to its
+    limited instruction set and lack of floating-point support.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Here’s the core monitor program to run the theremin ([full file](https://github.com/CarlKCarlK/pico_pio/blob/main/examples/theremin.rs)
+    and [project](https://github.com/CarlKCarlK/pico_pio/)):'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE16]'
+  prefs: []
+  type: TYPE_PRE
+- en: Using two PIO state machines alongside a Rust monitor program lets you literally
+    run three programs at once. This setup is convenient on its own and is essential
+    when strict timing or very high-frequency I/O operations are required.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '***Aside:*** *Alternatively, Rust Embassy’s async tasks let you implement cooperative
+    multitasking directly on a single main processor. You code in Rust rather than
+    a mixture of Rust and PIO. Although Embassy tasks don’t literally run in parallel,
+    they switch quickly enough to handle applications like a theremin. Here’s a snippet
+    from* [*theremin_no_pio.rs*](https://github.com/CarlKCarlK/pico_pio/blob/main/examples/theremin_no_pio.rs)
+    *showing a similar core loop:*'
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: '[PRE17]'
+  prefs: []
+  type: TYPE_PRE
+- en: '*See our* [*recent article on Rust Embassy programming*](https://medium.com/@carlmkadie/how-rust-embassy-shine-on-embedded-devices-part-1-9f4911c92007)
+    *for more details.*'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Now that we’ve assembled all the components, let’s watch the video again of
+    me “playing” the musical instrument. On the monitor screen, you can see the debugging
+    prints displaying the distance measurements and the corresponding tones. This
+    visual connection highlights how the system responds in real time.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Conclusion**'
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: PIO programming on the Raspberry Pi Pico is a captivating blend of simplicity
+    and complexity, offering unparalleled hardware control while demanding a shift
+    in mindset for developers accustomed to higher-level programming. Through the
+    nine Wats we’ve explored, PIO has both surprised us with its limitations and impressed
+    us with its raw efficiency.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'While we’ve covered significant ground — managing state machines, pin assignments,
+    timing intricacies, and debugging — there’s still much more you can learn as needed:
+    DMA, IRQ, side-set pins, differences between PIO on the Pico 1 and Pico 2, autopush
+    and autopull, FIFO join, and more.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Recommended Resources**'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[Code for this project on GitHub](https://github.com/CarlKCarlK/pico_pio/)'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '[The Pico SDK manual](https://datasheets.raspberrypi.com/pico/raspberry-pi-pico-c-sdk.pdf),
+    Chapter 3'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '[Embassy PIO API Documentation](https://docs.embassy.dev/embassy-rp/git/rp2040/pio/index.html)'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: The [RP2040](https://datasheets.raspberrypi.com/rp2040/rp2040-datasheet.pdf)
+    (Pico 1) and [RP2350](https://datasheets.raspberrypi.com/rp2350/rp2350-datasheet.pdf)
+    (Pico 2) datasheets
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: At its core, PIO’s quirks reflect a design philosophy that prioritizes low-level
+    hardware control with minimal overhead. By embracing these characteristics, PIO
+    will not only meet your project’s demands but also open doors to new possibilities
+    in embedded systems programming.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '*Please* [*follow Carl on Towards Data Science*](https://towardsdatascience.com/author/carlmkadie/)
+    *and on* [@carlkadie.bsky.social](https://bsky.app/profile/carlkadie.bsky.social)*.
+    I write on scientific programming in Rust and Python, machine learning, and statistics.
+    I tend to write about one article per month.*'
+  prefs: []
+  type: TYPE_NORMAL

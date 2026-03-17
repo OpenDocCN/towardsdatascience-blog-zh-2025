@@ -1,0 +1,517 @@
+- en: Stop Creating Bad DAGs – Optimize Your Airflow Environment By Improving Your
+    Python Code
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 原文：[https://towardsdatascience.com/stop-creating-bad-dags-optimize-your-airflow-environment-by-improving-your-python-code-146fcf4d27f7/](https://towardsdatascience.com/stop-creating-bad-dags-optimize-your-airflow-environment-by-improving-your-python-code-146fcf4d27f7/)
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: '![Photo by Dan Roizer on Unsplash](../Images/cfc36d1c403ceb48994e020ee396a3f3.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Photo by [Dan Roizer](https://unsplash.com/@danroizer?utm_source=medium&utm_medium=referral)
+    on [Unsplash](https://unsplash.com?utm_source=medium&utm_medium=referral)
+  prefs: []
+  type: TYPE_NORMAL
+- en: Apache Airflow is one of the most popular orchestration tools in the data field,
+    powering workflows for companies worldwide. However, anyone who has already worked
+    with Airflow in a production environment, especially in a complex one, knows that
+    it can occasionally present some problems and weird bugs.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Among the many aspects you need to manage in an Airflow environment, one critical
+    metric often flies under the radar: **DAG parse time**. Monitoring and optimizing
+    parse time is essential to avoid performance bottlenecks and ensure the correct
+    functioning of your orchestrations, as we’ll explore in this article.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: That said, this tutorial aims to introduce **`[airflow-parse-bench](https://github.com/AlvaroCavalcante/airflow-parse-bench)`**,
+    an open-source tool I developed to help data engineers monitor and optimize their
+    Airflow environments, providing insights to reduce code complexity and parse time.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Why Parse Time Matters
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: Regarding Airflow, DAG parse time is often an **overlooked metric**. Parsing
+    occurs every time Airflow processes your Python files to build the DAGs dynamically.
+  prefs: []
+  type: TYPE_NORMAL
+- en: By default, all your DAGs are parsed every 30 seconds – a frequency controlled
+    by the configuration variable _[min_file_process_interval](https://airflow.apache.org/docs/apache-airflow/stable/configurations-ref.html#min-file-process-interval)_.
+    This means that every 30 seconds, all the Python code that’s present in your `dags`
+    folder is read, imported, and processed to generate DAG objects containing the
+    tasks to be scheduled. Successfully processed files are then added to the [DAG
+    Bag](https://airflow.apache.org/docs/apache-airflow/stable/_api/airflow/models/dagbag/index.html).
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Two key Airflow components handle this process:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '*[DagFileProcessorManager](https://airflow.apache.org/docs/apache-airflow/stable/authoring-and-scheduling/dagfile-processing.html)*:
+    Checks which files need to be processed.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '*[DagFileProcessorProcess](https://airflow.apache.org/docs/apache-airflow/stable/authoring-and-scheduling/dagfile-processing.html)*:
+    Executes the actual file parsing.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Together, both components (commonly referred to as the **dag processor)** are
+    executed by the Airflow [Scheduler](https://airflow.apache.org/docs/apache-airflow/stable/administration-and-deployment/scheduler.html),
+    ensuring that your DAG objects are updated before being triggered. However, for
+    scalability and security reasons, it is also possible to run your dag processor
+    as a separate component in your cluster.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'If your environment only has a few dozen DAGs, it’s unlikely that the parsing
+    process will cause any kind of problem. However, it’s common to find production
+    environments with hundreds or even thousands of DAGs. In this case, if your parse
+    time is too high, it can lead to:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Delay DAG scheduling.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Increase resource utilization.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Environment heartbeat issues.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Scheduler failures.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Excessive CPU and memory usage, wasting resources.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Now, imagine having an environment with hundreds of DAGs containing unnecessarily
+    complex parsing logic. Small inefficiencies can quickly turn into significant
+    problems, affecting the stability and performance of your entire Airflow setup.
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: How to write better DAGs?
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: When writing Airflow DAGs, there are some important best practices to bear in
+    mind to create optimized code. Although you can find a lot of tutorials on how
+    to improve your DAGs, I’ll summarize some of the key principles that can significantly
+    enhance your DAG performance.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Limit Top-Level Code
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: One of the most common causes of high DAG parsing times is inefficient or complex
+    top-level code. Top-level code in an Airflow DAG file is executed every time the
+    Scheduler parses the file. If this code includes resource-intensive operations,
+    such as database queries, API calls, or dynamic task generation, it can significantly
+    impact parsing performance.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The following code shows an example of a **non-optimized DAG**:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: In this case, every time the file is parsed by the Scheduler, the top-level
+    code is executed, making an API request and processing the DataFrame, which can
+    significantly impact the parse time.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Another important factor contributing to slow parsing is top-level imports.
+    Every library imported at the top level is loaded into memory during parsing,
+    which can be time-consuming. To avoid this, you can move imports into functions
+    or task definitions.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The following code shows a better version of the same DAG:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Avoid Xcoms and Variables in Top-Level Code
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: 'Still talking about the same topic, is particularly interesting to avoid using
+    Xcoms and Variables in your top-level code. As stated by [Google documentation](https://cloud.google.com/blog/products/data-analytics/reduce-airflow-dag-parse-times-in-cloud-composer):'
+  prefs: []
+  type: TYPE_NORMAL
+- en: If you are using Variable.get() in top level code, every time the .py file is
+    parsed, Airflow executes a Variable.get() which opens a session to the DB. This
+    can dramatically slow down parse times.
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: To address this, consider using a **JSON dictionary** to retrieve multiple variables
+    in a single database query, rather than making multiple `Variable.get()` calls.
+    Alternatively, use **Jinja templates**, as variables retrieved this way are only
+    processed during task execution, not during DAG parsing.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Remove Unnecessary DAGs
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: 'Although it seems obvious, it’s always important to remember to periodically
+    clean up unnecessary DAGs and files from your environment:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Remove unused DAGs**: Check your `dags` folder and delete any files that
+    are no longer needed.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Use `.airflowignore`**: Specify the files Airflow should intentionally ignore,
+    skipping parsing.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Review paused DAGs**: Paused DAGs are still parsed by the Scheduler, consuming
+    resources. If they are no longer required, consider removing or archiving them.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Change Airflow Configurations
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: 'Lastly, you could change some Airflow configurations to reduce the Scheduler
+    resource usage:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**`min_file_process_interval`**: This setting controls how often (in seconds)
+    Airflow parses your DAG files. Increasing it from the default 30 seconds can reduce
+    the Scheduler’s load at the cost of slower DAG updates.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**`dag_dir_list_interval`**: This determines how often (in seconds) Airflow
+    scans the `dags` directory for new DAGs. If you deploy new DAGs infrequently,
+    consider increasing this interval to reduce CPU usage.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: How to Measure DAG Parse Time?
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: We’ve discussed a lot about the importance of creating optimized DAGs to maintain
+    a healthy Airflow environment. But how do you actually measure the parse time
+    of your DAGs? Fortunately, there are several ways to do this, depending on your
+    Airflow deployment or operating system.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'For example, if you have a [Cloud Composer](https://cloud.google.com/composer?hl=en)
+    deployment, you can easily retrieve a DAG parse report by executing the following
+    command on Google CLI:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE0]'
+  prefs: []
+  type: TYPE_PRE
+- en: While retrieving parse metrics is straightforward, measuring the effectiveness
+    of your code optimizations can be less so. Every time you modify your code, you
+    need to redeploy the updated Python file to your cloud provider, wait for the
+    DAG to be parsed, and then extract a new report – a slow and time-consuming process.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Another possible approach, if you’re on Linux or Mac, is to run this command
+    to measure the parse time locally on your machine:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE1]'
+  prefs: []
+  type: TYPE_PRE
+- en: However, while simple, this approach is not practical for systematically measuring
+    and comparing the parse times of multiple DAGs.
+  prefs: []
+  type: TYPE_NORMAL
+- en: To address these challenges, I created the **`airflow-parse-bench`**, a Python
+    library that simplifies measuring and comparing the parse times of your DAGs using
+    Airflow’s native parse method.
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: Measuring and Comparing Your DAG’s Parse Times
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: The **`[airflow-parse-bench](https://github.com/AlvaroCavalcante/airflow-parse-bench)`**
+    tool makes it easy to store parse times, compare results, and standardize comparisons
+    across your DAGs.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Installing the Library
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: 'Before installation, it’s recommended to use a [virtualenv](https://docs.python.org/3/library/venv.html)
+    to avoid library conflicts. Once set up, you can install the package by running
+    the following command:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE2]'
+  prefs: []
+  type: TYPE_PRE
+- en: '**Note:** This command only installs the essential dependencies (related to
+    Airflow and Airflow providers). You must manually install any additional libraries
+    your DAGs depend on.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: For example, if a DAG uses `boto3` to interact with AWS, ensure that `boto3`
+    is installed in your environment. Otherwise, you’ll encounter parse errors.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'After that, it’s necessary to initialize your Airflow database. This can be
+    done by executing the following command:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE3]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'In addition, if your DAGs use **Airflow Variables**, you must define them locally
+    as well. However, it’s not necessary to put real values on your variables, as
+    the actual values aren’t required for parsing purposes:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE4]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Without this, you’ll encounter an error like:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE5]'
+  prefs: []
+  type: TYPE_PRE
+- en: Using the Tool
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: After installing the library, you can begin measuring parse times. For example,
+    suppose you have a DAG file named `dag_test.py` containing the non-optimized DAG
+    code used in the example above.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'To measure its parse time, simply run:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE6]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'This execution produces the following output:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Execution result. Image by author.](../Images/5b7b07e8feb9af518931c8976c8513b3.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Execution result. Image by author.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'As observed, our DAG presented a parse time of **0.61 seconds**. If I run the
+    command again, I’ll see some small differences, as parse times can vary slightly
+    across runs due to system and environmental factors:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Result of another execution of the same DAG. Image by author.](../Images/db1d5f98a5d2eab33df4d7ea45aca4e7.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Result of another execution of the same DAG. Image by author.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'In order to present a more concise number, it’s possible to aggregate multiple
+    executions by specifying the number of iterations:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE7]'
+  prefs: []
+  type: TYPE_PRE
+- en: Although it takes a bit longer to finish, this calculates the **average parse
+    time** across five executions.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Now, to evaluate the impact of the aforementioned optimizations, I replaced
+    the code in my`dag_test.py` with the optimized version shared earlier. After executing
+    the same command, I got the following result:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Parse result of the optimized code. Image by author.](../Images/d5f226ee8e5fa351aa1a2776597f1cfb.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Parse result of the optimized code. Image by author.
+  prefs: []
+  type: TYPE_NORMAL
+- en: As noticed, just applying some good practices was capable of reducing almost
+    **0.5 seconds** in the DAG parse time, highlighting the importance of the changes
+    we made!
+  prefs: []
+  type: TYPE_NORMAL
+- en: Further Exploring the Tool
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: There are other interesting features that I think it’s relevant to share.
+  prefs: []
+  type: TYPE_NORMAL
+- en: As a reminder, if you have any doubts or problems using the tool, you can access
+    the complete documentation on [GitHub](https://github.com/AlvaroCavalcante/airflow-parse-bench).
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Besides that, to view all the parameters supported by the library, simply run:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE8]'
+  prefs: []
+  type: TYPE_PRE
+- en: Testing Multiple DAGs
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: In most cases, you likely have dozens of DAGs to test the parse times. To address
+    this use case, I created a folder named `dags` and put four Python files inside
+    it.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'To measure the parse times for all the DAGs in a folder, it’s just necessary
+    to specify the folder path in the `--path` parameter:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE9]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Running this command produces a table summarizing the parse times for all the
+    DAGs in the folder:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Testing the parse time of multiple DAGs. Image by author.](../Images/fba6f0a27c0cb9c5ad619cfbcec51325.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Testing the parse time of multiple DAGs. Image by author.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'By default, the table is sorted from the fastest to the slowest DAG. However,
+    you can reverse the order by using the `--order` parameter:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE10]'
+  prefs: []
+  type: TYPE_PRE
+- en: '![Inverted sorting order. Image by author.](../Images/17abd140d27a468882212e9f8f8217f0.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Inverted sorting order. Image by author.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Skipping Unchanged DAGs
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: 'The `--skip-unchanged` parameter can be especially useful during development.
+    As the name suggests, this option skips the parse execution for DAGs that haven’t
+    been modified since the last execution:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE11]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'As shown below, when the DAGs remain unchanged, the output reflects no difference
+    in parse times:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Output with no difference for unchanged files. Image by author.](../Images/9770f84be10aab3f4cc06875f64524ae.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Output with no difference for unchanged files. Image by author.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Resetting the Database
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: 'All DAG information, including metrics and history, is stored in a local SQLite
+    database. If you want to clear all stored data and start fresh, use the `--reset-db`
+    flag:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE12]'
+  prefs: []
+  type: TYPE_PRE
+- en: This command resets the database and processes the DAGs as if it were the first
+    execution.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Conclusion
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: Parse time is an important metric for maintaining scalable and efficient Airflow
+    environments, especially as your orchestration requirements become increasingly
+    complex.
+  prefs: []
+  type: TYPE_NORMAL
+- en: For this reason, the **`[airflow-parse-bench](https://github.com/AlvaroCavalcante/airflow-parse-bench)`**
+    library can be an important tool for helping data engineers create better DAGs.
+    By testing your DAGs’ parse time locally, you can easily and quickly find your
+    code bottleneck, making your dags faster and more performant.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Since the code is executed locally, the produced parse time won’t be the same
+    as the one present in your Airflow cluster. However, if you are able to reduce
+    the parse time in your local machine, the same might be reproduced in your cloud
+    environment.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Finally, this project is open for collaboration! If you have suggestions, ideas,
+    or improvements, feel free to contribute on [GitHub](https://github.com/AlvaroCavalcante/airflow-parse-bench).
+  prefs: []
+  type: TYPE_NORMAL
+- en: References
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: '[**maximize the benefits of Cloud Composer and reduce parse times | Google
+    Cloud Blog**](https://cloud.google.com/blog/products/data-analytics/reduce-airflow-dag-parse-times-in-cloud-composer)'
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: ''
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: '[**Optimize Cloud Composer via Better Airflow DAGs | Google Cloud Blog**](https://cloud.google.com/blog/products/data-analytics/optimize-cloud-composer-via-better-airflow-dags)'
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: ''
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: '[**Scheduler – Airflow Documentation**](https://airflow.apache.org/docs/apache-airflow/stable/administration-and-deployment/scheduler.html#fine-tuning-your-scheduler-performance)'
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: ''
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: '[**Best Practices – Airflow Documentation**](https://airflow.apache.org/docs/apache-airflow/stable/best-practices.html#reducing-dag-complexity)'
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: ''
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: '[**GitHub – AlvaroCavalcante/airflow-parse-bench: Stop creating bad DAGs! Use
+    this tool to measure and…**](https://github.com/AlvaroCavalcante/airflow-parse-bench)'
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL

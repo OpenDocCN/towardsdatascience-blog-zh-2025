@@ -1,0 +1,273 @@
+- en: Beyond Causal Language Modeling
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 原文：[https://towardsdatascience.com/beyond-causal-language-modeling-a-deep-dive-into-not-all-tokens-are-what-you-need-for-781166bc35b3/](https://towardsdatascience.com/beyond-causal-language-modeling-a-deep-dive-into-not-all-tokens-are-what-you-need-for-781166bc35b3/)
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: Introduction
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'A few days ago, I had the chance to present at a local reading group that focused
+    on some of the most exciting and insightful papers from *NeurIPS 2024*. As a presenter,
+    I selected a paper titled ***["Not All Tokens Are What You Need for Pretraining"](https://openreview.net/forum?id=0NMzBwqaAJ)***.
+    It addresses a super simple but reasonable question: *do we really need to apply
+    the next-token prediction loss to all tokens during language model pretraining*?'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Most of us have gotten used to the standard approach: feed in a huge web-scraping
+    corpus, apply causal language modeling (CLM) across every token, and trust that
+    bigger is better. The authors of this paper push back on that assumption, instead
+    arguing that some tokens might actually be detrimental to the learning process.
+    From their analysis, it becomes clear that focusing your training budget on particularly
+    "useful" tokens can yield significant efficiency and performance gains in data
+    efficiency and downstream tasks.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: In this post, I’ll summarize the paper’s core ideas of the proposed method called
+    Selective Language Modeling (SLM) and share some insights from the experiments
+    that impressed me the most.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '* * *'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Background
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: Token-Level Noise in Large Web Corpora
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: 'When you scrape huge amounts of texts from the web, it’s no surprise to find
+    a fair amount of noise. Researchers have tried refining their corpora by applying
+    document-level filters – removing entire documents that look suspicious or low
+    quality. However, the authors note that noise can exist inside documents as well:
+    a good article might still contain a handful of nonsense or extremely unpredictable
+    tokens. If your model is forced to learn from everything, these noisy tokens can
+    waste computation or even confuse the model.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Token-Level Learning Dynamics
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: 'By examining training checkpoints at multiple stages, the authors categorized
+    tokens based on whether their cross-entropy loss was high or low over time:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**L→L (low to low):** These tokens are learned early and remain "easy" for
+    the model, giving no further significant gradient updates later on.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**H→L (high to low):** A subset that starts off hard and eventually gets learned.
+    This means that those tokens still have significant room for improvement in learning.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**H→H (high to high):** Tokens that remain difficult and fluctuate heavily,
+    often due to their inherent unpredictability (i.e., *aleatoric uncertainty*)'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**L→H (low to high):** Tokens that were initially learned but become confusing
+    later, possibly due to context shifts or noise.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: The big takeaway is that only a fraction of tokens truly contributes meaningful
+    learning signals. Many tokens get mastered early (L→L) and then stop being beneficial.
+    Meanwhile tokens that stay consistently hard (H→H) can be extremely noisy and
+    unproductive throughout the entire training run.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '* * *'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The Proposed Approach: Selective Language Modeling (SLM)'
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: '![Figure 1\. Created by the author based on the figure presented in the original
+    paper, with additional explanations and interpretations](../Images/15c7bdac2d9db279728993f5f02715c2.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: '*Figure 1\. Created by the author based on the figure presented in the original
+    paper, with additional explanations and interpretations*'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The authors propose **Selective Language Modeling (SLM)** as a more nuanced
+    approach. Here’s how it works:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Step 1: Train a Reference Model (RM)'
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: They first take a small but *high-quality dataset* that reflects their "ideal"
+    data distribution. Using an already partially pre-trained base model, they fine-tune
+    this model to create a RM. This model essentially becomes the judge that decide
+    which tokens are worth training on later.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Step 2: Score Tokens with Excess Loss'
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: For each token in the large-scale corpus, they compute the **RM loss** (how
+    well the RM predicts that token) and compare it with the **current training model’s
+    loss**. The difference, called the **excess loss**, indicates how much improvement
+    is still possible on a token that "should" be predictable under the reference
+    distribution.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Step 3: Select Top-k% Tokens for Back-Propagation'
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: During the main pretraining, they still run the **full forward pass across all
+    tokens, but only back-propagate the loss on the top k% of tokens** (those with
+    the highest excess loss). This means that model devotes most of its capacity to
+    the tokens that are both learnable and relevant, while ignoring tokens deemed
+    less helpful. This dynamic selection happens at each step or batch, so it adapts
+    as the training model itself changes.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '* * *'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Experiments
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'This paper demonstrates SLM’s benefits across several experimental setups:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![Figure 2\. Created by the author to summarize the experimental setup](../Images/04fe187a8963dffc44a5a70334497454.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Figure 2\. Created by the author to summarize the experimental setup
+  prefs: []
+  type: TYPE_NORMAL
+- en: Math Domain Results
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: When they continued pretraining smaller 1B models on *OpenWebMath*, the improvements
+    were striking – up to 10% or even more gains on GSM8K and MATH over the same model
+    trained with CLM. The authors highlight that SLM can reach baseline performance
+    5–10 times faster, requiring fewer tokens and less computation.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In one remarkable case, their 7B model matched the accuracy of a prior SOTA
+    approach while consuming only 3% of the training tokens that the prior had used.
+  prefs: []
+  type: TYPE_NORMAL
+- en: On top of that, a simple fine-tuning step further boosted MATH scores over 40%
+    for a 1B model – a level that smaller open-source models usually struggle to reach
+    without huge training budgets.
+  prefs: []
+  type: TYPE_NORMAL
+- en: General Domain Results
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: What if you already have a model that has seen a ton of general text? The authors
+    show that SLM still helps.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Even a strong base model improved by around 5.8 percentage points on average
+    across 15 benchmarks, especially in tougher domains like code and math. Therefore,
+    even after large-scale training, there’s still a subset of tokens that can be
+    conducive to improving the performance.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Self-Referencing
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: 'A question arises: what if you don’t have a curated dataset to t rain your
+    reference model in the first place? The authors show a creative workaround: you
+    can train a quick-and-dirty reference model on the same raw corpus at just few
+    epochs.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Even though that reference model might not be perfect, it still does an okay
+    job identifying the noisier tokens that hamper training. The result is a 2–3%
+    downstream accuracy boost and a 30–40% reduction in tokens used.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '* * *'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Conclusion and Future Directions
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: Contributions of This Work
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: 'This paper provides both an illuminating analysis of token-level training dynamics
+    and a new technique called SLM:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Token Loss Analysis:**They demonstrate that a majority of tokens contribute
+    little beyond the initial training phase, while a small subset stays persistently
+    high loss.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**SLM for Focused Learning:**By leveraging a reference model to gauge how "useful"
+    each token is, they manage to r*educe training tokens drastically* without sacrificing
+    quality – in many cases even boosting downstream performance.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Broad Demonstration of Effectiveness:**SLM works not only on math-specific
+    tasks but also in more general domains, with either a meticulously curated reference
+    dataset or a reference model drawn from the same large corpus.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Where Could This Go Next?
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: 'SLM encompasses various potential directions for future research. For example:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Scaling Up Further:**Though the paper primarily focuses on models around
+    1B to 7B parameters, there remains the open question of how SLM performs at the
+    30B, 70B, or 100B+ scale. If the token-level approach generalizes well, the cost
+    savings could be enormous for truly massive LLMs.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Reference Models via API:**If you can’t gather curated data, maybe you could
+    use an API-based language model as your reference. That might make SLM more practical
+    for smaller research teams who lack the resources for selective reference training.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Reinforcement Learning Extensions:**Imagine coupling SLM with reinforcement
+    learning. The reference model could act as a "reward model," and token selection
+    might then be optimized through something akin to policy gradients.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Multiple Reference Models:**Instead of a single RM, you could train or gather
+    *several*, each focusing on a different domain or style. Then, combine their token
+    scores to produce a more robust multi-domain filtering system.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Alignment and Safety:**There’s a growing trend toward factoring in alignment
+    or truthfulness. One might train a reference model to give higher scores to well-supported
+    statements and zero out tokens that look factually incorrect or harmful.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '* * *'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '*Thanks for reading, and I hope this breakdown helps you understand this NeurIPS
+    2024 best-paperwork.*'
+  prefs: []
+  type: TYPE_NORMAL

@@ -1,0 +1,639 @@
+- en: Systematic LLM Prompt Engineering Using DSPy Optimization
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 原文：[https://towardsdatascience.com/systematic-llm-prompt-engineering-using-dspy-optimization/](https://towardsdatascience.com/systematic-llm-prompt-engineering-using-dspy-optimization/)
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: <mdspan datatext="el1755899213205" class="mdspan-comment">This article is a
+    journey</mdspan> into the fascinating and rapidly evolving science of LLM prompt
+    iteration, which is a fundamental part of Large Language Model Operations (LLMOPs).
+    We’ll use the example of generating customer service responses with a real-world
+    dataset to show how both generator and LLM-judge prompts can be developed in a
+    systematic fashion with [DSPy](https://dspy.ai/). All the code for this project,
+    including several notebooks and a nice README written by Claude, can be found
+    [here](https://github.com/rmartinshort/llm_judge_with_dspy/tree/main).
+  prefs: []
+  type: TYPE_NORMAL
+- en: '* * *'
+  prefs: []
+  type: TYPE_NORMAL
+- en: The field of applied AI, which typically involves building pipelines that connect
+    data to Large Language Models (LLMs) in a way that generates business value, is
+    evolving rapidly. There is a large and growing array of open and closed source
+    models for developers to choose from, and many of the latest models match or surpass
+    expert human level performance in generative tasks such as coding and technical
+    writing. Several flagship models such as Gemini 2.5 are also natively multimodal,
+    with video and audio capabilities that facilitate conversation with users in an
+    uncannily human-like fashion. Indeed, AI assistance is already quickly creeping
+    into our daily lives — for example I’ve been using it more and more over the last
+    few months for coding, brainstorming ideas and general advice. It’s a new world
+    that we are all learning to navigate and with such powerful technology at our
+    fingertips, it’s easy to get started and build a POC. But LLM-powered projects
+    still face significant hurdles on their way from research to production.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 1.0 The challenge of prompt iteration
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: Prompt iteration — central to building trustworthy generative AI products —
+    is hard because there are so many ways to write a prompt, models can be very sensitive
+    to small changes and with generative tasks judgement of the results is often subjective.
+    Over time, prompts can grow through iteration and edge case fixes into complicated
+    text files that are highly optimized against a particular model version. This
+    presents a challenge when teams want to upgrade to the latest version or switch
+    model provider, likely requiring significant refactoring. If a regression testing
+    process is established, then iteration is possible by incrementally adjusting
+    the generator prompt, re-running the test suite and evaluating the result. However
+    this process is also tedious and evaluation can be highly subjective — even teams
+    fortunate enough to employ subject matter experts will struggle when those experts
+    disagree.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 2.0 Who evaluates the output?
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: LLMs are non-deterministic, generative models. These attributes are core to
+    their functionality, but make them difficult to evaluate. Traditional natural
+    language processing metrics are rarely applicable, and often there is no ground
+    truth against which to compare the LLM outputs. The concept of LLM judges can
+    help here but adds complexity. An LLM judge is typically a powerful model that
+    tries to do the job of an expert annotator by determining the quality of the generator
+    model output. State of the art foundation models are typically very good at classifying
+    whether or not a generated output meets certain pre-defined criteria. Therefore, 
+    in the ideal situation we have a judge whose prompt distills the thought process
+    of a human SME and which produces outputs that are reliably aligned with SME consensus.
+    We can then apply this automatically to a representative development set and compare
+    results across versions of the generator prompt to make sure we’re iterating in
+    the right direction.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 3.0 Adding complexity
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: How do we know that the LLM judge is reliable? Human effort is usually still
+    needed to label a training set for the judge, whose prompt can then be aligned
+    to generate results that match the human labels as far as possible. All the complexities
+    and model version dependencies that we discussed above with reference to the generator
+    prompt also apply to LLM judges and in a multi-stage project with several LLM
+    calls there may also need to be several judges, each with their own training set.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Even for a single-prompt workflow, our setup has now become quite complex. We
+    have a generator prompt that we want to iterate on, and a development dataset
+    of inputs. We then have a separate dataset of inputs and outputs that is used
+    to develop the judge. That dataset should then be labelled by an SME and split
+    into a training portion — to build the judge prompt — and a test portion, to test
+    the judge prompt and prevent overfitting. Once the judge has been trained, it
+    is used to optimize the generator prompt against the development dataset. We then
+    ideally need another holdout set which we can use to check whether or not the
+    generator prompt has been overfit to the development set. Prompt versions and
+    datasets should be logged so that experiments are reproducible. The diagram below
+    illustrates this situation.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/4821534b48822faa3e4a5dff53bc947e.png "A practical methodology
+    for optimizing both generator and LLM judge prompts using automated techniques")'
+  prefs: []
+  type: TYPE_IMG
+- en: 'Figure 1: High level workflow for generator and LLM judge prompt optimization.
+    What started as a seemingly simple process of updating a POC generator prompt
+    can become a complex pipeline that would benefit from versioning, experiment tracking
+    and other LLMOPs concepts. Image generated by the author.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: With so many components for the optimization of a single generator prompt, we
+    ideally need an LLMOps framework with built in logging and tracking. Description
+    of such frameworks is beyond the scope of this article, but I would recommend
+    the mlflow documentation or the later modules of this excellent class for more
+    information.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 4.0 Purpose of this article
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: In this article, we will build the essential components of the system shown
+    in figure 1 for a simple toy problem that involves generating helpful customer
+    service responses. <mdspan datatext="el1755999685380" class="mdspan-comment">We’ll
+    make use of a modified version of this [airline customer support messages dataset](https://www.kaggle.com/datasets/aimack/customer-service-chat-data-30k-rows?resource=download),
+    which is available from Kaggle with a CC0 license. A sample of this dataset was
+    used to seed the generation of synthetic conversation set, which is then used
+    as the starting point for this project.</mdspan> Details of the data generation
+    process are shared in the next section.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The generator model’s aim will be to take a conversation and produce the next
+    support agent message that is as helpful as possible. To keep track of the prompts
+    and perform optimization, we’ll use the DSPy orchestration library. DSPy is unique
+    in that it abstracts away raw, text based prompts into modular Python code (using
+    what it calls Signatures and Modules, which we’ll discuss later), and provides
+    tools to define success metrics and automatically optimize prompts towards them.
+    The promise of DSPy is that with a good metric and some ability to calculate it
+    (either ground truth data or an LLM judge), one can automatically optimize the
+    prompt without needing to manually edit a text file. Through this project, we’ll
+    see some of the pros and cons of this approach. It should be noted that we only
+    really scratch the surface of DSPy uses here, and the library has excellent documentation
+    for further reading.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The sections are arranged as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: First we discuss the data and objectives. We load the data, do some preprocessing,
+    and sample a few hundred conversations to become the basis for our prompt development
+    sets
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: We explore the baseline generator and use it to create outputs for the judge
+    development set. We see how this can be done via direct API calls (i.e. no LLM
+    orchestration framework) vs what it looks like with DSPy.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Next we discuss creating the gold standard dataset for the LLM judge. To save
+    time, we choose to generate this with a powerful closed-source LLM, but this is
+    the step that in real projects will need human subject matter expert input
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: With our gold standard judge dataset in place, we can use it to tune a prompt
+    for the LLM judge that we’ll eventually be using to help us iterate. Along the
+    way we’ll touch on how DSPy’s optimizers work
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: We’ll then attempt to use DSPy with our optimized judge to tune our baseline
+    generator prompt and get the best scores possible on the development dataset
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: The purpose of all this is to take steps towards a robust methodology for prompt
+    development that is reproducible and fairly automated, meaning that it could be
+    run again to re-optimize the generator prompt if we chose to switch model provider,
+    for example. The methodology is far from perfect and in terms of result quality
+    I suspect it is no substitute for careful manual prompt engineering in collaboration
+    with SMEs. However, do I think it encapsulates many of the principles of evaluation
+    driven development and highlights the power of DSPy to speed up iteration in LLM
+    projects.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 5.0 Dataset and Objective
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: The Kaggle customer support dataset that we’re using provides us with about
+    30k customer questions related to air travel. In order to convert this into a
+    more realistic “customer support conversation” table, I used `gemini-2.5-flash`
+    to create a set of 5000 synthetic conversations using samples from the Kaggle
+    dataset to seed the topics. Each conversation contains both customer and support
+    messages, and is associated with a unique id and company name. This [generation
+    process](https://github.com/rmartinshort/llm_judge_with_dspy/blob/main/00_generate_dataset.ipynb)
+    is designed to create a reasonably sized example dataset that is similar to what
+    could be constructed from real customer support logs.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Here’s an example of a synthetic sample conversation related to American Airlines
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE0]'
+  prefs: []
+  type: TYPE_PRE
+- en: The goal of our agent will be to assume the role of customer support, responding
+    to the user’s query in a way that is as helpful as possible given the situation.
+    This is a challenging problem since customer questions may require highly specific
+    context in order to answer well, or may be completely outside the support agent’s
+    control. In such situations the model must do the best it can, showing empathy
+    and understanding just like a trained human agent would. It must also not hallucinate
+    facts, which is a very important check that is beyond the scope of this article
+    but should certainly be made in production, ideally using an LLM judge that has
+    access to suitable knowledge banks.
+  prefs: []
+  type: TYPE_NORMAL
+- en: To get the data ready, we can apply some basic preprocessing, covered in the
+    code [here](https://github.com/rmartinshort/llm_judge_with_dspy/blob/main/dspy_judge/data_loader/dataset_loader.py).
+    We take advantage of the parallelism offered by Huggingface’s datasets library,
+    which allows us to apply basic models like a fasttext language detector on this
+    dataset. We also need to randomly truncate the conversations so that the final
+    utterance is always a “Customer” message, therefore setting up the model to generate
+    the next “Support” response. For this purpose we have [this simple truncator class](http://dspy_judge/processor/conversation_truncator.py).
+    Finally, it seems helpful to provide the model with the company name for additional
+    context (this is something whose accuracy lift we can test with the framework
+    proposed here!, so we append that to the conversations too.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE1]'
+  prefs: []
+  type: TYPE_PRE
+- en: The development dataset that we use to tune our generator and judge needs to
+    be small enough that tuning is fast and efficient, but still representative of
+    what the model will see in production. Here we just choose a random sample of
+    400 truncated conversations, which will be split further into testing and training
+    datasets in the coming sections. Smarter methods for choosing a representative
+    sample for prompt optimization are a topic of active research, an interesting
+    example of which is [here](https://aclanthology.org/2025.acl-industry.67/).
+  prefs: []
+  type: TYPE_NORMAL
+- en: 6.0 Baseline generator and judge development set
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'Let’s split our dataset of representative inputs further: 160 examples for
+    judge development and 240 for generator prompt development. These numbers are
+    arbitrary but reflect a practical compromise between representativeness and time/cost.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: To proceed with LLM judge development we need some outputs. Let’s generate some
+    via a baseline version of our generator, which we’ll refine later.
+  prefs: []
+  type: TYPE_NORMAL
+- en: LLMs are typically very good at the customer service task we’re currency focused
+    on so in order to see meaningful performance gains in this toy project let’s use
+    `gpt-3.5-turbo` as our generator model. One of the most powerful features of DSPy
+    is the ease of switching between models without the need to manually re-optimize
+    prompts, so it would be easy and interesting to swap this out for other models
+    once the system is built.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 6.1 A basic version without DSPy
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: The first version of a baseline generator that I built for this project actually
+    does not use DSPy. It consists of the following basic manually-typed prompt
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE2]'
+  prefs: []
+  type: TYPE_PRE
+- en: To call an LLM, the code contains a number of modules inheriting from `LLMCallerBase`,
+    which can also optionally enforce structured output using the instructor library
+    (more about how this works here). There is also a module called ParallelProcessor,
+    which allows us to make API calls in parallel and minimizes errors in the process
+    by using backoff to automatically throttle the calls. There are likely many ways
+    to make these parallel calls — in a [previous article](https://pub.towardsai.net/data-driven-llm-evaluation-with-statistical-testing-004b1561793f)
+    I made use of Huggingface datasets `.map()` functionality, whereas here inside
+    ParallelProcessor we directly use python’s multiprocessing library and then re-form
+    the dataset from the list of outputs.
+  prefs: []
+  type: TYPE_NORMAL
+- en: This is likely not an efficient approach if you’re dealing with really large
+    datasets, but it works well for the few thousand examples that I have tested it
+    with. It’s also very important to be aware of API costs when testing and running
+    parallel LLM calls!
+  prefs: []
+  type: TYPE_NORMAL
+- en: Putting these things together, we can generate the baseline results from a sample
+    of the truncated conversation dataset like this
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE3]'
+  prefs: []
+  type: TYPE_PRE
+- en: 6.2 How does this look with DSPy?
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: Using dspy feels different from other LLM orchestration libraries because the
+    prompting component is abstracted away. However our codebase allows us to follow
+    a similar pattern to the “direct API call” approach above.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The core dspy objects are signatures and modules. Signatures are classes that
+    allow us to define the inputs and outputs of each LLM call. So for example our
+    baseline generator signature looks like this
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE4]'
+  prefs: []
+  type: TYPE_PRE
+- en: Signatures can also have docstrings, which are essentially the system instructions
+    that are sent to the model. We can therefore make use of the baseline prompt we’ve
+    already written simply by adding the line
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE5]'
+  prefs: []
+  type: TYPE_PRE
+- en: A DSPy module is also a core building block that implements a prompting strategy
+    for any given signature. Like signatures they are fully customizable, though for
+    this project we will mainly use a signature called `ChainOfThought`, which implements
+    the chain of thought prompting strategy and thus forces the model to generate
+    a reasoning field along with the response specified in the signature.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE6]'
+  prefs: []
+  type: TYPE_PRE
+- en: You can take a look at the [`process_dataset_with_dspy`](https://github.com/rmartinshort/llm_judge_with_dspy/blob/main/dspy_judge/processor/parallel_processor.py)
+    method to see the details of the setup here. To avoid pickling errors, we extract
+    the DSPy signature from the supplied module, deconstruct and then re-assemble
+    it on each of the workers. Each worker then calls
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE7]'
+  prefs: []
+  type: TYPE_PRE
+- en: on each row in the batch it receives and then the result is reassabled. The
+    final result should be similar to that generated with the “native API” method
+    in the previous sections, with the only differences arising from the high temperature
+    setting.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The big advantage of DSPy at this stage is that the module `support_transcript_generator_module`
+    can be easily saved, reloaded and fed directly into other DSPy tools like Evaluate
+    and Optimize, which we’ll see later.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 7.0 The judge training dataset
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: With our baseline generator set up, we can move on to LLM judge development.
+    In our problem, we want the LLM judge to act like a human customer support expert
+    who is able to read an interaction between another agent and a customer, judge
+    the agent’s success at resolving the customer’s issue and also give critiques
+    to explain the reasoning . To do this, it is very helpful to have some gold standard
+    judgments and critiques. In a real project this can be done by running the judge
+    development dataset through the baseline generator and then having a subject matter
+    expert review the inputs and outputs, generating a labeled dataset of results.
+    To keep things simple a binary yes/no judgement is often preferable, enabling
+    us to directly calculate metrics like accuracy, precision and Cohen’s kappa. To
+    speed up this step in this toy project, I used Claude Opus 4.0 along with a “gold
+    standard” [judge prompt](https://github.com/rmartinshort/llm_judge_with_dspy/blob/main/dspy_judge/prompts/base_prompts.py)
+    carefully designed with aid of GPT5\. This is powerful, but is no substitute for
+    a human SME and only used because this is a demo project.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Once again we can use DSPy’s `ChainOfThought` module with a signature like this
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE8]'
+  prefs: []
+  type: TYPE_PRE
+- en: Because we’re requesting chain of thought, the reasoning field will automatically
+    get generated and doesn’t need to specified in the signature
+  prefs: []
+  type: TYPE_NORMAL
+- en: Running our “gold standard judge” to simulate the SME labelling phase looks
+    like this
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE9]'
+  prefs: []
+  type: TYPE_PRE
+- en: The judge training dataset contains a fix of “positive” and “negative” results
+    and their associated explanations. This is desirable because we need to make sure
+    that our LLM judge is tuned to know how to distinguish the two. This also has
+    the advantage of giving us our first indication of the performance of the baseline
+    generator. For our sample dataset, the performance is not great, with an almost
+    50% failure rate as seen in figure 2\. In a more serious project, we would want
+    to pause at this SME labelling stage and conduct a careful error analysis to understand
+    the main types of failure mode.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/d205358857bfd60bc79bcccb9d32aa07.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'Figure 2: Performance of the baseline generator according to the gold standard
+    LLM judge, which is run against the judge training dataset and generates a binary
+    classification for each output pair and a short critique. Image generated by the
+    author.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 8.0 Optimizing the judge prompt
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: With our gold standard judge dataset in place, we can now proceed to develop
+    and optimize a judge prompt. One way to do this is start with a baseline judge
+    by trying to encode some of the SME reasoning into a prompt, run it on the judge
+    training set and make incremental edits until the alignment between the SME scores
+    and judges scores starts to level off. It’s useful to log each version of the
+    prompt and its associated alignment score so that progress can be tracked and
+    any leveling off detected. Another approach is to start by using dspy’s prompt
+    optimizers to do some of this work for us.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Dspy optimizers take our module, a metric function and small training set and
+    attempt to optimize the prompt to score and maximize the metric. In our case,
+    the metric will be the match accuracy between our judge’s binary classification
+    and the ground truth from the SME labelled dataset. There are multiple algorithms
+    for this, and here we focus on [MIPROv2](https://dspy.ai/api/optimizers/MIPROv2/)
+    because it can adapt both the system instructions and create or edit few-shot
+    examples. In summary, MIPROv2 is an automatic, iterative process with the following
+    steps
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Step 1: It runs the supplied module against a subset of the training dataset
+    and filters high scoring trajectories to generate few-shot examples.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'Step 2: It uses LLM calls to generate multiple candidate system prompts based
+    on observations from step 1'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'Step 3: It searches for combinations of candidate system prompts and candidate
+    few shot examples that maximize the metric value when run against mini-batches
+    of the training data'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: The promise of algorithms like this is that they can help us design prompts
+    in a data-driven fashion similar to how traditional ML models are trained. The
+    downside is that they separate developers from the data in such a way that it
+    becomes more difficult to explain why the selected prompt is optimal, except for
+    “the model said so”. They also have numerous hyperparameters whose settings can
+    be quite influential on the result.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In my experience so far, optimizers make sense to use in cases where we already
+    have ground truth, and their output can then be used as a starting point for manual
+    iteration and further collaboration with the subject matter expert.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Let’s see how MIPROv2 can be applied in our project to optimize the LLM judge.
+    We’ll choose our judge model to be Gemini 1.5 flash, which is cheap and fast.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE10]'
+  prefs: []
+  type: TYPE_PRE
+- en: Note that baseline judge here represents our “best attempt” at a judge based
+    on reviewing the SME labelled dataset.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Out of curiosity, let’s first see what the initial alignment between the baseline
+    and gold standard judge is like. We can do that using `dspy.Evaluate` running
+    on a set of examples, a metric function and a module.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE11]'
+  prefs: []
+  type: TYPE_PRE
+- en: For me, running this gives a baseline judge score of ~60%. The question is,
+    can we use MIPROv2 to improve this?
+  prefs: []
+  type: TYPE_NORMAL
+- en: Setting up an optimization run is straightforward, though be aware that multiple
+    LLM calls are made during this process and so running multiple times or on large
+    training datasets can be costly. It’s also recommended to check the documentation
+    for the [hyperparameter explanations](https://dspy.ai/api/optimizers/MIPROv2/)
+    and be prepared for the optimization to not work as expected.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE12]'
+  prefs: []
+  type: TYPE_PRE
+- en: At this stage, we have a new dspy module called judge_optimized, and we can
+    evaluate it with dspy. Evaluator against the training and validation sets. I get
+    an accuracy score of ~70% when I do this, suggesting that the optimization has
+    indeed made the judge prompt more aligned with the gold standard labels.
+  prefs: []
+  type: TYPE_NORMAL
+- en: What specifically has changed? To find out, we can run the following
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE13]'
+  prefs: []
+  type: TYPE_PRE
+- en: Which will show the latest version of the system prompt, any added few shot
+    examples and the last call that was made. Running the optimization several times
+    will likely produce quite different results with system prompts that range from
+    minor modifications to the baseline to complete rewrites, all of which achieve
+    somewhat similar final scores. Few-shot examples almost always get added from
+    the training set, which suggests that these are the main drivers of any metric
+    improvements. Given that the few-shot examples are sourced from the training set,
+    it’s very important to run the final evaluation against both this and the judge
+    validation set to protect against overfitting, though I suspect this is less of
+    a problem than in traditional machine learning.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Finally, we should save the judge and baseline modules for future use and reproduction
+    of any experiments.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE14]'
+  prefs: []
+  type: TYPE_PRE
+- en: 9.0 Using the optimized judge to optimize the generator
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: Let’s say we have an optimized LLM judge that we’re confident is suitably aligned
+    with the SME labelled dataset to be useful and we now want to use it to improve
+    the baseline generator prompt. The process is similar to that which we used to
+    build the optimized judge prompt, only this time we’re using the judge to provide
+    us with ground truth labels. As mentioned in section 6.0, we have a generator
+    development set of 240 examples. As part of manual prompt iteration, we would
+    each generate a generator prompt version on these input examples, then run the
+    judge on the results and calculate the accuracy. We’d then review the judge critiques,
+    iterate on the prompt, save a new version and then try again. Many iterations
+    will likely be needed, which explains why the development set should be fairly
+    small. DSPy can help get us started down this path with automatic optimization,
+    and the code is very similar to section 8.0, with one notable exception being
+    the optimization metric.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'During this phase, we’ll be using two LLMs in the optimization: The generator
+    model, which is `gpt-3.5-turbo` and the judge mode, which is `gemini-1.5-flash`.
+    To facilitate this, we can make a simple custom module called `ModuleWithLM` that
+    uses a specific LLM, otherwise it will just use whatever model is defined in the
+    last `dspy.configure()` call'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE15]'
+  prefs: []
+  type: TYPE_PRE
+- en: With this established, we can call `optimized_judge_program` inside a metric
+    function, which serves the same purpose as `match_judge_metric()` did in the judge
+    optimization process.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE16]'
+  prefs: []
+  type: TYPE_PRE
+- en: The optimization itself looks similar to the process we used for the LLM judge
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE17]'
+  prefs: []
+  type: TYPE_PRE
+- en: With the optimization complete, we can use dspy.Evaluate to generate an overall
+    accuracy assessment
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE18]'
+  prefs: []
+  type: TYPE_PRE
+- en: During testing, I was able to get a fair improvement from ~58%  to ~75% accuracy
+    using this method. On our small dataset some of this gain is attributable to just
+    a handful to judge results switching from “unsatisfied” to “satisfied”, and for
+    changes like this it is worth checking if they are within the natural variability
+    of the judge when run multiple times on the same dataset. In my view, the generator
+    prompt optimization’s greatest strength is that it provides us with a new baseline
+    prompt which is grounded in best practice and more defensible than the original
+    baseline, which is typically just the developer’s best guess at a good prompt.
+    The stage is then set for more manual iteration, use of the optimized LLM judge
+    for feedback and further consultation with SMEs for error analysis and edge case
+    handling.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/5054ca25154f5d64fae19abda0edba3b.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'Figure 3: Performance comparison between the baseline and optimized generator
+    prompts, as measured using the optimized judge. The performance lift appears to
+    come mainly from the DSPy optimizer adding few-shot examples. Image generated
+    by the author.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: At this stage it is sensible to look in detail at the data to learn about where
+    these modest quality gains are coming from. We can join the output datasets from
+    the baseline and optimized generator runs on conversation id, and look for instances
+    where the judge’s classification changed. In cases where the classification switched
+    from `satisfied=False` to `satisfied=True` my overall sense is that the generator’s
+    responses got longer and more polite, but didn’t really convey any more information.
+    This is not surprising, since for most customer support questions the generator
+    doesn’t have enough context to add meaningful detail. Also, since LLM judges are
+    known to show bias towards longer outputs, the optimization process appears to
+    have pushed the generator in that direction.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 10.0 Important learnings
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: This article has explored prompt optimization with DSPy for both LLM judge and
+    generator refinement. This process is somewhat long-winded, but it enforces good
+    practice in terms of development dataset curation, prompt logging and checking
+    for overfitting. Since the LLM judge alignment process typically requires a human
+    in the loop to generate labelled data, the DSPy optimization process can be especially
+    powerful here because it reduces expensive iterations with subject matter experts.
+    Although not really discussed in this article, it’s important to note that small
+    performance gains from the optimization might not be statistically significant
+    due to the natural variability of LLMs.
+  prefs: []
+  type: TYPE_NORMAL
+- en: With the judge set up, it can also be used by DSPy to optimize the generator
+    prompt (therefore bypassing the need for more human labelling). My sense is that
+    this may also be worth pursuing in some projects, if for no other reason but the
+    automatic curation of good few-shot examples. But it should not be a substitute
+    for manual evaluation and error analysis. Optimization is can also be quite costly
+    in terms of tokens, so care should be taken to avoid high API bills!
+  prefs: []
+  type: TYPE_NORMAL
+- en: Thank you for making it to the end. As always feedback is appreciated and if
+    you have tried a similar framework for prompt engineering I would be very interested
+    to learn about your experience! I’m also curious about the pros and cons of extending
+    this framework to more complex systems that use ReACT or prompt-chaining to accomplish
+    larger tasks.
+  prefs: []
+  type: TYPE_NORMAL

@@ -1,0 +1,468 @@
+- en: Training Objective That Makes LLM Inference 3X Faster
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 原文：[https://towardsdatascience.com/why-weve-been-optimizing-the-wrong-thing-in-llms-for-years/](https://towardsdatascience.com/why-weve-been-optimizing-the-wrong-thing-in-llms-for-years/)
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: <mdspan datatext="el1764223597300" class="mdspan-comment">Introduction</mdspan>
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'Standard Large Language Models (LLMs) are trained on a simple objective: Next-Token
+    Prediction (NTP). By maximizing the probability of the immediate subsequent token
+    *x[t+1]*, given the previous context, models have achieved remarkable fluency
+    and reasoning capabilities.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'However, this approach is really inefficient as the model has to spend the
+    same amount of compute in predicting filler words (eg, “the”, “and”, “have”) as
+    information-carrying words (eg, “red”, “apple”, “lazy”). This is exacerbated by
+    the fact that more than 50% of the words you see in the English language are filler
+    (Nordquist, 2024)³. This raises a practical question: Do all words need a full
+    inference cycle to be predicted, or do models already have the filler words in
+    their hidden states long before they are predicted?'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Motivation For MTP
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: The idea that transformers are capable of processing more than just the immediate
+    next step is supported by recent empirical research. (Pal et al., 2023)¹ demonstrated
+    that the internal representations of transformer models often encode trajectories
+    of future text long before they are generated.
+  prefs: []
+  type: TYPE_NORMAL
+- en: To illustrate, the researchers performed a “transplantation” experiment. They
+    extracted the hidden states from a model processing the sentence “Madison Square
+    Garden is located in…”— just before it was about to predict the next word as “New.”
+    They then placed this vector into a model processing a completely unrelated context,
+    such as “Tell me something about…” Despite the unrelated prompt, the model autoregressively
+    completed the sentence as “Tell me something about New York City.” This confirmed
+    that the model did not just encode solely for the next token, but for the entire
+    future sequence.
+  prefs: []
+  type: TYPE_NORMAL
+- en: To capitalize on this latent capacity of LLMs, researchers at Meta FAIR (Gloeckle
+    et al., 2024)² propose a novel approach. Instead of treating this foresight as
+    an emergent byproduct, they explicitly use it as a training objective. By tasking
+    the model with predicting “*n*” future tokens simultaneously at each position
+    instead of just one, they were effectively able to make the model look ahead.
+    The authors demonstrate that the Multi-Token Prediction (MTP) paradigm yields
+    significantly stronger performance on various benchmarks while boosting inference
+    speeds to up to 3 times faster than the baseline.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The MTP Architecture: Parallelizing Prediction'
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'If the information for the next few tokens is already embedded in the current
+    hidden states of LLMs, the question then becomes architectural: How do we extract
+    this information in advance, without increasing the compute requirements compared
+    to standard NTP?'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The architecture proposed by the authors aims to modify the existing transformer
+    backbone to predict *n* future tokens simultaneously. Unlike the standard NTP
+    paradigm, where the cross-entropy loss is minimized for the immediate next token
+    (*x[t+1]*) only, Multi-Token Prediction (MTP) minimizes the average loss over
+    *n* different output heads:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/a3f3d0249d2e83bf14931a593841151a.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: '(Source: Author)'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'x[t+i]: Represents future “i” tokens'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'x[1:t]: Represents the prompt context'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'P![](../Images/2ae2cc6f0544e8fcceb52fb6a599a7ea.png)[θ]: Represents the entire
+    Model as a function'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'To implement this, the authors divide the model into two components:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**A Shared Trunk (*f[s]*):** The bulk of the model is a standard transformer
+    backbone, whose job is to process the prompted context *x[1:t]​* into an information-dense
+    global representation *z[t]*​, which will be used for all subsequent predictions.'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '**Independent Heads (*f[h_i]*​​):** The output of the trunk is fed to *n* independent
+    heads. Each head has its own transformer layer and is responsible for predicting
+    a future offset token (e.g., head 1 predicts *t+1*, head 2 predicts *t+2*, etc.).'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: 'Ultimately, the output of each individual head is passed to the shared un-embedding
+    layer, which is implemented as a simple linear projection from the model’s hidden
+    dimension to the length of the vocabulary. The diagram below serves to sum up
+    the most important aspects of the MTP architecture:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/3da43e0e0a62dd436f4cde181bde1d77.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: '(Source: Author)'
+  prefs: []
+  type: TYPE_NORMAL
+- en: The model processes the shared trunk only once. Then, it activates each head
+    sequentially. For steps 4-6, it activates the first head, calculates its logits,
+    and then backpropagates the changes in steps 6-8\. Head 2 is activated in a similar
+    fashion, followed by heads 3 and 4.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Overcoming the Memory Bottleneck
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'The architecture described above presents a significant engineering hurdle:
+    GPU memory utilization.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: The vocabulary size (V) of Large Language Models is typically in the realm of
+    32k-256k, which is astronomically big. This makes the raw prediction scores for
+    every word in the vocabulary, aka the output logits, also very big. In a standard
+    NTP setup, the model needs to materialize these logits only once per step, making
+    it tractable. However, in the MTP setup, *n* different sets of these massive logits
+    are produced simultaneously, which can easily overwhelm the GPU memory. This makes
+    the MTP method impractical for researchers, unless they drastically reduce batch
+    sizes, slowing down the entire training process.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The authors circumvent this bottleneck with a sequential forward/backward pass strategy.
+    Rather than computing the loss for all *n* heads at once, the training loop iterates
+    through them sequentially:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: The shared trunk computes the latent state *z[t]*​.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: The model computes the logits for head 1, calculates the loss, backpropagates
+    gradients throughout the entire model, and immediately discards the logits from
+    memory.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: It then repeats this process for head 2, head 3, and so on.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: By deleting these massive logit vectors from memory after each head computation,
+    the peak memory usage of the training process remains O(V) instead of O(nV). This
+    allows the MTP models to be trained in similar batch sizes as the standard models.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Critical Design Choices
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: Beyond memory optimization, the authors also made two specific design decisions
+    that are important to understand the performance metrics and scientific validity
+    of MTP.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**1\. The Parameter Parity Constraint**'
+  prefs: []
+  type: TYPE_NORMAL
+- en: In an MTP model with `n=4` heads, the four additional head layers with transformer
+    backbones lead to an increase in parameters. To compensate for this increase,
+    the authors removed an equivalent number of layers from the model’s trunk, making
+    it shallower. This is done so that any performance changes in the MTP with respect
+    to the baseline can be solely credited to the MTP architecture itself, and not
+    to the increase in parameters of the model.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The fact that MTP still outperforms standard NTP-based models despite having
+    a shallower trunk only goes on to show the merits of the architecture.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**2\. Head Topology: Parallel vs. Causal**'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The authors also experimented with the arrangement of the heads themselves,
+    specifically comparing two approaches:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Parallel Heads:** This is the standard MTP design described above. In this
+    design, every head predicts its specific future token based only on the shared
+    state *z[t]*​, without seeing the predictions of other heads.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Causal Heads:** In this setup, head 2 (predicting *t+2*) would receive the
+    output of head 1 as input. This creates a “mini-autoregressive” chain at the end
+    of the model, which allows each head to look at the state of the previous head.
+    The architecture of MTP with n=4 causal heads is given below:'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '![](../Images/dec902ffdb33214f0d0e9c109ab1f525.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: '(Source: Author)'
+  prefs: []
+  type: TYPE_NORMAL
+- en: In the causal design, heads are arranged in a sequential order. This is done
+    so that each head knows what the head preceding it predicted.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Surprisingly, the Parallel design performed better. The authors hypothesize
+    that in the design with causal heads, the shared trunk “got lazy,” relying on
+    the heads to figure out the sequential information. But by forcing the heads to
+    act independently, the trunk was effectively coerced into learning a global representation,
+    which could satisfy all heads at once. This is the exact property that also manifests
+    itself as the model’s ability to plan into the future, which is essential in reasoning
+    tasks.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Experimental Results: The Scale of Improvement'
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: The authors conducted extensive evaluations comparing MTP models against standard
+    Next-Token Prediction (NTP) baselines across model sizes ranging from 300M to
+    13B parameters.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**1\. The “Scaling Law” of Multi-Token Prediction**'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Arguably, the most interesting finding is that the model’s performance scales
+    with its size. For smaller models from 300M-1.3B parameters, the difference between
+    MTP and NTP is negligible (oftentimes MTP performs worse). But as the size increases,
+    MTP starts to perform significantly better than the baseline. As illustrated below,
+    MTP outperforms NTP by 17% on the MBPP benchmark and 12% on the HumanEval benchmark.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/1932633c24da5178991caedea3b2bad2.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: '(Source: Adapted from Gloeckle et al. (2024b), Figure 3)'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Note: These graphs depict the absolute point changes compared to the baseline.
+    For example, in the top left graph, the 13B NTP model scored 26% on the MBPP benchmark
+    while MTP scored 30.5%, which is a 4.5% point increase in absolute terms and 17%
+    increase in relative terms.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: A possible reason behind this disparity could stem from the fact that larger
+    models, with their larger parameter counts, can afford to allocate more capacity
+    to future planning than smaller models can. This allows the bigger models to take
+    advantage of the multi-token objective to develop superior reasoning.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**2\. Three-Fold Inference Speedup via Self-Speculation**'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Apart from performance metrics, MTP also solves one of the most persistent
+    bottlenecks in LLM operations: inference latency.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: To fully appreciate this contribution, we must first understand what Speculative
+    Decoding is. In standard inference, the model has to iteratively generate tokens.
+    It has to wait for *x[t]* to be generated before computing *x[t+1]*. Speculative
+    decoding speeds this process up by using a smaller, faster draft model (usually
+    of the same family as the main model but with many fewer parameters), which takes
+    in the hidden state from the main model and predicts the next few tokens. The
+    main model is then tasked to verify all of these tokens in a single forward pass,
+    ensuring it agrees with the predictions of the smaller model. Since a single forward
+    pass is faster than generating tokens through numerous iterations, this results
+    in a net speedup. *([Read more about Speculative Decoding](https://medium.com/ai-science/speculative-decoding-make-llm-inference-faster-c004501af120))*
+  prefs: []
+  type: TYPE_NORMAL
+- en: Speculative decoding generally requires a smaller model to be loaded into memory,
+    which can be memory-intensive. However, the authors propose that the extra MTP
+    heads—usually discarded after training—can be used to serve the role of a built-in
+    draft model. As these heads share the same trunk, these heads are highly accurate
+    drafters. By using up to four heads to draft a subsequence and then verifying
+    it in parallel, MTP achieves a 3x speedup in inference with zero loss in performance
+    accuracy.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**4\. Faster Formation of “Induction Heads”**'
+  prefs: []
+  type: TYPE_NORMAL
+- en: The authors also analyze the emergence of induction capabilities in MTP. Induction
+    heads are circuits in transformers that are mainly responsible for pattern-matching
+    abilities (e.g., recognizing that [A]…[B]…[A] is likely followed by [B]). The
+    graph below shows that for smaller model sizes, MTP shows a greater induction
+    ability than similarly sized NTP models. This indicates that by forcing the model
+    to predict the consequences of the immediate next token, it creates a gradient
+    signal that is conducive to the emergence of pattern recognition and in-context
+    learning.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/d9e367ce28211c572cfd126390aae941.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: '(Source: Adapted from Gloeckle et al. (2024b), Figure 7)'
+  prefs: []
+  type: TYPE_NORMAL
+- en: The authors took 100 children’s stories and replaced the names of characters
+    with names that span two tokens. The induction success plotted on the y-axis is
+    the accuracy with which the model correctly predicts the second token of the two-token
+    names, given that the name has been shown to the model at least once before.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**5\. Unlocking Byte-Level Training**'
+  prefs: []
+  type: TYPE_NORMAL
+- en: In a more radical experiment, the authors applied MTP to byte-level models,
+    which predict a sequence of bytes instead of token representations. Historically,
+    byte-level models have always performed poorly because contextual information
+    among bytes is weak, and byte sequences tend to become very large. However, as
+    demonstrated in the table below, with *`n=8`* heads (predicting 8 bytes at once),
+    the MTP model significantly outperforms the baseline NTP with *`n=1`* head, consistently
+    across all three benchmarks. This suggests that the MTP model can efficiently
+    navigate the byte-realm, allowing models to process raw data natively without
+    any compromises in performance.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/9b8eda1117a65ee61d15590aaf8a7f3e.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: '(Source: Adapted from Gloeckle et al. (2024b), Table 1)'
+  prefs: []
+  type: TYPE_NORMAL
+- en: This table presents the Pass@k accuracies of the MTP and NTP models on different
+    benchmarks. For example, the column @10 measures the probability that at least
+    one of the top 10 solutions generated by the model is correct.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The Price of Foresight: Shortcomings and Trade-offs'
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: While Multi-Token Prediction offers a compelling alternative to the standard
+    paradigm, the paper’s results clarify that it is not a universal “silver bullet.”
+    The architecture introduces specific trade-offs that engineers must consider.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**1\. Regression on Knowledge-Intensive Task**'
+  prefs: []
+  type: TYPE_NORMAL
+- en: While MTP improves reasoning (how to structure an answer), it appears to hurt
+    retrieval (knowing a specific fact).
+  prefs: []
+  type: TYPE_NORMAL
+- en: As shown below, MTP models dominate in code generation and reasoning benchmarks,
+    but actually underperform the baseline on standard NLP tasks, including benchmarks
+    like MMLU, TriviaQA, and ARC Challenge (which test fact retrieval and world knowledge).
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/1b732b21f10e3de2dbc4d36f04fcddce.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: '(Source: Adapted from Gloeckle et al. (2024b), Figure 7)'
+  prefs: []
+  type: TYPE_NORMAL
+- en: The average accuracy across 7 benchmarks, namely arc challenge, copa, hellaswag,
+    nq, piqa, siqa, and tqa, is plotted on the y-axis against the training steps on
+    the x-axis.
+  prefs: []
+  type: TYPE_NORMAL
+- en: A possible explanation can be that answering recall-based questions like “What
+    is the capital of France?” requires a precise focus on the word “Paris”. By forcing
+    the model to predict multiple tokens at once, as in “Paris is a city in…,” it
+    might dilute the overall signal from the most critical token, tanking the model’s
+    performance on the overall benchmark. If your aim is to build a RAG (Retrieval
+    Augmented Generation) system or a Trivia bot, MTP might actually be detrimental.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**2\. The “Goldilocks” Sensitivity of *n***'
+  prefs: []
+  type: TYPE_NORMAL
+- en: There is no “more is better” rule here. The authors found that performance is
+    highly sensitive to the number of heads (*n*).
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The authors also concluded that the number of heads (*n*) doesn’t scale linearly
+    with MTP performance. There exists a “sweet spot” where the model can most efficiently
+    exploit the MTP paradigm:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Too few (*n=2*): Negligible gain, as the model does not receive enough incentive
+    to develop any foresight.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'Too many (*n=8*): Performance degrades rapidly, as the information for all
+    8 heads starts to overcrowd the hidden state of the shared trunk.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'Just right (*n=4*): Best performance'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: This introduces a new hyperparameter that must be tuned. Unlike Next-Token Prediction,
+    which just “works,” MTP requires finding the specific horizon that matches the
+    complexity of your data.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Conclusion
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: With its demonstrated ability to improve coding performance and inference speedups,
+    one obvious question remains: *If MTP is so revolutionary, why haven’t any major
+    AI labs used it yet?*
+  prefs: []
+  type: TYPE_NORMAL
+- en: The answer to it is actually DeepSeek-V3.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In their technical report (Liu et al., 2024)⁴, the DeepSeek team revealed that
+    MTP was a core component during training of the model. Similar to Meta, they performed
+    vigorous ablation studies comparing standard NTP models against MTP at both the 15.7B and 228.7B parameter
+    scales. Using a configuration of `<em>n</em>=2` during training (predicting one
+    extra future token), they found that MTP-trained models consistently outperformed
+    their NTP counterparts across all datasets, like MMLU, PILE-test, HumanEval, MBPP,
+    etc. Moreover, by keeping that second prediction head during inference for speculative
+    decoding as described earlier, DeepSeek achieved aninference speedup of up to
+    1.8x.
+  prefs: []
+  type: TYPE_NORMAL
+- en: This successful deployment by DeepSeek serves as practical validation for MTP
+    to be widely used as a training objective in Large Language Models, as it demonstrates
+    a clear path to improving the reasoning capabilities and inference efficiency
+    of the model with minimal associated drawbacks.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**If you like these kinds of breakdowns, I share more insights, notes, and
+    explainers here: [https://steadysurfdom.substack.com/](https://steadysurfdom.substack.com/)**'
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: References
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: '[1] Pal, Koyena, et al. “[Future lens: Anticipating subsequent tokens from
+    a single hidden state.](https://arxiv.org/abs/2311.04897)” *arXiv preprint arXiv:2311.04897* (2023).'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[2] Gloeckle, Fabian, et al. “[Better & faster large language models via multi-token
+    prediction.](https://arxiv.org/abs/2404.19737)” *arXiv preprint arXiv:2404.19737* (2024).'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[3] Nordquist, R. (2024, July 20). [*Definition and examples of function words
+    in English*. ThoughtCo.](https://www.thoughtco.com/function-word-grammar-1690876#:~:text=According%20to%20social%20psychologist%20James,is%20and%20how%20it%20works)'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[4] Liu, Aixin, et al. “[Deepseek-v3 technical report.](https://arxiv.org/abs/2412.19437)” *arXiv
+    preprint arXiv:2412.19437* (2024).'
+  prefs: []
+  type: TYPE_NORMAL

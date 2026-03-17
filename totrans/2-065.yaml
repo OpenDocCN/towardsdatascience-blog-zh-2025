@@ -1,0 +1,359 @@
+- en: 'InfiniBand vs RoCEv2: Choosing the Right Network for Large-Scale AI'
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 原文：[https://towardsdatascience.com/infiniband-vs-rocev2-choosing-the-right-network-for-large-scale-ai/](https://towardsdatascience.com/infiniband-vs-rocev2-choosing-the-right-network-for-large-scale-ai/)
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: <mdspan datatext="el1754506380989" class="mdspan-comment">Context</mdspan>
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: GPUs serve as the fundamental computational engines for AI. However, In large-scale
+    training environments, overall performance is not limited by processing speed,
+    but by the speed of the network communication between them.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Large language models are trained on thousands of GPUs, which creates a huge
+    amount of cross-GPU traffic. In these systems, even the smallest delays compound.
+    A microsecond lag when GPUs share data can cause a chain reaction that adds hours
+    to the training job. Therefore, these systems require a specialized network that’s
+    designed to transfer large amounts of data with minimal delay.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The traditional approach of routing GPU data through the CPU created a severe
+    bottleneck at scale. To fix this bottleneck, technologies like RDMA and GPUDirect
+    were invented to essentially build a bypass around the CPU. This creates a direct
+    path for GPUs to talk to one another.
+  prefs: []
+  type: TYPE_NORMAL
+- en: This direct communication method needs a network that can handle the speed.
+    The two main choices available today to provide this are InfiniBand and RoCEv2.
+  prefs: []
+  type: TYPE_NORMAL
+- en: So, how do you choose between InfiniBand and RoCEv2? It’s a big deal, forcing
+    you to balance raw speed against budget and how much hands-on tuning you’re willing
+    to do.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Let’s take a closer look at each technology to see its strengths and weaknesses.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Basic Concepts
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: Before we compare InfiniBand and RoCEv2, let’s first understand how traditional
+    communication works and introduce some basic concepts like RDMA and GPU Direct.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Traditional Communication** In traditional systems, most of the data movement
+    between machines is handled by the CPU. When a GPU finishes its computation and
+    needs to send data to a remote node, it follows the following steps –'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/c4037b17cb32ed9d08f766d93b3d610f.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'CPU Centric communication (source: author)'
+  prefs: []
+  type: TYPE_NORMAL
+- en: The GPU writes the data to the system (host) memory
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: The CPU copies that data into a buffer used by the network card
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: The NIC (Network Interface Card) sends the data over the network
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: On the receiving node, the NIC delivers the data to the CPU
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: The CPU writes it into system memory
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: The GPU reads it from system memory
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: This approach works well for small systems, but it doesn’t scale for AI workloads.
+    As more data gets copied around, the delays start to add up, and the network struggles
+    to keep up.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**RDMA**'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Remote Direct Memory Access (RDMA) enables a local machine to access the memory
+    of a remote machine directly without involving the CPU in the data transfer process.
+    In this architecture, the network interface card handles all memory operations
+    independently, allowing it to read from or write to remote memory locations without
+    creating intermediate copies of the data. This direct memory access capability
+    eliminates the traditional bottlenecks associated with CPU-mediated data transfers
+    and reduces overall system latency.
+  prefs: []
+  type: TYPE_NORMAL
+- en: RDMA proves particularly valuable in AI training environments where thousands
+    of GPUs must share gradient information efficiently. By bypassing operating system
+    overhead and network delays, RDMA enables the high-throughput, low-latency communication
+    essential for distributed machine learning operations.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**GPUDirect RDMA** GPUDirect is NVIDIA’s way of letting GPUs talk directly
+    to other hardware through PCIe connections. Normally, when a GPU needs to transfer
+    data to another device, it has to take the long way around. The data goes from
+    GPU memory to system memory first, then the receiving device grabs it from there.
+    GPUDirect skips the CPU entirely. Data moves directly from one GPU to another.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: GPUDirect RDMA extends this to network transfers by allowing the NIC to access
+    GPU memory directly using PCIe.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/97805074136fb4c0b182a2aecfd66053.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'GPUDirect RDMA Communication (source: author)'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Now that we understand concepts like RDMA and GPUDirect, let’s look into the
+    infrastructure technologies InfiniBand and RoCEv2 that support GPUDirect RDMA.
+  prefs: []
+  type: TYPE_NORMAL
+- en: InfiniBand
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: InfiniBand is a high-performance networking technology designed specifically
+    for data centers and supercomputing environments. While Ethernet was built to
+    handle general traffic, InfiniBand is designed to meet high speed and low latency
+    for AI workloads.
+  prefs: []
+  type: TYPE_NORMAL
+- en: It’s like a high-speed bullet train where both the train and the tracks are
+    designed to maintain the speed. InfiniBand follows the same concept, everything
+    including the cables, network cards, and switches are designed to move data fast
+    and avoid any delays.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**How does it work?**'
+  prefs: []
+  type: TYPE_NORMAL
+- en: InfiniBand works completely differently from regular Ethernet. It doesn’t use
+    the regular TCP/IP protocol. Instead, it relies on its own lightweight transport
+    layers designed for speed and low latency.
+  prefs: []
+  type: TYPE_NORMAL
+- en: At the core of InfiniBand is RDMA, which allows one server to directly access
+    the memory of another without involving the CPU. InfiniBand supports RDMA in hardware,
+    so the network card, called a Host Channel Adapter or HCA, handles data transfers
+    directly without interrupting the operating system or creating extra copies of
+    data.
+  prefs: []
+  type: TYPE_NORMAL
+- en: InfiniBand also uses a lossless communication model. It avoids dropping packets
+    even under heavy traffic by using credit-based flow control. The sender transmits
+    data only when the receiver has enough buffer space available.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In large GPU clusters, InfiniBand switches move data between nodes with extremely
+    low latency, often under one microsecond. And because the entire system is built
+    for this purpose, everything from the hardware to the software works together
+    to deliver consistent, high-throughput communication.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Let’s understand a simple GPU-to-GPU communication using the following diagram -
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/05c7e896f5332d99876ff3ed257b6ee0.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'GPU-to-GPU communication using InfiniBand (source: author)'
+  prefs: []
+  type: TYPE_NORMAL
+- en: GPU 1 hands off data to its HCA, skipping the CPU
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: The HCA initiates an RDMA write to the remote GPU
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Data is transferred over the InfiniBand switch
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: The receiving HCA writes the data directly to GPU 2’s memory
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Strength**'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Fast and predictable ** – InfiniBand delivers ultra-low latency and high
+    bandwidth, keeping large GPU clusters running efficiently without hiccups.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Built for RDMA ** – It handles RDMA in hardware and uses credit-based flow
+    control to avoid packet drops, even under heavy load.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Scalable** – Since all parts of the system are designed to work together,
+    performance is not impacted if additional nodes are added to the cluster.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Weaknesses**'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Expensive** – Hardware is expensive and mostly tied to NVIDIA, which limits
+    flexibility.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Harder to manage –** Setup and tuning require specialized skills. It’s not
+    as straightforward as Ethernet.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Limited interoperability –** It doesn’t play well with standard IP networks,
+    making it less flexible for general-purpose environments.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: RoceV2
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: RoCEv2 (RDMA over Converged Ethernet version 2) brings the benefits of RDMA
+    to standard Ethernet networks. RoCEv2 takes a different approach than InfiniBand.
+    Instead of needing custom network hardware, it just uses your regular IP network
+    with UDP for transport.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Think of it like upgrading a regular highway with an express lane just for critical
+    data. You don’t have to rebuild the entire road system. You just need to reserve
+    the fast lane and tune the traffic signals. RoCEv2 uses the same concept, it delivers
+    high-speed and low-latency communication using the existing Ethernet system.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**How does it work?**'
+  prefs: []
+  type: TYPE_NORMAL
+- en: RoCEv2 brings RDMA to standard Ethernet by running over UDP and IP. It works
+    across regular Layer 3 networks without needing a dedicated fabric. It uses commodity
+    switches and routers, making it more accessible and cost-effective.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Like InfiniBand, RoCEv2 enables direct memory access between machines. The key
+    difference is that while InfiniBand handles flow control and congestion in a closed,
+    tightly controlled environment, RoCEv2 relies on enhancements to Ethernet, such
+    as –
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Priority Flow Control(PFC)** – Prevents packet loss by pausing traffic at
+    the Ethernet layer based on priority.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Explicit Congestion Notification(ECN)** – Mark packets instead of dropping
+    them when congestion is detected.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Data Center Quantized Congestion Notification(DCQCN)** – A congestion control
+    protocol that reacts to ECN signals to manage traffic more smoothly.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: To make RoCEv2 work well, the underlying Ethernet network needs to be lossless
+    or close to it. Otherwise, RDMA performance drops. This requires careful configuration
+    of switches, queues, and flow control mechanisms throughout the data center.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Let’s understand a simple GPU-to-GPU communication using the following diagram
+    with RoCEv2 –
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/71d5ea813496487b66af460562e09c9e.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'GPU-to-GPU Communication using RoceV2 (source: author)'
+  prefs: []
+  type: TYPE_NORMAL
+- en: GPU 1 hands off data to its NIC, skipping the CPU.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: The NIC wraps the RDMA write in UDP/IP and sends it over Ethernet.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Data flows through standard Ethernet switches configured with PFC and ECN.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: The receiving NIC writes the data directly to GPU 2’s memory.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Strength**'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Cost-effective**  – RoCEv2 runs on standard Ethernet hardware, so you don’t
+    need a specialized network fabric or vendor-locked components.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Easier to deploy**  –  Since it uses familiar IP-based networking, it’s easier
+    for teams already managing Ethernet data centers to adopt.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Flexible integration**  –  RoCEv2 works well in mixed environments and integrates
+    easily with existing Layer 3 networks.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Weaknesses**'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Requires tuning**  – To avoid packet loss, RoCEv2 depends on careful configuration
+    of PFC, ECN, and congestion control. Poor tuning can hurt performance.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Less deterministic**  – Unlike InfiniBand’s tightly controlled environment,
+    Ethernet-based networks can introduce variability in latency and jitter.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Complex at scale**  –  As clusters grow, maintaining a lossless Ethernet
+    fabric with consistent behavior becomes increasingly difficult.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Conclusion
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: In a large-scale GPU cluster, compute power is worthless if the network can’t
+    handle the load. Network performance becomes just as vital as the GPUs because
+    it holds the whole system together. Technologies like RDMA and GPUDirect RDMA
+    help cut out the usual slowdowns by getting rid of unnecessary interruptions and
+    CPU copying, letting GPUs talk directly to each other.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Both InfiniBand and RoCEv2 speed up GPU-to-GPU communication, but they take
+    different approaches. InfiniBand builds its own dedicated network setup. It provides
+    excellent speed and low latency, but at a very high cost. RoCEv2 provides more
+    flexibility by using the existing Ethernet setup. It’s easier on the budget, but
+    it needs proper tuning of PFC and ECN to make it work.
+  prefs: []
+  type: TYPE_NORMAL
+- en: At the end of the day, it’s a classic trade-off. Go with InfiniBand if your
+    top priority is getting the absolute best performance possible, and budget is
+    less of a concern. But if you want a more flexible solution that works with your
+    existing network gear and costs less upfront, RoCEv2 is the way to go.
+  prefs: []
+  type: TYPE_NORMAL

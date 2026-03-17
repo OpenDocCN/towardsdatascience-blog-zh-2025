@@ -1,0 +1,745 @@
+- en: Building a Scalable and Accurate Audio Interview Transcription Pipeline with
+    Google Gemini
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 原文：[https://towardsdatascience.com/building-a-scalable-and-accurate-audio-interview-transcription-pipeline-with-google-gemini/](https://towardsdatascience.com/building-a-scalable-and-accurate-audio-interview-transcription-pipeline-with-google-gemini/)
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: '**This article is co-authored by Ugo Pradère and David Haüet**'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '<mdspan datatext="el1745629161913" class="mdspan-comment">How hard</mdspan>
+    can it be to transcribe an interview? You feed the audio to an AI model, wait
+    a few minutes, and boom: perfect transcript, right? Well… not quite.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: When it comes to accurately transcribe long audio interviews, even more when
+    the spoken language is not English, things get a lot more complicated. You need
+    high quality transcription with reliable speaker identification, precise timestamps,
+    and all that at an affordable price. Not so simple after all.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In this article, we take you behind the scenes of our journey to build a scalable
+    and production-ready transcription pipeline using Google’s Vertex AI and Gemini
+    models. From unexpected model limitations to budget evaluation and timestamp drift
+    disasters, we’ll walk you through the real challenges, and how we solved them.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Whether you are building your own audio processing tool or just curious about
+    what happens “under the hood” of a robust transcription system using a multimodal
+    model, you will find practical insights, clever workarounds, and lessons learned
+    that should be worth your time.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Context of the project and constraints
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'At the beginning of 2025, we started an interview transcription project with
+    a clear goal: to build a system capable of transcribing interviews in French,
+    typically involving a journalist and a guest, but not restricted to this situation,
+    and lasting from a few minutes to over an hour. The final output was expected
+    to be just a raw transcript but had to reflect the natural spoken dialogue written
+    in a “book-like” dialogue, ensuring both a faithful transcription of the original
+    audio content and a good readability.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Before diving into development, we conducted a short market review of existing
+    solutions, but the outcomes were never satisfactory: the quality was often disappointing,
+    the pricing definitely too high for an intensive usage, and in most cases, both
+    at once. At that point, we realized a custom pipeline would be necessary.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Because our organization is engaged in the Google ecosystem, we were required
+    to use Google Vertex AI services. Google Vertex AI offers a variety of Speech-to-Text
+    (S2T) models for audio transcription, including specialized ones such as “Chirp,”
+    “Latestlong,” or “Phone call,” whose names already hint at their intended use
+    cases. However, producing a complete transcription of an interview that combines
+    high accuracy, speaker diarization, and precise timestamping, especially for long
+    recordings, remains a real technical and operational challenge.
+  prefs: []
+  type: TYPE_NORMAL
+- en: First attempts and limitations
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'We initiated our project by evaluating all those models on our use case. However,
+    after extensive testing, we came quickly to the following conclusion: no Vertex
+    AI service fully meets the complete set of requirements and will allow us to achieve
+    our goal in a simple and effective manner. There was always at least one missing
+    specification, usually on timestamping or diarization.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The terrible Google documentation, this must be said, cost us a significant
+    amount of time during this preliminary research. This prompted us to ask Google
+    for a meeting with a Google Cloud Machine Learning Specialist to try and find
+    a solution to our problem. After a quick video call, our discussion with the Google
+    rep quickly confirmed our conclusions: what we aimed to achieve was not as simple
+    as it seemed at first. The entire set of requirements could not be fulfilled by
+    a single Google service and a custom implementation of a VertexAI S2T service
+    had to be developed.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'We presented our preliminary work and decided to continue exploring two strategies:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Use Chirp2 to generate the transcription and timestamping of long audio files,
+    then use Gemini for diarization.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Use Gemini 2.0 Flash for transcription and diarization, although the timestamping
+    is approximate and the token output length requires looping.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: In parallel of these investigations, we also had to consider the financial aspect.
+    The tool would be used for hundreds of hours of transcription per month. Unlike
+    text, which is generally cheap enough not to have to think about it, audio can
+    be quite costly. We therefore included this parameter from the beginning of our
+    exploration to avoid ending up with a solution that worked but was too expensive
+    to be exploited in production.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Deep dive into transcription with Chirp2
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'We began with a deeper investigation of the Chirp2 model since it is considered
+    as the “best in class” Google S2T service. A straightforward application of the
+    documentation provided the expected result. The model turned out to be quite effective,
+    offering good transcription with word-by-word timestamping according to the following
+    output in json format:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE0]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'However, a new requirement came along the project added by the operational
+    team: the transcription must be as faithful as possible to the original audio
+    content and include small filler words, interjections, onomatopoeia or even mumbling
+    that can add meaning to a conversation, and typically come from the non-speaking
+    participant either at the same time or toward the end of a sentence of the speaking
+    one. We’re talking about words like “oui oui,” “en effet” but also simple expressions
+    like (hmm, ah, etc.), so typical of the French language! It’s actually not uncommon
+    to validate or, more rarely, oppose someone point with a simple “Hmm Hmm”. Upon
+    analyzing Chirp with transcription, we noticed that while some of these small
+    words were present, a number of those expressions were missing. First downside
+    for Chirp2.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The main challenge in this approach lies in the reconstruction of the speaker
+    sentences while performing diarization. We quickly abandoned the idea of giving
+    Gemini the context of the interview and the transcription text, and asking it
+    to determine who said what. This method could easily result in incorrect diarization.
+    We instead explored sending the interview context, the audio file, and the transcription
+    content in a compact format, instructing Gemini to only perform diarization and
+    sentence reconstruction without re-transcribing the audio file. We requested a
+    TSV format, an ideal structured format for transcription: “human readable” for
+    fast quality checking, easy to process algorithmically, and lightweight. Its structure
+    is as follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'First line with speaker presentation:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '*Diarization Speaker_1:speaker_name\Speaker_2:speaker_name\Speaker_3:speaker_name\Speaker_4:speaker_name,
+    etc.*'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Then the transcription in the following format:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '*speaker_id\ttime_start\ttime_stop\text* *with:*'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '***speaker:*** *Numeric speaker ID (e.g., 1, 2, etc.)*'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '***time_start:*** *Segment start time in the format 00:00:00*'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '***time_stop:*** *Segment end time in the format 00:00:00*'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '***text:*** *Transcribed text of the dialogue segment*'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'An example output:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '*Diarization Speaker_1:Lea Finch\Speaker_2:David Albec *'
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: ''
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: '*1**00:00:00**00:03:00**Hi Andrew, how are you? *'
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: ''
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: '*2**00:03:00**00:03:00**Fine thanks. *'
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: ''
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: '*1**00:04:00**00:07:00**So, let’s start the interview *'
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: ''
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: '*2**00:07:00**00:08:00**All right.*'
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: ''
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: 'A simple version of the context provided to the LLM:'
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: ''
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: '*Here is the interview of David Albec, professional football player, by journalist
+    Lea Finch*'
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: The result was fairly qualitative with what appeared to be accurate diarization
+    and sentence reconstruction. However, instead of getting the exact same text,
+    it seemed slightly modified in several places. Our conclusion was that, despite
+    our clear instructions, Gemini probably carries out more than just diarization
+    and actually performed partial transcription.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'We also evaluated at this point the cost of transcription with this methodology.
+    Below is the approximate calculation based only on audio processing:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Chirp2 price /min: 0.016 usd'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Gemini 2.0 flash /min: 0,001875 usd'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Price /hour: 1,0725 usd'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Chirp2 is indeed quite “expensive”, about ten times more than Gemini 2.0 flash
+    at the time of writing, and still requires the audio to be processed by Gemini
+    for diarization. We therefore decided to put this method aside for now and explore
+    a way using the brand new multimodal Gemini 2.0 Flash alone, which had just left
+    experimental mode.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Next: exploring audio transcription with Gemini flash 2.0'
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'We provided Gemini with both the interview context and the audio file requesting
+    a structured output in a consistent format. By carefully crafting our prompt with
+    standard LLM guidelines, we were able to specify our transcription requirements
+    with a high degree of precision. In addition with the typical elements any prompt
+    engineer might include, we emphasized several key instructions essential for ensuring
+    a quality transcription (*comment in italic)*:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Transcribe interjections and onomatopoeia even when mid-sentence.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Preserve the full expression of words, including slang, insults, or inappropriate
+    language. => *the model tends to change words it considers inappropriate. For
+    this specific point, we had to require Google to deactivate the safety rules on
+    our Google Cloud Project*.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Build complete sentences, paying particular attention to changes in speaker
+    mid-sentence, for example when one speaker finishes another’s sentence or interrupts.
+    => *Such errors affect diarization and accumulate throughout the transcript until
+    context is strong enough for the LLM to correct*.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Normalize prolonged words or interjections like “euuuuuh” to “euh.” and not
+    “euh euh euh euh euh …” => *this was a classical bug we were encountering called
+    “repetition bug” and is discussed in more detail below*
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Identify speakers by voice tone while using context to determine who is the
+    journalist and who is the interviewee. => *in addition we can pass the information
+    of the first speaker in the prompt*
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Initial results were actually quite satisfying in terms of transcription, diarization,
+    and sentence construction. Transcribing short test files made us feel like the
+    project was nearly complete… until we tried longer files.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Dealing with Long Audio and LLM Token Limitations
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'Our early tests on short audio clips were encouraging but scaling the process
+    to longer audios quickly revealed new challenges: what initially seemed like a
+    simple extension of our pipeline turned out to be a technical hurdle in itself.
+    Processing files longer than just a few minutes revealed indeed a series of challenges
+    related to model constraints, token limits, and output reliability:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'One of the first problems we encountered with long audio was the token limit:
+    the number of output tokens exceeded the maximum allowed (MAX_INPUT_TOKEN = 8192)
+    forcing us to implement a looping mechanism by repeatedly calling Gemini while
+    resending the previously generated transcript, the initial prompt, a continuation
+    prompt, and the same audio file.'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: 'Here is an example of the continuation prompt we used:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '*Continue transcribing audio interview from the previous result. Start processing
+    the audio file from the previous generated text. Do not start from the beginning
+    of the audio. Be careful to continue the previously generated content which is
+    available between the following tags <previous_result>.*'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Using this transcription loop with large data inputs seems to significantly
+    degrade the LLM output quality, especially for timestamping. In this configuration,
+    timestamps can drift by over 10 minutes on an hour-long interview. If a few seconds
+    drift was considered compatible with our intended use, a few minutes made timestamping
+    useless.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Our initial test on short audios of a few minutes resulted in a maximum 5 to
+    10 seconds drift, and significant drift was observed generally after the first
+    loop when max input token was reached. We conclude from these experimental observations,
+    that while this looping technique ensures continuity in transcription fairly well,
+    it not only leads to cumulative timestamp errors but also to a drastic loss of
+    LLM timestamps accuracy.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'We also encountered a recurring and particularly frustrating bug: the model
+    would sometimes fall into a loop, repeating the same word or phrase over dozens
+    of lines. This behavior made entire portions of the transcript unusable and often
+    looked something like this:'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '*1 00:00:00 00:03:00 Hi Andrew, how are you? *'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '*2 00:03:00 00:03:00 Fine thanks.*'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '*2 00:03:00 00:03:00 Fine thanks*'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '*2 00:03:00 00:03:00 Fine thanks*'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '*2 00:03:00 00:03:00 Fine thanks. *'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '*2 00:03:00 00:03:00 Fine thanks*'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '*2 00:03:00 00:03:00 Fine thanks. *'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '*etc.*'
+  prefs: []
+  type: TYPE_NORMAL
+- en: This bug seems erratic but appears more frequently with medium-quality audio
+    with strong background noise, far away speaker for example. And “on the field”,
+    this is often the case.. Likewise, speaker hesitations or word repetitions seem
+    to trigger it. We still don’t know exactly what causes this “repetition bug”.
+    Google Vertex team is aware of it but hasn’t provided a clear explanation.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The consequences of this bug were especially limiting: once it occurred, the
+    only viable solution was to restart the transcription from scratch. Unsurprisingly,
+    the longer the audio file, the higher the probability of encountering the issue.
+    In our tests, it affected roughly one out of every three runs on recordings longer
+    than an hour, making it extremely difficult to deliver a reliable, production-quality
+    service under such conditions.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: To make it worse, resuming transcription after a reached Max_token “cutoff”
+    required resending the entire audio file each time. Although we only needed the
+    next segment, the LLM would still process the full file again (without outputting
+    the transcription), meaning we were billed the full audio time lenght for every
+    resend.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: In practice, we found that the token limit was typically reached between the
+    15th and 20th minute of the audio. As a result, transcribing a one hour long interview
+    often required 4 to 5 separate LLM calls, leading to a total billing equivalent
+    of 4 to 5 hours of audio for a single file.
+  prefs: []
+  type: TYPE_NORMAL
+- en: With this process, the cost of audio transcription does not scale linearly.
+    While a 15-minute audio would be billed as 15 minutes, in a single LLM call, a
+    1-hour file could effectively cost 4 hours, and a 2-hour file could increase to
+    16 hours, following a near quadratic pattern (≈ 4^x, where x = number of hours).
+  prefs: []
+  type: TYPE_NORMAL
+- en: This made long audio processing not just unreliable, but also expensive for
+    long audio files.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Pivoting to Chunked Audio Transcription
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: Given these major limitations, and being much more confident in the ability
+    of the LLM to handle text-based tasks over audio, we decided to shift our approach
+    and isolate the audio transcription process to maintain high transcription quality.
+    A quality transcription is indeed the key step of the need and it makes sense
+    to ensure that this part of the process should be at the core of the strategy.
+  prefs: []
+  type: TYPE_NORMAL
+- en: At this point, splitting audio into chunks became the ideal solution. Not only,
+    it seemed likely to greatly improve timestamp accuracy by avoiding the LLM timestamping
+    performance degradation after looping and cumulative drift, but also reducing
+    price since each chunk would be runned ideally once. While it introduced new uncertainties
+    around merging partial transcriptions, the tradeoff seemed to our advantage.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We thus focused on breaking long audio into shorter chunks that would insure
+    a single LLM transcription request. During our tests, we observed that issues
+    like repetition loops or timestamp drift typically began around the 18-minute
+    mark in most interviews. It became clear that we should use 15-minute (or shorter)
+    chunks for safety. Why not use 5-minute chunks? The quality improvement looked
+    minimal to us while tripling the number of segments. In addition, shorter chunks
+    reduce the overall context, which could hurt diarization.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Also this setup drastically minimized the repetition bug, we observed that
+    it still occurred occasionally. In a desire to provide the best service possible,
+    we definitely wanted to find an efficient counterback to this problem and we identified
+    an opportunity with our previously annoying max_input_token: with 10-minute chunks,
+    we could definitely be confident that token limits wouldn’t be exceeded in nearly
+    all cases. Thus, if the token limit was hit, we knew for sure the repetition bug
+    occurred and could restart that chunk transcription. This pragmatic method turned
+    out to be indeed very effective at identifying and avoiding the bug. Great news.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Correcting audio chunks transcription
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'With good transcripts of 10 minutes audio chunk in hand, we implemented at
+    this stage an algorithmic post-processing of each transcript to address minor
+    issues:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Removal of header tags like tsv or json added at the start and the end of the
+    transcription content:'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Despite optimizing the prompt, we couldn’t fully eliminate this side effect
+    without hurting the transcription quality. Since this is easily handled algorithmically,
+    we chose to do so.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Replacing speaker IDs with names:'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Speaker identification by name only begins once the LLM has enough context to
+    determine who is the journalist and who is being interviewed. This results in
+    incomplete diarization at the beginning of the transcript with early segments
+    using numeric IDs (first speaker in chunk = 1, etc.). Moreover, since each chunk
+    may have a different ID order (first person to talk being speaker 1), this would
+    create confusion during merging. We instructed the LLM to only use IDs and provide
+    a diarization mapping in the first line, during the transcription process. The
+    speaker ids are therefore replaced during the algorithmic correction and the diarization
+    headline removed.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Rarely, malformed or empty transcript lines are encountered. These lines are
+    deleted, but we flag them with a note to the user: “formatting issue on this line”
+    so users are at least aware of a potential content loss and correct it eventually
+    handwise. In our final optimized version, such lines were extremely rare.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Merging chunks and maintaining content continuity
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: At the previous stage of audio chunking, we initially tried to make chunks with
+    clean cuts. Unsurprisingly, this led to words or even full sentences loss at cut
+    points. So we naturally switched to overlapping chunk cuts to avoid such content
+    loss, leaving the optimization of the size of the overlap to the chunk merging
+    process.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Without a clean cut between chunks, the opportunity to merge the chunks algorithmically
+    disappeared. For the same audio input, the transcript lines output can be quite
+    different with breaks at different points of the sentences or even filler words
+    or hesitations being displayed differently. In such a situation, it is complex,
+    not to say impossible, to make an effective algorithm for a clean merge.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'This left us with the use of the LLM option of course. Quickly, few tests confirmed
+    the LLM could better merge together segments when overlaps included full sentences.
+    A 30-second overlap proved sufficient. With a 10 min audio chunk structure, this
+    would implies the following chunks cuts:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '1st transcript: 0 to 10 minutes'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '2nd transcript: 9m30s to 19m30s'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '3rd transcript: 19m to 29m …and so on.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '![](../Images/452cbe35bf6e13991aa2ee17573c2812.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Image by the authors
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Those overlapped chunk transcripts were corrected by the previously described
+    algorithm and sent to the LLM for merging to reconstruct the full audio transcript.
+    The idea was to send the full set of chunk transcripts with a prompt instructing
+    the LLM to merge and give the full merged audio transcript in tsv format as the
+    previous LLM transcription step. In this configuration, the merging process has
+    mainly three quality criterias:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Ensure transcription continuity without content loss or duplication.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Adjust timestamps to resume from where the previous chunk ended.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Preserve diarization.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: 'As expected, max_input_token was exceeded, forcing us into an LLM call loop.
+    However, since we were now using text input, we were more confident in the reliability
+    of the LLM… probably too much. The result of the merge was satisfactory in most
+    cases but prone to several issues: tag insertions, multi-line entries merged into
+    one line, incomplete lines, and even hallucinated continuations of the interview.
+    Despite many prompt optimizations, we couldn’t achieve sufficiently reliable results
+    for production use.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: As with audio transcription, we identified the amount of input information as
+    the main issue. We were sending several hundred, even thousands of text lines
+    containing the prompt, the set of partial transcripts to fuse, a roughly similar
+    amount with the previous transcript, and some more with the prompt and its example.
+    Definitely too much for a precise application of our set of instructions.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'On the plus side, timestamp accuracy did indeed improve significantly with
+    this chunking approach: we maintained a drift of just 5 to 10 seconds max on transcriptions
+    over an hour. As the start of a transcript should have minimal drift in timestamping,
+    we instructed the LLM to use the timestamps of the “ending chunk” as reference
+    for the fusion and correct any drift by a second per sentence. This made the cut
+    points seamless and kept overall timestamp accuracy.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Splitting the chunk transcripts for full transcript reconstruction
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'In a modular approach similar to the workaround we used for transcription,
+    we decided to carry out the merge of the transcript individually, in order to
+    avoid the previously described issues. To do so, each 10 minute transcript is
+    split into three parts based on the start_time of the segments:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Overlap segment to merge at the beginning: 0 to 1 minute'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'Main segment to paste: 1 to 9 minutes'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'Overlap segment to merge at the end: 9 to 10 minutes'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '*NB: Since each chunk, including first and last ones, is processed the same
+    way, the overlap at the beginning of the first chunk is directly merged with the
+    main segment, and the overlap at the end of the last chunk (if there is one) is
+    merged accordingly.*'
+  prefs: []
+  type: TYPE_NORMAL
+- en: The beginning and end segments are then sent in pairs to be merged. As expected,
+    the quality of the output drastically increased, resulting in an efficient and
+    reliable merge between the transcripts chunk. With this procedure, the response
+    of the LLM proved to be highly reliable and showed none of the previously mentioned
+    errors encountered during the looping process.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '*The process of transcript assembly for an audio of 28 minutes 42 seconds: *'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/563b438f1bf46663cc499ca33af86c9a.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Image by the authors
+  prefs: []
+  type: TYPE_NORMAL
+- en: Full transcript reconstruction
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: At this final stage, the only remaining task was to reconstruct the complete
+    transcript from the processed splits. To achieve this, we algorithmically combined
+    the main content segments with their corresponding merged overlaps alternately.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Overall process overview
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'The overall process involves 6 steps from which 2 are carried out by Gemini:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Chunking the audio into overlapped audio chunks
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Transcribing each chunks into partial text transcripts (LLM step)
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Correction of partial transcripts
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Splitting audio chunks transcripts into start, main, and end text splits
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Fusing end and start splits of each couple of chunk splits (LLM step)
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Reconstructing the full transcripts
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '![](../Images/50b80e48ca4ba0faea506dce5baf957b.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Image by the authors
+  prefs: []
+  type: TYPE_NORMAL
+- en: The overall process takes about 5 min per hour of transcription deserved to
+    the user in an asynchronous tool. Quite reasonable considering the quantity of
+    work executed behind the scene, and this for a fraction of the price of other
+    tools or pre-built Google models like Chirp2.
+  prefs: []
+  type: TYPE_NORMAL
+- en: One additional improvement that we considered but ultimately decided not to
+    implement was the timestamp correction. We observed that timestamps at the end
+    of each chunk typically ran about five seconds ahead of the actual audio. A straightforward
+    solution could have been to incrementally adjust the timestamps algorithmically
+    by approximately one second every two minutes to correct most of this drift. However,
+    we chose not to implement this adjustment, as the minor discrepancy was acceptable
+    for our business needs.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Conclusion
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: Building a high-quality, scalable transcription pipeline for long interviews
+    turned out to be much more complex than simply choosing the “right” Speech-to-Text
+    model. Our journey with Google’s Vertex AI and Gemini models highlighted key challenges
+    around diarization, timestamping, cost-efficiency, and long audio handling, especially
+    when aiming to export the full information of an audio.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Using careful prompt engineering, smart audio chunking strategies, and iterative
+    refinements, we were able to build a robust system that balances accuracy, performance,
+    and operational cost, turning an initially fragmented process into a smooth, production-ready
+    pipeline.
+  prefs: []
+  type: TYPE_NORMAL
+- en: There’s still room for improvement but this workflow now forms a solid foundation
+    for scalable, high-fidelity audio transcription. As LLMs continue to evolve and
+    APIs become more flexible, we’re optimistic about even more streamlined solutions
+    in the near future.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Key takeaways
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: '**No Vertex AI S2T model met all our needs:** Google Vertex AI provides specialized
+    models, but each one has limitations in terms of transcription accuracy, diarization,
+    or timestamping for long audios.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Token limits and long prompts influence transcription quality drastically:**
+    Gemini output token limitation significantly degrades transcription quality for
+    long audios, requiring heavily prompted looping strategies and finally forcing
+    us to shift to shorter audio chunks.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Chunked audio transcription and transcript reconstruction significantly improves
+    quality and cost-efficiency:** Splitting audio into 10 minute overlapping segments
+    minimized critical bugs like repeated sentences and timestamp drift, enabling
+    higher quality results and drastically reduced costs.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Careful prompt engineering remains essential:** Precision in prompts, especially
+    regarding diarization and interjections for transcription, as well as transcript
+    fusions, proved to be crucial for reliable LLM performance.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Short transcript fusion merging maximize reliability:** Splitting each chunk
+    transcript into smaller segments with end to start merging of overlaps provided
+    high accuracy and avoided common LLM issues like hallucinations or incorrect formatting.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL

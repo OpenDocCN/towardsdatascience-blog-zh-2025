@@ -1,0 +1,285 @@
+- en: How We Reduced LLM Costs by 90% with 5 Lines of Code
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 原文：[https://towardsdatascience.com/how-we-reduced-llm-cost-by-90-with-5-lines-of-code/](https://towardsdatascience.com/how-we-reduced-llm-cost-by-90-with-5-lines-of-code/)
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: <mdspan datatext="el1755803155887" class="mdspan-comment">You know that</mdspan>
+    feeling when everything *seems* to be working just fine, until you look under
+    the hood and realize your system is burning 10× more fuel than it needs to?
+  prefs: []
+  type: TYPE_NORMAL
+- en: We had a client script firing off requests to validate our prompts, built with
+    async Python code and running smoothly in a Jupyter notebook. Clean, simple, and
+    fast. We ran it regularly to test our models and collect evaluation data. No red
+    flags. No warnings.
+  prefs: []
+  type: TYPE_NORMAL
+- en: But beneath that polished surface, something was quietly going wrong.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We weren’t seeing failures. We weren’t getting exceptions. We weren’t even noticing
+    slowness. But our system was doing a lot more work than it needed to, and we didn’t
+    realize it.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In this post, we’ll walk through how we discovered the issue, what caused it,
+    and how a **simple structural change in our async code reduced LLM traffic and
+    cost by 90%,** with virtually no loss in speed or functionality.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Now, fair warning, **reading this post won’t magically slash your LLM costs
+    by 90%**. But the takeaway here is broader: **small, overlooked design decisions,
+    sometimes just a few lines of code, can lead to massive inefficiencies.** And
+    being intentional about how your code runs can save you time, money, and frustration
+    in the long run.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: The fix itself might feel niche at first. It involves the subtleties of Python’s
+    asynchronous behavior, how tasks are scheduled and dispatched. If you’re familiar
+    with Python and `async`/`await`, you’ll get more out of the code examples, but
+    even if you’re not, there’s still plenty to take away. Because the real story
+    here isn’t just about LLMs or Python, it’s about **responsible, efficient engineering**.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Let’s dig in.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The Setup
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: To automate validation, we use a predefined dataset and trigger our system through
+    a client script. The validation focuses on a **small subset** of the dataset,
+    so the client code only stops after receiving a certain number of responses.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Here’s a simplified version of our client in Python:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE0]'
+  prefs: []
+  type: TYPE_PRE
+- en: This script reads requests from a dataset, fires them concurrently, and stops
+    once we collect enough `true` responses for our evaluation. In production, the
+    logic is more complex and based on the diversity of responses we need. But the
+    structure is the same.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Let’s use a dummy FastAPI server to simulate real behavior:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE1]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Now let’s fire up that dummy server and run the client. You’ll see something
+    like this from the client terminal:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/cbc447468800550dedd3e4c28dcaedc0.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: The progress bar stopped after receiving 10 responses
+  prefs: []
+  type: TYPE_NORMAL
+- en: Can You Spot the Problem?
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: '![](../Images/c707900ee9507a9ccea492894a033ce2.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Photo by [Keiteu Ko](https://unsplash.com/@keiteu_ko?utm_source=medium&utm_medium=referral)
+    on [Unsplash](https://unsplash.com?utm_source=medium&utm_medium=referral)
+  prefs: []
+  type: TYPE_NORMAL
+- en: Nice! Fast, clean, and… wait is everything working as expected?
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'On the surface, it *seems* like the client is doing the right thing: sending
+    requests, getting 10 `true` responses, then stopping.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: But is it?
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Let’s add a few print statements to our server to see what it’s actually doing
+    under the hood:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE2]'
+  prefs: []
+  type: TYPE_PRE
+- en: Now re-run everything.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'You’ll start seeing logs like this:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE3]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Take a closer look at the server logs. You’ll notice something unexpected:
+    **instead of processing just 14 requests like we see in the progress bar, the
+    server handles all 100**. Even though the client stops after receiving 10 `true`
+    responses, it still sends every request up front. As a result, the server must
+    process all of them.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**It’s an easy mistake to miss**, especially because everything appears to
+    be working correctly from the client’s perspective: responses come in quickly,
+    the progress bar advances, and the script exits early. But behind the scenes,
+    all 100 requests are sent immediately, regardless of when we decide to stop listening.
+    This results in **10× more traffic** than needed, driving up costs, increasing
+    load, and risking rate limits.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'So the key question becomes: why is this happening, and how can we make sure
+    we only send the requests we actually need? The answer turned out to be a small
+    but powerful change.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**The root of the issue lies in how the tasks are scheduled**. In our original
+    code, we create a list of 100 tasks all at once:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE4]'
+  prefs: []
+  type: TYPE_PRE
+- en: When you pass a list of coroutines to `as_completed`, Python immediately wraps
+    each coroutine in a `Task` and schedules it on the event loop. This happens before
+    you start iterating over the loop body. Once a coroutine becomes a `Task`, the
+    event loop starts running it in the background right away.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '`as_completed` itself doesn’t control concurrency, it simply **waits for tasks
+    to finish and yields them one by one in the order they complete**. Think of it
+    as an iterator over completed futures, not a traffic controller. This means that
+    by the time you start looping, **all 100 requests are already in progress**. Breaking
+    out after 10 `true` results stops you from processing the rest, but it doesn’t
+    stop them from being sent.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: To fix this, we introduced **a** [**semaphore**](https://docs.python.org/3/library/asyncio-sync.html#asyncio.Semaphore)
+    **to limit concurrency**. The semaphore adds a lightweight lock inside `fetch`
+    so that only a fixed number of requests can start at the same time. The rest remain
+    paused, waiting for a slot. Once we hit our stopping condition, the paused tasks
+    never acquire the lock, so they never send their requests.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Here’s the adjusted version:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE5]'
+  prefs: []
+  type: TYPE_PRE
+- en: With this change, we still define 100 requests upfront, but **only a small group
+    is allowed to run at the same time**, 15 in that example. If we reach our stopping
+    condition early, the event loop stops before launching more requests. This keeps
+    the behavior responsive while reducing unnecessary calls.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Now, the server logs will display only around 20 `"Got a request/Returning response"`
+    entries. On the client side, the progress bar will appear identical to the original.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/0f50cca6da59ff72ded05c9ee4e4e5af.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: The progress bar stopped after receiving 10 responses
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'With this change in place, we saw immediate impact: **90% reduction in request
+    volume and LLM cost**, with no noticeable degradation in client experience. It
+    also improved throughput across the team, reduced queuing, and eliminated rate-limit
+    issues from our LLM providers.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: This small structural adjustment made our validation pipeline dramatically more
+    efficient, without adding much complexity to the code. It’s a good reminder that
+    in async systems, control flow doesn’t always behave the way you assume unless
+    you’re explicit about how tasks are scheduled and when they should run.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Bonus Insight: Closing the Event Loop'
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: If we had run the original client code without `asyncio.run`, we might have
+    noticed the problem earlier.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'For example, if we had used manual event loop management like this:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE6]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Python would have printed warnings such as:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/dbd33fdab24a696f30cd9897f8996225.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Task was destroyed but it is pending!
+  prefs: []
+  type: TYPE_NORMAL
+- en: These warnings appear when the program exits while there are still unfinished
+    async tasks scheduled in the loop. If we had seen a screen full of those warnings,
+    it likely would’ve triggered a red flag much sooner.
+  prefs: []
+  type: TYPE_NORMAL
+- en: So why didn’t we see that warning when using `asyncio.run()`?
+  prefs: []
+  type: TYPE_NORMAL
+- en: Because `asyncio.run()` takes care of cleanup behind the scenes. It doesn’t
+    just run your coroutine and exit, it also cancels any remaining tasks, waits for
+    them to finish, and only then shuts down the event loop. This built-in safety
+    net prevents those “pending task” warnings from showing up, even if your code
+    quietly launched more tasks than it needed to.
+  prefs: []
+  type: TYPE_NORMAL
+- en: As a result, it **suppresses those “pending task” warnings** when you manually
+    close the loop with `loop.close()` after `run_until_complete()`, any leftover
+    tasks that haven’t been awaited will still be hanging around. Python detects that
+    you’re forcefully shutting down the loop while work is still scheduled, and warns
+    you about it.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'This isn’t to say that every async Python program should avoid `asyncio.run()`
+    or always use `loop.run_until_complete()` with a manual `loop.close()`. But it
+    does highlight something important: you should be aware of what tasks are still
+    running when your program exits. **At the very least, it’s a good idea to monitor
+    or log any pending tasks before shutdown.**'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Final Thoughts
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: By stepping back and rethinking the control flow, we were able to make our validation
+    process dramatically more efficient — **not by adding more infrastructure, but
+    by using what we already had more carefully.** A few lines of code change led
+    to a **90% cost reduction** with almost no added complexity. It resolved rate-limit
+    errors, reduced system load, and allowed the team to run evaluations more frequently
+    without causing bottlenecks.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'It is an important reminder that **“clean” async code doesn’t always mean efficient
+    code, being intentional about how we use system resources is crucial.** Responsible,
+    efficient engineering is about more than just writing code that works. It’s about
+    designing systems that respect time, money, and shared resources, especially in
+    collaborative environments. When you treat compute as a shared asset instead of
+    an infinite pool, everyone benefits: systems scale better, teams move faster,
+    and costs stay predictable.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'So, whether you’re making LLM calls, launching Kubernetes jobs, or processing
+    data in batches, pause and ask yourself: am I only using what I *really need*?'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Often, the answer and the improvement are just one line of code away.
+  prefs: []
+  type: TYPE_NORMAL

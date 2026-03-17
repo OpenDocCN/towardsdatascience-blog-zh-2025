@@ -1,0 +1,1096 @@
+- en: Building a Rules Engine from First Principles
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 原文：[https://towardsdatascience.com/building-a-rules-engine-from-first-principles/](https://towardsdatascience.com/building-a-rules-engine-from-first-principles/)
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: <mdspan datatext="el1761845553987" class="mdspan-comment">Introduction</mdspan>
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'If you have ever been in charge of managing complex business logic, you know
+    how nested if-else statements can be a jungle: painful to navigate and easy to
+    get lost. When it comes to mission-critical tasks, for example formal verification
+    or satisfiability, many developers reach for sophisticated tools such as automated
+    theorem provers or SMT solvers. Although powerful, these approaches can be overkill
+    and a headache to implement. What if all you need is a simple, transparent rules
+    engine?'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The key idea for building such a lightweight engine relies on a concept that
+    we were taught to be insightful but impractical: *truth tables*. Exponential growth,
+    their fatal flaw, makes them unfit for real-world problems. So we were told.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'A simple observation changes everything: In almost all practical cases, the
+    “impossibly large” truth table is actually not dense with information; it is in
+    fact a **sparse matrix** in disguise.'
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: This reframing makes the truth tables both conceptually clear and computationally
+    tractable.
+  prefs: []
+  type: TYPE_NORMAL
+- en: This article shows you how to turn this insight into a lightweight and powerful
+    rules engine. We’ll guide you through all the necessary steps to build the engine
+    from scratch. Alternatively, you can use our open-source library `vector-logic`
+    to start building applications on day one. This tutorial will give you all the
+    necessary details to understand what’s under the hood.
+  prefs: []
+  type: TYPE_NORMAL
+- en: While all the theoretical background and mathematical details can be found in
+    our research paper on the *State Algebra* [[1]](https://arxiv.org/abs/2509.10326),
+    here, we focus on the hands-on application. Let’s roll up our sleeves and start
+    building!
+  prefs: []
+  type: TYPE_NORMAL
+- en: A Quick Refresher on Logic 101
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: Truth Tables
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: 'We’ll start with a quick refresher: logical formulas are expressions that are
+    built from Boolean variables and logical connectors like AND, OR, and NOT. In
+    a real-world context, Boolean variables can be thought of as representing events
+    (e.g. “the coffee cup is full”, which is *true* if the cup is actually full and
+    *false* if it is empty). For example, the formula \(f = (x_1 \vee x_2)\) is true
+    if \(x_1\) is true, \(x_2\) is true, or both are. We can use this framework to
+    build a comprehensive brute-force map of every possible reality — the truth table.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Using 1 for “true” and 0 for “false”, the table for \(x_1 \vee x_2\) looks
+    like this:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: \[ \begin{Bmatrix}
+  prefs: []
+  type: TYPE_NORMAL
+- en: x_1 & x_2 & x_1 \vee x_2 \\ \hline
+  prefs: []
+  type: TYPE_NORMAL
+- en: 0 & 0 & 0 \\
+  prefs: []
+  type: TYPE_NORMAL
+- en: 0 & 1 & 1 \\
+  prefs: []
+  type: TYPE_NORMAL
+- en: 1 & 0 & 1 \\
+  prefs: []
+  type: TYPE_NORMAL
+- en: 1 & 1 & 1
+  prefs: []
+  type: TYPE_NORMAL
+- en: \end{Bmatrix} \]
+  prefs: []
+  type: TYPE_NORMAL
+- en: Everything we need to perform logical inference is encoded in the truth table.
+    Let’s see it in action.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Logical Inference
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: 'Consider a classic example of the *transitivity of implication*. Suppose we
+    know that… By the way, everything we say “we know” is called a **premise**. Suppose
+    we have two premises:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: If \(x_1\) is true, then \(x_2\) must be true \((x_1 \to x_2)\)
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: If \(x_2\) is true, then \(x_3\) must be true \((x_2 \to x_3)\)
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'It’s easy to guess the conclusion: “If \(x_1\) is true, then \(x_3\) must be
+    true” \((x_1 \to x_3)\). However, we can give a formal proof using truth tables.
+    Let’s first label our formulas:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: \[\begin{align*}
+  prefs: []
+  type: TYPE_NORMAL
+- en: '& f_1 = (x_1 \to x_2) && \text{premise 1}\\'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '& f_2 = (x_2 \to x_3) && \text{premise 2}\\'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '& f_3 = (x_1 \to x_3) && \text{conclusion}'
+  prefs: []
+  type: TYPE_NORMAL
+- en: \end{align*}\]
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The first step is to build a truth table covering all combinations of the three
+    base variables \(x_1\), \(x_2\), and \(x_3\):'
+  prefs: []
+  type: TYPE_NORMAL
+- en: \[\begin{align*}
+  prefs: []
+  type: TYPE_NORMAL
+- en: \begin{Bmatrix}
+  prefs: []
+  type: TYPE_NORMAL
+- en: x_1 & x_2 & x_3 & f_1 & f_2 & f_3 \\ \hline
+  prefs: []
+  type: TYPE_NORMAL
+- en: 0 & 0 & 0 & 1 & 1 & 1 \\
+  prefs: []
+  type: TYPE_NORMAL
+- en: 0 & 0 & 1 & 1 & 1 & 1 \\
+  prefs: []
+  type: TYPE_NORMAL
+- en: 0 & 1 & 0 & 1 & 0 & 1 \\
+  prefs: []
+  type: TYPE_NORMAL
+- en: 0 & 1 & 1 & 1 & 1 & 1 \\
+  prefs: []
+  type: TYPE_NORMAL
+- en: 1 & 0 & 0 & 0 & 1 & 0 \\
+  prefs: []
+  type: TYPE_NORMAL
+- en: 1 & 0 & 1 & 0 & 1 & 1 \\
+  prefs: []
+  type: TYPE_NORMAL
+- en: 1 & 1 & 0 & 1 & 0 & 0 \\
+  prefs: []
+  type: TYPE_NORMAL
+- en: 1 & 1 & 1 & 1 & 1 & 1
+  prefs: []
+  type: TYPE_NORMAL
+- en: \end{Bmatrix}
+  prefs: []
+  type: TYPE_NORMAL
+- en: \end{align*}\]
+  prefs: []
+  type: TYPE_NORMAL
+- en: This table contains eight rows, one for each assignment of truth values to the
+    base variables. The variables \(f_1\), \(f_2\) and \(f_3\) are **derived**, as
+    we compute their values directly from the \(x\)-variables.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Notice how large the table is, even for this simple case!
+  prefs: []
+  type: TYPE_NORMAL
+- en: The next step is to let our premises, represented by \(f_1\) and \(f_2\), act
+    as a filter on reality. We are given that they are both true. Therefore, any row
+    where either \(f_1\) or \(f_2\) is false represents an impossible scenario which
+    should be discarded.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'After applying this filter, we are left with a much smaller table:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: \[\begin{align*}
+  prefs: []
+  type: TYPE_NORMAL
+- en: \begin{Bmatrix}
+  prefs: []
+  type: TYPE_NORMAL
+- en: x_1 & x_2 & x_3 & f_1 & f_2 & f_3 \\ \hline
+  prefs: []
+  type: TYPE_NORMAL
+- en: 0 & 0 & 0 & 1 & 1 & 1 \\
+  prefs: []
+  type: TYPE_NORMAL
+- en: 0 & 0 & 1 & 1 & 1 & 1 \\
+  prefs: []
+  type: TYPE_NORMAL
+- en: 0 & 1 & 1 & 1 & 1 & 1 \\
+  prefs: []
+  type: TYPE_NORMAL
+- en: 1 & 1 & 1 & 1 & 1 & 1
+  prefs: []
+  type: TYPE_NORMAL
+- en: \end{Bmatrix}
+  prefs: []
+  type: TYPE_NORMAL
+- en: \end{align*}\]
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'And here we are: In every remaining valid scenario, \(f_3\) is true. We have
+    proven that \(f_3\) logically follows from (or is entailed by) \(f_1\) and \(f_2\).'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'An elegant and intuitive method indeed. So, why don’t we use it for complex
+    systems? The answer lies in simple maths: With only three variables, we had \(2^3=8\)
+    rows. With 20 variables, we would have over a million. Take 200, and the number
+    of rows would exceed the number of atoms in the solar system. But wait, our article
+    does not end here. We can fix that.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: The Sparse Representation
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: The key idea for addressing exponentially growing truth tables lies in a *compact
+    representation* enabling lossless compression.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Beyond just compressing the truth tables, we will need an efficient way to perform
+    logical inference. We will achieve this by introducing “state vectors” — which
+    represent sets of states (truth table rows) — and adopting set theory operations
+    like union and intersection to manipulate them.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The Compressed Truth Table
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: 'First, we return to formula \(f = (x_1 \to x_2)\). Let’s identify the rows
+    that make the formula true. We use the symbol \(\sim\) to represent the correspondence
+    between the formula and a table of its “valid” truth assignments. In our example
+    of \(f\) for implication, we write:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: \[\begin{align*}
+  prefs: []
+  type: TYPE_NORMAL
+- en: f\quad\sim\quad
+  prefs: []
+  type: TYPE_NORMAL
+- en: \begin{Bmatrix}
+  prefs: []
+  type: TYPE_NORMAL
+- en: x_1 & x_2 \\ \hline
+  prefs: []
+  type: TYPE_NORMAL
+- en: 0 & 0 \\
+  prefs: []
+  type: TYPE_NORMAL
+- en: 0 & 1 \\
+  prefs: []
+  type: TYPE_NORMAL
+- en: 1 & 1
+  prefs: []
+  type: TYPE_NORMAL
+- en: \end{Bmatrix}
+  prefs: []
+  type: TYPE_NORMAL
+- en: \end{align*}\]
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Note that we dropped the row \((1, 0)\) since it invalidates \(f\). What would
+    happen to this table, if we now extended it to involve a third variable \(x_3\),
+    that \(f\) doesn’t depend on? The classic approach would double the size of the
+    truth table to account for \(x_3\) being 0 or 1, although it does not add any
+    new information about \(f\):'
+  prefs: []
+  type: TYPE_NORMAL
+- en: \[\begin{align*}
+  prefs: []
+  type: TYPE_NORMAL
+- en: f\quad\sim\quad
+  prefs: []
+  type: TYPE_NORMAL
+- en: \begin{Bmatrix}
+  prefs: []
+  type: TYPE_NORMAL
+- en: x_1 & x_2 & x_3 \\ \hline
+  prefs: []
+  type: TYPE_NORMAL
+- en: 0 & 0 & 0 \\
+  prefs: []
+  type: TYPE_NORMAL
+- en: 0 & 0 & 1 \\
+  prefs: []
+  type: TYPE_NORMAL
+- en: 0 & 1 & 0 \\
+  prefs: []
+  type: TYPE_NORMAL
+- en: 0 & 1 & 1 \\
+  prefs: []
+  type: TYPE_NORMAL
+- en: 1 & 1 & 0 \\
+  prefs: []
+  type: TYPE_NORMAL
+- en: 1 & 1 & 1
+  prefs: []
+  type: TYPE_NORMAL
+- en: \end{Bmatrix}
+  prefs: []
+  type: TYPE_NORMAL
+- en: \end{align*}\]
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'What a waste! Uninformative columns could be compressed, and, for this purpose,
+    we introduce a dash (–) as a “wildcard” symbol. You can think of it as a logical
+    Schrödinger’s cat: the variable exists in a superposition of both 0 and 1 until
+    a constraint or a measurement (in the context of learning, we call it “evidence”)
+    forces it into a definite state, removing one of the possibilities.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/13f5fb4cd140b3d28462dfd5cb323740.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'Now, we can represent \(f\) across a universe of \(n\) variables without any
+    bloat:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: \[\begin{align*}
+  prefs: []
+  type: TYPE_NORMAL
+- en: f\quad\sim\quad
+  prefs: []
+  type: TYPE_NORMAL
+- en: \begin{Bmatrix}
+  prefs: []
+  type: TYPE_NORMAL
+- en: x_1 & x_2 & x_3 & \ldots & x_n \\ \hline
+  prefs: []
+  type: TYPE_NORMAL
+- en: 0 & 0 & – & \ldots & -\\
+  prefs: []
+  type: TYPE_NORMAL
+- en: 0 & 1 & – &\ldots & – \\
+  prefs: []
+  type: TYPE_NORMAL
+- en: 1 & 1 & – &\ldots & –
+  prefs: []
+  type: TYPE_NORMAL
+- en: \end{Bmatrix}
+  prefs: []
+  type: TYPE_NORMAL
+- en: \end{align*}\]
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'We can generalise this by postulating that any row containing dashes is equivalent
+    to the set of multiple rows obtained by all possible substitutions of 0s and 1s
+    in the places of dashes. For example (try it with pencil and paper!):'
+  prefs: []
+  type: TYPE_NORMAL
+- en: \[\begin{align*}
+  prefs: []
+  type: TYPE_NORMAL
+- en: \begin{Bmatrix}
+  prefs: []
+  type: TYPE_NORMAL
+- en: x_1 & x_2 & x_3 \\ \hline
+  prefs: []
+  type: TYPE_NORMAL
+- en: – & 0 & – \\
+  prefs: []
+  type: TYPE_NORMAL
+- en: – & 1 & 1
+  prefs: []
+  type: TYPE_NORMAL
+- en: \end{Bmatrix} =
+  prefs: []
+  type: TYPE_NORMAL
+- en: \begin{Bmatrix}
+  prefs: []
+  type: TYPE_NORMAL
+- en: x_1 & x_2 & x_3 \\ \hline
+  prefs: []
+  type: TYPE_NORMAL
+- en: 0 & 0 & 0 \\
+  prefs: []
+  type: TYPE_NORMAL
+- en: 0 & 0 & 1 \\
+  prefs: []
+  type: TYPE_NORMAL
+- en: 1 & 0 & 0 \\
+  prefs: []
+  type: TYPE_NORMAL
+- en: 1 & 0 & 1 \\
+  prefs: []
+  type: TYPE_NORMAL
+- en: 0 & 1 & 1 \\
+  prefs: []
+  type: TYPE_NORMAL
+- en: 1 & 1 & 1
+  prefs: []
+  type: TYPE_NORMAL
+- en: \end{Bmatrix}
+  prefs: []
+  type: TYPE_NORMAL
+- en: \end{align*}\]
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'This is the essence of sparse representation. Let’s introduce a few definitions
+    for basic operations: We call replacing dashes with 0s and 1s **expansion**. The
+    reverse process, in which we spot patterns to introduce dashes, is called **reduction**.
+    The simplest form of reduction, replacing two rows with one, is called **atomic
+    reduction**.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: An Algebra of States
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: Now, let’s give these ideas some structure.
+  prefs: []
+  type: TYPE_NORMAL
+- en: A **state** is a single, complete assignment of truth values to all variables
+    — one row in a fully expanded truth table (e.g. \((0, 1, 1)\)).
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: A **state vector** is a set of states (think of it as a subset of the truth
+    table). A logical formula can now be considered as a state vector containing all
+    the states that make it true. Special cases are an empty state vector (0) and
+    a vector containing all \(2^n\) possible states, which we call a **trivial** vector
+    and denote as \(\mathbf{t}\). (As we’ll see, this corresponds to a t-object with
+    all wildcards.)
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: A row in a state vector’s compact representation (e.g. \((0, -, 1) \)) is called
+    a **t-object**. It’s our fundamental building block — a pattern that can represent
+    one or many states.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'Conceptually, shifting the focus from tables to sets is a crucial step. Remember
+    how we carried out inference using the truth table method: we used premises \(f_1\)
+    and \(f_2\) as a filter, keeping only the rows where both premises were true.
+    This operation, in terms of the language of set theory, is an **intersection**.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Each premise corresponds to a state vector (the set of states that satisfy the
+    premise). The state vector for our combined knowledge is the intersection of these
+    premise vectors. This operation is at the core of the new model.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'For friendlier notation, we introduce some “syntax sugar” by mapping set operations
+    to simple arithmetic operations:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Set Union (\(\cup\)) \(\rightarrow\) Addition (\(+\))
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Set Intersection (\(\cap\)) \(\rightarrow\) Multiplication (\(*\))
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'The properties of these operations (associativity, commutativity, and distributivity)
+    allow us to use high-school algebra notation for complex expressions with set
+    operations:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: \[
+  prefs: []
+  type: TYPE_NORMAL
+- en: \begin{align*}
+  prefs: []
+  type: TYPE_NORMAL
+- en: '& (A\cup B) \cap (C\cup D) = (A\cap C) \cup (A\cap D) \cup (B\cap C) \cup (B\cap
+    D) \\'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '& \rightarrow \\'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '& (A+B)\cdot(C+D) = A\,C + A\,D + B\,C + B\,D'
+  prefs: []
+  type: TYPE_NORMAL
+- en: \end{align*}
+  prefs: []
+  type: TYPE_NORMAL
+- en: \]
+  prefs: []
+  type: TYPE_NORMAL
+- en: Let’s take a break and see where we are. We’ve laid a strong foundation for
+    the new framework. Truth tables are now represented sparsely, and we reinterpret
+    them as sets (state vectors). We also established that logical inference can be
+    accomplished by multiplying the state vectors.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We are nearly there. But before we can apply this theory to develop an efficient
+    inference algorithm, we need one more ingredient. Let’s take a closer look at
+    operations on t-objects.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The Engine Room: Operations on T-Objects'
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: We are now ready to go to the next phase — creating an algebraic engine to manipulate
+    state vectors efficiently. The fundamental building block of our construction
+    is the **t-object** — our compact, wildcard-powered representation of a single
+    row in a state vector.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Note that to describe a row, we only need to know the positions of 0s and 1s.
+    We denote a t-object as \(\mathbf{t}^\alpha_\beta\), where \(\alpha\) is the set
+    of indices where the variable is 1, and \(\beta\) is the set of indices where
+    it is 0\. For instance:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: \[
+  prefs: []
+  type: TYPE_NORMAL
+- en: \begin{Bmatrix}
+  prefs: []
+  type: TYPE_NORMAL
+- en: x_1 & x_2 & x_3 & x_4 \\ \hline
+  prefs: []
+  type: TYPE_NORMAL
+- en: 1 & 0 & – & 1
+  prefs: []
+  type: TYPE_NORMAL
+- en: \end{Bmatrix} = \mathbf{t}_2^{14}
+  prefs: []
+  type: TYPE_NORMAL
+- en: \]
+  prefs: []
+  type: TYPE_NORMAL
+- en: A t-object consisting of all the dashes \(\mathbf{t} = \{ -\;\; – \ldots \ -\}\)
+    represents the previously mentioned trivial state vector that contains all possible
+    states.
+  prefs: []
+  type: TYPE_NORMAL
+- en: From Formulas to T-Objects
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: 'A state vector is the union of its rows or, in our new notation, the sum of
+    its t-objects. We call this **row decomposition**. For example, the formula \(f=(x_1\to
+    x_2)\) can be represented as:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: \[\begin{align*}
+  prefs: []
+  type: TYPE_NORMAL
+- en: f\quad\sim\quad
+  prefs: []
+  type: TYPE_NORMAL
+- en: \begin{Bmatrix}
+  prefs: []
+  type: TYPE_NORMAL
+- en: x_1 & x_2 & \ldots & x_n \\ \hline
+  prefs: []
+  type: TYPE_NORMAL
+- en: 0 & 0 & \ldots & -\\
+  prefs: []
+  type: TYPE_NORMAL
+- en: 0 & 1 & \ldots & – \\
+  prefs: []
+  type: TYPE_NORMAL
+- en: 1 & 1 & \ldots & –
+  prefs: []
+  type: TYPE_NORMAL
+- en: \end{Bmatrix} = \mathbf{t}_{12} + \mathbf{t}_1^2 + \mathbf{t}^{12}
+  prefs: []
+  type: TYPE_NORMAL
+- en: \end{align*}\]
+  prefs: []
+  type: TYPE_NORMAL
+- en: Notice that this decomposition doesn’t change if we add more variables (\(x_3,
+    x_4, \dots\)) to the system, which shows that our approach is inherently scalable.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The Rule of Contradiction
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: 'The same index cannot appear in both the upper and lower positions of a t-object.
+    If this occurs, the t-object is **null** (an empty set). For instance (we highlighted
+    the conflicting index):'
+  prefs: []
+  type: TYPE_NORMAL
+- en: \[
+  prefs: []
+  type: TYPE_NORMAL
+- en: \mathbf{t}^{1{\color{red}3}}_{2{\color{red}3}} = 0
+  prefs: []
+  type: TYPE_NORMAL
+- en: \]
+  prefs: []
+  type: TYPE_NORMAL
+- en: This is the algebraic equivalent of a logical contradiction. A variable (\(x_3\)
+    in this case) cannot be both true (superscript) and false (subscript) at the same
+    time. Any such t-object represents an impossible state and vanishes.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Simplifying Expressions: Atomic Reduction'
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: 'Atomic reduction can be expressed cleanly using the newly introduced t-object
+    notation. Two rows can be reduced if they are identical, except for one variable,
+    which is 0 in one and 1 in the other. For instance:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: \[
+  prefs: []
+  type: TYPE_NORMAL
+- en: \begin{align*}
+  prefs: []
+  type: TYPE_NORMAL
+- en: \begin{Bmatrix}
+  prefs: []
+  type: TYPE_NORMAL
+- en: x_1 & x_2 & x_3 & x_4 & x_5 \\ \hline
+  prefs: []
+  type: TYPE_NORMAL
+- en: 1 & – & 0 & 0 & – \\
+  prefs: []
+  type: TYPE_NORMAL
+- en: 1 & – & 0 & 1 & –
+  prefs: []
+  type: TYPE_NORMAL
+- en: \end{Bmatrix} =
+  prefs: []
+  type: TYPE_NORMAL
+- en: \begin{Bmatrix}
+  prefs: []
+  type: TYPE_NORMAL
+- en: x_1 & x_2 & x_3 & x_4 & x_5 \\ \hline
+  prefs: []
+  type: TYPE_NORMAL
+- en: 1 & – & 0 & – & –
+  prefs: []
+  type: TYPE_NORMAL
+- en: \end{Bmatrix}
+  prefs: []
+  type: TYPE_NORMAL
+- en: \end{align*}
+  prefs: []
+  type: TYPE_NORMAL
+- en: \]
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'In algebraic terms, this is:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: \[
+  prefs: []
+  type: TYPE_NORMAL
+- en: \mathbf{t}^1_{34} + \mathbf{t}^{14}_3 = \mathbf{t}^1_3
+  prefs: []
+  type: TYPE_NORMAL
+- en: \]
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The rule for this operation follows directly from the definition of the t-objects:
+    If two t-objects have index sets that are identical, except for one index that
+    is a superscript in one and a subscript in the other, they combine. The clashing
+    index (4 in this example) is annihilated, and the two t-objects merge.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'By applying atomic reduction, we can simplify the decomposition of the formula
+    \(f = (x_1 \to x_2)\). Noticing that \(\mathbf{t}_{12} + \mathbf{t}_1^2 = \mathbf{t}_1\),
+    we get:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: \[
+  prefs: []
+  type: TYPE_NORMAL
+- en: f \quad \sim\quad \mathbf{t}_{12} + \mathbf{t}_1^2 + \mathbf{t}^{12} = \mathbf{t}_1
+    + \mathbf{t}^{12}
+  prefs: []
+  type: TYPE_NORMAL
+- en: \]
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The Core Operation: Multiplication'
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: 'Finally, let us discuss the most important operation for our rules engine:
+    intersection (in terms of set theory), represented as multiplication (in terms
+    of algebra). How do we find the states common to the two t-objects?'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The rule governing this operation is straightforward: to multiply two t-objects,
+    one forms the union of their superscripts, as well as the union of their subscripts
+    (we leave the proof as a simple exercise for a curious reader):'
+  prefs: []
+  type: TYPE_NORMAL
+- en: \[
+  prefs: []
+  type: TYPE_NORMAL
+- en: \mathbf{t}^{\alpha_1}_{\beta_1}\,\mathbf{t}^{\alpha_2}_{\beta_2} = \mathbf{t}^{\alpha_1
+    \cup \alpha_2}_{\beta_1\cup\beta_2}
+  prefs: []
+  type: TYPE_NORMAL
+- en: \]
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The rule of contradiction still applies. If the resulting superscript and subscript
+    sets overlap, the product vanishes:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: \[
+  prefs: []
+  type: TYPE_NORMAL
+- en: \mathbf{t}^{\alpha_1 \cup \alpha_2}_{\beta_1\cup\beta_2} = 0 \quad \iff \quad
+  prefs: []
+  type: TYPE_NORMAL
+- en: (\alpha_1 \cup \alpha_2) \cap (\beta_1\cup\beta_2) \not = \emptyset
+  prefs: []
+  type: TYPE_NORMAL
+- en: \]
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'For example:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: \[
+  prefs: []
+  type: TYPE_NORMAL
+- en: \begin{align*}
+  prefs: []
+  type: TYPE_NORMAL
+- en: '& \mathbf{t}^{12}_{34}\,\mathbf{t}^5_6 = \mathbf{t}^{125}_{346} && \text{Simple
+    combination} \\'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '& \mathbf{t}^{12}_{34} \,\mathbf{t}^{4} = \mathbf{t}^{12{\color{red}4}}_{3{\color{red}4}}
+    = 0 && \text{Vanishes, because 4 is in both sets}'
+  prefs: []
+  type: TYPE_NORMAL
+- en: \end{align*}
+  prefs: []
+  type: TYPE_NORMAL
+- en: \]
+  prefs: []
+  type: TYPE_NORMAL
+- en: A vanishing product means that the two t-objects have no states in common; therefore,
+    their intersection is empty.
+  prefs: []
+  type: TYPE_NORMAL
+- en: These rules complete our construction. We defined a sparse representation of
+    logic and algebra for manipulating the objects. These are all the theoretical
+    tools that we need. We are ready to assemble them into a practical algorithm.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Putting It All Together: Inference With State Algebra'
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'The engine is ready, it’s time to turn it on! In its core, the idea is simple:
+    to find the set of valid states, we need to multiply all state vectors corresponding
+    to premises and evidences.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'If we have two premises, represented by the state vectors \((\mathbf{t}_{(1)}
+    + \mathbf{t}_{(2)})\) and \((\mathbf{t}_{(3)} + \mathbf{t}_{(4)})\), the set of
+    states in which both are true is their product:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: \[
+  prefs: []
+  type: TYPE_NORMAL
+- en: \left(\mathbf{t}_{(1)} + \mathbf{t}_{(2)}\right)\,\left(\mathbf{t}_{(3)} + \mathbf{t}_{(4)}\right)
+    =
+  prefs: []
+  type: TYPE_NORMAL
+- en: \mathbf{t}_{(1)}\,\mathbf{t}_{(3)} +
+  prefs: []
+  type: TYPE_NORMAL
+- en: \mathbf{t}_{(1)}\,\mathbf{t}_{(4)} +
+  prefs: []
+  type: TYPE_NORMAL
+- en: \mathbf{t}_{(2)}\,\mathbf{t}_{(3)} +
+  prefs: []
+  type: TYPE_NORMAL
+- en: \mathbf{t}_{(2)}\,\mathbf{t}_{(4)}
+  prefs: []
+  type: TYPE_NORMAL
+- en: \]
+  prefs: []
+  type: TYPE_NORMAL
+- en: This example can be easily generalised to any arbitrary number of premises and
+    t-objects.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The inference algorithm is straightforward:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Decompose**: Convert each premise into its state vector representation (a
+    sum of t-objects).'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Simplify**: Use atomic reduction on each state vector to make it as compact
+    as possible.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Multiply**: Multiply the state vectors of all premises together. The result
+    is a single state vector representing all states consistent with your premises.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Reduce Again**: The final product may have reducible terms, so simplify it
+    one last time.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'Example: Proving Transitivity, The Algebraic Way'
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: 'Let’s revisit our classic example of implication transitivity: if \(f_1 = (x_1\to
+    x_2)\) and \(f_2 = (x_2\to x_3)\) are true, prove that \(f_3=(x_1\to x_3)\) must
+    also be true. First, we write the simplified state vectors for our premises as
+    follows:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: \[
+  prefs: []
+  type: TYPE_NORMAL
+- en: \begin{align*}
+  prefs: []
+  type: TYPE_NORMAL
+- en: '& f_1 \quad \sim \quad \mathbf{t}_1 + \mathbf{t}^{12} \\'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '& f_2 \quad \sim \quad \mathbf{t}_2 + \mathbf{t}^{23}'
+  prefs: []
+  type: TYPE_NORMAL
+- en: \end{align*}
+  prefs: []
+  type: TYPE_NORMAL
+- en: \]
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'To prove the conclusion, we can use a proof by contradiction. Let’s ask: does
+    a scenario exist where our premises are true, but our conclusion \(f_3\) is false?'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The states that invalidate \(f_3 = (x_1 \to x_3)\) are those in which \(x_1\)
+    is true (1) and \(x_3\) is false (0). This corresponds to a single t-object: \(\mathbf{t}^1_3\).'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Now, let’s see if this “invalidating” state vector can coexist with our premises
+    by multiplying everything together:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: \[
+  prefs: []
+  type: TYPE_NORMAL
+- en: \begin{gather*}
+  prefs: []
+  type: TYPE_NORMAL
+- en: (\text{Premise 1}) \times (\text{Premise 2}) \times (\text{Invalidating State
+    Vector})\\
+  prefs: []
+  type: TYPE_NORMAL
+- en: (\mathbf{t}_1 + \mathbf{t}^{12})\,(\mathbf{t}_2 + \mathbf{t}^{23})\, \mathbf{t}^1_3
+  prefs: []
+  type: TYPE_NORMAL
+- en: \end{gather*}
+  prefs: []
+  type: TYPE_NORMAL
+- en: \]
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'First, we multiply by the invalidating t-object, as it’s the most restrictive
+    term:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: \[
+  prefs: []
+  type: TYPE_NORMAL
+- en: (\mathbf{t}_1 \mathbf{t}^1_3 + \mathbf{t}^{12} \mathbf{t}^1_3)\,(\mathbf{t}_2
+    + \mathbf{t}^{23}) = (\mathbf{t}^{{\color{red}1}}_{{\color{red}1}3} + \mathbf{t}^{12}_3)\,(\mathbf{t}_2
+    + \mathbf{t}^{23})
+  prefs: []
+  type: TYPE_NORMAL
+- en: \]
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The first term, \(\mathbf{t}^{{\color{red}1}}_{{\color{red}1}3}\), vanishes
+    due to contradiction. So we are left with:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: \[
+  prefs: []
+  type: TYPE_NORMAL
+- en: \mathbf{t}^{12}_3\,(\mathbf{t}_2 + \mathbf{t}^{23}) =
+  prefs: []
+  type: TYPE_NORMAL
+- en: \mathbf{t}^{12}_3 \mathbf{t}_2 + \mathbf{t}^{12}_3 \mathbf{t}^{23} =
+  prefs: []
+  type: TYPE_NORMAL
+- en: \mathbf{t}^{1{\color{red}2}}_{{\color{red}2}3} + \mathbf{t}^{12{\color{red}3}}_{{\color{red}3}}
+    =
+  prefs: []
+  type: TYPE_NORMAL
+- en: 0 + 0 = 0
+  prefs: []
+  type: TYPE_NORMAL
+- en: \]
+  prefs: []
+  type: TYPE_NORMAL
+- en: The intersection is empty. This proves that there is no possible state where
+    \(f_1\) and \(f_2\) are true, but \(f_3\) is false. Therefore, \(f_3\) must follow
+    from the premises.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Proof by contradiction is not the only way to solve this problem. You will find
+    a more elaborate analysis in the “State Algebra” paper [[1]](https://arxiv.org/abs/2509.10326).
+  prefs: []
+  type: TYPE_NORMAL
+- en: From Logic Puzzles to Fraud Detection
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: This isn’t just about logic puzzles. So much of our world is governed by rules
+    and logic! For example, consider a rule-based fraud-detection system.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Your **knowledge base** is a set of rules like
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE0]'
+  prefs: []
+  type: TYPE_PRE
+- en: The entire knowledge base can be compiled into a single large state vector.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Now, a transaction occurs. This is your evidence:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE1]'
+  prefs: []
+  type: TYPE_PRE
+- en: This evidence is a single t-object, assigning 1s to observed facts that are
+    true and 0s to facts that are false, leaving all unobserved facts as wildcards.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'To make a decision, you simply multiply:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: \[
+  prefs: []
+  type: TYPE_NORMAL
+- en: \text{Knowledge Base Vector}\times \text{Evidence T-object}
+  prefs: []
+  type: TYPE_NORMAL
+- en: \]
+  prefs: []
+  type: TYPE_NORMAL
+- en: The resulting state vector instantly tells you the value of the target variable
+    (such as `risk`) given the evidence. No messy chain of “`if-then-else`” statements
+    was needed.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Scaling Up: Optimisation Strategies'
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: As with mechanical engines, there are many ways to make our engine more efficient.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Let’s face the reality: logical inference problems are computationally hard,
+    meaning that the worst-case runtime is non-polynomial. Put simply, no matter how
+    compact the representation is, or how smart the algorithm is, in the worst-case
+    scenario, the runtime will be extremely long. So long that most likely, you will
+    have to stop the computation before the result is calculated.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: The reason SAT solvers are doing a great job is not because they change reality.
+    It is because the majority of real-life problems are not worst-case scenarios.
+    The runtime on an “average” problem will be extremely sensitive to the heuristic
+    optimisations that your algorithm uses for computation.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Thus, optimisation heuristics could be one of the most important components
+    of the engine to achieve meaningful scalability. Here, we just hint at possible
+    places where optimisation can be considered.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Note that when multiplying many state vectors, the number of intermediate t-objects
+    can grow significantly before eventually shrinking, but we can do the following
+    to keep the engine running smoothly:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Constant Reduction**: After each multiplication, run the reduction algorithm
+    on the resulting state vector. This keeps intermediate results compact.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Heuristic Ordering**: The order of multiplication matters. It’s often better
+    to multiply smaller or more restrictive state vectors first, as this can cause
+    more t-objects to vanish early, pruning the calculation.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Conclusion
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: We have taken you on a journey to discover how propositional logic can be cast
+    into the formalism of state vectors, such that we can use basic algebra to perform
+    logical inference. The elegance of this approach lies in its simplicity and efficiency.
+  prefs: []
+  type: TYPE_NORMAL
+- en: At no point does inference require the calculation of giant truth tables. The
+    knowledge base is represented as a set of sparse matrices (state vector), and
+    the logical inference is reduced to a set of algebraic manipulations that can
+    be implemented in a few straightforward steps.
+  prefs: []
+  type: TYPE_NORMAL
+- en: While this algorithm doesn’t aim to compete with cutting-edge SAT solvers and
+    formal verification algorithms, it offers a beautiful, intuitive way of representing
+    logic in a highly compact form. It’s a powerful tool for building lightweight
+    rules engines, and a great mental model for thinking about logical inference.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Try It Yourself
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: 'The best way to understand this system is to use it. We’ve packaged the entire
+    algorithm into an open-source Python library called `vector-logic`. It can be
+    installed directly from PyPI:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE2]'
+  prefs: []
+  type: TYPE_PRE
+- en: The full source code, along with more examples and documentation, is available
+    on
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[GitHub](https://github.com/dmitry-lesnik/vector-logic)'
+  prefs: []
+  type: TYPE_NORMAL
+- en: We encourage you to explore the repository, try it on your own logic problems,
+    and contribute.
+  prefs: []
+  type: TYPE_NORMAL
+- en: If you’re interested in delving deeper into mathematical theory, check out the
+    original paper [[1]](https://arxiv.org/abs/2509.10326). The paper covers some
+    topics which we could not include in this practical guide, such as canonical reduction,
+    orthogonalisation and many others. It also establishes an abstract algebraic representation
+    of propositional logic based on t-objects formalism.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We welcome any comments or questions.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Who We Are
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: '[Dmitry Lesnik](https://www.linkedin.com/in/dmitrylesnik/)'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '[Tobias Schäfer](https://www.math.csi.cuny.edu/People/faculty/Schaefer-Tobias.html)'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: References
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: '[1] Dmitry Lesnik and Tobias Schäfer, “State Algebra for Propositional Logic,”
+    arXiv preprint arXiv:2509.10326, 2025\. Available at: [https://arxiv.org/abs/2509.10326](https://arxiv.org/abs/2509.10326)'
+  prefs: []
+  type: TYPE_NORMAL

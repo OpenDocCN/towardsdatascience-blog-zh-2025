@@ -1,0 +1,498 @@
+- en: Grad-CAM from Scratch with PyTorch Hooks
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 原文：[https://towardsdatascience.com/grad-cam-from-scratch-with-pytorch-hooks/](https://towardsdatascience.com/grad-cam-from-scratch-with-pytorch-hooks/)
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: <mdspan datatext="el1750139294583" class="mdspan-comment">A self-driving</mdspan>
+    car stops suddenly. Worryingly, there is no stop sign in sight. The engineers
+    can only make guesses as to why the car’s neural network became confused. It could
+    be a tumbleweed rolling across the street, a car coming down the other lane or
+    the red billboard in the background. To find the real reason, they turn to **Grad-CAM**
+    [1].
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[Grad-CAM](https://adataodyssey.com/grad-cam/) is an **explainable AI (XAI)**
+    technique that helps reveal *why* a convolutional neural network (CNN) made a
+    particular decision. The method produces a **heatmap** that highlights the regions
+    in an image that are the most important for a prediction. For our self-driving
+    car example, this could show if the pixels from the weed, car or billboard caused
+    the car to stop.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Now, Grad-CAM is one of many [XAI methods for Computer Vision](https://adataodyssey.com/xai-for-cv/).
+    Due to its speed, flexibility and reliability, it has quickly become one of the
+    most popular. It has also inspired many related methods. So, if you are interested
+    in XAI, it is worth understanding exactly how this method works. To do that, we
+    will be implementing Grad-CAM from scratch using Python.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Specifically, we will be relying on **PyTorch Hooks**. As you will see, these
+    allow us to dynamically extract **gradients** and **activations** from a network
+    during forward and backwards passes. These are practical skills that will not
+    only allow you to implement Grad-CAM but also any gradient-based XAI method. See
+    the full project on [GitHub](https://github.com/a-data-odyssey/XAI-for-CV/blob/main/src/gradient/grad-cam-from-scratch.ipynb).
+  prefs: []
+  type: TYPE_NORMAL
+- en: The theory behind Grad-CAM
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: Before we get to the code, it is worth touching on the theory behind Grad-CAM.
+    If you want a deep dive, then check out the video below. If you want to learn
+    about other methods, then see this free [XAI for Computer Vision course](https://adataodyssey.com/xai-for-cv/).
+  prefs: []
+  type: TYPE_NORMAL
+- en: To summarise, when creating Grad-CAM heatmaps, we start with a trained CNN.
+    We then do a forward pass through this network with a single sample image. This
+    will activate all convolutional layers in the network. We call these **feature
+    maps** **($A^k$)**. They will be a collection of 2D matrices that contain different
+    features detected in the sample image.
+  prefs: []
+  type: TYPE_NORMAL
+- en: With Grad-CAM, we are typically interested in the maps from the last convolutional
+    layer of the network. When we apply the method to **VGG16**, you will see that
+    its final layer has **512 feature maps**. We use these as they contain features
+    with the most detailed semantic information while still retaining spatial information.
+    In other words, they tell us what was used for a prediction and where in the image
+    it was taken from.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The problem is that these maps also contain features that are important for
+    other classes. To mitigate this, we follow the process shown in **Figure 1**.
+    Once we have the feature maps (**$A^k$**), we weight them by how important they
+    are to the class of interest (**$y_c$**). We do this using **$a_k^c$** — the average
+    gradient of the score for $y_c$ w.r.t. to the elements in the feature map. We
+    then do **element-wise summation**. For VGG16, you will see we go from 512 maps
+    of 14×14 pixels to a single 14×14 map.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/43e493a9abcfd904b6fe478a08f1cdc1.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'Figure 1: element-wise summation of the weighted feature maps from the last
+    convolutional layer in a CNN (source: author)'
+  prefs: []
+  type: TYPE_NORMAL
+- en: The gradients for an individual element (**$\frac{\partial y^c}{\partial A_{ij}^k}$**)
+    tell us how much the score will change with a small change in the element. This
+    means that large average gradients indicate that the entire feature map was important
+    and should contribute more to the final heatmap. So, when we weight and sum the
+    maps, the ones that contain features for other classes will likely contribute
+    less.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The final steps are to apply the ReLU activation function to ensure all negative
+    elements will have a value of zero. Then we upsample with interpolation so the
+    heatmap has the same dimensions as the sample image. The final map is summarised
+    by the formula below. You might recognise it from the Grad-CAM paper [1].
+  prefs: []
+  type: TYPE_NORMAL
+- en: $$ L_{Grad-CAM}^c = ReLU\left( \sum_{k} a_k^c A^k \right) $$
+  prefs: []
+  type: TYPE_NORMAL
+- en: Grad-CAM from Scratch
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: Don’t worry if the theory is not completely clear. We will walk through it step
+    by step as we apply the method from scratch. You can find the full project on
+    [GitHub](https://github.com/a-data-odyssey/XAI-for-CV/blob/main/src/gradient/grad-cam-from-scratch.ipynb).
+    To start, we have our imports below. These are all common imports for computer
+    vision problems.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE0]'
+  prefs: []
+  type: TYPE_PRE
+- en: Load pretrained model from PyTorch
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: We’ll be applying Grad-CAM to **VGG16** pretrained on **[ImageNet](https://www.image-net.org/)**.
+    To help, we have the two functions below. The first will format an image in the
+    correct way for input into the model. The normalisation values used are the mean
+    and standard deviation of the images in ImageNet. The **224×224** size is also
+    standard for ImageNet models.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE1]'
+  prefs: []
+  type: TYPE_PRE
+- en: ImageNet has many classes. The second function will format the output of the
+    model so we display the classes with the highest predicted probabilities.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE2]'
+  prefs: []
+  type: TYPE_PRE
+- en: We now load the [pretrained VGG16 model](https://docs.pytorch.org/vision/main/models/generated/torchvision.models.vgg16.html)
+    (line 2), move it to a GPU (lines 5-8) and set it to evaluation mode (line 11).
+    You can see a snippet of the model output in **Figure 2**. VGG16 is made of **16
+    weighted layers**. Here, you can see the last 2 of 13 convolutional layers and
+    the 3 fully connected layers.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE3]'
+  prefs: []
+  type: TYPE_PRE
+- en: The names you see in **Figure 2** are important. Later, we will use them to
+    reference a specific layer in the network to access its activations and gradients.
+    Specifically, we will use *model.features[28]*. This is the final convolutional
+    layer in the network. As you can see in the snapshot, this layer contains 512
+    feature maps.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/6b48bc0cb37a9abbe597a038b71f0d06.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'Figure 2: snapshot of final layers of the VGG16 network (source: author)'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Forward pass with sample image
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: We will be explaining a prediction from this model. To do this, we need a sample
+    image that will be fed into the model. We downloaded one from Wikipedia Commons
+    (lines 2-3). We then load it (lines 5-6), crop it to have equal height and width
+    (line 7) and display it (lines 9-10). In **Figure 3**, you can see we are using
+    an image of a **whale shark** in an aquarium.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE4]'
+  prefs: []
+  type: TYPE_PRE
+- en: '![One of two resident male whale sharks in the Georgia Aquarium in the United
+    States.](../Images/2b3870e02d4d76c88902487b762bba6a.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'Figure 3: male whale shark in aquarium (source: [Wikimedia commons](https://commons.wikimedia.org/wiki/File:Male_whale_shark_at_Georgia_Aquarium.jpg))
+    (license: [CC BY-SA 2.5](https://creativecommons.org/licenses/by-sa/2.5/))'
+  prefs: []
+  type: TYPE_NORMAL
+- en: ImageNet has no dedicated class for whale sharks, so it will be interesting
+    to see what the model predicts. To do this, we start by processing our image (line
+    2) and moving it to the GPU (line 3). We then do a forward pass to get a prediction
+    (line 6) and display the top 5 probabilities (line 7). You can see these in **Figure
+    4**.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE5]'
+  prefs: []
+  type: TYPE_PRE
+- en: Given the available classes, these seem reasonable. They are all marine life
+    and the top two are sharks. Now, let’s see how we can explain this prediction.
+    We want to understand what regions of the image contribute the most to the highest
+    predicted class — **hammerhead**.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/17219182b83f7591f2ce071208b92692.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'Figure 4: top 5 predicted classes of the example image of the whale shark using
+    VGG16 (source: author)'
+  prefs: []
+  type: TYPE_NORMAL
+- en: PyTorch hooks naming conventions
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: Grad-CAM heatmaps are created using both activations from a forward pass and
+    gradients from a backwards pass. To access these, we will use PyTorch hooks. These
+    are functions that allow you to save the inputs and outputs of a layer. We won’t
+    do it here, but they even allow you to alter these aspects. For example, [Guided
+    Backpropagation](https://adataodyssey.com/guided-backpropagation/) can be applied
+    by ensuring only positive gradients are propagated using a backwards hook.
+  prefs: []
+  type: TYPE_NORMAL
+- en: You can see some examples of these functions below. A *forwards_hook* will be
+    called during a forward pass. It will be registered on a given module (i.e. layer).
+    By default, the function receives three arguments — the module, its input and
+    its output. Similarly, a *backwards_hook* is triggered during a backwards pass
+    with the module and gradients of the input and output.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE6]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'To avoid confusion, let’s clarify the parameter names used by these functions.
+    Take a look at the overview of the standard backpropagation procedure for a convolutional
+    layer in **Figure 5**. This layer consists of a set of kernels, $K$, and biases,
+    $b$. The other parts are the:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '*input* – a set of feature maps or an image'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '*output* – set of feature maps'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '*grad_in* is the gradient of the loss w.r.t. the layer’s input.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '*grad_out* is the gradient of the loss w.r.t. the layer’s output.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: We have labelled these using the same names of the arguments used to call the
+    hook functions that we apply later.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/d26d6e2b6810b296746f20d19b38765c.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'Figure 5: Backpropagation for a convolutional layer in a deep learning model.
+    The blue arrows show the forward pass and the red arrows show the backwards pass.
+    (source: author)'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Keep in mind, we won’t use the gradients in the same way as backpropagation.
+    Usually, we use the gradients of a *batch* of images to update $K$ and $b$. Now,
+    we are only interested in *grad_out* of a *single* sample image. This will give
+    us the gradients of the elements in the layer’s feature maps. In other words,
+    the gradients we use to weight the feature maps.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Activations with PyTorch forward hook
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: Our VGG16 network has been created using ReLU with *inplace=True.* These modify
+    tensors in memory, so the original values are lost. That is, tensors used as input
+    are overwritten by the ReLU function. This can lead to problems when applying
+    hooks, as we may need the original input. So we use the code below to replace
+    all ReLU functions with *inplace=False* ones. This will not impact the output
+    of the model, but it will increase its memory usage.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE7]'
+  prefs: []
+  type: TYPE_PRE
+- en: Below we have our first hook function — *save_activations*. This will append
+    the output from a module (line 6) to a list of activations (line 2). In our case,
+    we will only register the hook onto one module (i.e. the last convolutional layer),
+    so this list will only contain one element. Notice how we format the output (line
+    6). We detach it from the [computational graph](https://pytorch.org/blog/computational-graphs-constructed-in-pytorch/)
+    so the network is not affected. We also format them as a numpy array and squeeze
+    the batch dimension.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE8]'
+  prefs: []
+  type: TYPE_PRE
+- en: To use the hook function, we register it on the last convolutional layer — *model.features[28].*
+    This is done using the *register_forward_hook* function.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE9]'
+  prefs: []
+  type: TYPE_PRE
+- en: Now, when we do a forward pass (line 2), the *save_activations* hook function
+    will be called for this layer. In other words, its output will be saved to the
+    *activations* list.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE10]'
+  prefs: []
+  type: TYPE_PRE
+- en: Finally, it is good practice to remove the hook function when it is no longer
+    needed (line 2). This means the forward hook function will not be triggered if
+    we do another forward pass.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE11]'
+  prefs: []
+  type: TYPE_PRE
+- en: The shape of these activations is **(512, 14, 14)**. In other words, we have
+    512 feature maps and each map is 14×14 pixels. You can see some examples of these
+    in **Figure 6**. Some of these maps may contain features important for other classes
+    or those that decrease the probability of the predicted class. So let’s see how
+    we can find gradients to help identify the most important maps.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE12]'
+  prefs: []
+  type: TYPE_PRE
+- en: '![](../Images/e1b0b27c1df3a37c044793ed3bafe672.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'Figure 6: example of activated feature maps from the last convolutional layer
+    of the network (source: author)'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Gradients with PyTorch backwards hooks
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: To get gradients, we follow a similar process to before. The key difference
+    is that we now use the *register_full_backward_hook* to register the *save_gradients*
+    function (line 7). This will ensure that it is called during a backwards pass.
+    Importantly, we do the backwards pass (line 16) from the output for the class
+    with the highest score (line 13). This effectively sets the score for this class
+    to 1 and all other scores to 0\. In other words, we get the gradients of the hammerhead
+    class w.r.t. to the elements of the feature maps.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE13]'
+  prefs: []
+  type: TYPE_PRE
+- en: We will have a gradient for every element of the feature maps. So, again, the
+    shape is **(512, 14, 14)**. **Figure 7** visualises some of these. You can see
+    some tend to have higher values. However, we are not so concerned with the individual
+    gradients. When we create a Grad-CAM heatmap, we will use the average gradient
+    of each feature map.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE14]'
+  prefs: []
+  type: TYPE_PRE
+- en: '![](../Images/2c27a22bcaecae3c856c894d4277c6e5.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'Figure 7: gradients of the score w.r.t. to the elements of feature maps in
+    the last convolutional layer (source: author)'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Finally, before we move on, it is good practice to reset the model’s gradients
+    (line 2). This is particularly important if you plan to run the code for multiple
+    images, as gradients can be accumulated with each backwards pass.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE15]'
+  prefs: []
+  type: TYPE_PRE
+- en: Creating Grad-CAM heatmaps
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: First, we find the **mean gradients** for each feature map. There will be 512
+    of these average gradients. Plotting a histogram of them, you can see most tend
+    to be around 0\. In other words, these don’t have much impact on the predicted
+    score. There are a few that tend to have a negative impact and a positive impact.
+    It is these feature maps we want to give more weight to.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE16]'
+  prefs: []
+  type: TYPE_PRE
+- en: '![](../Images/ce37e3e91403c2b60d0b23d281e43b6b.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'Figure 8: histogram of average gradients (source: author)'
+  prefs: []
+  type: TYPE_NORMAL
+- en: We combine all the activations by doing **element-wise summation** (lines 2-4).
+    When we do this, we weight each feature map by its average gradient (line 3).
+    In the end, we will have one 14×14 array.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE17]'
+  prefs: []
+  type: TYPE_PRE
+- en: These weighted activations will contain both positive and negative pixels. We
+    can consider the negative pixels to be suppressing the predicted score. In other
+    words, an increase in the value of these regions tends to decrease the score.
+    Since we are only interested in the **positive contributions**—regions that **support**
+    the class prediction—we apply a **ReLU activation** to the final heatmap (line
+    2). You can see the difference in the heatmaps in **Figure 9**.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE18]'
+  prefs: []
+  type: TYPE_PRE
+- en: '![](../Images/6e534fe6d70bd8948a0b0c01cf85f2d0.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'Figure 9: relu of weighted activations (source: author)'
+  prefs: []
+  type: TYPE_NORMAL
+- en: You can see the heatmap in **Figure 9** is quite coarse. It would be more useful
+    if it had the dimensions of the original image. This is why the last step for
+    creating Grad-CAM heatmaps is to upsample to the dimension of the input image
+    (lines 2-4). In this case, we have a **224×224** image.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE19]'
+  prefs: []
+  type: TYPE_PRE
+- en: '**Figure 10** gives us our final visualisation. We display the sample image
+    (lines 5-7) next to the heatmap (lines 10-15). For the latter, we create a clear
+    visualisation with the help of **Canny Edge detection** (line 10). This gives
+    us an edge map (i.e. outline) of the sample image. We can then overlay the heatmap
+    on top of this (line 14).'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE20]'
+  prefs: []
+  type: TYPE_PRE
+- en: Looking at our Grad-CAM heatmap, there is some noise. However, it appears the
+    model is relying on the tail fin and, to a lesser extent, the pectoral fin to
+    make its predictions. It is starting to make sense why the model classified this
+    shark as a hammerhead. Perhaps both animals share these characteristics.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/69c72acc770fe8f43fa41784886677d6.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'Figure 10: input image (left) and grad-cam heatmap overlay on an edge map (right)
+    (source: author)'
+  prefs: []
+  type: TYPE_NORMAL
+- en: For some further investigation, we apply the same process but now using an actual
+    image of a hammerhead. In this case, the model appears to be relying on the same
+    features. This is a bit concerning. Would we not expect the model to use one of
+    the shark’s defining features— the hammerhead? Ultimately, this may lead VGG16
+    to confuse different types of sharks.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/fa6b9f16ca9cc20276c7d8c758d85c76.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'Figure 11: an additional example image (source: [Wikimedia Commons](https://commons.wikimedia.org/wiki/File:Scalloped_hammerhead_cocos.jpg))
+    (license: [CC BY 2.0](https://creativecommons.org/licenses/by/2.0/deed.en))'
+  prefs: []
+  type: TYPE_NORMAL
+- en: With this example, we see how Grad-CAM can highlight potential flaws in our
+    model. We can not only get their predictions but also understand how they made
+    them. We can understand if the features used will lead to unforeseen predictions
+    down the line. This can potentially save us a lot of time, money and in the case
+    of more consequential applications, lives!
+  prefs: []
+  type: TYPE_NORMAL
+- en: If you want to learn more about XAI for CV check out one of these articles.
+    Or see this Free [XAI for CV course](https://adataodyssey.com/xai-for-cv/).
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[Guided Backpropagation from Scratch with PyTorch Hooks](https://adataodyssey.com/guided-backpropagation/)'
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: '[Class Activation Maps (CAMs) from Scratch](https://adataodyssey.com/class-activation-maps/)'
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: '* * *'
+  prefs: []
+  type: TYPE_NORMAL
+- en: I hope you enjoyed this article! See the [course page](https://adataodyssey.com/course/)
+    for more XAI courses. You can also find me on [Bluesky](https://bsky.app/profile/conorosullyds.bsky.social)
+    | [Threads](https://www.threads.net/@conorosullyds) | [YouTube](https://www.youtube.com/channel/UChsoWqJbEjBwrn00Zvghi4w)
+    | [Medium](https://medium.com/@conorosullyds)
+  prefs: []
+  type: TYPE_NORMAL
+- en: References
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: '[1] Ramprasaath R Selvaraju, Michael Cogswell, Abhishek Das, Ramakrishna Vedantam,
+    Devi Parikh, and Dhruv Batra. Grad-cam: Visual explanations from deep networks
+    via gradient-based localization. In Proceedings of the IEEE international conference
+    on computer vision, pages 618–626, 2017.'
+  prefs: []
+  type: TYPE_NORMAL

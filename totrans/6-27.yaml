@@ -1,0 +1,430 @@
+- en: 'Airflow Data Intervals: A Deep Dive'
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 原文：[https://towardsdatascience.com/airflow-data-intervals-a-deep-dive-15d0ccfb0661/](https://towardsdatascience.com/airflow-data-intervals-a-deep-dive-15d0ccfb0661/)
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: '![Photo by Gareth David on Unsplash](../Images/09636bceb2810baa82d31ce2516d5c37.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Photo by [Gareth David](https://unsplash.com/@gareth_david?utm_content=creditCopyText&utm_medium=referral&utm_source=unsplash)
+    on [Unsplash](https://unsplash.com/photos/grayscale-photo-of-body-of-water-m0chaAschUw?utm_content=creditCopyText&utm_medium=referral&utm_source=unsplash)
+  prefs: []
+  type: TYPE_NORMAL
+- en: Apache Airflow is a powerful orchestration tool for scheduling and monitoring
+    workflows, but its behaviour can sometimes feel counterintuitive, especially when
+    it comes to data intervals.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Understanding these intervals is crucial for building reliable data pipelines,
+    ensuring idempotency, and enabling replayability. By leveraging data intervals
+    effectively, you can guarantee that your workflows produce consistent and accurate
+    results, even under retries or backfills.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In this article, we’ll explore Airflow’s data intervals in detail, discuss the
+    reasoning behind their design, why they were introduced, and how they can simplify
+    and enhance day-to-day data engineering work.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '* * *'
+  prefs: []
+  type: TYPE_NORMAL
+- en: What Are Data Intervals in Airflow?
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: Data intervals sit at at the heart of how Apache Airflow schedules and executes
+    workflows. Simply put, a data interval represents the specific time range that
+    a DAG run is responsible for processing.
+  prefs: []
+  type: TYPE_NORMAL
+- en: For instance, in a daily-scheduled DAG, each data interval starts at midnight
+    (00:00) and ends at midnight the following day (24:00). The DAG executes only
+    after the data interval has ended, ensuring that the data for that interval is
+    complete and ready for processing.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The intuition behind data intervals
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: The introduction of data intervals was driven by the need to standardize and
+    simplify how workflows operate on time-based data. In many data engineering scenarios,
+    tasks need to process data for a specific period, such as hourly logs or daily
+    transaction records. Without a clear concept of data intervals, workflows might
+    operate on incomplete data or overlap with other runs, leading to inconsistencies
+    and potential errors.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Data intervals provide a structured way to:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Ensure that DAGs process only the data they are meant to handle
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Avoid issues caused by data that arrives late or is still being written
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Enable accurate backfilling and replaying of workflows for historical periods
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Support idempotency by ensuring that each DAG run processes data for a clearly
+    defined and immutable time range. This prevents duplication or missed data when
+    workflows are retried or replayed
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: By tying each DAG run to a specific data interval, Airflow ensures that tasks
+    can be safely retried without affecting other runs, and workflows can be replayed
+    with confidence, knowing that they will produce consistent results every time.
+  prefs: []
+  type: TYPE_NORMAL
+- en: How do data intervals work?
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: 'When a DAG is scheduled, Airflow assigns each run a logical date, which corresponds
+    to the start of its data interval. This logical date is not the actual execution
+    time but rather a marker for the data interval. Each data interval is defined
+    by:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Data Interval Start:** The beginning of the time range the DAG run is responsible
+    for processing.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Data Interval End:** The end of the time range for the same DAG run.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Logical Date:** A timestamp representing the start of the data interval,
+    used as a reference point for the DAG run.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'For example:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'If a DAG is scheduled to run daily with a `start_date` of January 1, 2025,
+    the first data interval will have:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Data Interval Start:** January 1, 2025, 00:00'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Data Interval End:** January 2, 2025, 00:00'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Logical Date:** January 1, 2025'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: The DAG run for this interval will execute after the interval ends, at midnight
+    on January 2, 2025.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: This approach ensures that the DAG operates on a complete set of data for the
+    interval it represents.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '* * *'
+  prefs: []
+  type: TYPE_NORMAL
+- en: The role of start_date
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: The `start_date` in a DAG defines the logical start of the first data interval.
+    It is a critical parameter that determines when a DAG begins tracking its data
+    intervals and influences backfilling capabilities.
+  prefs: []
+  type: TYPE_NORMAL
+- en: When you set a `start_date`, it serves as a reference point for Airflow to calculate
+    data intervals. Once again, it’s worth highlighting that a DAG does not execute
+    immediately upon deployment; it waits for the first data interval to end before
+    initiating a run. This ensures that the data for the interval is complete and
+    ready for processing.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Why `start_date` Matters
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: The `start_date` also plays a significant role in how Airflow determines the
+    boundaries of data intervals. By defining a fixed starting point, Airflow ensures
+    that all intervals are consistently calculated, enabling workflows to process
+    data in a structured and reliable manner.
+  prefs: []
+  type: TYPE_NORMAL
+- en: By anchoring DAG runs to a consistent `start_date`, you ensure reproducible
+    workflows that operate predictably across different environments and timeframes.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Logical Start of Intervals:** The `start_date` establishes the beginning
+    of the first data interval, which serves as the foundation for all subsequent
+    intervals. For example, if your `start_date` is January 1, 2025, and the schedule
+    is `@daily`, the first interval will span January 1, 2025, 00:00 to January 2,
+    2025, 00:00.'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '**Alignment with Schedules:** Ensuring that the `start_date` aligns with the
+    DAG’s schedule is crucial for predictable execution. A mismatch between the two
+    can lead to unintended gaps or overlaps in processing.'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '**Backfilling Support:** A thoughtfully chosen `start_date` enables you to
+    backfill historical data by triggering DAG runs for past intervals. This capability
+    is vital for workflows that need to process older datasets.'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '**Reproducibility:** By anchoring DAG runs to a consistent `start_date`, you
+    ensure reproducible workflows that operate predictably across different environments
+    and timeframes.'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: In the example DAG presented below,
+  prefs: []
+  type: TYPE_NORMAL
+- en: The DAG is scheduled to run daily starting January 1, 2025
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: The `catchup=True` parameter ensures that if the DAG is deployed after the `start_date`,
+    it will backfill all missed intervals
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '[PRE0]'
+  prefs: []
+  type: TYPE_PRE
+- en: If the DAG is deployed at 10:00 AM on January 1, 2025, the first run will not
+    execute immediately. Instead, it will run at midnight on January 2, 2025, processing
+    data for January 1, 2025.
+  prefs: []
+  type: TYPE_NORMAL
+- en: If the DAG is deployed on January 3, 2025, it will backfill runs for January
+    1 and January 2, 2025, before executing the current interval.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Common Pitfalls with start_date
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: While the `start_date` parameter is straightforward, its improper configuration
+    can lead to unexpected behavior or workflow failures. Understanding these pitfalls
+    is crucial to avoid common mistakes and ensure smooth execution.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Choosing an Arbitrary `start_date`P**icking a random `start_date` without
+    considering the data availability or schedule can lead to failed runs or incomplete
+    processing.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Using Dynamic Values**Avoid setting the `start_date` to a dynamic value like
+    `datetime.now()`. Since the `start_date` is meant to be a fixed reference point,
+    using a dynamic value can result in unpredictable intervals and make backfilling
+    impossible.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Ignoring Time Zones**Always ensure that the `start_date` accounts for the
+    time zone of your data source to avoid misaligned intervals.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Misconfigured Catchup Settings**If `catchup` is disabled, missed intervals
+    will not be processed, potentially leading to data gaps.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '* * *'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Airflow Templates Reference
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: Airflow provides several [templated variables](https://airflow.apache.org/docs/apache-airflow/stable/templates-ref.html)
+    to simplify interactions with data intervals. These variables are crucial for
+    creating dynamic, maintainable, and idempotent workflows.
+  prefs: []
+  type: TYPE_NORMAL
+- en: By using these templates, you can ensure that your DAGs adapt to changing data
+    intervals without requiring hardcoded values, making them more robust and easier
+    to debug.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Airflow uses [Jinja templating](https://airflow.apache.org/docs/apache-airflow/stable/core-concepts/operators.html#concepts-jinja-templating)
+    under the hood to enable this dynamic behaviour, allowing you to embed these variables
+    directly in your task parameters or scripts.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Data Interval Templated Variables
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: 'Here’s a list of some commonly used templated references that you can embed
+    in your DAGs:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**`{{ data_interval_start }}`**: Represents the start of the current data interval.
+    Use this to query or process data that falls within the beginning of the interval.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**`{{ data_interval_end }}`**: Represents the end of the current data interval.
+    This is helpful for defining the boundary for data processing tasks.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**`{{ logical_date }}`**: The logical date for the DAG run, which aligns with
+    the start of the data interval. This is often used for logging or metadata purposes.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**`{{ prev_data_interval_start_success }}`**: The start of the data interval
+    for the previous successful DAG run. Use this for tasks that depend on the output
+    of earlier runs.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**`{{ prev_data_interval_end_success }}`**: The end of the data interval for
+    the previous successful DAG run. This ensures continuity in workflows that process
+    sequential data.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: You can find a more comprehensive list of all available templated references
+    in the [relevant section of Airflow documentation](https://airflow.apache.org/docs/apache-airflow/stable/templates-ref.html).
+  prefs: []
+  type: TYPE_NORMAL
+- en: The importance of Templates reference when authoring DAGs
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: Template variables are an integral part of writing flexible and efficient DAGs
+    in Airflow. They provide a way to dynamically reference key properties of data
+    intervals, ensuring that your workflows remain adaptable to changes and are easy
+    to maintain.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Here are some of the main reasons why these variables are so important:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Dynamic Adaptability:** Template variables allow your DAGs to automatically
+    adjust to the current data interval, eliminating the need for hardcoding specific
+    dates or time ranges.'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '**Idempotency:** By tying task parameters to specific data intervals, you ensure
+    that reruns or retries produce the same results, regardless of when they are executed.'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '**Ease of Maintenance:** Using templated variables reduces the risk of errors
+    and simplifies updates. For example, if your data processing logic changes, you
+    can adjust the templates without rewriting the DAG.'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '**Facilitate Backfilling:** These variables make it easy to backfill historical
+    data, as each DAG run is automatically tied to the appropriate data interval.'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '**Leverage Jinja Templating:** Jinja templating enables you to embed these
+    variables dynamically in your task commands, SQL queries, or scripts. This ensures
+    your workflows remain flexible and context-aware.'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '* * *'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Visualising Data Intervals
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: To better understand data intervals, consider the following visualisation
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![A visualisation representing of how data intervals work in Airflow - Source:
+    Author](../Images/f453557e959fa0721cca33a352bf1768.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'A visualisation representing of how data intervals work in Airflow – Source:
+    [Author](https://medium.com/@gmyrianthous)'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Every DAG has a single start date, and every DAG run executes only after the
+    corresponding data interval has ended. The table below illustrates the values
+    of each of the three data interval variables of interest, for every daily run.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE1]'
+  prefs: []
+  type: TYPE_PRE
+- en: '* * *'
+  prefs: []
+  type: TYPE_NORMAL
+- en: A working example
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: In the example DAG below, we attempt to fetch posts from a public API (jsonplaceholder)
+    that accepts a date as a parameter. In our scenario, we wish to specify the value
+    of the date parameter to the beginning of the interval. In other words, if the
+    DAG is supposed to run today, we want to call the API using yesterday’s date.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE2]'
+  prefs: []
+  type: TYPE_PRE
+- en: The DAG is scheduled to run daily, starting from January 1st, 2025\. It leverages
+    the `data_interval_start` templated variable to dynamically pass the date for
+    each run. Specifically, the `data_interval_start` corresponds to the start of
+    the execution window for each DAG run, allowing the API to receive the correct
+    date parameter.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The `start_date` parameter determines when the DAG execution begins, while the
+    `catchup=True` setting ensures that missed intervals are backfilled. This means
+    that if the DAG is delayed or the system is down, Airflow will automatically execute
+    tasks for the missed dates, ensuring no data is skipped.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The core of the DAG is a Python task that calls the API, passing the `data_interval_start`
+    as a formatted date. This allows for a flexible, interval-based API query system.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '* * *'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Final Thoughts
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: Understanding Airflow’s data intervals is essential for building reliable workflows.
+    By learning how `start_date`, logical dates, and templated variables work together,
+    you can create pipelines that process data accurately and efficiently. Whether
+    it’s backfilling historical data or managing complex workflows, these principles
+    ensure your pipelines run smoothly and consistently.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Mastering data intervals will help you design workflows that are easier to maintain
+    and adapt, making your day-to-day work in data engineering more effective and
+    predictable.
+  prefs: []
+  type: TYPE_NORMAL

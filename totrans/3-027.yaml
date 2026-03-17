@@ -1,0 +1,596 @@
+- en: The Shape‑First Tune‑Up Provides Organizations with a Means to Reduce MongoDB
+    Expenses by 79%
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 原文：[https://towardsdatascience.com/the-shape%e2%80%91first-tune%e2%80%91up-provides-organizations-with-a-means-to-reduce-mongodb-expenses-by-79/](https://towardsdatascience.com/the-shape%e2%80%91first-tune%e2%80%91up-provides-organizations-with-a-means-to-reduce-mongodb-expenses-by-79/)
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: '**TL;DR**'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '<mdspan datatext="el1746054440266" class="mdspan-comment">A fast‑growing</mdspan>
+    SaaS woke up to a silent auto‑scale from **M20 → M60**, adding 20 % to their cloud
+    bill overnight. In a frantic 48‑hour sprint we:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: flattened N + 1 waterfalls with **`$lookup`** ,
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: tamed unbounded cursors with projection, **`limit()`** and TTL,
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: split 16 MB “jumbo” docs into lean metadata + GridFS blobs,
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: reordered a handful of sleepy indexes
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: And watched **$15 284 → $3 210/mo (‑79 %)** while p95 latency toppled from **1.9
+    s → 140 ms**.
+  prefs: []
+  type: TYPE_NORMAL
+- en: All on a plain replica set.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '* * *'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Step 1: The Day the Invoice Went Supernova
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: '**02:17 a.m.** — The on‑call phone lit up like a pinball machine. Atlas had
+    quietly hot‑swapped our trusty **M20** for a maxed‑out M60\. Slack filled with
+    🟥 **BILL SHOCK** alerts while Grafana’s red‑lined graphs painted a horror movie
+    in real time.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: “Finance says the new spend wipes out nine months of runway. We need a fix before
+    stand‑up.”
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: — COO, 02:38
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: 'Half‑awake, the engineer cracked open the profiler. Three culprits leapt off
+    the screen:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Query waterfall** — every order API call triggered an extra fetch for its
+    lines. **1 000** orders? **1 001** round‑trips.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Fire‑hose cursor** — a click‑stream endpoint streamed **30 months** of events
+    on every page load.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Jumbo docs** — 16 MB invoices (complete with PDFs) blew the cache to bits
+    and back.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Atlas tried to help by throwing hardware at the fire—upgrading from 64 GB RAM
+    to 320 GB, boosting IOPS, and, of course, boosting the bill.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'By breakfast, the war‑room rules were clear: **cut 70 % of spend in 48 hours,
+    zero downtime, no schema nukes**. The play‑by‑play starts below.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '* * *'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Step 2: Three Shape Crimes & How to Fix Them
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 2.1 N + 1 Query Tsunami
+  prefs:
+  - PREF_H4
+  type: TYPE_NORMAL
+- en: '**Symptom**: For each order the API fired a second query for its line items.
+    1 000 orders ⇒ 1 001 round‑trips.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE0]'
+  prefs: []
+  type: TYPE_PRE
+- en: '**Hidden fees**: 1 000 index walks, 1 000 TLS handshakes, 1 000 context switches.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Remedy (4 lines):**'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE1]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Latency p95: **2 300 ms → 160 ms.** Read ops: **101 → 1 (‑99 %).**'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**2.2 Unbounded Query Fire‑Hose**'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Symptom**: One endpoint streamed 30 months of click history in a single cursor.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE2]'
+  prefs: []
+  type: TYPE_PRE
+- en: '**Fix**: Cap the window and project only rendered fields.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE3]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Then let Mongo prune for you:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE4]'
+  prefs: []
+  type: TYPE_PRE
+- en: A fintech client clipped **72 %** off their storage overnight using nothing
+    but TTL.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**2.3 Jumbo Document Money Pit**'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Anything above **256 KB** already strains cache lines; one collection stored
+    multi‑MB invoices complete with PDFs and 1 200‑row histories.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Solution**: split by access pattern—hot metadata in invoices , cold BLOBs
+    in S3/GridFS.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE5]'
+  prefs: []
+  type: TYPE_PRE
+- en: SSD spend snow‑dropped; cache hit ratio jumped 22 p.p.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '* * *'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Step 3: Four Shape Sins Hiding in Plain Sight
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: Shape isn’t just about document size—it’s how queries, indexes and access patterns
+    intertwine.
+  prefs: []
+  type: TYPE_NORMAL
+- en: These four anti‑patterns lurk in most production clusters and silently drain
+    cash.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**3.1 Low‑Cardinality Leading Index Key**'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Symptom** The index starts with a field that has < 10 % distinct values,
+    e.g. **{ type: 1, ts: -1 }** . The planner must traverse huge swaths before applying
+    the selective part.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Cost** High B‑tree fan‑out, poor cache locality, extra disk seeks.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Fix** Move the selective key (**userId , orgId , tenantId**) first: **{ userId:
+    1, ts: -1 }** . Rebuild online, then drop the old index.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**3.2 Blind `$regex` Scan**'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Symptom** **`$regex: /foo/i`** on a non‑indexed field forces a full collection
+    scan; CPU spikes, cache churns.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Cost Each pattern match walks every document and decodes BSON in the hot path.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Fix Prefer anchored patterns ( **`/^foo/`** ) with a supporting index, or add
+    a searchable slug field ( **`lower(name)`** ) and index that instead.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**3.3 findOneAndUpdate as a Message Queue**'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Symptom** Workers poll with **`findOneAndUpdate({ status: ''new'' }, { $set:
+    { status: ''taken'' } }).`**'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Cost** Document‑level locks serialize writers; throughput collapses beyond
+    a few thousand ops/s.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Fix** Use a purpose‑built queue (Redis Streams, Kafka, SQS) or MongoDB’s
+    native change streams to push events, keeping writes append‑only.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**3.4 Offset Pagination Trap**'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Symptom** **`find().skip(N).limit(20)`** where N can reach six‑figure offsets.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Cost** Mongo still counts and discards all skipped docs—linear time. Latency
+    balloons and billing counts each read.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Fix** Switch to **range cursors** using compound index **`(ts, _id)`** :'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE6]'
+  prefs: []
+  type: TYPE_PRE
+- en: Master these four and you’ll reclaim RAM, lower read units, and postpone sharding
+    by quarters.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '* * *'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Step 4: Cost Anatomy 101
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: '| Metric | Before | Unit $ | Cost | After | Δ % |'
+  prefs: []
+  type: TYPE_TB
+- en: '| --- | --- | --- | --- | --- | --- |'
+  prefs: []
+  type: TYPE_TB
+- en: '| Reads (3 k/s) | 7.8 B | 0.09/M | $702 | 2.3 B | -70 |'
+  prefs: []
+  type: TYPE_TB
+- en: '| Writes (150/s) | 380 M | 0.225/M | $86 | 380 M | 0 |'
+  prefs: []
+  type: TYPE_TB
+- en: '| Xfer | 1.5 TB | 0.25/GB | $375 | 300 GB | -80 |'
+  prefs: []
+  type: TYPE_TB
+- en: '| Storage | 2 TB | 0.24/GB | $480 | 800 GB | -60 |'
+  prefs: []
+  type: TYPE_TB
+- en: '| **Total** |  | **$1,643** |  | **-66** |'
+  prefs: []
+  type: TYPE_TB
+- en: Step 5: 48‑Hour Rescue Timeline
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: '| Hour | Action | Tool | Win |'
+  prefs: []
+  type: TYPE_TB
+- en: '| --- | --- | --- | --- |'
+  prefs: []
+  type: TYPE_TB
+- en: '| 0‑2 | Enable profiler (slowms = 50) | mongo shell | Top 10 slow ops located
+    |'
+  prefs: []
+  type: TYPE_TB
+- en: '| 2‑6 | Replace N + 1 with $lookup | VS Code + tests | 90 % fewer reads |'
+  prefs: []
+  type: TYPE_TB
+- en: '| 6‑10 | Add projections & limit() | API layer | RAM steady, API 4× faster
+    |'
+  prefs: []
+  type: TYPE_TB
+- en: '| 10‑16 | Split jumbo docs | Scripted ETL | Working set fits in RAM |'
+  prefs: []
+  type: TYPE_TB
+- en: '| 16‑22 | Drop/re‑order weak indexes | Compass | Disk shrinks, cache hits ↑
+    |'
+  prefs: []
+  type: TYPE_TB
+- en: '| 22‑30 | Create TTLs / Online Archive | Atlas UI | −60 % storage |'
+  prefs: []
+  type: TYPE_TB
+- en: '| 30‑36 | Wire Grafana panels | Prometheus | Early warnings live |'
+  prefs: []
+  type: TYPE_TB
+- en: '| 36‑48 | Load‑test with k6 | k6 + Atlas | p95 < 150 ms @ 2× load |'
+  prefs: []
+  type: TYPE_TB
+- en: '* * *'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Step 6: Self‑Audit Checklist'
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: Largest doc ÷ median > 10? → Refactor.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Any cursor > 1 000 docs? → Paginate.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: TTL on every event collection? (Y/N)
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Index cardinality < 10 %? → Drop or reorder.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Profiler “slow” ops > 1 %? → Optimize or cache.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Tape this to your monitor before Friday deploys.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '* * *'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Step 7: Why Shape > Indexes (Most Days)
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'Adding an index is like buying a faster forklift for the warehouse: it speeds
+    up picking, but it does **nothing** if the aisles are cluttered with oversized
+    boxes. In MongoDB terms the planner’s cost formula is roughly:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE7]'
+  prefs: []
+  type: TYPE_PRE
+- en: Indexes trim **, yet** and **“** can still dominate when documents are bloated,
+    sparsely‑accessed, or poorly grouped.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**A Tale of Two Queries**'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '|  | Skinny Doc (2 kB) | Jumbo Doc (16 MB) |'
+  prefs: []
+  type: TYPE_TB
+- en: '| --- | --- | --- |'
+  prefs: []
+  type: TYPE_TB
+- en: '| ixScans | 1 000 | 1 000 |'
+  prefs: []
+  type: TYPE_TB
+- en: '| fetches | 1 000×2 kB = 2 MB | 1 000×16 MB = 16 GB |'
+  prefs: []
+  type: TYPE_TB
+- en: '| Net time | 80 ms | 48 s + eviction storms |'
+  prefs: []
+  type: TYPE_TB
+- en: Same index, same query pattern — the only difference is **shape**.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**The Rule of Thumb**'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Fix shape first, then index once.
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: – Every reshaped document shrinks every future fetch, cache line, and replication
+    packet.
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: Three shape wins easily beat a dozen extra B‑trees.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '* * *'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Step 8: Live Metrics You Should Alert On (PromQL)
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: '[PRE8]'
+  prefs: []
+  type: TYPE_PRE
+- en: '* * *'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Step 9: Thin‑Slice Migration Script
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'Need to break a 1‑TB **`events`** collection into sub‑collections without downtime?
+    Use double‑writes + backfill:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE9]'
+  prefs: []
+  type: TYPE_PRE
+- en: '* * *'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Step 11: When Sharding Is Actually Required
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: Sharding is a **last‑mile tactic, not a first‑line cure**. It fractures data,
+    multiplies failure modes, and complicates every migration. Exhaust vertical upgrades
+    and shape‑based optimizations first. Reach for a shard key only when at least
+    one of the thresholds below is **sustained** under real load and cannot be solved
+    cheaper.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Hard Capacity Ceilings**'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '| Symptom | Rule of Thumb | Why Horizontal Split Helps |'
+  prefs: []
+  type: TYPE_TB
+- en: '| --- | --- | --- |'
+  prefs: []
+  type: TYPE_TB
+- en: '| Working set sits above 80 % of physical RAM for 24 h+ | < 60 % is healthy;
+    60–80 % can be masked by a bigger box; > 80 % pages constantly | Splitting puts
+    hot partitions on separate nodes, restoring cache‑hit ratio |'
+  prefs: []
+  type: TYPE_TB
+- en: '| Primary write throughput > 15 000 ops/s after index tuning | Below 10 000
+    ops/s you can often survive by batching or bulk upserts | Isolating high‑velocity
+    chunks reduces journal lag and lock contention |'
+  prefs: []
+  type: TYPE_TB
+- en: '| Multi‑region product needs < 70 ms p95 read latency | Speed‑of‑light sets
+    ~80 ms US↔EU floor | Zone sharding pins data near users without resorting to edge
+    caches |'
+  prefs: []
+  type: TYPE_TB
+- en: '**Soft Signals Sharding Is Approaching**'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Index builds exceed maintenance windows even with online indexing.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Compaction time eats into disaster‑recovery SLA.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: A single tenant owns > 25 % of cluster volume.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Profiler shows > 500 ms lock spikes from long transactions.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Checklist Before You Cut**'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Reshape documents**: if the largest doc is 20 × the median, refactor first.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Enable compression** ( **zstd** or **snappy** ) often buys 30 % storage headroom.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Archive cold data** via Online Archive or tiered S3 storage.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Rewrite hottest endpoints in Go/Rust if JSON parsing dominates CPU.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Run **`mongo‑perf`**; if workload fits a single replica set post‑fixes, abort
+    the shard plan.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Choosing a Shard Key**'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Use **high‑cardinality, monotonically increasing** fields ( **`ObjectId`** ,
+    timestamp prefix).
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Avoid low‑entropy keys (**`status`** , **`country`** ) that funnel writes to
+    a few chunks.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Put the most common query predicate first to avoid scatter‑gather.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Sharding is surgery; once you cut, you live with the scar. Make sure the patient
+    truly needs the operation.
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: '* * *'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Conclusion — Shaping Up Before the Bill Comes Due
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: When the **M60** upgrade landed with a silent boom, it wasn’t the hardware’s
+    fault it was a wake-up call. This wasn’t about CPU, memory, or disk it was about
+    shape. Shape of the documents. Shape of the queries. Shape of the assumptions
+    that quietly bloated over months of “just ship it” sprints.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Fixing it didn’t take a new database, a weekend migration, or an army of consultants.
+    It took a team willing to look inward, to trade panic for profiling, and to reshape
+    what they already had.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The results were undeniable: latency down by **92%**, costs cut by nearly **80%**,
+    and a codebase now lean enough to breathe.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'But here’s the real takeaway: technical debt on shape isn’t just a performance
+    issue it’s a financial one. And unlike indexes or caching tricks, shaping things
+    right up front pays off every single time your query runs, every time your data
+    replicates, every time you scale.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'So before your next billing cycle spikes, ask yourself:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Does every endpoint need the full document?
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Are we designing for reads, or just writing fast?
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Are our indexes working, or just working hard?
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Shape-first isn’t a technique — it’s a mindset. A habit. And the earlier you
+    adopt it, the longer your system — and your runway — will last.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '* * *'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Sources & Further Reading
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: MongoDB Engineering Blog — [Understanding WiredTiger Cache](https://www.mongodb.com/docs/manual/core/wiredtiger/)
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: AWS Architecture Blog — [Cost‑Optimizing Document Stores](https://aws.amazon.com/ru/blogs/architecture/top-architecture-blog-posts-of-2024/)
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Prisma – [Avoiding N+1 Queries](https://www.youtube.com/watch?v=7oMfBGEdwsc&ab_channel=Prisma)
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: MongoDB Engineering Blog — [Query Optimization Techniques](https://www.mongodb.com/docs/manual/tutorial/optimize-query-performance-with-indexes-and-projections/)
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: About the Author
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: '**Hayk Ghukasyan** is a Chief of Engineering at Hexact, where he helps build
+    automation platforms like Hexomatic and Hexospark. He has over 20 years of experience
+    in large-scale systems architecture, real-time databases, and optimization engineering.'
+  prefs: []
+  type: TYPE_NORMAL

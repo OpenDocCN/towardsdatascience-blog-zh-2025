@@ -1,0 +1,763 @@
+- en: Mining Rules from Data
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 原文：[https://towardsdatascience.com/mining-rules-from-data/](https://towardsdatascience.com/mining-rules-from-data/)
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: '<mdspan datatext="el1744217464415" class="mdspan-comment">Working</mdspan>
+    with products, we might face a need to introduce some “rules”. Let me explain
+    what I mean by “rules” in practical examples:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Imagine that we’re seeing a massive wave of fraud in our product, and we want
+    to restrict onboarding for a particular segment of customers to lower this risk.
+    For example, we found out that the majority of fraudsters had specific user agents
+    and IP addresses from certain countries.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Another option is to send coupons to customers to use in our online shop. However,
+    we would like to treat only customers who are likely to churn since loyal users
+    will return to the product anyway. We might figure out that the most feasible
+    group is customers who joined less than a year ago and decreased their spending
+    by 30%+ last month.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Transactional businesses often have a segment of customers where they are losing
+    money. For example, a bank customer passed the verification and regularly reached
+    out to customer support (so generated onboarding and servicing costs) while doing
+    almost no transactions (so not generating any revenue). The bank might introduce
+    a small monthly subscription fee for customers with less than 1000$ in their account
+    since they are likely non-profitable.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'Of course, in all these cases, we might have used a complex Machine Learning
+    model that would take into account all the factors and predict the probability
+    (either of a customer being a fraudster or churning). Still, under some circumstances,
+    we might prefer just a set of static rules for the following reasons:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**The speed and complexity of implementation.** Deploying an ML model in production
+    takes time and effort. If you are experiencing a fraud wave right now, it might
+    be more feasible to go live with a set of static rules that can be implemented
+    quickly and then work on a comprehensive solution.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Interpretability.** ML models are black boxes. Even though we might be able
+    to understand at a high level how they work and what features are the most important
+    ones, it’s challenging to explain them to customers. In the example of subscription
+    fees for non-profitable customers, it’s important to share a set of transparent
+    rules with customers so that they can understand the pricing.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Compliance.** Some industries, like finance or healthcare, might require
+    auditable and rule-based decisions to meet compliance requirements.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'In this article, I want to show you how we can solve business problems using
+    such rules. We will take a practical example and go really deep into this topic:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: we will discuss which models we can use to mine such rules from data,
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: we will build a Decision Tree Classifier from scratch to learn how it works,
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: we will fit the `sklearn` Decision Tree Classifier model to extract the rules
+    from the data,
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: we will learn how to parse the Decision Tree structure to get the resulting
+    segments,
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: finally, we will explore different options for category encoding, since the
+    `sklearn` implementation doesn’t support categorical variables.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: We have lots of topics to cover, so let’s jump into it.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Case
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: As usual, it’s easier to learn something with a practical example. So, let’s
+    start by discussing the task we will be solving in this article.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We will work with [the Bank Marketing](https://archive.ics.uci.edu/dataset/222/bank+marketing)
+    dataset (<mdspan datatext="el1744217074911" class="mdspan-comment">CC BY 4.0 license</mdspan>).
+    This dataset contains data about the direct marketing campaigns of a Portuguese
+    banking institution. For each customer, we know a bunch of features and whether
+    they subscribed to a term deposit (our target).
+  prefs: []
+  type: TYPE_NORMAL
+- en: Our business goal is to maximise the number of conversions (subscriptions) with
+    limited operational resources. So, we can’t call the whole user base, and we want
+    to reach the best outcome with the resources we have.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The first step is to look at the data. So, let’s load the data set.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE0]'
+  prefs: []
+  type: TYPE_PRE
+- en: We know quite a lot about the customers, including personal data (such as job
+    type or marital status) and their previous behaviour (such as whether they have
+    a loan or their average yearly balance).
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/3dd67f1dfd76f7ffeb203a234cf47c8a.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Image by author
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The next step is to select a machine-learning model. There are two classes
+    of models that are usually used when we need something easily interpretable:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: decision trees,
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: linear or logistic regression.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Both options are feasible and can give us good models that can be easily implemented
+    and interpreted. However, in this article, I would like to stick to the decision
+    tree model because it produces actual rules, while logistic regression will give
+    us probability as a weighted sum of features.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Data Preprocessing
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: As we’ve seen in the data, there are lots of categorical variables (such as
+    education or marital status). Unfortunately, the `sklearn` decision tree implementation
+    can’t handle categorical data, so we need to do some preprocessing.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Let’s start by transforming yes/no flags into integers.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE1]'
+  prefs: []
+  type: TYPE_PRE
+- en: The next step is to transform the `month` variable. We can use one-hot encoding
+    for months, introducing flags like `month_jan` , `month_feb` , etc. However, there
+    might be seasonal effects, and I think it would be more reasonable to convert
+    months into integers following their order.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE2]'
+  prefs: []
+  type: TYPE_PRE
+- en: For all other categorical variables, let’s use one-hot encoding. We will discuss
+    different strategies for category encoding later, but for now, let’s stick to
+    the default approach.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The easiest way to do one-hot encoding is to leverage `get_dummies` [function](https://pandas.pydata.org/docs/reference/api/pandas.get_dummies.html)
+    in pandas.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE3]'
+  prefs: []
+  type: TYPE_PRE
+- en: This function transforms each categorical variable into a separate 1/0 column
+    for each possible. We can see how it works for `poutcome` column.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE4]'
+  prefs: []
+  type: TYPE_PRE
+- en: '![](../Images/060f712001cb8ae83a6dc25fbe6aeed7.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Image by author
+  prefs: []
+  type: TYPE_NORMAL
+- en: Our data is now ready, and it’s time to discuss how decision tree classifiers
+    work.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Decision Tree Classifier: Theory'
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: In this section, we’ll explore the theory behind the Decision Tree Classifier
+    and build the algorithm from scratch. If you’re more interested in a practical
+    example, feel free to skip ahead to the next part.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The easiest way to understand the decision tree model is to look at an example.
+    So, let’s build a simple model based on our data. We will use [DecisionTreeClassifier](https://scikit-learn.org/stable/modules/generated/sklearn.tree.DecisionTreeClassifier.html)
+    from `sklearn`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE5]'
+  prefs: []
+  type: TYPE_PRE
+- en: The next step is to visualise the tree.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE6]'
+  prefs: []
+  type: TYPE_PRE
+- en: '![](../Images/cc29c1eec38a620a81ee7c8149757ee9.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Image by author
+  prefs: []
+  type: TYPE_NORMAL
+- en: So, we can see that the model is straightforward. It’s a set of binary splits
+    that we can use as heuristics.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Let’s figure out how the classifier works under the hood. As usual, the best
+    way to understand the model is to build the logic from scratch.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The cornerstone of any problem is the optimisation function. By default, in
+    the decision tree classifier, we’re optimising [the Gini coefficient](https://en.wikipedia.org/wiki/Gini_coefficient).
+    Imagine getting one random item from the sample and then the other. The Gini coefficient
+    would equal the probability of the situation when these items are from different
+    classes. So, our goal will be minimising the Gini coefficient.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'In the case of just two classes (like in our example, where marketing intervention
+    was either successful or not), the Gini coefficient is defined just by one parameter
+    `p` , where `p` is the probability of getting an item from one of the classes.
+    Here’s the formula:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: \[\textbf{gini}(\textsf{p}) = 1 – \textsf{p}^2 – (1 – \textsf{p})^2 = 2 * \textsf{p}
+    * (1 – \textsf{p}) \]
+  prefs: []
+  type: TYPE_NORMAL
+- en: If our classification is ideal and we are able to separate the classes perfectly,
+    then the Gini coefficient will be equal to 0\. The worst-case scenario is when
+    `p = 0.5` , then the Gini coefficient is also equal to 0.5.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'With the formula above, we can calculate the Gini coefficient for each leaf
+    of the tree. To calculate the Gini coefficient for the whole tree, we need to
+    combine the Gini coefficients of binary splits. For that, we can just get a weighted
+    sum:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: \[\textbf{gini}_{\textsf{total}} = \textbf{gini}_{\textsf{left}} * \frac{\textbf{n}_{\textsf{left}}}{\textbf{n}_{\textsf{left}}
+    + \textbf{n}_{\textsf{right}}} + \textbf{gini}_{\textsf{right}} * \frac{\textbf{n}_{\textsf{right}}}{\textbf{n}_{\textsf{left}}
+    + \textbf{n}_{\textsf{right}}}\]
+  prefs: []
+  type: TYPE_NORMAL
+- en: Now that we know what value we’re optimising, we only need to define all possible
+    binary splits, iterate through them and choose the best option.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Defining all possible binary splits is also quite straightforward. We can do
+    it one by one for each parameter, sort possible values, and pick up thresholds
+    between them. For example, for months (integer from 1 to 12).
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/6e133a14bae01f745ca902f657b98dcc.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Image by author
+  prefs: []
+  type: TYPE_NORMAL
+- en: Let’s try to code it and see whether we will come to the same result. First,
+    we will define functions that calculate the Gini coefficient for one dataset and
+    the combination.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE7]'
+  prefs: []
+  type: TYPE_PRE
+- en: The next step is to get all possible thresholds for one parameter and calculate
+    their Gini coefficients.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE8]'
+  prefs: []
+  type: TYPE_PRE
+- en: The final step is to iterate through all features and calculate all possible
+    splits.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE9]'
+  prefs: []
+  type: TYPE_PRE
+- en: '![](../Images/910bc6dd3ca9cbfb5ad259f72e20d1d4.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Image by author
+  prefs: []
+  type: TYPE_NORMAL
+- en: Wonderful, we’ve got the same result as in our `DecisionTreeClassifier` model.
+    The optimal split is whether `poutcome = success` or not. We’ve reduced the Gini
+    coefficient from 0.2065 to 0.1872.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'To continue building the tree, we need to repeat the process recursively. For
+    example, going down for the `poutcome_success <= 0.5` branch:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE10]'
+  prefs: []
+  type: TYPE_PRE
+- en: '![](../Images/6e7f5406ed58d3c06b335a8b378ebfde.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Image by author
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The only question we still need to discuss is the stopping criteria. In our
+    initial example, we’ve used two conditions:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '`max_depth = 2` — it just limits the maximum depth of the tree,'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '`min_samples_leaf = 1000` prevents us from getting leaf nodes with less than
+    1K samples. Because of this condition, we’ve chosen a binary split by `contact_unknown`
+    even though `age` led to a lower Gini coefficient.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Also, I usually limit the `min_impurity_decrease` that prevent us from going
+    further if the gains are too small. By gains, we mean the decrease of the Gini
+    coefficient.
+  prefs: []
+  type: TYPE_NORMAL
+- en: So, we’ve understood how the Decision Tree Classifier works, and now it’s time
+    to use it in practice.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '*If you’re interested to see how Decision Tree Regressor works in all detail,
+    you can look it up in [my previous article](https://towardsdatascience.com/interpreting-random-forests-638bca8b49ea/).*'
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: Decision Trees: practice
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: We’ve already built a simple tree model with two layers, but it’s definitely
+    not enough since it’s too simple to get all the insights from the data. Let’s
+    train another Decision Tree by limiting the number of samples in leaves and decreasing
+    impurity (reduction of Gini coefficient).
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE11]'
+  prefs: []
+  type: TYPE_PRE
+- en: '![](../Images/4f9ca8eb054cdff9de42f5d358c5b5f1.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Image by author
+  prefs: []
+  type: TYPE_NORMAL
+- en: That’s it. We’ve got our rules to split customers into groups (leaves). Now,
+    we can iterate through groups and see which groups of customers we want to contact.
+    Even though our model is relatively small, it’s daunting to copy all conditions
+    from the image. Luckily, we can parse [the tree structure](https://scikit-learn.org/stable/auto_examples/tree/plot_unveil_tree_structure.html)
+    and get all the groups from the model.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The Decision Tree classifier has an attribute `tree_` that will allow us to
+    get access to low-level attributes of the tree, such as `node_count` .
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE12]'
+  prefs: []
+  type: TYPE_PRE
+- en: The `tree_` variable also stores the entire tree structure as parallel arrays,
+    where the `i`[th] element of each array stores the information about the node
+    `i`. For the root `i` equals to 0.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Here are the arrays we have to represent the tree structure:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '`children_left` and `children_right` — IDs of left and right nodes, respectively;
+    if the node is a leaf, then -1.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '`feature` — feature used to split the node `i` .'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '`threshold` — threshold value used for the binary split of the node `i` .'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '`n_node_samples` — number of training samples that reached the node `i` .'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '`values` — shares of samples from each class.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Let’s save all these arrays.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE13]'
+  prefs: []
+  type: TYPE_PRE
+- en: It will be more convenient for us to work with a hierarchical view of the tree
+    structure, so let’s iterate through all nodes and, for each node, save the parent
+    node ID and whether it was a right or left branch.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE14]'
+  prefs: []
+  type: TYPE_PRE
+- en: The next step is to filter out the leaf nodes since they are terminal and the
+    most interesting for us as they define the customer segments.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE15]'
+  prefs: []
+  type: TYPE_PRE
+- en: The next step is to determine all the conditions applied to each group since
+    they will define our customer segments. The first function `get_condition` will
+    give us the tuple of feature, condition type and threshold for a node.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE16]'
+  prefs: []
+  type: TYPE_PRE
+- en: The next function will allow us to recursively go from the leaf node to the
+    root and get all the binary splits.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE17]'
+  prefs: []
+  type: TYPE_PRE
+- en: Let’s save the logic of executing the recursion and formatting into a wrapper
+    function.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE18]'
+  prefs: []
+  type: TYPE_PRE
+- en: We’ve learned how to get each node’s binary split conditions. The only remaining
+    logic is to combine the conditions.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE19]'
+  prefs: []
+  type: TYPE_PRE
+- en: Now, we can calculate the conditions for each group.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE20]'
+  prefs: []
+  type: TYPE_PRE
+- en: The last step is to add their size and conversion to the groups.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE21]'
+  prefs: []
+  type: TYPE_PRE
+- en: Now, we can use these rules to make decisions. We can sort groups by conversion
+    (probability of successful contact) and pick the customers with the highest probability.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE22]'
+  prefs: []
+  type: TYPE_PRE
+- en: '![](../Images/acbff0174458938774ca4624ca7bfce3.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Image by author
+  prefs: []
+  type: TYPE_NORMAL
+- en: Imagine we have resources to contact only around 10% of our user base, we can
+    focus on the first three groups. Even with such a limited capacity, we would expect
+    to get almost 40% conversion — it’s a really good result, and we’ve achieved it
+    with just a bunch of straightforward heuristics.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In real life, it’s also worth testing the model (or heuristics) before deploying
+    it in production. I would split the training dataset into training and validation
+    parts (by time to avoid leakage) and see the heuristics performance on the validation
+    set to have a better view of the actual model quality.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Working with high cardinality categories
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: Another topic that is worth discussing in this context is category encoding,
+    since we have to encode the categorical variables for `sklearn` implementation.
+    We’ve used a straightforward approach with one-hot encoding, but in some cases,
+    it doesn’t work.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Imagine we also have a region in the data. I’ve synthetically generated English
+    cities for each row. We have 155 unique regions, so the number of features has
+    increased to 190.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE23]'
+  prefs: []
+  type: TYPE_PRE
+- en: So, the basic tree now has lots of conditions based on regions and it’s not
+    convenient to work with them.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/6216a33b10776916d2f69f7d0630683c.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Image by author
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'In such a case, it might not be meaningful to explode the number of features,
+    and it’s time to think about encoding. There’s a comprehensive article, [“Categorically:
+    Don’t explode — encode!”](https://medium.com/data-science-at-microsoft/categorically-dont-explode-encode-dd623b565ce3),
+    that shares a bunch of different options to handle high cardinality categorical
+    variables. I think the most feasible ones in our case will be the following two
+    options:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Count or Frequency Encoder** that shows good performance in benchmarks. This
+    encoding assumes that categories of similar size would have similar characteristics.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Target Encoder,** where we can encode the category by the mean value of the
+    target variable. It will allow us to prioritise segments with higher conversion
+    and deprioritise segments with lower. Ideally, it would be nice to use historical
+    data to get the averages for the encoding, but we will use the existing dataset.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: However, it will be interesting to test different approaches, so let’s split
+    our dataset into train and test, saving 10% for validation. For simplicity, I’ve
+    used one-hot encoding for all columns except for region (since it has the highest
+    cardinality).
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE24]'
+  prefs: []
+  type: TYPE_PRE
+- en: For convenience, let’s combine all the logic for parsing the tree into one function.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE25]'
+  prefs: []
+  type: TYPE_PRE
+- en: Let’s create an encodings data frame, calculating frequencies and conversions.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE26]'
+  prefs: []
+  type: TYPE_PRE
+- en: Then, merge it into our training and validation sets. For the validation set,
+    we will also fill NAs as averages.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE27]'
+  prefs: []
+  type: TYPE_PRE
+- en: Now, we can fit the models and get their structures.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE28]'
+  prefs: []
+  type: TYPE_PRE
+- en: Let’s look at the structures and select the top categories up to 10–15% of our
+    target audience. We can also apply these conditions to our validation sets to
+    test our approach in practice.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Let’s start with Count Encoder.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/dcec657e89b6f991384cf68d107a5f11.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Image by author
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE29]'
+  prefs: []
+  type: TYPE_PRE
+- en: We can also see what regions have been selected, and it’s only Manchester.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/f49564eb3fe6576eb852af3484e2e6ba.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Image by author
+  prefs: []
+  type: TYPE_NORMAL
+- en: Let’s continue with the Target encoding.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/ba0e411fdef581bd2a120a04721315aa.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Image by author
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE30]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'We see a slightly lower number of selected users for communication but a significantly
+    higher number of conversions: 248 vs. 227 (+9.3%).'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Let’s also look at the selected categories. We see that the model picked up
+    all the cities with high conversions (Manchester, Liverpool, Bristol, Leicester,
+    and New Castle), but there are also many small regions with high conversions solely
+    due to chance.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE31]'
+  prefs: []
+  type: TYPE_PRE
+- en: '![](../Images/0cc1c68f8cc94caa56e08caca2b5008d.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Image by author
+  prefs: []
+  type: TYPE_NORMAL
+- en: In our case, it doesn’t impact much since the share of such small cities is
+    low. However, if you have way more small categories, you might see significant
+    drawbacks of overfitting. Target Encoding might be tricky at this point, so it’s
+    worth keeping an eye on the output of your model.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Luckily, there’s an approach that can help you overcome this issue. Following
+    the article [“Encoding Categorical Variables: A Deep Dive into Target Encoding”](https://towardsdatascience.com/encoding-categorical-variables-a-deep-dive-into-target-encoding-2862217c2753/),
+    we can add smoothing. The idea is to combine the group’s conversion rate with
+    the overall average: the larger the group, the more weight its data carries, while
+    smaller segments will lean more towards the global average.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: First, I’ve selected the parameters that make sense for our distribution, looking
+    at a bunch of options. I chose to use the global average for the groups under
+    100 people. This part is a bit subjective, so use common sense and your knowledge
+    about the business domain.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE32]'
+  prefs: []
+  type: TYPE_PRE
+- en: '![](../Images/7b4434f070ff79eb13e28db0fffd95ef.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Image by author
+  prefs: []
+  type: TYPE_NORMAL
+- en: Then, we can calculate, based on the selected parameters, the smoothing coefficients
+    and blended averages.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE33]'
+  prefs: []
+  type: TYPE_PRE
+- en: Then, we can fit another model with smoothed target category encoding.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE34]'
+  prefs: []
+  type: TYPE_PRE
+- en: '![](../Images/9610810673b2809cf5d211bd4f0ca5fb.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Image by author
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE35]'
+  prefs: []
+  type: TYPE_PRE
+- en: We can see that we’ve eliminated the small cities and prevented overfitting
+    in our model while keeping roughly the same performance, capturing 247 conversions.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE36]'
+  prefs: []
+  type: TYPE_PRE
+- en: '![](../Images/87e71c38bff14e5d0b25db54b719055d.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Image by author
+  prefs: []
+  type: TYPE_NORMAL
+- en: You can also use [TargetEncoder](https://scikit-learn.org/stable/modules/generated/sklearn.preprocessing.TargetEncoder.html)
+    from `sklearn`, which smoothes and mixes the category and global means depending
+    on the segment size. However, it also adds random noise, which is not ideal for
+    our case of heuristics.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '*You can find the full code on [GitHub](https://github.com/miptgirl/miptgirl_medium/blob/main/mining_rules/churn_prediction.ipynb).*'
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: Summary
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: In this article, we explored how to extract simple “rules” from data and use
+    them to inform business decisions. We generated heuristics using a Decision Tree
+    Classifier and touched on the important topic of categorical encoding since decision
+    tree algorithms require categorical variables to be converted.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'We saw that this rule-based approach can be surprisingly effective, helping
+    you reach business decisions quickly. However, it’s worth noting that this simplistic
+    approach has its drawbacks:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: We are trading off the model’s power and accuracy for its simplicity and interpretability,
+    so if you’re optimising for accuracy, choose another approach.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Even though we’re using a set of static heuristics, your data still can change,
+    and they might become outdated, so you need to recheck your model from time to
+    time.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '* * *'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '*Thank you a lot for reading this article. I hope it was insightful to you.
+    If you have any follow-up questions or comments, please leave them in the comments
+    section.*'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Reference
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: '**Dataset:** *Moro, S., Rita, P., & Cortez, P. (2014). Bank Marketing [Dataset].
+    UCI Machine Learning Repository.* [*https://doi.org/10.24432/C5K306*](https://doi.org/10.24432/C5K306)'
+  prefs: []
+  type: TYPE_NORMAL

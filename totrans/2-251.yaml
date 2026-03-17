@@ -1,0 +1,366 @@
+- en: Connecting the Dots for Better Movie Recommendations
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 原文：[https://towardsdatascience.com/connecting-the-dots-for-better-movie-recommendations/](https://towardsdatascience.com/connecting-the-dots-for-better-movie-recommendations/)
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: <mdspan datatext="el1749774191081" class="mdspan-comment">One of the</mdspan>
+    promises of retrieval-augmented generation (RAG) is that it allows AI systems
+    to answer questions using up-to-date or domain-specific information, without retraining
+    the model. But most RAG pipelines still treat documents and information as flat
+    and disconnected—retrieving isolated chunks based on vector similarity, with no
+    sense of how those chunks relate.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In order to remedy RAG’s ignorance of—often obvious—connections between documents
+    and chunks, developers have turned to graph RAG approaches, but often found that
+    the benefits of graph RAG were [not worth the added complexity of implementing
+    it](https://medium.com/data-science/the-quest-for-production-quality-graph-rag-easy-to-start-hard-to-finish-46ca404cee3d).
+  prefs: []
+  type: TYPE_NORMAL
+- en: In our recent article on [the open-source Graph RAG Project and GraphRetriever](https://www.datastax.com/blog/introducing-graph-rag-project-and-graphretriever),
+    we introduced a new, simpler approach that combines your existing vector search
+    with lightweight, metadata-based graph traversal, which doesn’t require graph
+    construction or storage. The graph connections can be defined at runtime—or even
+    query-time—by specifying which document metadata values you would like to use
+    to define graph “edges,” and these connections are traversed during retrieval
+    in graph RAG.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'In this article, we expand on one of the use cases in the Graph RAG Project
+    documentation—[a demo notebook can be found here](https://github.com/datastax/graph-rag/blob/main/docs/examples/movie-reviews-graph-rag.ipynb)—which
+    is a simple but illustrative example: searching movie reviews from a Rotten Tomatoes
+    dataset, automatically connecting each review with its local subgraph of related
+    information, and then putting together query responses with full context and relationships
+    between movies, reviews, reviewers, and other data and metadata attributes.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The dataset: Rotten Tomatoes reviews and movie metadata'
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'The dataset used in this case study comes from a public Kaggle dataset titled
+    [“Massive Rotten Tomatoes Movies and Reviews”](https://www.kaggle.com/datasets/andrezaza/clapper-massive-rotten-tomatoes-movies-and-reviews).
+    It includes two primary CSV files:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: rotten_tomatoes_movies.csv — containing structured information on over 200,000
+    movies, including fields like title, cast, directors, genres, language, release
+    date, runtime, and box office earnings.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: rotten_tomatoes_movie_reviews.csv — a collection of nearly 2 million user-submitted
+    movie reviews, with fields such as review text, rating (e.g., 3/5), sentiment
+    classification, review date, and a reference to the associated movie.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Each review is linked to a movie via a shared movie_id, creating a natural relationship
+    between unstructured review content and structured movie metadata. This makes
+    it a perfect candidate for demonstrating GraphRetriever’s ability to traverse
+    document relationships using metadata alone—no need to manually build or store
+    a separate graph.
+  prefs: []
+  type: TYPE_NORMAL
+- en: By treating metadata fields such as movie_id, genre, or even shared actors and
+    directors as graph edges, we can build a connected retrieval flow that enriches
+    each query with related context automatically.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The challenge: putting movie reviews in context'
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'A common goal in AI-powered search and recommendation systems is to let users
+    ask natural, open-ended questions and get meaningful, contextual results. With
+    a large dataset of movie reviews and metadata, we want to support full-context
+    responses to prompts like:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: “What are some good family movies?”
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: “What are some recommendations for exciting action movies?”
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: “What are some classic movies with amazing cinematography?”
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'A great answer to each of these prompts requires subjective review content
+    along with some semi-structured attributes like genre, audience, or visual style.
+    To give a good answer with full context, the system needs to:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Retrieve the most relevant reviews based on the user’s query, using vector-based
+    semantic similarity
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Enrich each review with full movie details—title, release year, genre, director,
+    etc.—so the model can present a complete, grounded recommendation
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: 'Connect this information with other reviews or movies that provide an even
+    broader context, such as: What are other reviewers saying? How do other movies
+    in the genre compare?'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: A traditional RAG pipeline might handle step 1 well—pulling relevant snippets
+    of text. But, without knowledge of how the retrieved chunks relate to other information
+    in the dataset, the model’s responses can lack context, depth, or accuracy.
+  prefs: []
+  type: TYPE_NORMAL
+- en: How graph RAG addresses the challenge
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: Given a user’s query, a plain RAG system might recommend a movie based on a
+    small set of directly semantically relevant reviews. But graph RAG and GraphRetriever
+    can easily pull in relevant context—for example, other reviews of the same movies
+    or other movies in the same genre—to compare and contrast before making recommendations.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'From an implementation standpoint, graph RAG provides a clean, two-step solution:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Step 1: Build a standard RAG system'
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: First, just like with any RAG system, we embed the document text using a language
+    model and store the embeddings in a vector database. Each embedded review may
+    include structured metadata, such as reviewed_movie_id, rating, and sentiment—information
+    we’ll use to define relationships later. Each embedded movie description includes
+    metadata such as movie_id, genre, release_year, director, etc.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'This allows us to handle typical vector-based retrieval: when a user enters
+    a query like “What are some good family movies?”, we can quickly fetch reviews
+    from the dataset that are semantically related to family movies. Connecting these
+    with broader context occurs in the next step.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Step 2: Add graph traversal with GraphRetriever'
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: Once the semantically relevant reviews are retrieved in step 1 using vector
+    search, we can then use GraphRetriever to traverse connections between reviews
+    and their related movie records.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Specifically, the GraphRetriever:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Fetches relevant reviews via semantic search (RAG)
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Follows metadata-based edges (like reviewed_movie_id) to retrieve more information
+    that is directly related to each review, such as movie descriptions and attributes,
+    data about the reviewer, etc
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Merges the content into a single context window for the language model to use
+    when generating an answer
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'A key point: no pre-built knowledge graph is needed. The graph is defined entirely
+    in terms of metadata and traversed dynamically at query time. If you want to expand
+    the connections to include shared actors, genres, or time periods, you just update
+    the edge definitions in the retriever config—no need to reprocess or reshape the
+    data.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: So, when a user asks about exciting action movies with some specific qualities,
+    the system can bring in datapoints like the movie’s release year, genre, and cast,
+    improving both relevance and readability. When someone asks about classic movies
+    with amazing cinematography, the system can draw on reviews of older films and
+    pair them with metadata like genre or era, giving responses that are both subjective
+    and grounded in facts.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In short, GraphRetriever bridges the gap between unstructured opinions (subjective
+    text) and structured context (connected metadata)—producing query responses that
+    are more intelligent, trustworthy, and complete.
+  prefs: []
+  type: TYPE_NORMAL
+- en: GraphRetriever in action
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'To show how GraphRetriever can connect unstructured review content with structured
+    movie metadata, we walk through a basic setup using a sample of the Rotten Tomatoes
+    dataset. This involves three main steps: creating a vector store, converting raw
+    data into LangChain documents, and configuring the graph traversal strategy.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: See [the example notebook in the Graph RAG Project](https://github.com/datastax/graph-rag/blob/main/docs/examples/movie-reviews-graph-rag.ipynb)
+    for complete, working code.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Create the vector store and embeddings
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: 'We begin by embedding and storing the documents, just like we would in any
+    RAG system. Here, we are using OpenAIEmbeddings and the Astra DB vector store:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE0]'
+  prefs: []
+  type: TYPE_PRE
+- en: The structure of data and metadata
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: We store and embed document content as we usually would for any RAG system,
+    but we also preserve structured metadata for use in graph traversal. The document
+    content is kept minimal (review text, movie title, description), while the rich
+    structured data is stored in the “metadata” fields in the stored document object.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'This is example JSON from one movie document in the vector store:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE1]'
+  prefs: []
+  type: TYPE_PRE
+- en: Note that graph traversal with GraphRetriever uses only the attributes this
+    metadata field, does not require a specialized graph DB, and does not use any
+    LLM calls or other expensive
+  prefs: []
+  type: TYPE_NORMAL
+- en: Configure and run GraphRetriever
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: The GraphRetriever traverses a simple graph defined by metadata connections.
+    In this case, we define an edge from each review to its corresponding movie using
+    the directional relationship between **reviewed_movie_id** (in reviews) and **movie_id**
+    (in movie descriptions).
+  prefs: []
+  type: TYPE_NORMAL
+- en: We use an “eager” traversal strategy, which is one of the simplest traversal
+    strategies. See [documentation for the Graph RAG Project](https://datastax.github.io/graph-rag/reference/graph_retriever/strategies/)
+    for more details about strategies.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE2]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'In this configuration:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '`start_k=10`: retrieves 10 review documents using semantic search'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '`adjacent_k=10`: allows up to 10 adjacent documents to be pulled at each step
+    of graph traversal'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '`select_k=100`: up to 100 total documents can be returned'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '`max_depth=1`: the graph is only traversed one level deep, from review to movie'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Note that because each review links to exactly one reviewed movie, the graph
+    traversal depth would have stopped at 1 regardless of this parameter, in this
+    simple example. See [more examples in the Graph RAG Project](https://datastax.github.io/graph-rag/examples/)
+    for more sophisticated traversal.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Invoking a query
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: 'You can now run a natural language query, such as:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE3]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'And with a little sorting and reformatting of text—see the notebook for details—we
+    can print a basic list of the retrieved movies and reviews, for example:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE4]'
+  prefs: []
+  type: TYPE_PRE
+- en: We can then pass the above output to the LLM for generation of a final response,
+    using the full set information from the reviews as well as the linked movies.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Setting up the final prompt and LLM call looks like this:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE5]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'And, the final response from the graph RAG system might look like this:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '`Based on the reviews provided, "The Addams Family" and "Addams Family Values"
+    are recommended as good family movies. "The Addams Family" is described as a witty
+    family comedy with enough humor to entertain adults, while "Addams Family Values"
+    is noted for its clever take on family dynamics and its entertaining moments.`'
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: Keep in mind that this final response was the result of the initial semantic
+    search for reviews mentioning family movies—plus expanded context from documents
+    that are directly related to these reviews. By expanding the window of relevant
+    context beyond simple semantic search, the LLM and overall graph RAG system is
+    able to put together more complete and more helpful responses.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Try It Yourself
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'The case study in this article shows how to:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Blend unstructured and structured data in your RAG pipeline
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Use metadata as a dynamic knowledge graph without building or storing one
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Improve the depth and relevance of AI-generated responses by surfacing connected
+    context
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'In short, this is Graph RAG in action: adding structure and relationships to
+    make LLMs not just retrieve, but build context and reason more effectively. If
+    you’re already storing rich metadata alongside your documents, GraphRetriever
+    gives you a practical way to put that metadata to work—with no additional infrastructure.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: We hope this inspires you to try GraphRetriever on your own data—it’s all open-source—especially
+    if you’re already working with documents that are implicitly connected through
+    shared attributes, links, or references.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'You can explore the full notebook and implementation details here: [Graph RAG
+    on Movie Reviews from Rotten Tomatoes](https://github.com/datastax/graph-rag/blob/main/docs/examples/movie-reviews-graph-rag.ipynb).'
+  prefs: []
+  type: TYPE_NORMAL

@@ -1,0 +1,802 @@
+- en: Agentic GraphRAG for Commercial Contracts
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 原文：[https://towardsdatascience.com/agentic-graphrag-for-commercial-contracts/](https://towardsdatascience.com/agentic-graphrag-for-commercial-contracts/)
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: <mdspan datatext="el1743654067385" class="mdspan-comment">In every business</mdspan>,
+    legal contracts are foundational documents that define the relationships, obligations,
+    and responsibilities between parties. Whether it’s a partnership agreement, an
+    NDA, or a supplier contract, these documents often contain critical information
+    that drives decision-making, risk management, and compliance. However, navigating
+    and extracting insights from these contracts can be a complex and time-consuming
+    process.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In this post, we’ll explore how we can streamline the process of understanding
+    and working with legal contracts by implementing an end-to-end solution using
+    Agentic GraphRAG. I see GraphRAG as an umbrella term for any method that retrieves
+    or reasons over information stored in a knowledge graph, enabling more structured
+    and context-aware responses.
+  prefs: []
+  type: TYPE_NORMAL
+- en: By structuring legal contracts into a knowledge graph in Neo4j, we can create
+    a powerful repository of information that’s easy to query and analyze. From there,
+    we’ll build a LangGraph agent that allows users to ask specific questions about
+    the contracts, making it possible to rapidly uncover new insights.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/5b876bd9cf71faa52035cfc977691926.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: The code is available in this [GitHub repository](https://github.com/tomasonjo-labs/legal-tech-chat).
+  prefs: []
+  type: TYPE_NORMAL
+- en: Why structuring data matters
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: Some domains work well with naive RAG, but legal contracts present unique challenges.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/17c8bc70d3a762b1f4c6da79d6550534.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Pulling information from irrelevant contracts using naive vector RAG
+  prefs: []
+  type: TYPE_NORMAL
+- en: As shown in the image, relying solely on a vector index to retrieve relevant
+    chunks can introduce risks, such as pulling information from irrelevant contracts.
+    This is because legal language is highly structured, and similar wording across
+    different agreements can lead to incorrect or misleading retrieval. These limitations
+    highlight the need for a more structured approach, such as GraphRAG, to ensure
+    precise and context-aware retrieval.
+  prefs: []
+  type: TYPE_NORMAL
+- en: To implement GraphRAG, we first need to construct a knowledge graph.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/86e71d8871328b956f822aec447b85f1.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Legal knowledge graph containing both structured and unstructured information.
+  prefs: []
+  type: TYPE_NORMAL
+- en: To build a knowledge graph for legal contracts, we need a way to extract structured
+    information from documents and store it alongside the raw text. An LLM can help
+    by reading through contracts and identifying key details such as parties, dates,
+    contract types, and important clauses. Instead of treating the contract as just
+    a block of text, we break it down into structured components that reflect its
+    underlying legal meaning. For example, an LLM can recognize that “ACME Inc. agrees
+    to pay $10,000 per month starting January 1, 2024” contains both a payment obligation
+    and a start date, which we can then store in a structured format.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Once we have this structured data, we store it in a knowledge graph, where entities
+    like companies, agreements, and clauses are represented as represented along with
+    their relationships. The unstructured text remains available, but now we can use
+    the structured layer to refine our searches and make retrieval far more precise.
+    Instead of just fetching the most relevant text chunks, we can filter contracts
+    based on their attributes. This means we can answer questions that naive RAG would
+    struggle with, such as how many contracts were signed last month or whether we
+    have any active agreements with a specific company. These questions require aggregation
+    and filtering, which isn’t possible with standard vector-based retrieval alone.
+  prefs: []
+  type: TYPE_NORMAL
+- en: By combining structured and unstructured data, we also make retrieval more context-aware.
+    If a user asks about a contract’s payment terms, we ensure that the search is
+    constrained to the right agreement rather than relying on text similarity, which
+    might pull in terms from unrelated contracts. This hybrid approach overcomes the
+    limitations of naive RAG and allows for a much deeper and more reliable analysis
+    of legal documents.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Graph construction
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: We’ll leverage an LLM to extract structured information from legal documents,
+    using the [**CUAD (Contract Understanding Atticus Dataset)**](https://www.atticusprojectai.org/cuad)**,**
+    a widely used benchmark dataset for contract analysis licensed under CC BY 4.0\.
+    CUAD dataset contains over 500 contracts, making it an ideal dataset for evaluating
+    our structured extraction pipeline.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The token count distribution for the contracts is visualized below.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/7e6b3075929569c02291298709d49a06.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Most contracts in this dataset are relatively short, with token counts below
+    10,000\. However, there are some much longer contracts, with a few reaching up
+    to 80,000 tokens. These long contracts are rare, while shorter ones make up the
+    majority. The distribution shows a steep drop-off, meaning long contracts are
+    the exception rather than the rule.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We’re using Gemini-2.0-Flash for extraction, which has a 1 million token input
+    limit, so handling these contracts isn’t a problem. Even the longest contracts
+    in our dataset (around 80,000 tokens) fit well within the model’s capacity. Since
+    most contracts are much shorter, we don’t have to worry about truncation or breaking
+    documents into smaller chunks for processing.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Structured data extraction
+  prefs:
+  - PREF_H4
+  type: TYPE_NORMAL
+- en: 'Most commercial LLMs have the option to use Pydantic objects to define the
+    schema of the output. An example for location:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE0]'
+  prefs: []
+  type: TYPE_PRE
+- en: When using LLMs for structured output, Pydantic helps define a clear schema
+    by specifying the types of attributes and providing descriptions that guide the
+    model’s responses. Each field has a type, such as `str` or `Optional[str]`, and
+    a description that tells the LLM exactly how to format the output.
+  prefs: []
+  type: TYPE_NORMAL
+- en: For example, in a `Location` model, we define key attributes like `address`,
+    `city`, `state`, and `country`, specifying what data is expected and how it should
+    be structured. The `country` field, for instance, follows two-letter country code
+    standard like `"US"`, `"FR"`, or `"JP"`, instead of inconsistent variations like
+    “United States” or “USA.” This principle applies to other structured data as well,
+    ISO 8601 keeps dates in a standard format (`YYYY-MM-DD`), and so on.
+  prefs: []
+  type: TYPE_NORMAL
+- en: By defining structured output with Pydantic, we make LLM responses more reliable,
+    machine-readable, and easier to integrate into databases or APIs. Clear field
+    descriptions further help the model generate correctly formatted data, reducing
+    the need for post-processing.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The Pydantic schema models can be more sophisticated like the **Contract** model
+    below, which captures key details of a legal agreement, ensuring the extracted
+    data follows a standardized structure.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE1]'
+  prefs: []
+  type: TYPE_PRE
+- en: This contract schema organizes key details of legal agreements in a structured
+    way, making it easier to analyze with LLMs. It includes different types of clauses,
+    such as confidentiality or termination, each with a short summary. The parties
+    involved are listed with their names, locations, and roles, while contract details
+    cover things like start and end dates, total value, and governing law. Some attributes,
+    such as governing law, can be defined using nested models, enabling more detailed
+    and complex outputs.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '*The nested object approach works well with some AI models that handle complex
+    data relationships, while others may struggle with deeply nested details.*'
+  prefs: []
+  type: TYPE_NORMAL
+- en: We can test our approach using the following example. We are using the LangChain
+    framework to orchestrate LLMs.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE2]'
+  prefs: []
+  type: TYPE_PRE
+- en: which outputs
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE3]'
+  prefs: []
+  type: TYPE_PRE
+- en: Now that our contract data is in a structured format, we can define the Cypher
+    query needed to import it into Neo4j, mapping entities, relationships, and key
+    clauses into a graph structure. This step transforms raw extracted data into a
+    queryable knowledge graph, enabling efficient traversal and retrieval of contract
+    insights.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE4]'
+  prefs: []
+  type: TYPE_PRE
+- en: This Cypher query imports structured contract data into Neo4j by creating `Contract`
+    nodes with attributes such as `summary`, `contract_type`, `effective_date`, `duration`,
+    and `total_amount`. If a governing law is specified, it links the contract to
+    a `Location` node. Parties involved in the contract are stored as `Party` nodes,
+    with each party connected to a `Location` and assigned a role in relation to the
+    contract. The query also processes clauses, creating `Clause` nodes and linking
+    them to the contract while storing their type and summary.
+  prefs: []
+  type: TYPE_NORMAL
+- en: After processing and importing the contracts, the resulting graph follows the
+    following graph schema.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/5ef11a6435ec2041062a30e7593d7b30.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Imported legal graph schema
+  prefs: []
+  type: TYPE_NORMAL
+- en: Let’s also take a look at a single contract.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/0c8abd767cf0c0236a14a9a90c7a65ed.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'This graph represents a contract structure where a contract (orange node) connects
+    to various clauses (red nodes), parties (blue nodes), and locations (violet nodes).
+    The contract has three clauses: *Renewal & Termination*, *Liability & Indemnification*,
+    and *Confidentiality & Non-Disclosure*. Two parties, *Modus Media International*
+    and *Dragon Systems, Inc.*, are involved, each linked to their respective locations,
+    Netherlands (NL) and United States (US). The contract is governed by U.S. law.
+    The contract node also contains additional metadata, including dates and other
+    relevant details.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: A public read-only instance containing CUAD legal contracts is available with
+    the following credentials.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE5]'
+  prefs: []
+  type: TYPE_PRE
+- en: Entity resolution
+  prefs:
+  - PREF_H4
+  type: TYPE_NORMAL
+- en: Entity resolution in legal contracts is challenging due to variations in how
+    companies, individuals, and locations are referenced. A company might appear as
+    “Acme Inc.” in one contract and “Acme Corporation” in another, requiring a process
+    to determine whether they refer to the same entity.
+  prefs: []
+  type: TYPE_NORMAL
+- en: One approach is to generate candidate matches using text embeddings or string
+    distance metrics like Levenshtein distance. Embeddings capture semantic similarity,
+    while string distance measures character-level differences. Once candidates are
+    identified, additional evaluation is needed, comparing metadata such as addresses
+    or tax IDs, analyzing shared relationships in the graph, or incorporating human
+    review for critical cases.
+  prefs: []
+  type: TYPE_NORMAL
+- en: For resolving entities at scale, both open-source solutions like [Dedupe](https://github.com/dedupeio/dedupe)
+    and commercial tools like [Senzing](https://senzing.com/) offer automated methods.
+    Choosing the right approach depends on data quality, accuracy requirements, and
+    whether manual oversight is feasible.
+  prefs: []
+  type: TYPE_NORMAL
+- en: With the legal graph constructed, we can move onto the agentic GraphRAG implementation.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Agentic GraphRAG
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: Agentic architectures vary widely in complexity, modularity, and reasoning capabilities.
+    At their core, these architectures involve an LLM acting as a central reasoning
+    engine, often supplemented with tools, memory, and orchestration mechanisms. The
+    key differentiator is how much autonomy the LLM has in making decisions and how
+    interactions with external systems are structured.
+  prefs: []
+  type: TYPE_NORMAL
+- en: One of the simplest and most effective designs, particularly for chatbot-like
+    implementations, is a direct LLM-with-tools approach. In this setup, the LLM serves
+    as the decision-maker, dynamically selecting which tools to invoke (if any), retrying
+    operations when necessary, and executing multiple tools in sequence to fulfill
+    complex requests.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/a2b5fa9107dd1897ce14c61f3166c367.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: The diagram represents a simple LangGraph agent workflow. It begins at `__start__`,
+    moving to the `assistant` node, where the LLM processes user input. From there,
+    the assistant can either call `tools` to fetch relevant information or transition
+    directly to `__end__` to complete the interaction. If a tool is used, the assistant
+    processes the response before deciding whether to call another tool or end the
+    session. This structure allows the agent to autonomously determine when external
+    information is needed before responding.
+  prefs: []
+  type: TYPE_NORMAL
+- en: This approach is particularly well-suited to stronger commercial models like
+    Gemini or GPT-4o, which excel at reasoning and self-correction.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Tools
+  prefs:
+  - PREF_H4
+  type: TYPE_NORMAL
+- en: LLMs are powerful reasoning engines, but their effectiveness often depends on
+    how well they are equipped with external tools. These tools , whether database
+    queries, APIs, or search functions, extend an LLM’s ability to retrieve facts,
+    perform calculations, or interact with structured data.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/e677659d8edb43dbd742a7df99884e02.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Designing tools that are both general enough to handle diverse queries and precise
+    enough to return meaningful results is more art than science. What we’re really
+    building is a semantic layer between the LLM and the underlying data. Rather than
+    requiring the LLM to understand the exact structure of a Neo4j knowledge graph
+    or a database schema, we define tools that abstract away these complexities.
+  prefs: []
+  type: TYPE_NORMAL
+- en: With this approach, the LLM doesn’t need to know whether contract information
+    is stored as graph nodes and relationships or as raw text in a document store.
+    It only needs to invoke the right tool to fetch relevant data based on a user’s
+    question.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In our case, the contract retrieval tool serves as this semantic interface.
+    When a user asks about contract terms, obligations, or parties, the LLM calls
+    a structured query tool that translates the request into a database query, retrieves
+    relevant information, and presents it in a format the LLM can interpret and summarize.
+    This enables a flexible, model-agnostic system where different LLMs can interact
+    with contract data without needing direct knowledge of its storage or structure.
+  prefs: []
+  type: TYPE_NORMAL
+- en: There’s no one-size-fits-all standard for designing an optimal toolset. What
+    works well for one model may fail for another. Some models handle ambiguous tool
+    instructions gracefully, while others struggle with complex parameters or require
+    explicit prompting. The trade-off between generality and task-specific efficiency
+    means tool design requires iteration, testing, and fine-tuning for the LLM in
+    use.
+  prefs: []
+  type: TYPE_NORMAL
+- en: For contract analysis, an effective tool should retrieve contracts and summarize
+    key terms without requiring users to phrase queries rigidly. Achieving this flexibility
+    depends on thoughtful prompt engineering, robust schema design, and adaptation
+    to different LLM capabilities. As models evolve, so do strategies for making tools
+    more intuitive and effective.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In this section, we’ll explore different approaches to tool implementation,
+    comparing their flexibility, effectiveness, and compatibility with various LLMs.
+  prefs: []
+  type: TYPE_NORMAL
+- en: My preferred approach is to dynamically and deterministically construct a Cypher
+    query and execute it against the database. This method ensures consistent and
+    predictable query generation while maintaining implementation flexibility. By
+    structuring queries this way, we reinforce the semantic layer, allowing user inputs
+    to be seamlessly translated into database retrievals. This keeps the LLM focused
+    on retrieving relevant information rather than understanding the underlying data
+    model.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Our tool is intended to identify relevant contracts, so we need to provide the
+    LLM with options to search contracts based on various attributes. The input description
+    is again provided as a Pydantic object.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE6]'
+  prefs: []
+  type: TYPE_PRE
+- en: With LLM tools, attributes can take various forms depending on their purpose.
+    Some fields are simple strings, such as `contract_type` and `country`, which store
+    single values. Others, like `parties`, are lists of strings, allowing multiple
+    entries (e.g., multiple entities involved in a contract).
+  prefs: []
+  type: TYPE_NORMAL
+- en: Beyond basic data types, attributes can also represent complex objects. For
+    example, `monetary_value` uses a `MonetaryValue` object, which includes structured
+    data such as currency type and the operator. While attributes with nested objects
+    offer a clear and structured representation of data, models tend to struggle to
+    handle them effectively, so we should keep them simple.
+  prefs: []
+  type: TYPE_NORMAL
+- en: As part of this project, we’re experimenting with an additional `cypher_aggregation`
+    attribute, providing the LLM with greater flexibility for scenarios that require
+    specific filtering or aggregation.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE7]'
+  prefs: []
+  type: TYPE_PRE
+- en: MATCH (c:Contract)
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: <filtering based on other parameters>
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: WITH c, summary, contract_type, contract_scope, effective_date, end_date, parties,
+    active, monetary_value, contract_id, countries
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: <your cypher goes here>
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: '[PRE8]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: RETURN contract_type, count(*) AS count ORDER BY count DESC
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: '[PRE9]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: WITH contract_type, effective_date, end_date
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: WHERE effective_date IS NOT NULL AND end_date IS NOT NULL
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: WITH contract_type, duration.between(effective_date, end_date).days AS duration
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: RETURN contract_type, avg(duration) AS avg_duration ORDER BY avg_duration DESC
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: '[PRE10]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: RETURN effective_date.year AS year, count(*) AS count ORDER BY year
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: '[PRE11]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: UNWIND parties AS party
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: WITH party.name AS party_name, active, count(*) AS contract_count
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: WHERE active = true
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: RETURN party_name, contract_count
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: ORDER BY contract_count DESC
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: LIMIT 1
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: '[PRE12]'
+  prefs:
+  - PREF_IND
+  type: TYPE_PRE
+- en: The `cypher_aggregation` attribute allows LLMs to define custom Cypher statements
+    for advanced aggregations and analytics. It extends the base query by appending
+    question-specified aggregation logic, enabling flexible filtering and computation.
+  prefs: []
+  type: TYPE_NORMAL
+- en: This feature supports use cases such as counting contracts by type, calculating
+    average contract duration, analyzing contract distributions over time, and identifying
+    key parties based on contract activity. By leveraging this attribute, the LLM
+    can dynamically generate insights tailored to specific analytical needs without
+    requiring predefined query structures.
+  prefs: []
+  type: TYPE_NORMAL
+- en: While this flexibility is valuable, it should be carefully evaluated, as increased
+    adaptability comes at the cost of reduced consistency and robustness due to the
+    added complexity of the operation.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We must clearly define the function’s name and description when presenting it
+    to the LLM. A well-structured description helps guide the model in using the function
+    correctly, ensuring it understands its purpose, expected inputs, and outputs.
+    This reduces ambiguity and improves the LLM’s ability to generate meaningful and
+    reliable queries.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE13]'
+  prefs: []
+  type: TYPE_PRE
+- en: Finally, we need to implement a function that processes the given inputs, constructs
+    the corresponding Cypher statement, and executes it efficiently.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The core logic of the function centers on constructing the Cypher statement.
+    We begin by matching the contract as the foundation of the query.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE14]'
+  prefs: []
+  type: TYPE_PRE
+- en: Next, we need to implement the function that processes the input parameters.
+    In this example, we primarily use attributes to filter contracts based on the
+    given criteria.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Simple property filtering**'
+  prefs: []
+  type: TYPE_NORMAL
+- en: For example, the `contract_type` attribute is used to perform simple node property
+    filtering.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE15]'
+  prefs: []
+  type: TYPE_PRE
+- en: This code adds a Cypher filter for `contract_type` while using query parameters
+    for values to prevent query injection security issue.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Since the possible contract type values are presented in the attribute description
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE16]'
+  prefs: []
+  type: TYPE_PRE
+- en: we don’t have to worry about mapping values from input to valid contract types
+    as the LLM will handle that.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Inferred property filtering**'
+  prefs: []
+  type: TYPE_NORMAL
+- en: We’re building tools for an LLM to interact with a knowledge graph, where the
+    tools serve as an abstraction layer over structured queries. A key feature is
+    the ability to use inferred properties at runtime, similar to an ontology but
+    dynamically computed.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE17]'
+  prefs: []
+  type: TYPE_PRE
+- en: Here, `active` acts as a runtime classification, determining whether a contract
+    is ongoing (`>= date()`) or expired (`< date()`). This logic extends structured
+    KG queries by computing properties only when needed, enabling more flexible LLM
+    reasoning. By handling logic like this within tools, we ensure the LLM interacts
+    with simplified, intuitive operations, keeping it focused on reasoning rather
+    than query formulation.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Neighbor filtering**'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Sometimes filtering depends on neighboring nodes, such as restricting results
+    to contracts involving specific parties. The `parties` attribute is an optional
+    list, and when provided, it ensures only contracts linked to those entities are
+    considered:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE18]'
+  prefs: []
+  type: TYPE_PRE
+- en: This code filters contracts based on their associated parties, treating the
+    logic as **AND**, meaning all specified conditions must be met for a contract
+    to be included. It iterates through the provided `parties` list and constructs
+    a query where each party condition must hold.
+  prefs: []
+  type: TYPE_NORMAL
+- en: For each party, a unique parameter name is generated to avoid conflicts. The
+    `EXISTS` clause ensures that the contract has a `PARTY_TO` relationship to a party
+    whose name contains the specified value. The name is converted to lowercase to
+    allow case-insensitive matching. Each party condition is added separately, enforcing
+    an implicit **AND** between them.
+  prefs: []
+  type: TYPE_NORMAL
+- en: If more complex logic were needed, such as supporting **OR** conditions or allowing
+    different matching criteria, the input would need to change. Instead of a simple
+    list of party names, a structured input format specifying operators would be required.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '*Additionally, we could implement a party-matching method that tolerates minor
+    typos, improving the user experience by handling variations in spelling and formatting.*'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Custom operator filtering**'
+  prefs: []
+  type: TYPE_NORMAL
+- en: To add more flexibility, we can introduce an operator object as a nested attribute,
+    allowing more control over filtering logic. Instead of hardcoding comparisons,
+    we define an enumeration for operators and use it dynamically.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'For example, with monetary values, a contract might need to be filtered based
+    on whether its total amount is greater than, less than, or exactly equal to a
+    specified value. Instead of assuming a fixed comparison logic, we define an enum
+    that represents the possible operators:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE19]'
+  prefs: []
+  type: TYPE_PRE
+- en: This approach makes the system more expressive. Instead of rigid filtering rules,
+    the tool interface allows the LLM to specify not just a value but how it should
+    be compared, making it easier to handle a broader range of queries while keeping
+    the LLM’s interaction simple and declarative.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Some LLMs struggle with nested objects as inputs, making it harder to handle
+    structured operator-based filtering. Adding a *between* operator introduces additional
+    complexity since it requires two separate values, which can lead to ambiguity
+    in parsing and input validation.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Min and Max attributes**'
+  prefs: []
+  type: TYPE_NORMAL
+- en: To keep things simpler, I tend to gravitate toward using `min` and `max` attributes
+    for dates, as this naturally supports range filtering and makes the *between*
+    logic straightforward.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE20]'
+  prefs: []
+  type: TYPE_PRE
+- en: This function filters contracts based on an effective date range by adding an
+    optional lower and upper bound condition when `min_effective_date` and `max_effective_date`
+    are provided, ensuring that only contracts within the specified date range are
+    included.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Semantic search**'
+  prefs: []
+  type: TYPE_NORMAL
+- en: An attribute can also be used for semantic search, where instead of relying
+    on a vector index upfront, we use a post-filtering approach to metadata filtering.
+    First, structured filters, like date ranges, monetary values, or parties, are
+    applied to narrow down the candidate set. Then, vector search is performed over
+    this filtered subset to rank results based on semantic similarity.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE21]'
+  prefs: []
+  type: TYPE_PRE
+- en: This code applies semantic search when `summary_search` is provided by computing
+    cosine similarity between the contract’s embedding and the query embedding, ordering
+    results by relevance, and filtering out low-scoring matches with a threshold of
+    0.9\. Otherwise, it defaults to sorting contracts by the most recent `effective_date`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Dynamic queries**'
+  prefs: []
+  type: TYPE_NORMAL
+- en: The cypher aggregation attribute is an experiment I wanted to test that gives
+    the LLM a degree of partial text2cypher capability, allowing it to dynamically
+    generate aggregations after the initial structured filtering. Instead of predefining
+    every possible aggregation, this approach lets the LLM specify calculations like
+    counts, averages, or grouped summaries on demand, making queries more flexible
+    and expressive. However, since this shifts more query logic to the LLM, ensuring
+    all generated queries work correctly becomes challenging, as malformed or incompatible
+    Cypher statements can break execution. This trade-off between flexibility and
+    reliability is a key consideration in designing the system.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE22]'
+  prefs: []
+  type: TYPE_PRE
+- en: If no cypher aggregation is provided, we return the total count of identified
+    contracts along with only five example contracts to avoid overwhelming the prompt.
+    Handling excessive rows is crucial, as an LLM struggling with a massive result
+    set isn’t useful. Additionally, LLM producing answers with 100 contract titles
+    isn’t a good user experience either.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE23]'
+  prefs: []
+  type: TYPE_PRE
+- en: This cypher statement collects all matching contracts into a list, returning
+    the total count and up to five example contracts with key attributes, including
+    summary, type, scope, dates, monetary value, associated parties with roles, and
+    unique country locations.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Now that our contract search tool is built, we hand it off to the LLM and just
+    like that, we have agentic GraphRAG implemented.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Agent Benchmark
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: If you’re serious about implementing agentic GraphRAG, you need an evaluation
+    dataset, not just as a benchmark but as a foundation for the entire project. A
+    well-constructed dataset helps define the scope of what the system should handle,
+    ensuring that initial development aligns with real-world use cases. Beyond that,
+    it becomes an invaluable tool for evaluating performance, allowing you to measure
+    how well the LLM interacts with the graph, retrieves information, and applies
+    reasoning. It’s also essential for prompt engineering optimizations, letting you
+    iteratively refine queries, tool use, and response formatting with clear feedback
+    rather than guesswork. Without a structured dataset, you’re flying blind, making
+    improvements harder to quantify and inconsistencies more difficult to catch.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The code for the benchmark is [available on GitHub](https://github.com/tomasonjo-labs/legal-tech-chat/blob/main/research/benchmark/benchmark_evaluate.ipynb).
+  prefs: []
+  type: TYPE_NORMAL
+- en: I have compiled a list of 22 questions which we will use to evaluate the system.
+    Additionally, we are going to introduce a new metric called `answer_satisfaction`
+    where we will be provide a custom prompt.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE24]'
+  prefs: []
+  type: TYPE_PRE
+- en: Many questions can return a large amount of information. For example, asking
+    for contracts signed before 2020 might yield hundreds of results. Since the LLM
+    receives both the total count and a few example entries, our evaluation should
+    focus on the total count, rather than which specific examples the LLM chooses
+    to show.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/0fc236f4a4c1475b0c8d0bcc83d5f843.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Benchmark results.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The provided results indicate that all evaluated models (Gemini 1.5 Pro, Gemini
+    2.0 Flash, and GPT-4o) perform similarly well for most tool calls, with GPT-4o
+    slightly outperforming the Gemini models (0.82 vs. 0.77). The noticeable difference
+    emerges primarily when partial `text2cypher` is used, particularly for various
+    aggregation operations.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '*Note that this is only 22 fairly simple questions, so we didn’t really explore
+    reasoning capabilities of LLMs.*'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Additionally, I’ve seen projects where accuracy can be improved significantly
+    by leveraging Python for aggregations, as LLMs typically handle Python code generation
+    and execution better than generating complex Cypher queries directly.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Web Application
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: We’ve also built a simple React web application, powered by LangGraph hosted
+    on FastAPI, which streams responses directly to the frontend. Special thanks to
+    [Anej Gorkic](https://github.com/easwee) for creating the web app.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'You can launch the entire stack with the following command:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE25]'
+  prefs: []
+  type: TYPE_PRE
+- en: And navigate to `localhost:5173`
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/3eedd3c713aa5e6e62e46aa6be56dc76.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Summary
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: As LLMs gain stronger reasoning capabilities, they, when paired with the right
+    tools, can become powerful agents for navigating complex domains like legal contracts.
+    In this post, we’ve only scratched the surface, focusing on core contract attributes
+    while barely touching the rich variety of clauses found in real-world agreements.
+    There’s significant room for growth, from expanding clause coverage to refining
+    tool design and interaction strategies.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The code is available on [GitHub](https://github.com/tomasonjo-labs/legal-tech-chat).
+  prefs: []
+  type: TYPE_NORMAL
+- en: Images
+  prefs:
+  - PREF_H4
+  type: TYPE_NORMAL
+- en: All images in this post were created by the author.
+  prefs: []
+  type: TYPE_NORMAL

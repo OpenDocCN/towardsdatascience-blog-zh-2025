@@ -1,0 +1,335 @@
+- en: How to Benchmark Classical Machine Learning Workloads on Google Cloud
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 原文：[https://towardsdatascience.com/benchmarking-classical-machine-learning-workloads-on-google-cloud/](https://towardsdatascience.com/benchmarking-classical-machine-learning-workloads-on-google-cloud/)
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: <mdspan datatext="el1755898002223" class="mdspan-comment">Why Classical</mdspan>
+    Machine Learning Still Matters
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: In an era of GPU supremacy, why do real-world business cases depend so much
+    on classical machine learning and CPU-based training? The answer is that the data
+    most important to real-world business applications is still overwhelmingly **tabular,
+    structured, and relational**—think fraud detection, insurance risk scoring, churn
+    prediction, and operational telemetry. Empirical results (e.g., [Grinsztajn et
+    al*.,* *Why do tree-based models still outperform deep learning on typical tabular
+    data?* (2022), NeurIPS 2022 Track on Datasets and Benchmarks](https://papers.neurips.cc/paper_files/paper/2022/file/0378c7692da36807bdec87ab043cdadc-Paper-Datasets_and_Benchmarks.pdf))
+    show that for these domains **random forest**, **gradient boosting**, and **logistic
+    regression** outperform neural nets in both accuracy and reliability. They also
+    offer explainability which is critical in regulated industries like banking and
+    healthcare.
+  prefs: []
+  type: TYPE_NORMAL
+- en: GPUs often lose their edge here due to **data transfer latency** ([PCIe](https://www.intel.com/content/www/us/en/gaming/resources/what-is-pcie-4-and-why-does-it-matter.html)
+    overhead) and **poor scaling** of some tree-based algorithms. Consequently, **CPU-based
+    training** remains the most cost-effective choice for small-medium structured
+    data workloads on cloud platforms.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'In this article, I’ll walk you through the steps for benchmarking traditional
+    machine learning algorithms on [Google Cloud Platform (GCP)](https://cloud.google.com/)
+    CPU offerings, including the [Intel® Xeon® 6](https://www.intel.com/content/www/us/en/products/details/processors/xeon.html)
+    that was recently made generally available. (Full disclosure: I am affiliated
+    with Intel as a Senior AI Software Solutions Engineer.)'
+  prefs: []
+  type: TYPE_NORMAL
+- en: By systematically comparing runtime, scalability, and cost across algorithms,
+    we can make evidence-based decisions about which approaches deliver the best trade-off
+    between accuracy, speed, and operational cost.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Machine Configuration on Google Cloud
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: Go to [console.cloud.google.com](https://console.cloud.google.com/), set up
+    your billing, and head to “Compute Engine.” Then click on “Create instance” to
+    configure your virtual machine (VM). The figure below shows the [C4 VM series](https://cloud.google.com/compute/docs/general-purpose-machines#c4_series)
+    powered by Intel® Xeon® 6 (code-named Granite Rapids) and the 5th Gen Intel® Xeon®
+    (code-named Emerald Rapids) CPUs.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/cdf48f4b9a3b9d5b1f90e2e54dda8027.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Setting up a virtual machine on Google Cloud
+  prefs: []
+  type: TYPE_NORMAL
+- en: Hyperthreading can introduce performance variability because two threads compete
+    for the same core’s execution resources. For consistent benchmark results, setting
+    “vCPUs to core ratio” to 1 eliminates that variable—more on this in the next section.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/fb4eb1a69d476ab0b80e2f11230ff163.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: vCPUs to core ratio and visible core counts can be set under “Advanced configurations”
+  prefs: []
+  type: TYPE_NORMAL
+- en: Before creating the VM, increase the boot disk size from the left-hand panel—200
+    GB will be more than enough to install the packages needed for this blog.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/9a6fcae3c1ca194239f5b10497a291fc.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Increasing the boot disk size for the virtual machine on Google Cloud
+  prefs: []
+  type: TYPE_NORMAL
+- en: Non-uniform Memory Access (NUMA) Awareness
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: Memory access is non-uniform on multi-core, multi-socket CPUs. This means the
+    latency and bandwidth of memory operations depend on which CPU core is accessing
+    which region of memory. If you don’t control for NUMA, you’re benchmarking the
+    scheduler, not the CPU and the results can appear inconsistent. **Memory affinity**
+    is exactly what eliminates that problem by controlling which CPU cores access
+    which memory regions. The Linux scheduler is aware of the NUMA topology of the
+    platform and attempts to improve performance by scheduling threads on processors
+    that are in the same node as the memory being used, rather than letting the scheduler
+    randomly assign work across the system. However, without explicit affinity controls,
+    you can’t guarantee consistent placement for reliable benchmarking.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Let’s do a hands-on NUMA experiment with XGBoost and a synthetic dataset that
+    is large enough to stress memory.
+  prefs: []
+  type: TYPE_NORMAL
+- en: First, provision a VM that spans multiple NUMA nodes, SSH into the instance,
+    and install the dependencies.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE0]'
+  prefs: []
+  type: TYPE_PRE
+- en: Then create and activate a Python virtual environment to install `scikit-learn`,
+    `numpy`, and `xgboost`. Save the script below as `xgb_bench.py`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE1]'
+  prefs: []
+  type: TYPE_PRE
+- en: Next, run this script in three modes (`baseline / numa0 / interleave`). Repeat
+    each experiment at least 5 times and report the mean and standard deviation. (This
+    calls for another simple script!)
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE2]'
+  prefs: []
+  type: TYPE_PRE
+- en: '[PRE3]'
+  prefs: []
+  type: TYPE_PRE
+- en: When assigning tasks to specific physical cores, use the `--physcpubind` or
+    `-C` option rather than `--cpunodebind`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE4]'
+  prefs: []
+  type: TYPE_PRE
+- en: Which experiment had the smallest mean? How about the standard deviation? For
+    interpreting these numbers, keep in mind that
+  prefs: []
+  type: TYPE_NORMAL
+- en: Lower standard deviation for `numa0` indicates more stable locality.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Lower mean for `numa0` vs `baseline` suggests cross-node traffic was hurting
+    you, and
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: If `interleave` narrows the gap vs `baseline`, your workload is bandwidth sensitive
+    and benefits from spreading pages—at potential cost to latency.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: If none of these apply to a benchmark, the workload may be compute-bound (e.g.,
+    shallow trees, small dataset), or the VM might expose a single NUMA node.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Choosing the Right Benchmarks
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: When benchmarking classical machine learning algorithms on CPUs, you should
+    build your own testing framework, or leverage existing benchmark suites, or use
+    a hybrid approach if appropriate.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Existing test suites such as [scikit-learn_bench](https://github.com/IntelPython/scikit-learn_bench)
+    and [Phoronix Test Suite (PTS)](https://github.com/phoronix-test-suite/phoronix-test-suite)
+    are helpful when you need standardized, reproducible results that others can validate
+    and compare against. They work particularly well if you’re evaluating well-established
+    algorithms like random forest, SVM, or XGBoost where standard datasets provide
+    meaningful insights. Custom benchmarks excel at revealing implementation-specific
+    performance characteristics. For instance, they can measure how different sparse
+    matrix formats affect SVM training times, or how feature preprocessing pipelines
+    impact overall throughput on your specific CPU architecture. The datasets you
+    use directly influence what your benchmark reveals. Feel free to consult the official
+    [scikit-learn benchmarks](https://github.com/scikit-learn/scikit-learn/tree/main/benchmarks)
+    for inspiration. Here’s also a sample set that you can use to create a custom
+    test.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '| **Dataset** | **Size** | **Task** | **Source** |'
+  prefs: []
+  type: TYPE_TB
+- en: '| Higgs | 11M rows | Binary classification | [UCI ML Repo](https://archive.ics.uci.edu/dataset/280/higgs)
+    |'
+  prefs: []
+  type: TYPE_TB
+- en: '| Airline Delay | Variable | Multi-class classification | [BTS](https://www.transtats.bts.gov/ot_delay/ot_delaycause1.asp)
+    |'
+  prefs: []
+  type: TYPE_TB
+- en: '| California Housing | 20K rows | Regression | `sklearn.datasets.fetch_california_housing`
+    |'
+  prefs: []
+  type: TYPE_TB
+- en: '| Synthetic | Variable | Scaling tests | `sklearn.datasets.make_classification`
+    |'
+  prefs: []
+  type: TYPE_TB
+- en: Synthetic scaling datasets are especially useful to expose differences in cache,
+    memory bandwidth, and I/O.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In the rest of this blog, we illustrate how you can run experiments using the
+    open source scikit-learn_bench which currently supports scikit-learn, cuML, and
+    XGBoost frameworks.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Installations and Benchmarking
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: Once the GCP VM is initialized, you can SSH into the instance and execute the
+    commands below in your terminal.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE5]'
+  prefs: []
+  type: TYPE_PRE
+- en: To install Conda on a GCP VM, you’ll need to account for the CPU architecture.
+    If you’re unsure about the architecture of your VM, you can run
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE6]'
+  prefs: []
+  type: TYPE_PRE
+- en: before proceeding to
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE7]'
+  prefs: []
+  type: TYPE_PRE
+- en: Next, you need to execute the script and accept the terms of service (ToS).
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE8]'
+  prefs: []
+  type: TYPE_PRE
+- en: Finally, clone the latest scikit-learn_bench from GitHub, create a virtual environment
+    and install the required Python libraries.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE9]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'At this point, you should be able to run a benchmark using the [sklbench module](https://github.com/IntelPython/scikit-learn_bench/tree/main/sklbench)
+    and a specific configuration:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE10]'
+  prefs: []
+  type: TYPE_PRE
+- en: By default, `sklbench` benchmarks both the standard scikit-learn implementations
+    and their optimized counterparts provided by **sklearnex** (Intel’s accelerated
+    extension)—or other supported frameworks like cuML or XGBoost—and logs results
+    along with hardware and software metadata into `result.json`. You can customize
+    the output file with `--result-file`, and include `--report` to produce an Excel
+    report (`report.xlsx`). For a list of all supported options, see the [documentation](https://github.com/IntelPython/scikit-learn_bench/blob/main/sklbench/report/README.md#arguments).
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'As discussed earlier, you can use `numactl` to pin a process and its child
+    processes to specific CPU cores. Here’s how to run `sklbench` with `numactl`,
+    binding it to selected cores:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE11]'
+  prefs: []
+  type: TYPE_PRE
+- en: Interpreting Results and Best Practices
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: The [report generator](https://github.com/IntelPython/scikit-learn_bench/tree/main/sklbench/report)
+    allows you to combine the result files of multiple runs.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE12]'
+  prefs: []
+  type: TYPE_PRE
+- en: The real metric for cloud decision-making is the cost per task, namely,
+  prefs: []
+  type: TYPE_NORMAL
+- en: '*Cost per task = runtime in hours x hourly price*.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Real-world deployments rarely behave like single benchmark runs. To accurately
+    model the cost per task, it’s useful to account for CPU boost behavior, cloud
+    infrastructure variability, and memory topology, as they can all influence performance
+    in ways that aren’t captured by a one-off measurement. To better reflect actual
+    runtime characteristics, I recommend starting with warm-up iterations to stabilize
+    CPU frequency scaling. Then run each experiment multiple times to account for
+    system noise and transient effects. Reporting the mean and standard deviation
+    helps surface consistent trends, while using medians can be more robust when variance
+    is high, especially in cloud environments where noisy neighbors or resource contention
+    can skew averages. For reproducibility, it’s important to fix package versions
+    and use consistent VM image snapshots. Including NUMA configuration in your results
+    helps others understand memory locality effects, which can significantly impact
+    performance. Tools like scikit-learn_bench automate many of these steps, making
+    it easier to produce benchmarks that are both representative and repeatable.
+  prefs: []
+  type: TYPE_NORMAL
+- en: If you found this article valuable, please consider sharing it with your network.
+    For more AI development how-to content, visit [Intel® AI Development Resources](https://www.intel.com/content/www/us/en/developer/topic-technology/artificial-intelligence/overview.html).
+  prefs: []
+  type: TYPE_NORMAL
+- en: '***Acknowledgments***'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '*The author thanks Neal Dixon, Miriam Gonzales, Chris Liebert, and Rachel Novak
+    for providing feedback on an earlier draft of this work.*'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Resources**'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[Optimizing Applications for NUMA](https://www.intel.com/content/dam/develop/external/us/en/documents/3-5-memmgt-optimizing-applications-for-numa-184398.pdf),
+    Intel Guide for Developing Multithreaded Applications'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Vijay Janapa Reddi, [Introduction to Machine Learning Systems](https://www.mlsysbook.ai/)
+    (2025), MIT Press
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Kounev et al., [Systems Benchmarking For Scientists and Engineers](https://link.springer.com/book/10.1007/978-3-031-85634-1),
+    Second Edition (2025), Springer
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'Matthew Stewart, [The Olympics of AI: Benchmarking Machine Learning Systems](https://medium.com/data-science/the-olympics-of-ai-benchmarking-machine-learning-systems-c4b2051fbd2b)
+    (2023), Towards Data Science'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL

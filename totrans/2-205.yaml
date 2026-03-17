@@ -1,0 +1,340 @@
+- en: Pipelining AI/ML Training Workloads with CUDA Streams
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 原文：[https://towardsdatascience.com/pipelining-ai-ml-training-workloads-with-cuda-streams/](https://towardsdatascience.com/pipelining-ai-ml-training-workloads-with-cuda-streams/)
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: '<mdspan datatext="el1750968827091" class="mdspan-comment">This post is the</mdspan>
+    ninth in our series on [performance profiling and optimization in PyTorch](https://towardsdatascience.com/pytorch-model-performance-analysis-and-optimization-10c3c5822869/) aimed
+    at emphasizing the critical role of performance analysis and optimization in machine
+    learning development. Throughout the series we have reviewed a wide variety of
+    practical tools and techniques for analyzing and boosting the runtime performance
+    of PyTorch-based AI/ML models. Our goal has been twofold:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: To emphasize the importance of routine evaluation and optimization of AI/ML
+    workloads.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: To demonstrate the accessibility of a wide variety tools and techniques for
+    analyzing and optimizing AI/ML runtime performance. You don’t need to be a CUDA
+    expert to meaningfully improve your model performance and reduce compute costs.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: 'In this post, we will explore the use of CUDA streams, a powerful feature of
+    NVIDIA’s CUDA programming model that offers a sophisticated method of overlapping
+    GPU operations and running them concurrently. Although we typically associate
+    our AI/ML model training workload with a single monolithic (a.k.a., “unbreakable”)
+    computation graph *G *running on the GPU, there are some scenarios where the graph
+    can be decomposed into two distinct subgraphs *G1* and *G2*, where *G=G2*G1*.
+    In such cases CUDA streams enable “pipelining” the computation graph, i.e., programming
+    our training step to run *G1* (on batch input *n+1*) in parallel to *G2 *(on the *nth* output
+    of *G1*). This technique is especially useful when:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Neither subgraph fully utilizes the GPU when run alone, and
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: The two subgraphs are of similar computational cost (i.e., neither dominates
+    runtime).
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'We will explore two common scenarios where “pipelining” is feasible:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Partial-model training or finetuning:**'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: It’s common to freeze a pre-trained model *backbone* (e.g., feature extractor
+    or encoder) and train only a model *head* (e.g., decoder). Since the frozen *backbone *doesn’t
+    rely on gradients from the *head*, the two can be executed concurrently.
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: '**Offloading data preprocessing to the GPU:**'
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: A common method for addressing bottlenecks in the input pipeline (also known
+    as GPU starvation), data preprocessing can be moved to the GPU. While prepending
+    preprocessing operations to the model graph improves performance, additional gains
+    can be achieved by running preprocessing on a separate CUDA stream in parallel
+    with model execution—assuming preprocessing isn’t trivial compared to model compute.
+  prefs:
+  - PREF_IND
+  type: TYPE_NORMAL
+- en: To facilitate our discussion, we will define two toy training scripts and measure
+    the training performance under different scenarios. The experiments were run on
+    an [Amazon EC2 g5.2xlarge](https://aws.amazon.com/ec2/instance-types/g5/) instance
+    (containing an NVIDIA A10G GPU and 8 vCPUs) running a [PyTorch (2.6) Deep Learning
+    AMI](https://aws.amazon.com/releasenotes/aws-deep-learning-ami-gpu-pytorch-2-6-ubuntu-22-04/) (DLAMI).
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Please note: the code snippets that we share are for demonstration purposes
+    only —please do not rely on their correctness or optimality. The impact of using
+    CUDA streams will vary depending on model architecture and system configuration.
+    We encourage you to conduct your own profiling and experimentation before integrating
+    CUDA streams (or any other tool technique we refer to) into your workflow.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Part 1: Pipelining an Encoder-Decoder Model'
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: The first use-case we explore involves a CNN-based image segmentation model
+    consisting of a fixed (pre-trained) encoder and a trainable decoder. In this scenario,
+    since the encoder weights are frozen and unaffected by backpropagation, the encoder
+    can be executed independently of the decoder’s training. In this section, we assess
+    the impact of pipelining the training process using CUDA streams.
+  prefs: []
+  type: TYPE_NORMAL
+- en: A Toy Image Segmentation Training Experiment
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: We begin by defining a simple CNN-based image encoder along with its corresponding
+    decoder.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE0]'
+  prefs: []
+  type: TYPE_PRE
+- en: Next, we construct a synthetic dataset of random images and segmentation maps.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE1]'
+  prefs: []
+  type: TYPE_PRE
+- en: Finally, we define the loss function, optimizer, and training loop. Note, that
+    we freeze the encoder’s weights and train only the decoder.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE2]'
+  prefs: []
+  type: TYPE_PRE
+- en: Our baseline training script achieves an average throughput of 83 steps per
+    second, with an average GPU utilization of 85%.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Pipelining the Model Execution With CUDA Streams
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: 'In the revised version of the training loop shown below, we introduce two CUDA
+    streams: one for executing the encoder and one for training the decoder. In each
+    iteration, we perform two operations concurrently:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Train the decoder using the image features and labels from batch *N*.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Execute the encoder on input batch *N+1* to generate its image features.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE3]'
+  prefs: []
+  type: TYPE_PRE
+- en: This modification yields an average throughput of 91 steps per second, representing
+    a 9.6% speedup. This is a significant improvement — especially considering that
+    our baseline already had high GPU utilization (85%).
+  prefs: []
+  type: TYPE_NORMAL
+- en: Sensitivity of Pipelining to Workload Properties
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: The effectiveness of pipelining with CUDA streams is highly dependent on the
+    specifics of the training workload and runtime environment. If the encoder is
+    significantly larger than the decoder (or vice versa), pipelining may offer little
+    benefit or even hinder performance. Conversely, when the GPU is underutilized,
+    pipelining tends to yield more substantial gains.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'To illustrate this dependency, we reran the experiment with varying batch sizes.
+    The results are summarized below:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/2685d73f704ce361733f2f3cd8b02d13.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Impact of Pipelining With CUDA Streams on Throughput (by Author)
+  prefs: []
+  type: TYPE_NORMAL
+- en: As the batch size increases, the benefit of pipelining diminishes. This is likely
+    because larger batch sizes naturally lead to higher (and more efficient) GPU utilization,
+    leaving less room for improvement through concurrent execution.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Part 2: Offloading Augmentations onto the GPU'
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: In this section, we will apply the use of CUDA streams to the acceleration of
+    data augmentation. In previous blog posts (e.g., [here](https://towardsdatascience.com/solving-bottlenecks-on-the-data-input-pipeline-with-pytorch-profiler-and-tensorboard-5dced134dbe9/#7fbd-af822198c08) and [here](https://chaimrand.medium.com/a-caching-strategy-for-identifying-bottlenecks-on-the-data-input-pipeline-8e52060b402f)),
+    we have studied the problem of bottlenecks on the data input pipeline from different
+    perspectives and reviewed several techniques for diagnosing and addressing them.
+    A common causes of these bottlenecks is CPU resource exhaustion, where the CPU
+    cannot meet the computational demands of the preprocessing pipeline. The result
+    is GPU starvation — a scenario in which the expensive GPU sits idle, waiting for
+    data to arrive.
+  prefs: []
+  type: TYPE_NORMAL
+- en: One effective solution is to offload heavy data preprocessing to the GPU. We
+    will demonstrate this technique and take it a step further by executing the augmentations
+    on a dedicated CUDA stream, enabling concurrent execution with the model training.
+  prefs: []
+  type: TYPE_NORMAL
+- en: A Toy Image Classification Training Experiment
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: 'We begin by defining a simple CNN-based image classification model:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE4]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Next, we create a synthetic dataset with an augmentation pipeline intentionally
+    designed to cause a severe performance bottleneck:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE5]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Finally, we define the loss function, optimizer, and training loop:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE6]'
+  prefs: []
+  type: TYPE_PRE
+- en: Running this baseline script results in an average throughput of 20.41 steps
+    per second and a GPU utilization of only 42%. The heavy data augmentations are
+    choking the CPU leading to GPU starvation. See our [previous post](https://towardsdatascience.com/solving-bottlenecks-on-the-data-input-pipeline-with-pytorch-profiler-and-tensorboard-5dced134dbe9/#7fbd-af822198c08) for
+    more information on detecting bottlenecks on the data input pipeline.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Offloading Data Augmentations to the GPU
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: To address the performance bottleneck on the data input pipeline, we move the
+    augmentations onto the GPU.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The first step is to define [custom data transforms](https://docs.pytorch.org/vision/main/auto_examples/transforms/plot_custom_transforms.html) that
+    apply random rotations and crops per sample in a batch. This is important because
+    the built-in [torchvision](https://docs.pytorch.org/vision/stable/index.html) transforms
+    apply the same augmentation across the entire batch — losing the per-sample randomness
+    seen on the CPU.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We implement the *BatchRandomCrop* transform using the [roi_align](https://docs.pytorch.org/vision/main/generated/torchvision.ops.roi_align.html) operator.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE7]'
+  prefs: []
+  type: TYPE_PRE
+- en: We implement the *BatchRandomRotate *transfrom by iterating over all of the
+    images in the batch and applying a random rotation to each one. Note that this
+    version is not vectorized; a fully vectorized implementation would be more would
+    require greater effort.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE8]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'We now define *batch_transform *that mimics the CPU-based augmentation pipeline
+    defined above:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE9]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Finally, we reset the dataset and update the training loop to apply the new *batch_transform*:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE10]'
+  prefs: []
+  type: TYPE_PRE
+- en: This updated training script improves throughput to 35.22 steps per second —
+    a 72.57% speedup over the baseline result.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Pipelining Augmentations With CUDA Streams
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: 'Next, we pipeline the augmentation and training steps using two separate CUDA
+    streams: one for running the data transform one for training the model. In each
+    iteration of the loop we perform two concurrent operations:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: We train the model on the augmented batch *N*.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Perform GPU-based data augmentations on batch *N+1*
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: '[PRE11]'
+  prefs: []
+  type: TYPE_PRE
+- en: This further improves the throughput to 38.82 steps per second — a 10.2% increase
+    over the serialized solution, and 90.20% faster than the original baseline
+  prefs: []
+  type: TYPE_NORMAL
+- en: Sensitivity of Pipelining to Workload Properties
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: 'As we saw in Part 1, the benefit of pipelining using CUDA streams varies based
+    on the details of the workload. In the table below, we capture the results for
+    several different batch sizes:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/c5b466a082a5850d5b690b14c77f67f5.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Impact of Pipelining With CUDA Streams on Throughput (by Author)
+  prefs: []
+  type: TYPE_NORMAL
+- en: As the batch size increases, GPU offloading becomes more effective, significantly
+    boosting performance. At the same time, the gains from pipelining decrease. This
+    is likely do to the fact larger batch sizes increase the GPU efficiency, reducing
+    the opportunities for overlap.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Summary
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'When it comes to running AI/ML workloads, every millisecond counts. In this
+    post we explored the impact of pipelining an AI/ML training step using CUDA stream
+    in two common scenarios: partial model training and offloading data augmentations
+    to the GPU. In both cases, the pipelined solution outperformed the serialized
+    implementation — though the extent of the improvement varied significantly based
+    on the value of the batch size.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: As we’ve emphasized throughout the post, the expected impact of the use of CUDA
+    streams can vary greatly based on the AI/ML workload. For example, in cases where
+    the GPU is already being efficiently utilized, the overhead of using CUDA streams
+    may actually lead to a degradation in runtime performance. We strongly recommend
+    testing this technique on your own workloads before adopting this approach.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We hope you will find the technique described in this post useful. For more
+    tip, tricks, and techniques for profiling and optimizing AI/ML workflows, check
+    out the other posts in this [series](https://towardsdatascience.com/pytorch-model-performance-analysis-and-optimization-10c3c5822869/).
+  prefs: []
+  type: TYPE_NORMAL

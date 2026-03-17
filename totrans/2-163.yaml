@@ -1,0 +1,478 @@
+- en: The Crucial Role of NUMA Awareness in High-Performance Deep Learning
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 原文：[https://towardsdatascience.com/the-crucial-role-of-numa-awareness-in-high-performance-deep-learning/](https://towardsdatascience.com/the-crucial-role-of-numa-awareness-in-high-performance-deep-learning/)
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: <mdspan datatext="el1752124468783" class="mdspan-comment">In the intricate</mdspan>
+    world of deep learning training, the role of the ML developer can be likened to
+    that of the conductor of an orchestra. Just as a conductor must time the entry
+    of each instrument to produce the perfect harmony, so must the ML practitioner
+    orchestrate a multitude of hardware components — CPUs and GPUs with their associated
+    memory, high-speed storage, network controllers, various communication buses,
+    etc. — to work together seamlessly to maximize runtime performance. Just as a
+    single off-key note can disrupt an entire musical production, a bottleneck or
+    inefficiency in any one of these components can severely hamper the overall training
+    process.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In this complex landscape, it’s of critical importance that you have an intimate
+    understanding of your system’s underlying topology and that you know how to apply
+    it toward optimal runtime performance. In a [previous post](https://towardsdatascience.com/smart-distributed-training-on-amazon-sagemaker-with-smd-part-2-c833e7139b5f/),
+    we explored the critical role of topology awareness in a distributed training
+    setting and discussed the advantage of topology-aware gradient sharing algorithms
+    in minimizing cross-node communication and boosting performance.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In this post, the tenth in our series on PyTorch model analysis and optimization,
+    we zoom in on the collaboration between the CPU and GPU in training and running
+    AI/ML models. In a typical training pipeline, the CPU is responsible for preparing
+    and pre-processing data, for loading GPU kernels, and for processing output, while
+    the GPU is responsible for the model execution. This cooperation isn’t merely
+    a hand-off — it’s a constant, high-speed exchange of data and commands, in what
+    can be likened to an intricate dance — where precision timing and physical proximity
+    are crucial. For this dance to be performed optimally, it must be choreographed
+    in a manner that accounts for the underlying system topology. In particular, it
+    must take into account the system’s [Non-Uniform Memory Access (NUMA)](https://en.wikipedia.org/wiki/Non-uniform_memory_access) architecture.
+  prefs: []
+  type: TYPE_NORMAL
+- en: NUMA Architecture
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: The NUMA architecture is designed to optimize memory transactions by associating
+    local memory banks directly with specific CPU sockets. Most modern multi-GPU High-Performance
+    Computing (HPC) systems consist of two or more NUMA nodes, where CPUs and GPUs
+    are divided into disjoint groups, each attached to one node. NUMA is most efficient
+    when memory banks are accessed from within the same node. Accessing memory on
+    a remote node requires data traversal over a dedicated NUMA interconnect, which
+    is significantly slower than accessing local memory. In memory-intensive applications
+    like AI/ML workloads, cross-NUMA memory accesses can introduce performance bottlenecks.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Unfortunately, popular AI/ML frameworks — most notably PyTorch — do not account
+    for NUMA architecture by default. However, as we will demonstrate in this post,
+    you can introduce NUMA-awareness into your PyTorch script without much difficulty.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In the next section, we will explore the NUMA architecture of the popular [Amazon
+    EC2 p4d.96xlarge](https://aws.amazon.com/ec2/instance-types/p4/) instance (containing
+    8 NVIDIA A100 GPUs and 96 vCPUs) running a [PyTorch (2.6) Deep Learning AMI](https://aws.amazon.com/releasenotes/aws-deep-learning-ami-gpu-pytorch-2-6-ubuntu-22-04/) (DLAMI).
+    We will then demonstrate how to implement a NUMA-aware PyTorch script and evaluate
+    its impact on runtime performance.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Disclaimers
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: 'The NUMA architecture is a complex and nuanced topic. In this post, we explore
+    just one of its implications: its impact on deep learning. For more comprehensive
+    details on the topic, please refer to other authoritative resources.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: The code we will share is intended for demonstrative purposes and should not
+    be relied on for correctness or optimality. Please do not interpret our choice
+    of platform, framework, or any other tool or library as an endorsement for its
+    use.
+  prefs: []
+  type: TYPE_NORMAL
+- en: NUMA Architecture Discovery
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: There are multiple ways to detect the NUMA architecture of the system you are
+    running on. In this section, we will demonstrate how to explore the NUMA layout
+    of an [Amazon EC2 p4d.96xlarge](https://aws.amazon.com/ec2/instance-types/p4/) instance
+    using commonly available Linux command-line tools.
+  prefs: []
+  type: TYPE_NORMAL
+- en: CPU NUMA Node Discovery
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: 'The [*lscpu*](https://man7.org/linux/man-pages/man1/lscpu.1.html)command provides
+    information about the CPU architecture of a Linux system, including a section
+    describing the NUMA layout. By running the command on an [Amazon EC2 p4d.96xlarge](https://aws.amazon.com/ec2/instance-types/p4/) instance
+    we learn that it consists of 96 vCPUs divided between two NUMA nodes:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE0]'
+  prefs: []
+  type: TYPE_PRE
+- en: GPU NUMA Node Discovery
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: 'To determine which NUMA node each GPU is attached to, we use a two-step process:
+    First, we identify the PCI ID associated with each GPU, and then we look up the
+    NUMA node associated with that PCI ID.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The PCI ID is one of the properties of the GPUs reported by the [*nvidia-smi*](https://docs.nvidia.com/deploy/nvidia-smi/index.html) utility.
+    In the following snippet, we see the PCI Bus IDs of the first two out of the eight
+    GPUs on our Amazon EC2 p4d.96xlarge instance:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE1]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Next, we use these PCI IDs to determine the corresponding NUMA node by reading
+    from the `/sys/bus/pci/devices/` path:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE2]'
+  prefs: []
+  type: TYPE_PRE
+- en: This indicates that GPUs 0 and 1 are connected to NUMA node 0.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Additional Tools
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: 'An alternative method for finding the NUMA node assignment of the PCI IDs is
+    using [*lstopo*](https://linux.die.net/man/1/lstopo)— a command-line utility that
+    reports the topology of a computer system. Though it isn’t included by default
+    in the DLAMI, it can be easily installed by running:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE3]'
+  prefs: []
+  type: TYPE_PRE
+- en: Here is a small segment of its command-line output which reports four PCI IDs
+    on NUMA node 0\. These are marked with “(3D)” tags—common identifiers of 3D accelerators,
+    otherwise known as GPUs.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE4]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Another useful tool is [*numactl *](https://man7.org/linux/man-pages/man3/numa.3.html)—
+    a command-line utility in Linux inspecting and managing NUMA policies. To install *numactl*,
+    run:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE5]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'You can inspect the NUMA configuration by running:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE6]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'On our Amazon EC2 p4d.96xlarge instance this produces the following output:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE7]'
+  prefs: []
+  type: TYPE_PRE
+- en: This provides useful information such as memory sizes and CPU assignments per
+    NUMA node, as well as inter-node memory access costs (higher numbers = greater
+    latency).
+  prefs: []
+  type: TYPE_NORMAL
+- en: NUMA Topology Summary
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: 'To summarize the topology we’ve discovered, here is a Python representation
+    of the CPU and GPU layout:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE8]'
+  prefs: []
+  type: TYPE_PRE
+- en: We will use this later to implement NUMA-aware training.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The Impact of NUMA Placement on Data Loading
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: Memory transactions between CPU and GPU occur at various stages during model
+    execution — for example, when offloading tensors to CPU memory, or when executing
+    certain model components (e.g., sequential algorithms such as non-maximum suppression)
+    on the CPU. In this post, we’ll focus on the transfer of input data from the CPU
+    to the GPU — a critical part of every AI/ML workflow.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The CPU Processes in a Typical Distributed Training Job
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: 'In a typical distributed training setting, new CPU processes are created on
+    two occasions:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**At startup**: A separate training process is created for each GPU. These
+    processes handle model setup and training execution on their assigned GPUs. In
+    the script we’ll introduce later, these are launched via [torch.multiprocessing.spawn](https://docs.pytorch.org/docs/stable/multiprocessing.html#spawning-subprocesses).'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**Per dataloader**: Each training process creates its own [DataLoader](https://docs.pytorch.org/tutorials/beginner/basics/data_tutorial.html) instance
+    to provide data batches for its GPU. Each dataloader typically creates multiple
+    worker processes, which generate individual training samples. These samples are
+    then grouped by the main process into batches.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: In the case of our Amazon EC2 p4d.96xlarge instance, each of these processes
+    is assigned to a CPU, which resides on one of the two NUMA nodes.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Why NUMA Placement Matters
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: Ideally, the main training process for a given GPU — and all of its associated
+    dataloader worker processes — will be located on the same NUMA node as the GPU.
+    Otherwise, we may end up seeing a considerable amount of traffic on the NUMA interconnects,
+    which could result in performance bottlenecks.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Let’s imagine a particularly bad setup:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: GPU *i* is located on NUMA node 0.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: The main training process assigned to GPU *i* is scheduled on a CPU on NUMA
+    node 1.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: The worker processes spawned by the training process are all assigned to CPUs
+    on NUMA node 0.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'This results in the following inefficient sequence:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Individual samples are created and grouped into batches by workers on NUMA node
+    0.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Each batch is transmitted through the interconnect to the main process on node
+    1.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: The batch is sent back across the interconnect to node 0, where it is fed to
+    the GPU.
+  prefs:
+  - PREF_OL
+  type: TYPE_NORMAL
+- en: Sounds horrendous, right??
+  prefs: []
+  type: TYPE_NORMAL
+- en: While this exact scenario may be rare, it illustrates how the default Linux
+    scheduler — if left unmanaged — can result in inefficient placement and redundant
+    traffic over the NUMA interconnect. And with the high cost of GPU training, relying
+    on the “luck of the scheduler” is not recommended.
+  prefs: []
+  type: TYPE_NORMAL
+- en: When NUMA Placement Matters Most
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: The performance impact of poor NUMA placement depends heavily on the workload
+    characteristics. Specifically, training steps that consist of a large number of
+    large data transactions will suffer more than training steps with few transactions
+    and small data sizes.
+  prefs: []
+  type: TYPE_NORMAL
+- en: When it comes to dataloading, the impact of inefficient NUMA Placement will
+    also depend on the size of the model. Recall that AI/ML workloads are designed
+    to run the dataloading on the CPU in parallel with model execution on the GPU.
+    Thus, if the GPU execution takes significantly longer than the dataloading, inefficient
+    NUMA placement might go unnoticed. But if dataloading time is similar to or longer
+    than GPU execution time — or if you’re already experiencing GPU starvation — the
+    impact can be significant.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Benchmark Impact of NUMA Pinning
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: Because the effect of NUMA-aware pinning can vary widely, it’s essential to
+    benchmark its impact on a per-workload basis.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In some situations, NUMA pinning could even hurt performance. For instance,
+    in systems where CPUs on one NUMA node are designated for other tasks, or systems
+    where one NUMA node contains CPUs bit no GPUs, NUMA pinning could limit access
+    to CPU power, ultimately straining throughput performance.
+  prefs: []
+  type: TYPE_NORMAL
+- en: A Toy PyTorch Experiment
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: To demonstrate the impact of NUMA awareness on runtime performance, we design
+    a toy distributed training experiment. Our baseline implementation simply reports
+    the NUMA assignment of each spawned process. We then apply NUMA-based CPU and
+    memory affinity and measure the impact on throughput.
+  prefs: []
+  type: TYPE_NORMAL
+- en: NUMA Discovery and Pinning Utilities
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: We begin by defining utility functions for NUMA node discovery and pinning.
+    The implementation shown here uses the hardcoded NUMA topology we summarized earlier.
+    A more robust version would dynamically discover topology by parsing the output
+    of system utilities such as *lscpu *and *nvidia-smi*.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The following code block contains utilities for looking up NUMA placement. For
+    each process we report both the NUMA node of the host CPU and the NUMA node of
+    its allocated memory it is bound to. We use `numactl --show` to detect the memory
+    binding of the current process.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE9]'
+  prefs: []
+  type: TYPE_PRE
+- en: One common method for setting CPU affinity in Python is via the [os.sched_setaffinity](https://docs.python.org/3/library/os.html#os.sched_setaffinity) function.
+    However, this method is insufficient for our purposes because it only pins the
+    CPU — it does not bind the memory it uses. To bind both CPU and memory binding
+    we use the [numa_bind](https://linux.die.net/man/3/numa_bind) function from the *libnuma* library.
+    (Run `sudo apt install libnuma-dev` to install).
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE10]'
+  prefs: []
+  type: TYPE_PRE
+- en: Model Definition
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: Next, we define a simple distributed training script using a ResNet-18 image
+    classification model and a synthetic dataset. Each synthetic sample is a randomly
+    generated 1024×1024 image, simulating large memory transactions. On the GPU, images
+    are downscaled to 224×224 before being passed to the model. This setup is intentionally
+    designed to result in a bottleneck in the input data pipeline. The bottleneck
+    can be detected by comparing throughput (in steps per second) during normal training
+    versus when running on a cached batch. For more on identifying dataloader bottlenecks,
+    see our earlier posts (e.g., [here](https://towardsdatascience.com/a-caching-strategy-for-identifying-bottlenecks-on-the-data-input-pipeline/) and [here](https://towardsdatascience.com/solving-bottlenecks-on-the-data-input-pipeline-with-pytorch-profiler-and-tensorboard-5dced134dbe9/#7fbd-af822198c08)).
+  prefs: []
+  type: TYPE_NORMAL
+- en: Each time a new process is started, it reports its NUMA assignment using the
+    utilities we defined above. For the dataloader workers this is done using a custom *worker_init_fn* function.
+    We include a *numa_aware *control flag that determines whether to apply NUMA pinning.
+  prefs: []
+  type: TYPE_NORMAL
+- en: It’s important to note that when applying NUMA-binding using *numa_bind* inside
+    a process*, *the CPU-binding is not always inherited by subprocesses. It is therefore
+    essential to reapply NUMA binding explicitly within the dataloader workers.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE11]'
+  prefs: []
+  type: TYPE_PRE
+- en: Observing NUMA Placement
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: 'Here is a sample output from running the script on a single GPU with four dataloader
+    workers and no NUMA binding. In this run, all processes were scheduled on NUMA
+    node 1, while the GPU resides on NUMA node 0:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE12]'
+  prefs: []
+  type: TYPE_PRE
+- en: Baseline Results
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: NUMA placement can vary between runs, so we repeated the baseline experiment
+    ten times. The resultant average throughput was **1.04 **steps per second.
+  prefs: []
+  type: TYPE_NORMAL
+- en: NUMA-Aware Training
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: To enable NUMA-aware training, we set the *numa_aware *flag to *True*. This
+    causes each training process to run on a CPU from the same NUMA node as its assigned
+    GPU and allocate memory on that same NUMA node. This configuration ensures NUMA-locality
+    across CPU, memory, and GPU, reducing the traffic over the NUMA interconnect.
+  prefs: []
+  type: TYPE_NORMAL
+- en: The average throughput in this setting increased to **1.24** steps per second
+    — a **19%** improvement over the baseline experiment.
+  prefs: []
+  type: TYPE_NORMAL
+- en: CPU Binding with numactl
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: An alternative approach to NUMA pinning is to launch each training process from
+    the command-line via the *numactl *command. The advantage of this method is that
+    the binding is applied before the process is started rather than on entry. This
+    avoids the possibility of early memory allocations on the wrong node before pinning.
+    Another advantage is that the NUMA placement is inherited by subprocesses, making
+    it unnecessary to re-pin dataloader workers manually. Note, that the inheritance
+    behavior may vary between systems, so you should confirm it on your specific setup
+    before relying on it.
+  prefs: []
+  type: TYPE_NORMAL
+- en: One downside of this method is that it cannot be easily integrated with PyTorch’s
+    launch utilities like [torch.multiprocessing.spawn](https://docs.pytorch.org/docs/stable/multiprocessing.html#spawning-subprocesses) or [torchrun](https://docs.pytorch.org/docs/stable/elastic/run.html).
+    If your code depends on those utilities, you may need to replicate some of their
+    logic manually. Furthermore, some high-level frameworks (e.g., Lightning) may
+    not expose control over process initialization, preventing the use of binding
+    via *numactl*.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Here’s a sample Bash script that wraps our training script with NUMA pinning
+    using *numactl*:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE13]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'Results:'
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: The table below summarizes the results of our experiments.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/b967c1b7ceb9425700430b5564f170d6.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Experiment Results (by Author)
+  prefs: []
+  type: TYPE_NORMAL
+- en: In this toy example, the benefits of NUMA-aware training are clear. However,
+    as noted earlier, the actual impact can vary depending on your model architecture,
+    data loading characteristics, and system configuration.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Summary
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: In our constant pursuit of AI/ML workload optimization, topology awareness —
+    including NUMA node placement — is critical.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In this post, we continued our exploration of PyTorch model profiling and optimization
+    by demonstrating how NUMA pinning can improve throughput performance. We hope
+    you will find this method useful in your own AI/ML projects.
+  prefs: []
+  type: TYPE_NORMAL
+- en: For more tips, tricks, and techniques for optimizing PyTorch model development,
+    be sure to check out the other posts in [this series](https://towardsdatascience.com/pytorch-model-performance-analysis-and-optimization-10c3c5822869/).
+  prefs: []
+  type: TYPE_NORMAL

@@ -1,0 +1,481 @@
+- en: 'Why CatBoost Works So Well: The Engineering Behind the Magic'
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 原文：[https://towardsdatascience.com/catboost-inner-workings-and-optimizations/](https://towardsdatascience.com/catboost-inner-workings-and-optimizations/)
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: <mdspan datatext="el1744219143668" class="mdspan-comment">Gradient boosting</mdspan>
+    is a cornerstone technique for modeling tabular data due to its speed and simplicity.
+    It delivers great results without any fuss. When you look around you’ll see multiple
+    options like LightGBM, XGBoost, etc. CatBoost is one such variant. In this post,
+    we will take a detailed look at this model, explore its inner workings, and understand
+    what makes it a great choice for real-world tasks.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Target Statistic
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: '![Table illustrating target encoding for categorical values. It maps vehicle
+    types—Car, Bike, Bus, and Cycle—to numerical target means: 3.9, 1.2, 11.7, and
+    0.8 respectively. A curved arrow at the bottom indicates the transformation from
+    category to numeric value](../Images/d200a6820285dd3c2ffa9c6dcf75121d.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'Target Encoding Example: the average value of the target variable for a category
+    is used to replace each category. Image by author'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Target Encoding Example: the average value of the target variable for a category
+    is used to replace each category'
+  prefs: []
+  type: TYPE_NORMAL
+- en: One of the important contributions of the CatBoost paper is a new method of
+    calculating the Target Statistic. What is a Target Statistic? If you have worked
+    with categorical variables before, you’d know that the most rudimentary way to
+    deal with categorical variables is to use one-hot encoding. From experience, you’d
+    also know that this introduces a can of problems like sparsity, curse of dimensionality,
+    memory issues, etc. Especially for categorical variables with high cardinality.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Greedy Target Statistic
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: To avoid one-hot encoding, we calculate the Target Statistic instead for the
+    categorical variables. This means we calculate the mean of the target variable
+    at each unique value of the categorical variable. So if a categorical variable
+    takes the values — `A`, `B`, `C` then we will calculate the average value of \(\text{y}\)
+    over all these values and replace these values with the average of \(\text{y}\)
+    at each unique value.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'That sounds good, right? It does but this approach comes with its problems
+    — namely Target Leakage. To understand this, let’s take an extreme example. Extreme
+    examples are often the easiest way to eke out issues in the approach. Consider
+    the below dataset:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '| Categorical Column | Target Column |'
+  prefs: []
+  type: TYPE_TB
+- en: '| --- | --- |'
+  prefs: []
+  type: TYPE_TB
+- en: '| A | 0 |'
+  prefs: []
+  type: TYPE_TB
+- en: '| B | 1 |'
+  prefs: []
+  type: TYPE_TB
+- en: '| C | 0 |'
+  prefs: []
+  type: TYPE_TB
+- en: '| D | 1 |'
+  prefs: []
+  type: TYPE_TB
+- en: '| E | 0 |'
+  prefs: []
+  type: TYPE_TB
+- en: 'Greedy Target Statistic: Compute the mean target value for each unique category'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Now let’s write the equation for calculating the Target Statistic:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: \[\hat{x}^i_k = \frac{
+  prefs: []
+  type: TYPE_NORMAL
+- en: \sum_{j=1}^{n} 1_{{x^i_j = x^i_k}} \cdot y_j + a p
+  prefs: []
+  type: TYPE_NORMAL
+- en: '}{'
+  prefs: []
+  type: TYPE_NORMAL
+- en: \sum_{j=1}^{n} 1_{{x^i_j = x^i_k}} + a
+  prefs: []
+  type: TYPE_NORMAL
+- en: '}\]'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Here \(x^i_j\) is the value of the **i-th categorical feature** for the **j-th
+    sample**. So for the k-th sample, we iterate over all samples of \(x^i\), select
+    the ones having the value \(x^i_k\), and take the average value of \(y\) over
+    those samples. Instead of taking a direct average, we take a smoothened average
+    which is what the \(a\) and \(p\) terms are for. The \(a\) parameter is the smoothening
+    parameter and \(p\) is the global mean of \(y\).
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'If we calculate the Target Statistic using the formula above, we get:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '| Categorical Column | Target Column | Target Statistic |'
+  prefs: []
+  type: TYPE_TB
+- en: '| --- | --- | --- |'
+  prefs: []
+  type: TYPE_TB
+- en: '| A | 0 | \(\frac{ap}{1+a}\) |'
+  prefs: []
+  type: TYPE_TB
+- en: '| B | 1 | \(\frac{1+ap}{1+a}\) |'
+  prefs: []
+  type: TYPE_TB
+- en: '| C | 0 | \(\frac{ap}{1+a}\) |'
+  prefs: []
+  type: TYPE_TB
+- en: '| D | 1 | \(\frac{1+ap}{1+a}\) |'
+  prefs: []
+  type: TYPE_TB
+- en: '| E | 0 | \(\frac{ap}{1+a}\) |'
+  prefs: []
+  type: TYPE_TB
+- en: Calculation of Greedy Target Statistic with Smoothening
+  prefs: []
+  type: TYPE_NORMAL
+- en: Now if I use this `Target Statistic` column as my training data, I will get
+    a perfect split at \( threshold = \frac{0.5+ap}{1+a}\). Anything above this value
+    will be classified as `1` and anything below will be classified as `0`. I have
+    a perfect classification at this point, so I get 100% accuracy on my training
+    data.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Let’s take a look at the test data. Here, since we are assuming that the feature
+    has all unique values, the Target Statistic becomes—
+  prefs: []
+  type: TYPE_NORMAL
+- en: \[TS = \frac{0+ap}{0+a} = p\]
+  prefs: []
+  type: TYPE_NORMAL
+- en: If \(threshold\) is greater than \(p\), all test data predictions will be \(0\).
+    Conversely, if \(threshold\) is less than \(p\), all test data predictions will
+    be \(1\) leading to poor performance on the test set.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Although we rarely see datasets where values of a categorical variable are all
+    unique, we do see cases of high cardinality. This extreme example shows the pitfalls
+    of using Greedy Target Statistic as an encoding approach.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Leave One Out Target Statistic
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: 'So the Greedy TS didn’t work out quite well for us. Let’s try another method—
+    the Leave One Out Target Statistic method. At first glance, this looks promising.
+    But, as it turns out, this too has its problems. Let’s see how with another extreme
+    example. This time let’s assume that our categorical variable \(x^i\) has only
+    one unique value, i.e., all values are the same. Consider the below data:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '| Categorical Column | Target Column |'
+  prefs: []
+  type: TYPE_TB
+- en: '| --- | --- |'
+  prefs: []
+  type: TYPE_TB
+- en: '| A | 0 |'
+  prefs: []
+  type: TYPE_TB
+- en: '| A | 1 |'
+  prefs: []
+  type: TYPE_TB
+- en: '| A | 0 |'
+  prefs: []
+  type: TYPE_TB
+- en: '| A | 1 |'
+  prefs: []
+  type: TYPE_TB
+- en: Example data for an extreme case where a categorical feature has just one unique
+    value
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'If calculate the leave one out target statistic, we get:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '| Categorical Column | Target Column | Target Statistic |'
+  prefs: []
+  type: TYPE_TB
+- en: '| --- | --- | --- |'
+  prefs: []
+  type: TYPE_TB
+- en: '| A | 0 | \(\frac{n^+ -y_k + ap}{n+a}\) |'
+  prefs: []
+  type: TYPE_TB
+- en: '| A | 1 | \(\frac{n^+ -y_k + ap}{n+a}\) |'
+  prefs: []
+  type: TYPE_TB
+- en: '| A | 0 | \(\frac{n^+ -y_k + ap}{n+a}\) |'
+  prefs: []
+  type: TYPE_TB
+- en: '| A | 1 | \(\frac{n^+ -y_k + ap}{n+a}\) |'
+  prefs: []
+  type: TYPE_TB
+- en: Calculation of Leave One Out Target Statistic with Smoothening
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Here:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: \(n\) is the total samples in the data (in our case this 4)
+  prefs: []
+  type: TYPE_NORMAL
+- en: \(n^+\) is the number of positive samples in the data (in our case this 2)
+  prefs: []
+  type: TYPE_NORMAL
+- en: \(y_k\) is the value of the target column in that row
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Substituting the above, we get:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '| Categorical Column | Target Column | Target Statistic |'
+  prefs: []
+  type: TYPE_TB
+- en: '| --- | --- | --- |'
+  prefs: []
+  type: TYPE_TB
+- en: '| A | 0 | \(\frac{2 + ap}{4+a}\) |'
+  prefs: []
+  type: TYPE_TB
+- en: '| A | 1 | \(\frac{1 + ap}{4+a}\) |'
+  prefs: []
+  type: TYPE_TB
+- en: '| A | 0 | \(\frac{2 + ap}{4+a}\) |'
+  prefs: []
+  type: TYPE_TB
+- en: '| A | 1 | \(\frac{1 + ap}{4+a}\) |'
+  prefs: []
+  type: TYPE_TB
+- en: Substituing values of `n` and `n<sup>+</sup>`
+  prefs: []
+  type: TYPE_NORMAL
+- en: Now, if I use this `Target Statistic` column as my training data, I will get
+    a perfect split at \( threshold = \frac{1.5+ap}{4+a}\). Anything above this value
+    will be classified as `0` and anything below will be classified as `1`. I have
+    a perfect classification at this point, so I again get 100% accuracy on my training
+    data.
+  prefs: []
+  type: TYPE_NORMAL
+- en: You see the problem, right? My categorical variable which doesn’t have more
+    than a unique value is producing different values for Target Statistic which will
+    perform great on the training data but will fail miserably on the test data.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Ordered Target Statistic
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: '![Illustration of ordered learning: CatBoost processes data in a randomly permuted
+    order and predicts each sample using only the earlier samples (Image by Author)](../Images/c823e3c93b376f8545dfdc144106b493.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'Illustration of ordered learning: CatBoost processes data in a randomly permuted
+    order and predicts each sample using only the earlier samples. Image by author'
+  prefs: []
+  type: TYPE_NORMAL
+- en: CatBoost introduces a technique called Ordered Target Statistic to address the
+    issues discussed above. This is the core principle of CatBoost’s handling of categorical
+    variables.
+  prefs: []
+  type: TYPE_NORMAL
+- en: This method, inspired by online learning, uses only past data to make predictions.
+    CatBoost generates a random permutation (random ordering) of the training data(\(\sigma\)).
+    To compute the Target Statistic for a sample at row \(k\), CatBoost uses samples
+    from row \(1\) to \(k-1\). For the test data, it uses the entire train data to
+    compute the statistic.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Additionally, CatBoost generates a new permutation for each tree, rather than
+    reusing the same permutation each time. This reduces the variance that can arise
+    in the early samples.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Ordered Boosting
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: '![Diagram illustrating the ordered boosting mechanism in CatBoost. Data points
+    x₁ through xᵢ are shown sequentially, with earlier samples used to compute predictions
+    for later ones. Each xᵢ is associated with a model prediction M, where the prediction
+    for xᵢ is computed using the model trained on previous data points. The equations
+    show how residuals are calculated and how the model is updated: rᵗ(xᵢ, yᵢ) = yᵢ
+    − M⁽ᵗ⁻¹⁾ᵢ⁻¹(xᵢ), and ΔM is learned from samples with order less than or equal
+    to i. Final model update: Mᵢ = Mᵢ + ΔM.](../Images/48ef180b450d5547eedf7349e7650ecf.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'This visualization shows how CatBoost computes residuals and updates the model:
+    for sample xᵢ, the model predicts using only earlier data points. [Source](https://doi.org/10.1093/fqsafe/fyae007)'
+  prefs: []
+  type: TYPE_NORMAL
+- en: Another important innovation introduced by the CatBoost paper is its use of
+    Ordered Boosting. It builds on similar principles as ordered target statistics,
+    where CatBoost randomly permutes the training data at the start of each tree and
+    makes predictions sequentially.
+  prefs: []
+  type: TYPE_NORMAL
+- en: In traditional boosting methods, when training tree \(t\), the model uses predictions
+    from the previous tree \(t−1\) for all training samples, including the one it
+    is currently predicting. This can lead to **target leakage**, as the model may
+    indirectly use the label of the current sample during training.
+  prefs: []
+  type: TYPE_NORMAL
+- en: To address this issue, CatBoost uses Ordered Boosting where, for a given sample,
+    it only uses predictions from previous rows in the training data to calculate
+    gradients and build trees. For each row \(i\) in the permutation, CatBoost calculates
+    the output value of a leaf using only the samples before \(i\). The model uses
+    this value to get the prediction for row \(i\). Thus, the model predicts each
+    row **without looking at its label**.
+  prefs: []
+  type: TYPE_NORMAL
+- en: CatBoost trains each tree using a new random permutation to average the variance
+    in early samples in one permutation.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Let’s say we have 5 data points: `A, B, C, D, E`. CatBoost creates a **random
+    permutation** of these points. Suppose the permutation is: `σ = [C, A, E, B, D]`'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '| Step | Data Used to Train | Data Point Being Predicted | Notes |'
+  prefs: []
+  type: TYPE_TB
+- en: '| --- | --- | --- | --- |'
+  prefs: []
+  type: TYPE_TB
+- en: '| 1 | — | C | No previous data → use prior |'
+  prefs: []
+  type: TYPE_TB
+- en: '| 2 | C | A | Model trained on C only |'
+  prefs: []
+  type: TYPE_TB
+- en: '| 3 | C, A | E | Model trained on C, A |'
+  prefs: []
+  type: TYPE_TB
+- en: '| 4 | C, A, E | B | Model trained on C, A, E |'
+  prefs: []
+  type: TYPE_TB
+- en: '| 5 | C, A, E, B | D | Model trained on C, A, E, B |'
+  prefs: []
+  type: TYPE_TB
+- en: Table highlighting how CatBoost uses random permutation to perform training
+  prefs: []
+  type: TYPE_NORMAL
+- en: This avoids using the actual label of the current row to get the prediction
+    thus preventing **leakage**.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Building a Tree
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: Each time CatBoost builds a tree, it creates a random permutation of the training
+    data. It calculates the ordered target statistic for all the categorical variables
+    with more than two unique values. For a binary categorical variable, it maps the
+    values to zeros and ones.
+  prefs: []
+  type: TYPE_NORMAL
+- en: CatBoost processes data as if the data is arriving sequentially. It begins with
+    an initial prediction of zero for all instances, meaning the residuals are initially
+    equivalent to the target values.
+  prefs: []
+  type: TYPE_NORMAL
+- en: As training proceeds, CatBoost updates the leaf output for each sample using
+    the residuals of the previous samples that fall into the same leaf. By not using
+    the current sample’s label for prediction, CatBoost effectively prevents data
+    leakage.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Split Candidates
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: '![Histogram showing how continuous features can be divided into bins—CatBoost
+    evaluates splits using these binned values instead of raw continuous values](../Images/34db1391c35a085df0a166947f6e4a6c.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: CatBoost bins continuous features to reduce the search space for optimal splits.
+    Each bin edge and split point represents a potential decision threshold. Image
+    by author
+  prefs: []
+  type: TYPE_NORMAL
+- en: At the core of a decision tree lies the task of selecting the optimal feature
+    and threshold for splitting a node. This involves evaluating multiple feature-threshold
+    combinations and selecting the one that gives the best reduction in loss. CatBoost
+    does something similar. It discretizes the continuous variable into bins to simplify
+    the search for the optimal combination. It evaluates each of these feature-bin
+    combinations to determine the best split
+  prefs: []
+  type: TYPE_NORMAL
+- en: CatBoost uses Oblivious Trees, a key difference compared to other trees, where
+    it uses the same split across all nodes at the same depth.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Oblivious Trees
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: '![Comparison between Oblivious Trees and Regular Trees. The Oblivious Tree
+    on the left applies the same split condition at each level across all nodes, resulting
+    in a symmetric structure. The Regular Tree on the right applies different conditions
+    at each node, leading to an asymmetric structure with varied splits at different
+    depths](../Images/84080daf38a861ef50a33375c7f8cdd7.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: 'Illustration of ordered learning: CatBoost processes data in a randomly permuted
+    order and predicts each sample using only the earlier samples. Image by author'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Unlike standard decision trees, where different nodes can split on different
+    conditions (feature-threshold), Oblivious Trees split across the same conditions
+    across all nodes at the same depth of a tree. At a given depth, all samples are
+    evaluated at the same feature-threshold combination. This symmetry has several
+    implications:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Speed and simplicity: since the same condition is applied across all nodes
+    at the same depth, the trees produced are simpler and faster to train'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'Regularization: Since all trees are forced to apply the same condition across
+    the tree at the same depth, there is a regularization effect on the predictions'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'Parallelization: the uniformity of the split condition, makes it easier to
+    parallelize the tree creation and usage of GPU to accelerate training'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Conclusion
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'CatBoost stands out by directly tackling a long-standing challenge: how to
+    handle categorical variables effectively without causing target leakage. Through
+    innovations like **Ordered Target Statistics**, **Ordered Boosting**, and the
+    use of **Oblivious Trees**, it efficiently balances robustness and accuracy.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: If you found this deep dive helpful, you might enjoy another deep dive on the
+    differences between [Stochastic Gradient Classifer and Logistic Regression](https://shubhamgandhi.net/model-deep-dives/sgd-classifier-vs-logistic-regression/)
+  prefs: []
+  type: TYPE_NORMAL
+- en: Further Reading
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: '[CatBoost: unbiased boosting with categorical features](https://arxiv.org/pdf/1706.09516)'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '[CatBoost: How training is performed](https://catboost.ai/docs/en/concepts/algorithm-main-stages)'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '[CatBoost Enables Fast Gradient Boosting on Decision Trees Using GPUs](https://catboost.ai/news/catboost-enables-fast-gradient-boosting-on-decision-trees-using-gpus)'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL

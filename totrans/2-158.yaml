@@ -1,0 +1,533 @@
+- en: Building a Сustom MCP Chatbot
+  prefs:
+  - PREF_H1
+  type: TYPE_NORMAL
+- en: 原文：[https://towardsdatascience.com/building-a-%d1%81ustom-mcp-chatbot/](https://towardsdatascience.com/building-a-%d1%81ustom-mcp-chatbot/)
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: '<mdspan datatext="el1752176987570" class="mdspan-comment">**MCP (Model Context
+    Protocol)** is</mdspan> a method to standardise communication between AI applications
+    and external tools or data sources. This standardisation helps to reduce the number
+    of integrations needed (*from N*M to N+M*):'
+  prefs: []
+  type: TYPE_NORMAL
+- en: You can use community-built MCP servers when you need common functionality,
+    saving time and avoiding the need to reinvent the wheel every time.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: You can also expose your own tools and resources, making them available for
+    others to use.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: In [my previous article](https://towardsdatascience.com/your-personal-analytics-toolbox/),
+    we built the analytics toolbox (a collection of tools that might automate your
+    day-to-day routine). We built an MCP server and used its capabilities with existing
+    clients like MCP Inspector or Claude Desktop.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Now, we want to use those tools directly in our AI applications. To do that,
+    let’s build our own MCP client. We will write fairly low-level code, which will
+    also give you a clearer picture of how tools like Claude Code interact with MCP
+    under the hood.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Additionally, I would like to implement the feature that is currently (*July
+    2025*) missing from Claude Desktop: the ability for the LLM to automatically check
+    whether it has a suitable prompt template for the task at hand and use it. Right
+    now, you have to pick the template manually, which isn’t very convenient.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: As a bonus, I will also share a high-level implementation using the smolagents
+    framework, which is ideal for scenarios when you work only with MCP tools and
+    don’t need much customisation.
+  prefs: []
+  type: TYPE_NORMAL
+- en: MCP protocol overview
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: Here’s a quick recap of the MCP to ensure we’re on the same page. MCP is a protocol
+    developed by Anthropic to standardise the way LLMs interact with the outside world.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'It follows a client-server architecture and consists of three main components:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Host** is the user-facing application.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**MCP client** is a component within the host that establishes a one-to-one
+    connection with the server and communicates using messages defined by the MCP
+    protocol.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**MCP server** exposes capabilities such as prompt templates, resources and
+    tools.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '![](../Images/a67aa82a555288a4ebe98309b6f602a9.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Image by author
+  prefs: []
+  type: TYPE_NORMAL
+- en: Since we’ve already [implemented the MCP server](https://github.com/miptgirl/mcp-analyst-toolkit)
+    before, this time we will focus on building the MCP client. We will start with
+    a relatively simple implementation and later add the ability to dynamically select
+    prompt templates on the fly.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '*You can find the full code on [GitHub](https://github.com/miptgirl/miptgirl_medium/tree/main/mcp_client_example).*'
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: Building the MCP chatbot
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'Let’s begin with the initial setup: we’ll load the Anthropic API key from a
+    config file and adjust Python’s `asyncio` event loop to support nested event loops.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE0]'
+  prefs: []
+  type: TYPE_PRE
+- en: Let’s start by building a skeleton of our program to get a clear picture of
+    the application’s high-level architecture.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE1]'
+  prefs: []
+  type: TYPE_PRE
+- en: We start by creating an instance of the `MCP_ChatBot` class. The chatbot starts
+    by discovering available MCP capabilities (iterating through all configured MCP
+    servers, establishing connections and requesting their lists of capabilities).
+  prefs: []
+  type: TYPE_NORMAL
+- en: Once connections are set up, we will initialise an infinite loop where the chatbot
+    listens to the user queries, calls tools when needed and continues this cycle
+    until the process is stopped manually.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Finally, we will perform a cleanup step to close all open connections.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Let’s now walk through each stage in more detail.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Initialising the ChatBot class
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: 'Let’s start by creating the class and defining the `__init__` method. The main
+    fields of the ChatBot class are:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '`exit_stack` manages the lifecycle of multiple async threads (connections to
+    MCP servers), ensuring that all connections will be closed appropriately, even
+    if we face an error during execution. This logic is implemented in the `cleanup`
+    function.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '`anthropic` is a client for Anthropic API used to send messages to LLM.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '`available_tools` and `available_prompts` are the lists of tools and prompts
+    exposed by all MCP servers we are connected to.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '`sessions` is a mapping of tools, prompts and resources to their respective
+    MCP sessions. This allows the chatbot to route requests to the correct MCP server
+    when the LLM selects a specific tool.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '[PRE2]'
+  prefs: []
+  type: TYPE_PRE
+- en: Connecting to servers
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: The first task for our chatbot is to initiate connections with all configured
+    MCP servers and discover what capabilities we can use.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'The list of MCP servers that our agent can connect to is defined in the `server_config.json`
+    file. I’ve set up connections with three MCP servers:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[analyst_toolkit](https://github.com/miptgirl/mcp-analyst-toolkit) is my implementation
+    of the everyday analytical tools we discussed in the previous article,'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '[Filesystem](https://github.com/modelcontextprotocol/servers/tree/main/src/filesystem)
+    allows the agent to work with files,'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '[Fetch](https://github.com/modelcontextprotocol/servers/tree/main/src/fetch)
+    helps LLMs retrieve the content of webpages and convert it from HTML to markdown
+    for better readability.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '[PRE3]'
+  prefs: []
+  type: TYPE_PRE
+- en: First, we will read the config file, parse it and then connect to each listed
+    server.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE4]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'For each server, we perform several steps to establish the connection:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**At the transport level,** welaunch the MCP server as a stdio process and
+    get streams for sending and receiving messages.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '**At the session level**, we create a `ClientSession` incorporating the streams,
+    and then we perform the MCP handshake by calling `initialize` method.'
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: We registered both the session and transport objects in the context manager
+    `exit_stack` to ensure that all connections will be closed properly in the end.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: The last step is to **register server capabilities**. We wrapped this functionality
+    into a separate function, and we will discuss it shortly.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: '[PRE5]'
+  prefs: []
+  type: TYPE_PRE
+- en: Registering capabilities involves iterating over all the tools, prompts and
+    resources retrieved from the session. As a result, we update the internal variables
+    `sessions` (*mapping between resources and a particular session between the MCP
+    client and server*), `available_prompts` and `available_tools`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE6]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'By the end of this stage, our `MCP_ChatBot` object has everything it needs
+    to start interacting with users:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: connections to all configured MCP servers are established,
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: all prompts, resources and tools are registered, including descriptions needed
+    for LLM to understand how to use these capabilities,
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: mappings between these resources and their respective sessions are stored, so
+    we know exactly where to send each request.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Chat loop
+  prefs:
+  - PREF_H3
+  type: TYPE_NORMAL
+- en: So, it’s time to start our chat with users by creating the `chat_loop` function.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'We will first share all the available commands with the user:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: listing resources, tools and prompts
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: executing a tool call
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: viewing a resource
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: using a prompt template
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: quitting the chat (*it’s important to have a clear way to exit the infinite
+    loop*).
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: 'After that, we will enter an infinite loop where, based on user input, we will
+    execute the appropriate action: whether it’s one of the commands above or making
+    a request to the LLM.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE7]'
+  prefs: []
+  type: TYPE_PRE
+- en: There are a bunch of helper functions to parse arguments and return the lists
+    of available tools and prompts we registered earlier. Since it’s fairly straightforward,
+    I won’t go into much detail here. You can check [the full code](https://github.com/miptgirl/miptgirl_medium/blob/main/mcp_client_example/mcp_client_example_base.py)
+    if you are interested.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Instead, let’s dive deeper into how the interactions between the MCP client
+    and server work in different scenarios.
+  prefs: []
+  type: TYPE_NORMAL
+- en: When working with resources, we use the `self.sessions` mapping to find the
+    appropriate session (with a fallback option if needed) and then use that session
+    to read the resource.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE8]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'To execute a tool, we follow a similar process: start by finding the session
+    and then use it to call the tool, passing its name and arguments.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE9]'
+  prefs: []
+  type: TYPE_PRE
+- en: No surprise here. The same approach works for executing the prompt.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE10]'
+  prefs: []
+  type: TYPE_PRE
+- en: The only major use case we haven’t covered yet is handling a general, free-form
+    input from a user (not one of specific commands).
+  prefs: []
+  type: TYPE_NORMAL
+- en: In this case, we send the initial request to the LLM first, then we parse the
+    output, defining whether there are any tool calls. If tool calls are present,
+    we execute them. Otherwise, we exit the infinite loop and return the answer to
+    the user.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE11]'
+  prefs: []
+  type: TYPE_PRE
+- en: So, we have now fully covered how the MCP chatbot actually works under the hood.
+    Now, it’s time to test it in action. You can run it from the command line interface
+    with the following command.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE12]'
+  prefs: []
+  type: TYPE_PRE
+- en: 'When you run the chatbot, you’ll first see the following introduction message
+    outlining potential options:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE13]'
+  prefs: []
+  type: TYPE_PRE
+- en: From there, you can try out different commands, for example,
+  prefs: []
+  type: TYPE_NORMAL
+- en: call the tool to list the databases available in the DB
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: list all available prompts
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: use the prompt template, calling it like this `/prompt sql_query_prompt question=”How
+    many customers did we have in May 2024?”`.
+  prefs:
+  - PREF_UL
+  type: TYPE_NORMAL
+- en: Finally, I can finish your chat by typing `quit`.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE14]sql'
+  prefs: []
+  type: TYPE_NORMAL
+- en: select uniqExact(user_id) as customer_count
+  prefs: []
+  type: TYPE_NORMAL
+- en: from ecommerce.sessions
+  prefs: []
+  type: TYPE_NORMAL
+- en: where toStartOfMonth(action_date) = '2024-05-01'
+  prefs: []
+  type: TYPE_NORMAL
+- en: format TabSeparatedWithNames
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE15]'
+  prefs: []
+  type: TYPE_PRE
+- en: Looks pretty cool! Our basic version is working well! Now, it’s time to take
+    it one step further and make our chatbot smarter by teaching it to suggest relevant
+    prompts on the fly based on customer input.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Prompt suggestions
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: In practice, suggesting prompt templates that best match the user’s task can
+    be incredibly helpful. Right now, users of our chatbot need to either already
+    know about available prompts or at least be curious enough to explore them on
+    their own to benefit from what we’ve built. By adding a prompt suggestions feature,
+    we can do this discovery for our users and make our chatbot significantly more
+    convenient and user-friendly.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'Let’s brainstorm ways to add this functionality. I would approach this feature
+    in the following way:'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Evaluate the relevance of the prompts using the LLM.** Iterate through all
+    available prompt templates and, for each one, assess whether the prompt is a good
+    match for the user’s query.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Suggest a matching prompt to the user.** If we found the relevant prompt
+    template, share it with the user and ask whether they would like to execute it.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: '**Merge the prompt template with the user input.** If the user accepts, combine
+    the selected prompt with the original query. Since prompt templates have placeholders,
+    we might need the LLM to fill them in. Once we’ve merged the prompt template with
+    the user’s query, we’ll have an updated message ready to send to the LLM.'
+  prefs: []
+  type: TYPE_NORMAL
+- en: We will add this logic to the `process_query` function. Thanks to our modular
+    design, it’s pretty easy to add this enhancement without disrupting the rest of
+    the code.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Let’s start by implementing a function to find the most relevant prompt template.
+    We will use the LLM to evaluate each prompt and assign it a relevance score from
+    0 to 5\. After that, we’ll filter out any prompts with a score of 2 or lower and
+    return only the most relevant one (the one with the highest relevance score among
+    the remaining results).
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE16]'
+  prefs: []
+  type: TYPE_PRE
+- en: The next function we need to implement is one that combines the selected prompt
+    template with the user input. We will rely on the LLM to intelligently combine
+    them, filling all placeholders as needed.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE17]'
+  prefs: []
+  type: TYPE_PRE
+- en: Then, we will simply update the `process_query` logic to check for matching
+    prompts, ask the user for confirmation and decide which message to send to the
+    LLM.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE18]'
+  prefs: []
+  type: TYPE_PRE
+- en: Now, let’s test our updated version with a question about our data. Excitingly,
+    the chatbot was able to find the right prompt and use it to find the right answer.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE19]'
+  prefs: []
+  type: TYPE_PRE
+- en: It’s always a good idea to test negative examples as well. In this case, the
+    chatbot behaves as expected and doesn’t suggest an SQL-related prompt when given
+    an unrelated question.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE20]'
+  prefs: []
+  type: TYPE_PRE
+- en: Now that our chatbot is up and running, we’re ready to wrap things up.
+  prefs: []
+  type: TYPE_NORMAL
+- en: 'BONUS: quick and easy MCP client with smolagents'
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: We’ve looked at low-level code that enables building highly customised MCP clients,
+    but many use cases require only basic functionality. So, I decided to share with
+    you a quick and straightforward implementation for scenarios when you need just
+    the tools. We will use one of my favourite agent frameworks — smolagents from
+    HuggingFace (*I’ve discussed this framework in detail in* [*my previous article*](https://towardsdatascience.com/code-agents-the-future-of-agentic-ai/)).
+  prefs: []
+  type: TYPE_NORMAL
+- en: '[PRE21]'
+  prefs: []
+  type: TYPE_PRE
+- en: As a result, we received the correct answer.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '![](../Images/3b3d0409ac716b51e4deeb2d9da9f8d9.png)'
+  prefs: []
+  type: TYPE_IMG
+- en: Image by author
+  prefs: []
+  type: TYPE_NORMAL
+- en: If you don’t need much customisation or integration with prompts and resources,
+    this implementation is definitely the way to go.
+  prefs: []
+  type: TYPE_NORMAL
+- en: Summary
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: In this article, we built a chatbot that integrates with MCP servers and leverages
+    all the benefits of standardisation to access tools, prompts, and resources seamlessly.
+  prefs: []
+  type: TYPE_NORMAL
+- en: We started with a basic implementation capable of listing and accessing MCP
+    capabilities. Then, we enhanced our chatbot with a smart feature that suggests
+    relevant prompt templates to users based on their input. This makes our product
+    more intuitive and user-friendly, especially for users unfamiliar with the complete
+    library of available prompts.
+  prefs: []
+  type: TYPE_NORMAL
+- en: To implement our chatbot, we used relatively low-level code, giving you a better
+    understanding of how the MCP protocol works under the hood and what happens when
+    you use AI tools like Claude Desktop or Cursor.
+  prefs: []
+  type: TYPE_NORMAL
+- en: As a bonus, we also discussed the smolagents implementation that lets you quickly
+    deploy an MCP client integrated with tools.
+  prefs: []
+  type: TYPE_NORMAL
+- en: '*Thank you for reading. I hope this article was insightful. Remember Einstein’s
+    advice: “The important thing is not to stop questioning. Curiosity has its own
+    reason for existing.” May your curiosity lead you to your next great insight.*'
+  prefs:
+  - PREF_BQ
+  type: TYPE_NORMAL
+- en: Reference
+  prefs:
+  - PREF_H2
+  type: TYPE_NORMAL
+- en: 'This article is inspired by the [*“*](https://www.deeplearning.ai/short-courses/ai-agents-in-langgraph/)[*MCP:
+    Build Rich-Context AI Apps with Anthropic*](https://www.deeplearning.ai/short-courses/mcp-build-rich-context-ai-apps-with-anthropic/)[*”*](https://www.deeplearning.ai/short-courses/ai-agents-in-langgraph/)
+    short course from *DeepLearning.AI.*'
+  prefs: []
+  type: TYPE_NORMAL
