@@ -1,26 +1,34 @@
 - en: Avoidable and Unavoidable Randomness in GPT-4o
+  id: totrans-0
   prefs:
   - PREF_H1
   type: TYPE_NORMAL
+  zh: GPT-4o中的可避免和不可避免随机性
 - en: 原文：[https://towardsdatascience.com/avoidable-and-unavoidable-randomness-in-gpt-4o/](https://towardsdatascience.com/avoidable-and-unavoidable-randomness-in-gpt-4o/)
+  id: totrans-1
   prefs:
   - PREF_BQ
   type: TYPE_NORMAL
+  zh: 原文：[https://towardsdatascience.com/avoidable-and-unavoidable-randomness-in-gpt-4o/](https://towardsdatascience.com/avoidable-and-unavoidable-randomness-in-gpt-4o/)
 - en: Of course there is randomness in GPT-4o’s outputs. After all, the model samples
     from a probability distribution when choosing each token. But what I didn’t understand
     was that those very probabilities themselves are not deterministic. Even with
     consistent prompts, fixed seeds, and temperature set to zero, GPT-4o still introduces
     subtle, frustrating randomness.
+  id: totrans-2
   prefs: []
   type: TYPE_NORMAL
+  zh: 当然，GPT-4o的输出中存在随机性。毕竟，在选择每个标记时，模型是从一个概率分布中进行采样的。但我没有理解的是，那些概率本身并不是确定的。即使有一致的提示、固定的种子和温度设置为零，GPT-4o仍然引入了微妙而令人沮丧的随机性。
 - en: There’s no fix for this, and it might not even be something OpenAI *could* fix
     if they wanted to, just so we’re clear up front about where this article is headed.
     Along the way, we’ll examine all the sources of randomness in GPT-4o output, which
     will require us to break down the sampling process to a low level. We’ll point
     at the issue—the probabilities vary—and critically examine OpenAI’s official guidance
     on determinism.
+  id: totrans-3
   prefs: []
   type: TYPE_NORMAL
+  zh: 对于这个问题，没有解决办法，而且即使OpenAI想要解决这个问题，也可能无法解决，这样我们就可以清楚地了解这篇文章的方向。在这个过程中，我们将检查GPT-4o输出中所有随机性的来源，这将需要我们将采样过程分解到低级别。我们将指出问题——概率在变化——并批判性地审查OpenAI关于确定性的官方指南。
 - en: 'First, though, let’s talk about why determinism matters. Determinism means
     that the same input always produces the same output, like a mathematical function.
     While LLM creativity is often desirable, determinism serves crucial purposes:
@@ -28,34 +36,50 @@
     results, and prompt engineers for debugging their changes. Without it, you’re
     left wondering if different outputs stem from your tweaks or just the random number
     generator’s mood swings.'
+  id: totrans-4
   prefs: []
   type: TYPE_NORMAL
+  zh: 首先，让我们谈谈为什么确定性很重要。确定性意味着相同的输入总是产生相同的输出，就像一个数学函数。虽然LLM的创造力通常是可取的，但确定性具有至关重要的作用：研究人员需要它来进行可重复的实验，开发者需要它来验证报告的结果，提示工程师需要它来调试他们的更改。没有它，你只能猜测不同的输出是由于你的调整还是随机数生成器的情绪波动。
 - en: Flipping a coin
+  id: totrans-5
   prefs:
   - PREF_H2
   type: TYPE_NORMAL
+  zh: 抛硬币
 - en: 'We’re going to keep things extremely simple here and prompt the most recent
     version of GPT-4o (`gpt-4o-2024-08-06` in the API) with this:'
+  id: totrans-6
   prefs: []
   type: TYPE_NORMAL
+  zh: 我们将保持这里的操作极其简单，并使用以下内容提示GPT-4o的最新版本（API中的`gpt-4o-2024-08-06`）：
 - en: '` Flip a coin. Return Heads or Tails only.`'
+  id: totrans-7
   prefs: []
   type: TYPE_NORMAL
+  zh: '` 抛硬币。只返回正面或反面。`'
 - en: Flipping a coin with LLMs is a fascinating topic in itself (see for example
     Van Koevering & Kleinberg, 2024 in the references), but here, we’ll use it as
     a simple binary question with which to explore determinism, or the lack thereof.
+  id: totrans-8
   prefs: []
   type: TYPE_NORMAL
+  zh: 使用LLM抛硬币本身就是一个有趣的话题（例如，参见参考文献中的Van Koevering & Kleinberg，2024），但在这里，我们将使用它作为一个简单的二元问题来探索确定性，或者缺乏确定性。
 - en: This is our first attempt.
+  id: totrans-9
   prefs: []
   type: TYPE_NORMAL
+  zh: 这是我们的第一次尝试。
 - en: '[PRE0]'
+  id: totrans-10
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE0]'
 - en: Running the code gave me `Heads`. Maybe you’ll get `Tails`, or if you’re really
     lucky, something far more interesting.
+  id: totrans-11
   prefs: []
   type: TYPE_NORMAL
+  zh: 运行代码给了我“正面”。也许你会得到“反面”，或者如果你真的很幸运，可能会得到一些更有趣的结果。
 - en: The code first initializes an OpenAI client with an API key set in the environment
     variable `OPENAI_API_KEY` (to avoid sharing billing credentials here). The main
     action happens with client.chat.completions.create, where we specify the model
@@ -63,43 +87,59 @@
     to the server. We get an object called response back from the server. This object
     contains a lot of information, as shown below, so we need to dig into it to extract
     GPT-4o’s actual response to the message, which is `response.choices[0].message.content`.
+  id: totrans-12
   prefs: []
   type: TYPE_NORMAL
+  zh: 代码首先使用环境变量`OPENAI_API_KEY`（为了避免在这里共享计费凭证）初始化一个OpenAI客户端。主要操作发生在`client.chat.completions.create`，在那里我们指定要使用的模型，并将提示（作为名为messages的非常简单的对话的一部分）发送到服务器。我们从服务器返回一个名为response的对象。这个对象包含大量信息，如下所示，因此我们需要深入挖掘以提取GPT-4o对消息的实际响应，即`response.choices[0].message.content`。
 - en: '[PRE1]'
+  id: totrans-13
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE1]'
 - en: Now let’s flip the coin ten times. If this were a real, fair coin, of course,
     we would expect roughly equal heads and tails over time thanks to the law of large
     numbers. But GPT-4o’s coin doesn’t work quite like that.
+  id: totrans-14
   prefs:
   - PREF_BQ
   type: TYPE_NORMAL
+  zh: 现在让我们抛硬币十次。如果这是一个真实、公平的硬币，当然，由于大数定律，随着时间的推移，我们会期望头和尾大致相等。但GPT-4o的硬币并不完全是这样工作的。
 - en: ''
+  id: totrans-15
   prefs:
   - PREF_BQ
   type: TYPE_NORMAL
 - en: '[PRE2]'
+  id: totrans-16
   prefs:
   - PREF_BQ
   type: TYPE_PRE
+  zh: '[PRE2]'
 - en: ''
+  id: totrans-17
   prefs:
   - PREF_BQ
   type: TYPE_NORMAL
 - en: Running this code gave me the following output, although you might get different
     output, of course.
+  id: totrans-18
   prefs:
   - PREF_BQ
   type: TYPE_NORMAL
+  zh: 运行此代码给了我以下输出，尽管你可能会得到不同的输出，当然。
 - en: ''
+  id: totrans-19
   prefs:
   - PREF_BQ
   type: TYPE_NORMAL
 - en: '[PRE3]'
+  id: totrans-20
   prefs:
   - PREF_BQ
   type: TYPE_PRE
+  zh: '[PRE3]'
 - en: ''
+  id: totrans-21
   prefs:
   - PREF_BQ
   type: TYPE_NORMAL
@@ -107,33 +147,42 @@
     (2014) found that people flipping imaginary coins choose “heads” 80% of the time.
     Maybe GPT-4o learned that from us. But whatever the reason, we’re just using this
     simple example to explore determinism.
+  id: totrans-22
   prefs:
   - PREF_BQ
   - PREF_BQ
   type: TYPE_NORMAL
+  zh: GPT-4o的硬币显然是有偏的，但人类也是如此。Bar-Hillel、Peer和Acquisti（2014）发现，人们在抛想象中的硬币时80%的时间选择“头”。也许GPT-4o从我们这里学到了这一点。但无论原因如何，我们只是用这个简单的例子来探索确定性。
 - en: ''
+  id: totrans-23
   prefs:
   - PREF_BQ
   - PREF_BQ
   type: TYPE_NORMAL
 - en: Just how biased is GPT-4o’s coin?
+  id: totrans-24
   prefs:
   - PREF_BQ
   - PREF_BQ
   - PREF_H2
   type: TYPE_NORMAL
+  zh: GPT-4o的硬币有多偏？
 - en: ''
+  id: totrans-25
   prefs:
   - PREF_BQ
   - PREF_BQ
   type: TYPE_NORMAL
 - en: Let’s say we wanted to know precisely what percentage of GPT-4o coin flips land
     Heads.
+  id: totrans-26
   prefs:
   - PREF_BQ
   - PREF_BQ
   type: TYPE_NORMAL
+  zh: 假设我们想知道GPT-4o硬币抛掷中“头”出现的精确百分比。
 - en: ''
+  id: totrans-27
   prefs:
   - PREF_BQ
   - PREF_BQ
@@ -144,11 +193,14 @@
     the right prompt, the first token carries all the necessary information, making
     these API calls incredibly cheap: around 30,000 calls per dollar, since each requires
     just 18 (cached) input tokens and 1 output token.'
+  id: totrans-28
   prefs:
   - PREF_BQ
   - PREF_BQ
   type: TYPE_NORMAL
+  zh: 与抛一百万次（虽然昂贵）的明显方法相比，有一种更聪明的方法。对于具有少量可能答案的分类任务，我们可以提取标记概率而不是生成完整的响应。有了正确的提示，第一个标记就包含了所有必要的信息，这使得这些API调用非常便宜：大约每美元30,000次调用，因为每次调用只需要18（缓存的）输入标记和1个输出标记。
 - en: ''
+  id: totrans-29
   prefs:
   - PREF_BQ
   - PREF_BQ
@@ -159,192 +211,255 @@
     to a temperature setting of 1.0, and is how we calculate probabilities throughout
     this article). OpenAI lets us request logprobs for the top 20 most likely tokens,
     so we do that.
+  id: totrans-30
   prefs:
   - PREF_BQ
   - PREF_BQ
   type: TYPE_NORMAL
+  zh: OpenAI为我们提供（自然）对数概率。在代码中，这些被称为logprobs，我们通过指数运算将它们转换为常规概率。（我们很快会讨论温度，但请注意，直接像这样指数运算logprobs对应于温度设置为1.0，这是我们在这篇文章中计算概率的方式）。OpenAI允许我们请求前20个最可能标记的对数概率，所以我们就是这样做的。
 - en: ''
+  id: totrans-31
   prefs:
   - PREF_BQ
   - PREF_BQ
   type: TYPE_NORMAL
 - en: '[PRE4]'
+  id: totrans-32
   prefs:
   - PREF_BQ
   - PREF_BQ
   type: TYPE_PRE
+  zh: '[PRE4]'
 - en: ''
+  id: totrans-33
   prefs:
   - PREF_BQ
   - PREF_BQ
   type: TYPE_NORMAL
 - en: If you run this, you’ll get *something* like the following output, but actual
     numbers *will* vary.
+  id: totrans-34
   prefs:
   - PREF_BQ
   - PREF_BQ
   type: TYPE_NORMAL
+  zh: 如果您运行此代码，您将得到类似以下输出，但实际数字会*变化*。
 - en: ''
+  id: totrans-35
   prefs:
   - PREF_BQ
   - PREF_BQ
   type: TYPE_NORMAL
 - en: '[PRE5]       |    -16.7880535126 |     0.0000051173 |'
+  id: totrans-36
   prefs:
   - PREF_BQ
   - PREF_BQ
   type: TYPE_NORMAL
+  zh: '[PRE5]  |  -16.7880535126 |  0.0000051173 |'
 - en: '| Here''s    |    -16.9130535126 |     0.0000045160 |'
+  id: totrans-37
   prefs:
   - PREF_BQ
   - PREF_BQ
   type: TYPE_TB
+  zh: '| 这里  |  -16.9130535126 |  0.0000045160 |'
 - en: '| I         |    -17.2880535126 |     0.0000031038 |'
+  id: totrans-38
   prefs:
   - PREF_BQ
   - PREF_BQ
   type: TYPE_TB
+  zh: '| 我  |  -17.2880535126 |  0.0000031038 |'
 - en: '| As        |    -17.2880535126 |     0.0000031038 |'
+  id: totrans-39
   prefs:
   - PREF_BQ
   - PREF_BQ
   type: TYPE_TB
+  zh: '| 是  |  -17.2880535126 |  0.0000031038 |'
 - en: ''
+  id: totrans-40
   prefs:
   - PREF_BQ
   - PREF_BQ
   type: TYPE_NORMAL
 - en: 'Total probabilities: 99.999970%'
+  id: totrans-41
   prefs:
   - PREF_BQ
   - PREF_BQ
   type: TYPE_NORMAL
+  zh: 总概率：99.999970%
 - en: '[PRE6]'
+  id: totrans-42
   prefs:
   - PREF_BQ
   - PREF_BQ
   type: TYPE_PRE
+  zh: '[PRE6]'
 - en: '>>> import tiktoken'
+  id: totrans-43
   prefs:
   - PREF_BQ
   - PREF_BQ
   - PREF_BQ
   type: TYPE_NORMAL
+  zh: '>>> 导入 tiktoken'
 - en: '>>> encoding = tiktoken.encoding_for_model("gpt-4o-2024-08-06")'
+  id: totrans-44
   prefs:
   - PREF_BQ
   - PREF_BQ
   - PREF_BQ
   type: TYPE_NORMAL
+  zh: '>>> encoding = tiktoken.encoding_for_model("gpt-4o-2024-08-06")'
 - en: '>>> encoding.encode(''Tails'')'
+  id: totrans-45
   prefs:
   - PREF_BQ
   - PREF_BQ
   - PREF_BQ
   type: TYPE_NORMAL
+  zh: '>>> encoding.encode(''Tails'')'
 - en: '[51, 2196]'
+  id: totrans-46
   prefs:
   - PREF_BQ
   - PREF_BQ
   - PREF_BQ
   type: TYPE_NORMAL
+  zh: '[51, 2196]'
 - en: '>>> encoding.decode([51])'
+  id: totrans-47
   prefs:
   - PREF_BQ
   - PREF_BQ
   - PREF_BQ
   type: TYPE_NORMAL
+  zh: '>>> encoding.decode([51])'
 - en: '''T'''
+  id: totrans-48
   prefs:
   - PREF_BQ
   - PREF_BQ
   - PREF_BQ
   type: TYPE_NORMAL
+  zh: '''T'''
 - en: '>>> encoding.encode(''Heads'')'
+  id: totrans-49
   prefs:
   - PREF_BQ
   - PREF_BQ
   - PREF_BQ
   type: TYPE_NORMAL
+  zh: '>>> encoding.encode(''Heads'')'
 - en: '[181043]'
+  id: totrans-50
   prefs:
   - PREF_BQ
   - PREF_BQ
   - PREF_BQ
   type: TYPE_NORMAL
+  zh: '[181043]'
 - en: '[PRE7]'
+  id: totrans-51
   prefs:
   - PREF_BQ
   - PREF_BQ
   - PREF_BQ
   type: TYPE_PRE
+  zh: '[PRE7]'
 - en: '| Token     |   Log Probability |   Percentage (%) |'
+  id: totrans-52
   prefs:
   - PREF_BQ
   - PREF_BQ
   - PREF_BQ
   type: TYPE_TB
+  zh: '| 标记  |  对数概率 |  百分比 (%) |'
 - en: '|-----------|-------------------|------------------|'
+  id: totrans-53
   prefs:
   - PREF_BQ
   - PREF_BQ
   - PREF_BQ
   type: TYPE_NORMAL
+  zh: '|-----------|-------------------|------------------|'
 - en: '| Heads     |     -0.0110520627 |    98.9008786933 |'
+  id: totrans-54
   prefs:
   - PREF_BQ
   - PREF_BQ
   - PREF_BQ
   type: TYPE_TB
+  zh: '| 头  |  -0.0110520627 |  98.9008786933 |'
 - en: '| T         |     -4.5110521317 |     1.0986894433 |'
+  id: totrans-55
   prefs:
   - PREF_BQ
   - PREF_BQ
   - PREF_BQ
   type: TYPE_TB
+  zh: '| T  |  -4.5110521317 |  1.0986894433 |'
 - en: '| Certainly |    -14.0110521317 |     0.0000822389 |'
+  id: totrans-56
   prefs:
   - PREF_BQ
   - PREF_BQ
   - PREF_BQ
   type: TYPE_TB
+  zh: '| 当然  |  -14.0110521317 |  0.0000822389 |'
 - en: '| Head      |    -14.2610521317 |     0.0000640477 |'
+  id: totrans-57
   prefs:
   - PREF_BQ
   - PREF_BQ
   - PREF_BQ
   type: TYPE_TB
+  zh: '| 头  |  -14.2610521317 |  0.0000640477 |'
 - en: '| Sure      |    -14.2610521317 |     0.0000640477 |'
+  id: totrans-58
   prefs:
   - PREF_BQ
   - PREF_BQ
   - PREF_BQ
   type: TYPE_TB
+  zh: '| 当然  |  -14.2610521317 |  0.0000640477 |'
 - en: '| Tail      |    -14.3860521317 |     0.0000565219 |'
+  id: totrans-59
   prefs:
   - PREF_BQ
   - PREF_BQ
   - PREF_BQ
   type: TYPE_TB
+  zh: '| 尾  |  -14.3860521317 |  0.0000565219 |'
 - en: '| heads     |    -15.3860521317 |     0.0000207933 |'
+  id: totrans-60
   prefs:
   - PREF_BQ
   - PREF_BQ
   - PREF_BQ
   type: TYPE_TB
+  zh: '| heads  |  -15.3860521317 |  0.0000207933 |'
 - en: '| Heads     |    -15.5110521317 |     0.0000183500 |'
+  id: totrans-61
   prefs:
   - PREF_BQ
   - PREF_BQ
   - PREF_BQ
   type: TYPE_TB
+  zh: '| 头  |  -15.5110521317 |  0.0000183500 |'
 - en: '| [PRE8]'
+  id: totrans-62
   prefs:
   - PREF_BQ
   - PREF_BQ
   - PREF_BQ
   type: TYPE_NORMAL
+  zh: '| [PRE8]'
 - en: ''
+  id: totrans-63
   prefs:
   - PREF_BQ
   - PREF_BQ
@@ -352,13 +467,16 @@
   type: TYPE_NORMAL
 - en: 'In their [cookbook](https://cookbook.openai.com/examples/reproducible_outputs_with_the_seed_parameter),
     OpenAI offers the following advice on receiving “mostly identical” outputs:'
+  id: totrans-64
   prefs:
   - PREF_BQ
   - PREF_BQ
   - PREF_BQ
   - PREF_BQ
   type: TYPE_NORMAL
+  zh: 在他们的[食谱](https://cookbook.openai.com/examples/reproducible_outputs_with_the_seed_parameter)中，OpenAI提供了以下关于接收“大部分相同”输出的建议：
 - en: ''
+  id: totrans-65
   prefs:
   - PREF_BQ
   - PREF_BQ
@@ -369,6 +487,7 @@
     your requests, then model outputs will mostly be identical. There is a small chance
     that responses differ even when request parameters and `system_fingerprint` match,
     due to the inherent non-determinism of our models.
+  id: totrans-66
   prefs:
   - PREF_BQ
   - PREF_BQ
@@ -376,7 +495,9 @@
   - PREF_BQ
   - PREF_BQ
   type: TYPE_NORMAL
+  zh: 如果在您的请求中`seed`、请求参数和`system_fingerprint`都匹配，那么模型输出将大部分是相同的。即使请求参数和`system_fingerprint`匹配，由于我们模型固有的非确定性，响应也可能有所不同。
 - en: ''
+  id: totrans-67
   prefs:
   - PREF_BQ
   - PREF_BQ
@@ -385,13 +506,16 @@
   type: TYPE_NORMAL
 - en: They also give “mostly identical” advice in the [reproducible outputs section](https://platform.openai.com/docs/advanced-usage/reproducible-outputs)
     of their documentation.
+  id: totrans-68
   prefs:
   - PREF_BQ
   - PREF_BQ
   - PREF_BQ
   - PREF_BQ
   type: TYPE_NORMAL
+  zh: 他们还在其文档的“可重复输出部分”（[reproducible outputs section](https://platform.openai.com/docs/advanced-usage/reproducible-outputs)）中给出了“大部分相同”的建议。
 - en: ''
+  id: totrans-69
   prefs:
   - PREF_BQ
   - PREF_BQ
@@ -402,13 +526,16 @@
     OpenAI also suggests we track `system_fingerprint`, because differences here might
     cause differences in output. We’ll examine each of these below, but spoiler: none
     of them will fix or even explain this non-determinism.'
+  id: totrans-70
   prefs:
   - PREF_BQ
   - PREF_BQ
   - PREF_BQ
   - PREF_BQ
   type: TYPE_NORMAL
+  zh: 可能影响随机性的请求参数是`temperature`和`seed`。OpenAI还建议我们跟踪`system_fingerprint`，因为这里的差异可能会导致输出差异。我们将在下面逐一检查这些参数，但剧透一下：它们都无法解决这个问题，甚至无法解释这种非确定性。
 - en: ''
+  id: totrans-71
   prefs:
   - PREF_BQ
   - PREF_BQ
@@ -416,6 +543,7 @@
   - PREF_BQ
   type: TYPE_NORMAL
 - en: Temperature, and why it won’t fix this
+  id: totrans-72
   prefs:
   - PREF_BQ
   - PREF_BQ
@@ -423,7 +551,9 @@
   - PREF_BQ
   - PREF_H2
   type: TYPE_NORMAL
+  zh: 温度，以及为什么它无法解决这个问题
 - en: ''
+  id: totrans-73
   prefs:
   - PREF_BQ
   - PREF_BQ
@@ -438,13 +568,16 @@
     across four dimensions of creativity: novelty (originality), coherence (logical
     consistency), cohesion (how well the text flows), and typicality (how well it
     fits expected patterns). They observed that:'
+  id: totrans-74
   prefs:
   - PREF_BQ
   - PREF_BQ
   - PREF_BQ
   - PREF_BQ
   type: TYPE_NORMAL
+  zh: 温度控制模型响应的随机程度。低温（<0.5）使其变得机械和可预测，中等温度（0.7–1.3）允许一些创造性，而高温（>1.5）会产生无意义的文本。温度通常被称为“创造性参数”，但这是一种过度简化的说法。在他们的分析中，Peeperkorn、Kouwenhoven、Brown和Jordanous（2024）从创造性的四个维度评估了LLM的输出：新颖性（原创性）、连贯性（逻辑一致性）、凝聚力（文本的流畅性）和典型性（与预期模式的契合度）。他们观察到：
 - en: ''
+  id: totrans-75
   prefs:
   - PREF_BQ
   - PREF_BQ
@@ -454,6 +587,7 @@
 - en: temperature is weakly correlated with novelty, and unsurprisingly, moderately
     correlated with incoherence, but there is no relationship with either cohesion
     or typicality.
+  id: totrans-76
   prefs:
   - PREF_BQ
   - PREF_BQ
@@ -461,7 +595,9 @@
   - PREF_BQ
   - PREF_BQ
   type: TYPE_NORMAL
+  zh: 温度与新颖性呈弱相关，并且不出所料，与不连贯性中度相关，但与凝聚力和典型性都没有关系。
 - en: ''
+  id: totrans-77
   prefs:
   - PREF_BQ
   - PREF_BQ
@@ -473,13 +609,16 @@
     be converted to probabilities. This creates a non-linear effect: `temperature=0.5`
     squares the probabilities, making likely tokens dominate, while `temperature=2.0`
     applies a square root, flattening the distribution.'
+  id: totrans-78
   prefs:
   - PREF_BQ
   - PREF_BQ
   - PREF_BQ
   - PREF_BQ
   type: TYPE_NORMAL
+  zh: 但是，这与抛硬币无关。在底层，对数概率在重新归一化和指数化以转换为概率之前会被除以温度。这产生了一个非线性效应：`temperature=0.5`平方了概率，使可能的标记占主导地位，而`temperature=2.0`则应用平方根，使分布平坦化。
 - en: ''
+  id: totrans-79
   prefs:
   - PREF_BQ
   - PREF_BQ
@@ -490,13 +629,16 @@
     model simply picks the highest-probability token. Sounds deterministic, right?
     Not quite. Here’s the catch: temperature only comes into play after the log probabilities
     are computed, when we convert them to probabilities.'
+  id: totrans-80
   prefs:
   - PREF_BQ
   - PREF_BQ
   - PREF_BQ
   - PREF_BQ
   type: TYPE_NORMAL
+  zh: 那么`temperature=0.0`呢？模型不是通过除以零来破坏数学，而是简单地选择概率最高的标记。听起来是确定性的，对吧？但并不完全是这样。这里的关键是：温度只有在计算了对数概率之后，在我们将它们转换为概率时才会发挥作用。
 - en: ''
+  id: totrans-81
   prefs:
   - PREF_BQ
   - PREF_BQ
@@ -505,13 +647,16 @@
   type: TYPE_NORMAL
 - en: 'In summary: **if the logprobs aren’t deterministic, setting temperature to
     0.0 won’t make the model deterministic**.'
+  id: totrans-82
   prefs:
   - PREF_BQ
   - PREF_BQ
   - PREF_BQ
   - PREF_BQ
   type: TYPE_NORMAL
+  zh: 总结：**如果对数概率不是确定性的，将温度设置为0.0不会使模型变得确定性**。
 - en: ''
+  id: totrans-83
   prefs:
   - PREF_BQ
   - PREF_BQ
@@ -521,13 +666,16 @@
 - en: In fact, since we’re just asking the model for the raw logprobs directly rather
     than generating full responses, the temperature setting doesn’t come into play
     in our code at all.
+  id: totrans-84
   prefs:
   - PREF_BQ
   - PREF_BQ
   - PREF_BQ
   - PREF_BQ
   type: TYPE_NORMAL
+  zh: 事实上，因为我们只是直接请求模型提供原始的对数概率，而不是生成完整的响应，所以在我们的代码中温度设置根本不起作用。
 - en: ''
+  id: totrans-85
   prefs:
   - PREF_BQ
   - PREF_BQ
@@ -535,6 +683,7 @@
   - PREF_BQ
   type: TYPE_NORMAL
 - en: Seeds, and why they won’t fix this
+  id: totrans-86
   prefs:
   - PREF_BQ
   - PREF_BQ
@@ -542,7 +691,9 @@
   - PREF_BQ
   - PREF_H2
   type: TYPE_NORMAL
+  zh: 种子，以及为什么它们无法解决这个问题
 - en: ''
+  id: totrans-87
   prefs:
   - PREF_BQ
   - PREF_BQ
@@ -555,13 +706,16 @@
     generator. In an ideal world, setting a seed would give us determinism at any
     temperature. But seeds only affect sampling, not the log probabilities before
     sampling.
+  id: totrans-88
   prefs:
   - PREF_BQ
   - PREF_BQ
   - PREF_BQ
   - PREF_BQ
   type: TYPE_NORMAL
+  zh: 在使用温度来计算概率之后，模型会从这些概率中采样以选择下一个标记。OpenAI通过允许我们为随机数生成器设置`seed`参数，给我们提供了一点点对采样过程的控制。在一个理想的世界里，设置种子会在任何温度下给我们确定性。但是，种子只会影响采样，而不会影响采样之前的对数概率。
 - en: ''
+  id: totrans-89
   prefs:
   - PREF_BQ
   - PREF_BQ
@@ -570,13 +724,16 @@
   type: TYPE_NORMAL
 - en: 'In summary: **if the logprobs aren’t deterministic, setting a seed won’t make
     the model deterministic**.'
+  id: totrans-90
   prefs:
   - PREF_BQ
   - PREF_BQ
   - PREF_BQ
   - PREF_BQ
   type: TYPE_NORMAL
+  zh: 总结：**如果对数概率不是确定性的，设置种子不会使模型变得确定性**。
 - en: ''
+  id: totrans-91
   prefs:
   - PREF_BQ
   - PREF_BQ
@@ -587,13 +744,16 @@
     the model is always choosing the highest probability token regardless of the seed.
     Again, since we’re just asking the model for the raw logprobs directly rather
     than sampling, neither of these settings can help us achieve determinism.
+  id: totrans-92
   prefs:
   - PREF_BQ
   - PREF_BQ
   - PREF_BQ
   - PREF_BQ
   type: TYPE_NORMAL
+  zh: 事实上，`seed`只有在非零温度下才有意义。当`temperature=0.0`时，模型总是选择最高概率的token，而不管seed是多少。再次强调，由于我们只是直接请求模型的原始logprobs而不是采样，这两个设置都不能帮助我们实现决定论。
 - en: ''
+  id: totrans-93
   prefs:
   - PREF_BQ
   - PREF_BQ
@@ -601,6 +761,7 @@
   - PREF_BQ
   type: TYPE_NORMAL
 - en: System fingerprints, our last hope
+  id: totrans-94
   prefs:
   - PREF_BQ
   - PREF_BQ
@@ -608,7 +769,9 @@
   - PREF_BQ
   - PREF_H2
   type: TYPE_NORMAL
+  zh: 系统指纹，我们的最后希望
 - en: ''
+  id: totrans-95
   prefs:
   - PREF_BQ
   - PREF_BQ
@@ -619,13 +782,16 @@
     infrastructure, and configuration options in OpenAI’s backend. At least, that’s
     what OpenAI tells us. Variations in system fingerprints might indeed explain variations
     in logprobs. Except that they don’t, as we will verify below.
+  id: totrans-96
   prefs:
   - PREF_BQ
   - PREF_BQ
   - PREF_BQ
   - PREF_BQ
   type: TYPE_NORMAL
+  zh: '`system_fingerprint`识别OpenAI后端当前模型权重、基础设施和配置选项的组合。至少，这是OpenAI告诉我们的。系统指纹的变化确实可能解释logprobs的变化。但事实并非如此，正如我们下面将要验证的。'
 - en: ''
+  id: totrans-97
   prefs:
   - PREF_BQ
   - PREF_BQ
@@ -633,6 +799,7 @@
   - PREF_BQ
   type: TYPE_NORMAL
 - en: Nothing can get you determinism
+  id: totrans-98
   prefs:
   - PREF_BQ
   - PREF_BQ
@@ -640,7 +807,9 @@
   - PREF_BQ
   - PREF_H2
   type: TYPE_NORMAL
+  zh: 没有什么能让你获得决定论
 - en: ''
+  id: totrans-99
   prefs:
   - PREF_BQ
   - PREF_BQ
@@ -652,13 +821,16 @@
     matter for what we’re doing, you can never be too safe, so we’ll set `temperature=0.0`
     and `seed=42`. And to see if infrastructure differences explain our varying logprobs,
     we’ll print `system_fingerprint`. Here’s the code:'
+  id: totrans-100
   prefs:
   - PREF_BQ
   - PREF_BQ
   - PREF_BQ
   - PREF_BQ
   type: TYPE_NORMAL
+  zh: 让我们确认我们一直在努力构建的内容。我们将运行10次相同的请求，并确保所有安全措施都到位。即使这些参数*不应该*对我们正在做的事情产生影响，但你永远不能太过安全，所以我们将设置`temperature=0.0`和`seed=42`。为了查看基础设施差异是否解释了我们的不同logprobs，我们将打印`system_fingerprint`。以下是代码：
 - en: ''
+  id: totrans-101
   prefs:
   - PREF_BQ
   - PREF_BQ
@@ -666,13 +838,16 @@
   - PREF_BQ
   type: TYPE_NORMAL
 - en: '[PRE9]'
+  id: totrans-102
   prefs:
   - PREF_BQ
   - PREF_BQ
   - PREF_BQ
   - PREF_BQ
   type: TYPE_PRE
+  zh: '[PRE9]'
 - en: ''
+  id: totrans-103
   prefs:
   - PREF_BQ
   - PREF_BQ
@@ -681,13 +856,16 @@
   type: TYPE_NORMAL
 - en: 'Running this 10 times, here are the logprobs and probabilities for the token
     Heads:'
+  id: totrans-104
   prefs:
   - PREF_BQ
   - PREF_BQ
   - PREF_BQ
   - PREF_BQ
   type: TYPE_NORMAL
+  zh: 运行10次，以下是token Heads的logprobs和概率：
 - en: ''
+  id: totrans-105
   prefs:
   - PREF_BQ
   - PREF_BQ
@@ -695,13 +873,16 @@
   - PREF_BQ
   type: TYPE_NORMAL
 - en: '[PRE10]'
+  id: totrans-106
   prefs:
   - PREF_BQ
   - PREF_BQ
   - PREF_BQ
   - PREF_BQ
   type: TYPE_PRE
+  zh: '[PRE10]'
 - en: ''
+  id: totrans-107
   prefs:
   - PREF_BQ
   - PREF_BQ
@@ -709,6 +890,7 @@
   - PREF_BQ
   type: TYPE_NORMAL
 - en: Mixture-of-experts makes determinism impossible
+  id: totrans-108
   prefs:
   - PREF_BQ
   - PREF_BQ
@@ -716,7 +898,9 @@
   - PREF_BQ
   - PREF_H2
   type: TYPE_NORMAL
+  zh: 混合专家使决定论成为不可能
 - en: ''
+  id: totrans-109
   prefs:
   - PREF_BQ
   - PREF_BQ
@@ -726,13 +910,16 @@
 - en: OpenAI is decidedly not open about the architecture behind GPT-4o. However,
     it’s widely believed that GPT-4o uses a mixture-of-experts (MoE) architecture
     with either 8 or 16 experts.
+  id: totrans-110
   prefs:
   - PREF_BQ
   - PREF_BQ
   - PREF_BQ
   - PREF_BQ
   type: TYPE_NORMAL
+  zh: OpenAI对于GPT-4o背后的架构决不开放。然而，普遍认为GPT-4o使用混合专家（MoE）架构，具有8个或16个专家。
 - en: ''
+  id: totrans-111
   prefs:
   - PREF_BQ
   - PREF_BQ
@@ -742,13 +929,16 @@
 - en: 'According to a paper by Google DeepMind researchers Puigcerver, Riquelme, Mustafa,
     and Houlsby (hat tip to [user elmstedt on the OpenAI forum](https://community.openai.com/t/why-the-api-output-is-inconsistent-even-after-the-temperature-is-set-to-0/329541/9)),
     mixture-of-experts architectures may add an unavoidable level of non-determinism:'
+  id: totrans-112
   prefs:
   - PREF_BQ
   - PREF_BQ
   - PREF_BQ
   - PREF_BQ
   type: TYPE_NORMAL
+  zh: 根据谷歌DeepMind研究人员Puigcerver、Riquelme、Mustafa和Houlsby的一篇论文（感谢OpenAI论坛上的用户elmstedt[用户elmstedt在OpenAI论坛上的帖子](https://community.openai.com/t/why-the-api-output-is-inconsistent-even-after-the-temperature-is-set-to-0/329541/9)），混合专家架构可能会添加一个不可避免的非决定论级别：
 - en: ''
+  id: totrans-113
   prefs:
   - PREF_BQ
   - PREF_BQ
@@ -760,6 +950,7 @@
     contain tokens from different sequences or inputs, these tokens compete for available
     spots in expert buffers. Therefore, the model is no longer deterministic at the
     sequence-level, but only at the batch-level.
+  id: totrans-114
   prefs:
   - PREF_BQ
   - PREF_BQ
@@ -767,7 +958,9 @@
   - PREF_BQ
   - PREF_BQ
   type: TYPE_NORMAL
+  zh: 在容量限制下，所有稀疏MoE方法都以固定大小的组路由token，并在组内强制（或鼓励）平衡。当组包含来自不同序列或输入的token时，这些token会竞争专家缓冲区中的可用位置。因此，模型在序列级别上不再是决定论的，但在批量级别上是。
 - en: ''
+  id: totrans-115
   prefs:
   - PREF_BQ
   - PREF_BQ
@@ -780,13 +973,16 @@
     to an “expert” within the model. However, since only so many prompts can be routed
     to the same expert, the expert your prompt gets routed to will depend on all the
     other prompts in the batch.
+  id: totrans-116
   prefs:
   - PREF_BQ
   - PREF_BQ
   - PREF_BQ
   - PREF_BQ
   type: TYPE_NORMAL
+  zh: 换句话说，当你的提示（如上所述，是一个*token序列*）到达OpenAI的服务器时，它会被与一组其他提示一起批量处理（OpenAI没有公开其他提示的数量）。然后，批量中的每个提示都会被路由到模型内的一个“专家”。然而，由于可以路由到同一专家的提示数量有限，你的提示被路由到的专家将取决于批量中的所有其他提示。
 - en: ''
+  id: totrans-117
   prefs:
   - PREF_BQ
   - PREF_BQ
@@ -795,13 +991,16 @@
   type: TYPE_NORMAL
 - en: This “competition” for experts introduces a real-world randomness completely
     beyond our control.
+  id: totrans-118
   prefs:
   - PREF_BQ
   - PREF_BQ
   - PREF_BQ
   - PREF_BQ
   type: TYPE_NORMAL
+  zh: 这种“竞争”专家的行为引入了完全超出我们控制的现实世界随机性。
 - en: ''
+  id: totrans-119
   prefs:
   - PREF_BQ
   - PREF_BQ
@@ -809,6 +1008,7 @@
   - PREF_BQ
   type: TYPE_NORMAL
 - en: Non-determinism beyond mixture-of-experts
+  id: totrans-120
   prefs:
   - PREF_BQ
   - PREF_BQ
@@ -816,7 +1016,9 @@
   - PREF_BQ
   - PREF_H2
   type: TYPE_NORMAL
+  zh: 混合专家之外的非决定论
 - en: ''
+  id: totrans-121
   prefs:
   - PREF_BQ
   - PREF_BQ
@@ -825,13 +1027,16 @@
   type: TYPE_NORMAL
 - en: While non-determinism may be inherent to real-world mixture-of-experts models,
     that does not seem to be the *only* source of non-determinism in OpenAI’s models.
+  id: totrans-122
   prefs:
   - PREF_BQ
   - PREF_BQ
   - PREF_BQ
   - PREF_BQ
   type: TYPE_NORMAL
+  zh: 虽然非决定论可能是现实世界混合专家模型固有的，但这似乎并不是OpenAI模型中非决定论的唯一来源。
 - en: ''
+  id: totrans-123
   prefs:
   - PREF_BQ
   - PREF_BQ
@@ -842,13 +1047,16 @@
     looking for the token `He` since GPT-3.5’s tokenizer splits “Heads” differently,
     and ignoring system_fingerprint because this model doesn’t have it) reveals that
     GPT-3.5-turbo *also* exhibits non-deterministic logprobs:'
+  id: totrans-124
   prefs:
   - PREF_BQ
   - PREF_BQ
   - PREF_BQ
   - PREF_BQ
   type: TYPE_NORMAL
+  zh: 通过对我们的代码进行一些修改（切换到`gpt-3.5-turbo-0125`，寻找标记`He`，因为GPT-3.5的标记器将“正面”分割得不同，并且忽略system_fingerprint，因为该模型没有它），我们发现GPT-3.5-turbo**也**表现出非确定性的对数概率：
 - en: ''
+  id: totrans-125
   prefs:
   - PREF_BQ
   - PREF_BQ
@@ -856,13 +1064,16 @@
   - PREF_BQ
   type: TYPE_NORMAL
 - en: '[PRE11]'
+  id: totrans-126
   prefs:
   - PREF_BQ
   - PREF_BQ
   - PREF_BQ
   - PREF_BQ
   type: TYPE_PRE
+  zh: '[PRE11]'
 - en: ''
+  id: totrans-127
   prefs:
   - PREF_BQ
   - PREF_BQ
@@ -872,6 +1083,7 @@
 - en: No one is claiming that GPT-3.5-turbo uses a mixture-of-experts architecture.
     Thus, there must be additional factors beyond mixture-of-experts contributing
     to this non-determinism.
+  id: totrans-128
   prefs:
   - PREF_BQ
   - PREF_BQ
@@ -879,7 +1091,9 @@
   - PREF_BQ
   - PREF_BQ
   type: TYPE_NORMAL
+  zh: 没有人声称GPT-3.5-turbo使用的是专家混合架构。因此，除了专家混合之外，还必须有其他因素导致这种非确定性。
 - en: ''
+  id: totrans-129
   prefs:
   - PREF_BQ
   - PREF_BQ
@@ -888,6 +1102,7 @@
   - PREF_BQ
   type: TYPE_NORMAL
 - en: What 10,000 GPT-4o coin flip probabilities tell us
+  id: totrans-130
   prefs:
   - PREF_BQ
   - PREF_BQ
@@ -896,7 +1111,9 @@
   - PREF_BQ
   - PREF_H2
   type: TYPE_NORMAL
+  zh: 10,000次GPT-4o抛硬币概率告诉我们什么
 - en: ''
+  id: totrans-131
   prefs:
   - PREF_BQ
   - PREF_BQ
@@ -907,6 +1124,7 @@
 - en: To better understand the patterns and magnitude of this non-determinism, I conducted
     a more extensive experiment with GPT-4o, performing 10,000 “coin flips” while
     recording the probability assigned to “Heads” in each case.
+  id: totrans-132
   prefs:
   - PREF_BQ
   - PREF_BQ
@@ -914,7 +1132,9 @@
   - PREF_BQ
   - PREF_BQ
   type: TYPE_NORMAL
+  zh: 为了更好地理解这种非确定性的模式和幅度，我使用GPT-4o进行了更广泛的实验，进行了10,000次“抛硬币”实验，同时记录了每次实验中分配给“正面”的概率。
 - en: ''
+  id: totrans-133
   prefs:
   - PREF_BQ
   - PREF_BQ
@@ -928,6 +1148,7 @@
     explanation for non-determinism in GPT-4o, we might expect to see one distinct
     probability for each expert. But GPT-4o is believed to have either 8 or 16 experts,
     **not 42**.
+  id: totrans-134
   prefs:
   - PREF_BQ
   - PREF_BQ
@@ -935,7 +1156,9 @@
   - PREF_BQ
   - PREF_BQ
   type: TYPE_NORMAL
+  zh: 结果揭示了一些令人着迷的事情。在10,000次具有相同参数的API调用中，GPT-4o不仅产生了几个不同的概率值，而且产生了**42个不同的概率值**。如果混合专家假设是GPT-4o中非确定性的完整解释，我们可能会期望每个专家都有一个独特的概率值。但GPT-4o被认为有8个或16个专家，**而不是42个**。
 - en: ''
+  id: totrans-135
   prefs:
   - PREF_BQ
   - PREF_BQ
@@ -946,6 +1169,7 @@
 - en: In the output below, I clustered these probabilities, ensuring that each cluster
     was separated from the others by 0.01 (as a raw percentage). This groups the output
     into **12 clusters**.
+  id: totrans-136
   prefs:
   - PREF_BQ
   - PREF_BQ
@@ -953,7 +1177,9 @@
   - PREF_BQ
   - PREF_BQ
   type: TYPE_NORMAL
+  zh: 在下面的输出中，我将这些概率进行了聚类，确保每个聚类与其他聚类之间隔开0.01（作为一个原始百分比）。这把输出分成了**12个聚类**。
 - en: ''
+  id: totrans-137
   prefs:
   - PREF_BQ
   - PREF_BQ
@@ -962,6 +1188,7 @@
   - PREF_BQ
   type: TYPE_NORMAL
 - en: '[PRE12]'
+  id: totrans-138
   prefs:
   - PREF_BQ
   - PREF_BQ
@@ -969,7 +1196,9 @@
   - PREF_BQ
   - PREF_BQ
   type: TYPE_PRE
+  zh: '[PRE12]'
 - en: ''
+  id: totrans-139
   prefs:
   - PREF_BQ
   - PREF_BQ
@@ -979,6 +1208,7 @@
   type: TYPE_NORMAL
 - en: (With a threshold of 0.001 there are 13 clusters, and with a threshold of 0.0001
     there are 17 clusters.)
+  id: totrans-140
   prefs:
   - PREF_BQ
   - PREF_BQ
@@ -987,7 +1217,9 @@
   - PREF_BQ
   - PREF_BQ
   type: TYPE_NORMAL
+  zh: （以0.001为阈值，有13个聚类，以0.0001为阈值，有17个聚类。）
 - en: ''
+  id: totrans-141
   prefs:
   - PREF_BQ
   - PREF_BQ
@@ -1001,6 +1233,7 @@
     system fingerprints: 4488 results with `fp_f9f4fb6dbf` and 5512 with `fp_eb9dce56a8`,
     and for the most part the two system fingerprints returned the same sets probabilities,
     rather than each fingerprint producing its own distinct set of probabilities.'
+  id: totrans-142
   prefs:
   - PREF_BQ
   - PREF_BQ
@@ -1009,7 +1242,9 @@
   - PREF_BQ
   - PREF_BQ
   type: TYPE_NORMAL
+  zh: 如上图所示，这些众多结果不能由`system_fingerprint`值来解释。在所有10,000次调用中，我只收到了两种不同的系统指纹：4488次结果带有`fp_f9f4fb6dbf`，5512次带有`fp_eb9dce56a8`，而且大部分情况下，这两个系统指纹返回了相同的概率集，而不是每个指纹产生其自己的独特概率集。
 - en: ''
+  id: totrans-143
   prefs:
   - PREF_BQ
   - PREF_BQ
@@ -1024,6 +1259,7 @@
     and consistent. Take the giant cluster at around 96.266% with two distinct probabilities
     representing over half of our coin flips. The difference between these two probabilities,
     0.0000448274%, is tiny but persistent.
+  id: totrans-144
   prefs:
   - PREF_BQ
   - PREF_BQ
@@ -1032,7 +1268,9 @@
   - PREF_BQ
   - PREF_BQ
   type: TYPE_NORMAL
+  zh: 它**可能**是这12个概率聚类代表了**12个不同的专家**。即使假设如此，聚类内的变化仍然令人困惑。这些看起来不太可能是简单的舍入误差，因为它们太系统和一致了。以大约96.266%的巨大聚类为例，其中有两个不同的概率代表了超过一半的抛硬币。这两个概率之间的差异，0.0000448274%，非常小但持续存在。
 - en: ''
+  id: totrans-145
   prefs:
   - PREF_BQ
   - PREF_BQ
@@ -1042,6 +1280,7 @@
   - PREF_BQ
   type: TYPE_NORMAL
 - en: 'Conclusion: Non-determinism is baked in'
+  id: totrans-146
   prefs:
   - PREF_BQ
   - PREF_BQ
@@ -1051,7 +1290,9 @@
   - PREF_BQ
   - PREF_H2
   type: TYPE_NORMAL
+  zh: 结论：非确定性是固有的
 - en: ''
+  id: totrans-147
   prefs:
   - PREF_BQ
   - PREF_BQ
@@ -1065,6 +1306,7 @@
     flavors of GPT-3.5-turbo. Because this non-determinism is baked into the log probabilities,
     there’s no way for a user to get around it. Temperature and seed values have no
     effect, and system fingerprints don’t explain it.'
+  id: totrans-148
   prefs:
   - PREF_BQ
   - PREF_BQ
@@ -1073,7 +1315,9 @@
   - PREF_BQ
   - PREF_BQ
   type: TYPE_NORMAL
+  zh: 所有目前可用的非思考型OpenAI模型（GPT-4o、GPT-4o-mini以及两种GPT-3.5-turbo版本）返回的对数概率中存在一种潜在的随机性。由于这种非确定性已经嵌入到对数概率中，用户无法绕过它。温度和种子值都没有效果，系统指纹也无法解释这一点。
 - en: ''
+  id: totrans-149
   prefs:
   - PREF_BQ
   - PREF_BQ
@@ -1086,6 +1330,7 @@
     in the competition for experts, the non-determinism in GPT-4o seems to go far
     beyond this, and the non-determinism in GPT-3.5-turbo can’t be explained by this
     at all, because GPT-3.5-turbo isn’t a mixture-of-experts model.
+  id: totrans-150
   prefs:
   - PREF_BQ
   - PREF_BQ
@@ -1094,7 +1339,9 @@
   - PREF_BQ
   - PREF_BQ
   type: TYPE_NORMAL
+  zh: 虽然混合专家架构在本质上引入了专家竞争中的某些随机性，但GPT-4o中的非确定性似乎远超于此，GPT-3.5-turbo中的非确定性也无法用这一点来解释，因为GPT-3.5-turbo不是一个混合专家模型。
 - en: ''
+  id: totrans-151
   prefs:
   - PREF_BQ
   - PREF_BQ
@@ -1105,6 +1352,7 @@
   type: TYPE_NORMAL
 - en: 'While we can’t verify this claim any more because the model isn’t being served,
     this behaviour wasn’t seen with GPT-3, according to [user _j on the OpenAI forum](https://medium.com/r/?url=https%3A%2F%2Fcommunity.openai.com%2Ft%2Fnon-deterministic-probabilities-for-first-generated-token-in-chat-completion%2F726074%2F5):'
+  id: totrans-152
   prefs:
   - PREF_BQ
   - PREF_BQ
@@ -1113,7 +1361,9 @@
   - PREF_BQ
   - PREF_BQ
   type: TYPE_NORMAL
+  zh: 尽管我们无法再验证这一说法，因为模型不再提供服务，但根据[OpenAI论坛上的用户_j](https://medium.com/r/?url=https%3A%2F%2Fcommunity.openai.com%2Ft%2Fnon-deterministic-probabilities-for-first-generated-token-in-chat-completion%2F726074%2F5)的说法，这种行为在GPT-3中并未出现：
 - en: ''
+  id: totrans-153
   prefs:
   - PREF_BQ
   - PREF_BQ
@@ -1127,6 +1377,7 @@
     be the same. Even if you found a top-2 answer that returned exactly the same logprob
     value via the API, you would never see them switch position or return different
     values.
+  id: totrans-154
   prefs:
   - PREF_BQ
   - PREF_BQ
@@ -1136,7 +1387,9 @@
   - PREF_BQ
   - PREF_BQ
   type: TYPE_NORMAL
+  zh: 这是一个在之前的GPT-3 AI模型中未曾见过的症状，在数百次试验以调查采样时，你从未需要怀疑logprobs会相同。即使你通过API找到了返回相同logprob值的top-2答案，你也永远不会看到它们的位置交换或返回不同的值。
 - en: ''
+  id: totrans-155
   prefs:
   - PREF_BQ
   - PREF_BQ
@@ -1147,6 +1400,7 @@
   type: TYPE_NORMAL
 - en: This suggests that whatever is causing this randomness first emerged in either
     GPT-3.5 or GPT-3.5-turbo.
+  id: totrans-156
   prefs:
   - PREF_BQ
   - PREF_BQ
@@ -1155,7 +1409,9 @@
   - PREF_BQ
   - PREF_BQ
   type: TYPE_NORMAL
+  zh: 这表明导致这种随机性的原因最早出现在GPT-3.5或GPT-3.5-turbo中。
 - en: ''
+  id: totrans-157
   prefs:
   - PREF_BQ
   - PREF_BQ
@@ -1170,6 +1426,7 @@
     need consistency. but as we’ve seen, even when we lock down every knob OpenAI
     lets us touch, we still can’t get an answer to the simplest possible question:
     **“what is the probability that GPT-4o says a coin lands heads?”**'
+  id: totrans-158
   prefs:
   - PREF_BQ
   - PREF_BQ
@@ -1178,7 +1435,9 @@
   - PREF_BQ
   - PREF_BQ
   type: TYPE_NORMAL
+  zh: 但无论何时出现，这种非确定性都是理解这些模型的严重障碍。如果你想研究一个模型——它如何泛化，它如何偏置响应，它如何为不同的标记分配概率——你需要一致性。但正如我们所见，即使我们锁定OpenAI让我们能触及的每一个旋钮，我们仍然无法得到对最简单问题的答案：**“GPT-4o说硬币落地为头的概率是多少？”**
 - en: ''
+  id: totrans-159
   prefs:
   - PREF_BQ
   - PREF_BQ
@@ -1193,6 +1452,7 @@
     us which expert processed our request or by offering additional parameters to
     control this routing process. Without such visibility, we’re left guessing at
     the true nature of the variability.
+  id: totrans-160
   prefs:
   - PREF_BQ
   - PREF_BQ
@@ -1201,7 +1461,9 @@
   - PREF_BQ
   - PREF_BQ
   type: TYPE_NORMAL
+  zh: 更糟糕的是，虽然混合专家解释了部分这种非确定性，但显然还有其他隐藏的随机性来源，我们无法看到、控制或理解。在一个理想的世界里，API会通过告诉我们哪个专家处理了我们的请求或提供额外的参数来控制这个路由过程，从而提供更多的透明度。没有这种可见性，我们只能猜测这种变异性真正的本质。
 - en: ''
+  id: totrans-161
   prefs:
   - PREF_BQ
   - PREF_BQ
@@ -1211,6 +1473,7 @@
   - PREF_BQ
   type: TYPE_NORMAL
 - en: References
+  id: totrans-162
   prefs:
   - PREF_BQ
   - PREF_BQ
@@ -1220,7 +1483,9 @@
   - PREF_BQ
   - PREF_H2
   type: TYPE_NORMAL
+  zh: 参考文献
 - en: ''
+  id: totrans-163
   prefs:
   - PREF_BQ
   - PREF_BQ
@@ -1232,6 +1497,7 @@
 - en: 'Bar-Hillel, M., Peer, E., & Acquisti, A. (2014). “Heads or tails?” – A reachability
     bias in binary choice. Journal of Experimental Psychology: Learning, Memory, and
     Cognition, 40(6), 1656–1663\. [https://doi.org/10.1037/xlm0000005](https://doi.org/10.1037/xlm0000005).'
+  id: totrans-164
   prefs:
   - PREF_BQ
   - PREF_BQ
@@ -1240,7 +1506,9 @@
   - PREF_BQ
   - PREF_BQ
   type: TYPE_NORMAL
+  zh: Bar-Hillel, M., Peer, E., & Acquisti, A. (2014)。 “正面还是反面？”——二元选择中的可达性偏差。实验心理学：学习、记忆和认知，40(6)，1656–1663。[https://doi.org/10.1037/xlm0000005](https://doi.org/10.1037/xlm0000005)。
 - en: ''
+  id: totrans-165
   prefs:
   - PREF_BQ
   - PREF_BQ
@@ -1252,6 +1520,7 @@
 - en: Peeperkorn, M., Kouwenhoven, T., Brown, D., & Jordanous, A. (2024). Is temperature
     the creativity parameter of large language models?. In The 15th International
     Conference on Computational Creativity (ICCC’24). [arXiv:2405.00492](https://arxiv.org/abs/2405.00492).
+  id: totrans-166
   prefs:
   - PREF_BQ
   - PREF_BQ
@@ -1260,7 +1529,9 @@
   - PREF_BQ
   - PREF_BQ
   type: TYPE_NORMAL
+  zh: Peeperkorn, M., Kouwenhoven, T., Brown, D., & Jordanous, A. (2024)。温度是大型语言模型的创造力参数吗？在第15届国际计算创造力会议（ICCC’24）中。[arXiv:2405.00492](https://arxiv.org/abs/2405.00492)。
 - en: ''
+  id: totrans-167
   prefs:
   - PREF_BQ
   - PREF_BQ
@@ -1275,6 +1546,7 @@
     [arXiv:2308.00951](https://arxiv.org/abs/2308.00951).Van Koevering, K., & Kleinberg,
     J. (2024). How random is random? Evaluating the randomness and humanness of LLMs’
     coin flips. [arXiv:2406.00092](https://arxiv.org/abs/2406.00092).
+  id: totrans-168
   prefs:
   - PREF_BQ
   - PREF_BQ
@@ -1283,3 +1555,6 @@
   - PREF_BQ
   - PREF_BQ
   type: TYPE_NORMAL
+  zh: Puigcerver, J., Riquelme, C., Mustafa, B., & Houlsby, N. (2024). 从稀疏到软混合专家。在第十二届国际学习表示会议（ICLR
+    2024）中。[https://openreview.net/forum?id=jxpsAj7ltE](https://openreview.net/forum?id=jxpsAj7ltE)。[arXiv:2308.00951](https://arxiv.org/abs/2308.00951)。Van
+    Koevering, K., & Kleinberg, J. (2024)。随机性有多随机？评估LLM的硬币翻转的随机性和人性。[arXiv:2406.00092](https://arxiv.org/abs/2406.00092)。
