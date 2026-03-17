@@ -68,12 +68,17 @@
   id: totrans-6
   prefs: []
   type: TYPE_NORMAL
+  zh: NUMA 架构旨在通过将本地内存银行直接与特定的 CPU 插槽关联来优化内存事务。大多数现代的多 GPU 高性能计算（HPC）系统由两个或更多 NUMA
+    节点组成，其中 CPU 和 GPU 被分为不相交的组，每个组连接到一个节点。当内存银行在同一节点内访问时，NUMA 最有效。在远程节点上访问内存需要通过专用的
+    NUMA 互连进行数据传输，这比访问本地内存慢得多。在内存密集型应用程序，如 AI/ML 工作负载中，跨 NUMA 内存访问可能会引入性能瓶颈。
 - en: Unfortunately, popular AI/ML frameworks — most notably PyTorch — do not account
     for NUMA architecture by default. However, as we will demonstrate in this post,
     you can introduce NUMA-awareness into your PyTorch script without much difficulty.
   id: totrans-7
   prefs: []
   type: TYPE_NORMAL
+  zh: 不幸的是，流行的 AI/ML 框架——最著名的是 PyTorch——默认情况下并没有考虑 NUMA 架构。然而，正如我们将在本文中展示的那样，你可以在
+    PyTorch 脚本中轻松地引入 NUMA 意识。
 - en: In the next section, we will explore the NUMA architecture of the popular [Amazon
     EC2 p4d.96xlarge](https://aws.amazon.com/ec2/instance-types/p4/) instance (containing
     8 NVIDIA A100 GPUs and 96 vCPUs) running a [PyTorch (2.6) Deep Learning AMI](https://aws.amazon.com/releasenotes/aws-deep-learning-ami-gpu-pytorch-2-6-ubuntu-22-04/) (DLAMI).
@@ -82,17 +87,22 @@
   id: totrans-8
   prefs: []
   type: TYPE_NORMAL
+  zh: 在下一节中，我们将探索流行的 [Amazon EC2 p4d.96xlarge](https://aws.amazon.com/ec2/instance-types/p4/)
+    实例（包含 8 个 NVIDIA A100 GPU 和 96 个 vCPU）的 NUMA 架构（运行 [PyTorch (2.6) 深度学习 AMI](https://aws.amazon.com/releasenotes/aws-deep-learning-ami-gpu-pytorch-2-6-ubuntu-22-04/)（DLAMI））。然后，我们将展示如何实现一个
+    NUMA 意识的 PyTorch 脚本并评估其对运行时性能的影响。
 - en: Disclaimers
   id: totrans-9
   prefs:
   - PREF_H3
   type: TYPE_NORMAL
+  zh: 免责声明
 - en: 'The NUMA architecture is a complex and nuanced topic. In this post, we explore
     just one of its implications: its impact on deep learning. For more comprehensive
     details on the topic, please refer to other authoritative resources.'
   id: totrans-10
   prefs: []
   type: TYPE_NORMAL
+  zh: NUMA 架构是一个复杂且微妙的话题。在本博文中，我们探讨其影响的一个方面：其对深度学习的影响。有关该主题的更全面细节，请参考其他权威资源。
 - en: The code we will share is intended for demonstrative purposes and should not
     be relied on for correctness or optimality. Please do not interpret our choice
     of platform, framework, or any other tool or library as an endorsement for its
@@ -100,11 +110,13 @@
   id: totrans-11
   prefs: []
   type: TYPE_NORMAL
+  zh: 我们将分享的代码旨在演示目的，不应依赖于其正确性或最优性。请勿将我们对平台、框架或任何其他工具或库的选择解释为对其使用的认可。
 - en: NUMA Architecture Discovery
   id: totrans-12
   prefs:
   - PREF_H2
   type: TYPE_NORMAL
+  zh: NUMA 架构发现
 - en: There are multiple ways to detect the NUMA architecture of the system you are
     running on. In this section, we will demonstrate how to explore the NUMA layout
     of an [Amazon EC2 p4d.96xlarge](https://aws.amazon.com/ec2/instance-types/p4/) instance
@@ -112,11 +124,14 @@
   id: totrans-13
   prefs: []
   type: TYPE_NORMAL
+  zh: 有多种方法可以检测你正在运行的系统的 NUMA 架构。在本节中，我们将演示如何使用常用的 Linux 命令行工具来探索 [Amazon EC2 p4d.96xlarge](https://aws.amazon.com/ec2/instance-types/p4/)
+    实例的 NUMA 布局。
 - en: CPU NUMA Node Discovery
   id: totrans-14
   prefs:
   - PREF_H3
   type: TYPE_NORMAL
+  zh: CPU NUMA 节点发现
 - en: 'The [*lscpu*](https://man7.org/linux/man-pages/man1/lscpu.1.html)command provides
     information about the CPU architecture of a Linux system, including a section
     describing the NUMA layout. By running the command on an [Amazon EC2 p4d.96xlarge](https://aws.amazon.com/ec2/instance-types/p4/) instance
@@ -124,6 +139,9 @@
   id: totrans-15
   prefs: []
   type: TYPE_NORMAL
+  zh: '`[*lscpu*](https://man7.org/linux/man-pages/man1/lscpu.1.html)` 命令提供了有关 Linux
+    系统的 CPU 架构信息，包括一个描述 NUMA 布局的章节。通过在 [Amazon EC2 p4d.96xlarge](https://aws.amazon.com/ec2/instance-types/p4/)
+    实例上运行该命令，我们了解到它由 96 个 vCPU 分为两个 NUMA 节点：'
 - en: '[PRE0]'
   id: totrans-16
   prefs: []
@@ -134,12 +152,15 @@
   prefs:
   - PREF_H3
   type: TYPE_NORMAL
+  zh: GPU NUMA 节点发现
 - en: 'To determine which NUMA node each GPU is attached to, we use a two-step process:
     First, we identify the PCI ID associated with each GPU, and then we look up the
     NUMA node associated with that PCI ID.'
   id: totrans-18
   prefs: []
   type: TYPE_NORMAL
+  zh: 为了确定每个 GPU 所连接的 NUMA 节点，我们使用两步过程：首先，我们识别与每个 GPU 相关的 PCI ID，然后查找与该 PCI ID 相关的
+    NUMA 节点。
 - en: 'The PCI ID is one of the properties of the GPUs reported by the [*nvidia-smi*](https://docs.nvidia.com/deploy/nvidia-smi/index.html) utility.
     In the following snippet, we see the PCI Bus IDs of the first two out of the eight
     GPUs on our Amazon EC2 p4d.96xlarge instance:'
