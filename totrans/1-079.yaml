@@ -1,109 +1,133 @@
 - en: How to Build an Over-Engineered Retrieval System
+  id: totrans-0
   prefs:
   - PREF_H1
   type: TYPE_NORMAL
 - en: 原文：[https://towardsdatascience.com/how-to-build-an-overengineered-retrieval-system/](https://towardsdatascience.com/how-to-build-an-overengineered-retrieval-system/)
+  id: totrans-1
   prefs:
   - PREF_BQ
   type: TYPE_NORMAL
 - en: <mdspan datatext="el1763428277760" class="mdspan-comment">One of the things</mdspan>
     you’ll stumble upon when doing AI engineering work is that there’s no real blueprint
     to follow.
+  id: totrans-2
   prefs: []
   type: TYPE_NORMAL
 - en: Yes, for the most basic parts of retrieval (the “R” in RAG), you can chunk documents,
     use semantic search on a query, re-rank the results, and so on. This part is well
     known.
+  id: totrans-3
   prefs: []
   type: TYPE_NORMAL
 - en: 'But once you start digging into this area, you begin to ask questions like:
     **how can we call a system intelligent if it’s only able to read a few chunks
     here and there in a document?** So, how do we make sure it has enough information
     to actually answer intelligently?'
+  id: totrans-4
   prefs: []
   type: TYPE_NORMAL
 - en: Soon, you’ll find yourself going down a rabbit hole, trying to discern what
     others are doing in their own orgs, because none of this is properly documented,
     and people are still building their own setups.
+  id: totrans-5
   prefs: []
   type: TYPE_NORMAL
 - en: 'This will lead you to implement various optimization strategies: building custom
     chunkers, rewriting user queries, using different search methods, filtering with
     metadata, and expanding context to include neighboring chunks.'
+  id: totrans-6
   prefs: []
   type: TYPE_NORMAL
 - en: '![](../Images/e9b0a39f1256f3f312bfb93521457f4b.png)'
+  id: totrans-7
   prefs: []
   type: TYPE_IMG
 - en: Hence why I’ve now built a rather bloated retrieval system to show you how it
     works. So, let’s walk through it so we can see the results of each step, but also
     to discuss the trade-offs.
+  id: totrans-8
   prefs: []
   type: TYPE_NORMAL
 - en: To demo this system in public, I decided to embed 150 recent ArXiv papers (2,250
     pages) that mention RAG. This means the system we’re testing here is designed
     for scientific papers, and all the test queries will be RAG-related.
+  id: totrans-9
   prefs: []
   type: TYPE_NORMAL
 - en: I have collected the raw outputs for each step for a few queries in this [repository](https://github.com/ilsilfverskiold/Awesome-LLM-Resources-List/tree/main/guides/RAG/Custom),
     if you want to look at the whole thing in detail.
+  id: totrans-10
   prefs: []
   type: TYPE_NORMAL
 - en: For the tech stack, I’m using Qdrant and Redis to store data, and Cohere and
     OpenAI for the LLMs. I do not rely on any framework to build the pipelines (as
     it makes it harder to debug).
+  id: totrans-11
   prefs: []
   type: TYPE_NORMAL
 - en: '*As always, I do a quick review of what we’re doing for beginners, so if RAG
     is already familiar to you, feel free to skip the first section.*'
+  id: totrans-12
   prefs: []
   type: TYPE_NORMAL
 - en: Recap retrieval & RAG
+  id: totrans-13
   prefs:
   - PREF_H2
   type: TYPE_NORMAL
 - en: When you work with AI knowledge systems like Copilot (where you feed it your
     custom docs to answer from) you work with a RAG system.
+  id: totrans-14
   prefs: []
   type: TYPE_NORMAL
 - en: '**RAG** stands for **Retrieval Augmented Generation** and is separated into
     two parts, the retrieval part and the generation part.'
+  id: totrans-15
   prefs: []
   type: TYPE_NORMAL
 - en: '**Retrieval** refers to the process of **fetching information in your files**,
     using keyword and semantic matching, based on a user query. **The generation**
     part is where **the LLM comes in and answers** based on the provided context and
     the user query.'
+  id: totrans-16
   prefs: []
   type: TYPE_NORMAL
 - en: '![](../Images/c821c7a0df21463680c3495762ffcd3d.png)'
+  id: totrans-17
   prefs: []
   type: TYPE_IMG
 - en: For anyone new to RAG it may seem like a chunky way to build systems. Shouldn’t
     an LLM do most of the work on its own?
+  id: totrans-18
   prefs: []
   type: TYPE_NORMAL
 - en: Unfortunately, LLMs are static, and we need to engineer systems so that each
     time we call on them, we give them everything they need upfront so they can answer
     the question.
+  id: totrans-19
   prefs: []
   type: TYPE_NORMAL
 - en: I have written about building RAG bots for Slack [before](https://towardsdatascience.com/agentic-rag-applications-company-knowledge-slack-agents/).
     This one uses standard chunking methods, if you’re keen to get a sense of how
     people build something simple.
+  id: totrans-20
   prefs: []
   type: TYPE_NORMAL
 - en: This article goes a **step further** and tries to rebuild the entire retrieval
     pipeline without any frameworks, to do some fancy stuff like build a multi-query
     optimizer, fuse results, and expand the chunks to build better context for the
     LLM.
+  id: totrans-21
   prefs: []
   type: TYPE_NORMAL
 - en: As we’ll see though, all of **these fancy additions we’ll have to pay for in
     latency and additional work.**
+  id: totrans-22
   prefs: []
   type: TYPE_NORMAL
 - en: Processing different documents
+  id: totrans-23
   prefs:
   - PREF_H2
   type: TYPE_NORMAL
@@ -111,545 +135,718 @@
     how to store data. With retrieval, we focus on something called chunking, and
     how you do it and what you store with it is essential to building a well-engineered
     system.
+  id: totrans-24
   prefs: []
   type: TYPE_NORMAL
 - en: When we do retrieval, we search text, and to do that we need to separate the
     text into different chunks of information. These pieces of text are what we’ll
     later search to find a match for a query.
+  id: totrans-25
   prefs: []
   type: TYPE_NORMAL
 - en: Most simple systems use general chunkers, simply splitting the full text by
     length, paragraph, or sentence.
+  id: totrans-26
   prefs: []
   type: TYPE_NORMAL
 - en: '![](../Images/d1b63864440a6aa3dd3c9d4002838a29.png)'
+  id: totrans-27
   prefs: []
   type: TYPE_IMG
 - en: But every document is different, so by doing this you risk losing context.
+  id: totrans-28
   prefs: []
   type: TYPE_NORMAL
 - en: To understand this, you should look at different documents to see how they all
     follow different structures. You’ll have an HR document with clear section headers,
     and API docs with unnumbered sections using code blocks and tables.
+  id: totrans-29
   prefs: []
   type: TYPE_NORMAL
 - en: If you applied the same chunking logic to all of these, you’d risk splitting
     each text the wrong way. This means that once the LLM gets the chunks of information,
     it will be incomplete, which may cause it to fail at producing an accurate answer.
+  id: totrans-30
   prefs: []
   type: TYPE_NORMAL
 - en: Furthermore, for each chunk of information, you also need to think about the
     data you want it to hold.
+  id: totrans-31
   prefs: []
   type: TYPE_NORMAL
 - en: Should it contain certain metadata so the system can apply filters? Should it
     link to similar information so it can connect data? Should it hold context so
     the LLM understands where the information comes from?
+  id: totrans-32
   prefs: []
   type: TYPE_NORMAL
 - en: This means the architecture of how you store data becomes the most important
     part. If you start storing information and later realize it’s not enough, you’ll
     have to redo it. If you realize you’ve complicated the system, you’ll have to
     start from scratch.
+  id: totrans-33
   prefs: []
   type: TYPE_NORMAL
 - en: This system will ingest Excel and PDFs, focusing on adding context, keys, and
     neighbors. This will allow you to see what this looks like when doing retrieval
     later.
+  id: totrans-34
   prefs: []
   type: TYPE_NORMAL
 - en: '*For this demo, I have stored data in Redis and Qdrant. We use Qdrant to do
     semantic, BM25, and hybrid search, and to expand content we fetch data from Redis.*'
+  id: totrans-35
   prefs: []
   type: TYPE_NORMAL
 - en: Ingesting tabular files
+  id: totrans-36
   prefs:
   - PREF_H2
   type: TYPE_NORMAL
+  zh: 处理表格文件
 - en: First we’ll go through how you can chunk tabular data, add context, and keep
     information connected with keys.
+  id: totrans-37
   prefs: []
   type: TYPE_NORMAL
+  zh: 首先，我们将介绍如何分块表格数据，添加上下文，并使用键保持信息连接。
 - en: When dealing with already structured tabular data, like in Excel files, it might
     seem like the obvious approach is to let the system search it directly. But semantic
     matching is actually quite effective for messy user queries.
+  id: totrans-38
   prefs: []
   type: TYPE_NORMAL
+  zh: 当处理已经结构化的表格数据，如Excel文件时，可能看起来直接让系统直接搜索它是明显的做法。但实际上，对于混乱的用户查询，语义匹配非常有效。
 - en: SQL or direct queries only work if you already know the schema and exact fields.
     For instance, if you get a query like “Mazda 2023 specs” from a user, semantically
     matching rows will give us something to go on.
+  id: totrans-39
   prefs: []
   type: TYPE_NORMAL
+  zh: SQL或直接查询仅在你知道模式以及确切字段时才有效。例如，如果你从用户那里得到一个“Mazda 2023规格”的查询，语义匹配行将给我们一些依据。
 - en: I’ve talked to companies that wanted their system to match documents across
     different Excel files. To do this, we can store keys along with the chunks (without
     going full KG).
+  id: totrans-40
   prefs: []
   type: TYPE_NORMAL
+  zh: 我和想要他们的系统匹配不同Excel文件中的文档的公司谈过。为了做到这一点，我们可以存储键与块（而不进行完整的KG）一起。
 - en: 'So for instance, if we’re working with Excel files containing purchase data,
     we could ingest data for each row like so:'
+  id: totrans-41
   prefs: []
   type: TYPE_NORMAL
+  zh: 例如，如果我们正在处理包含采购数据的Excel文件，我们可以这样为每一行摄取数据：
 - en: '[PRE0]'
+  id: totrans-42
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE0]'
 - en: If we decide later in the retrieval pipeline to connect information, we can
     do standard search using the keys to find connecting chunks. This allows us to
     make quick hops between documents without adding another router step to the pipeline.
+  id: totrans-43
   prefs: []
   type: TYPE_NORMAL
+  zh: 如果我们决定在检索管道中稍后连接信息，我们可以使用键进行标准搜索以找到连接的块。这允许我们在文档之间快速跳转，而无需在管道中添加另一个路由步骤。
 - en: '![](../Images/1fd6efed0f93629eb484a76cd665f9b3.png)'
+  id: totrans-44
   prefs: []
   type: TYPE_IMG
+  zh: '![](../Images/1fd6efed0f93629eb484a76cd665f9b3.png)'
 - en: Very simplified — connecting keys between tabular documents | Image by author
+  id: totrans-45
   prefs: []
   type: TYPE_NORMAL
+  zh: 非常简化——在表格文档之间连接键 | 图片由作者提供
 - en: We can also set a summary for each document. This acts as a gatekeeper to chunks.
+  id: totrans-46
   prefs: []
   type: TYPE_NORMAL
+  zh: 我们也可以为每个文档设置一个摘要。这作为块的门卫。
 - en: '[PRE1]'
+  id: totrans-47
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE1]'
 - en: The gatekeeper summary idea might be a bit complicated to understand at first,
     but it also helps to have the summary stored at the document level if you need
     it when building the context later.
+  id: totrans-48
   prefs: []
   type: TYPE_NORMAL
+  zh: 最初理解门卫摘要的想法可能有点复杂，但如果在构建上下文时需要它，将摘要存储在文档级别也有帮助。
 - en: When the LLM sets up this summary (and a brief context string), it can suggest
     the key columns (i.e. order IDs and so on).
+  id: totrans-49
   prefs: []
   type: TYPE_NORMAL
+  zh: 当LLM设置这个摘要（以及一个简短上下文字符串）时，它可以建议关键列（例如订单ID等）。
 - en: '*As a note, always set the key columns manually if you can, if that’s not possible,
     set up some validation logic to make sure the keys aren’t just random (it can
     happen that an LLM will choose weird columns to store while ignoring the most
     vital ones).*'
+  id: totrans-50
   prefs: []
   type: TYPE_NORMAL
+  zh: '*作为备注，如果可能，始终手动设置键列，如果不可能，设置一些验证逻辑以确保键不是随机的（可能会发生LLM选择奇怪的列来存储，而忽略最重要的列）。*'
 - en: For this system with the ArXiv papers, I’ve ingested two Excel files that contain
     information on title and author level.
+  id: totrans-51
   prefs: []
   type: TYPE_NORMAL
+  zh: 对于这个包含ArXiv论文的系统，我已经摄取了两个包含标题和作者级别信息的Excel文件。
 - en: 'The chunks will look something like this:'
+  id: totrans-52
   prefs: []
   type: TYPE_NORMAL
+  zh: 块看起来可能像这样：
 - en: '[PRE2]'
+  id: totrans-53
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE2]'
 - en: These Excel files were strictly not necessary (the PDF files would have been
     enough), but they’re a way to demo how the system can look up keys to find connecting
     information.
+  id: totrans-54
   prefs: []
   type: TYPE_NORMAL
+  zh: 这些Excel文件严格来说不是必要的（PDF文件就足够了），但它们是演示系统如何查找键以找到连接信息的一种方式。
 - en: I created summaries for these files too.
+  id: totrans-55
   prefs: []
   type: TYPE_NORMAL
+  zh: 我也为这些文件创建了摘要。
 - en: '[PRE3]'
+  id: totrans-56
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE3]'
 - en: We also store information in Redis at document level, which tells us what it’s
     about, where to find it, who is allowed to see it, and when it was last updated.
     This will allow us to update stale information later.
+  id: totrans-57
   prefs: []
   type: TYPE_NORMAL
+  zh: 我们还在Redis中以文档级别存储信息，这告诉我们它是什么，在哪里可以找到它，谁被允许查看它，以及最后一次更新时间。这将允许我们稍后更新过时的信息。
 - en: Now let’s turn to PDF files, which are the worst monster you’ll deal with.
+  id: totrans-58
   prefs: []
   type: TYPE_NORMAL
+  zh: 现在让我们转向PDF文件，这是你将遇到的最大的怪物。
 - en: Ingesting PDF docs
+  id: totrans-59
   prefs:
   - PREF_H2
   type: TYPE_NORMAL
+  zh: 处理PDF文档
 - en: To process PDF files, we do similar things as with tabular data, but chunking
     them is much harder, and we store neighbors instead of keys.
+  id: totrans-60
   prefs: []
   type: TYPE_NORMAL
+  zh: 处理PDF文件时，我们做类似的事情，但分块它们要困难得多，我们存储邻居而不是键。
 - en: To start processing PDFs, we have several frameworks to work with, such as LlamaParse
     and Docling, but none of them are perfect, so we have to build out the system
     further.
+  id: totrans-61
   prefs: []
   type: TYPE_NORMAL
+  zh: 要开始处理PDF，我们有几个框架可以与之合作，例如LlamaParse和Docling，但没有一个是完美的，因此我们必须进一步构建系统。
 - en: PDF documents are very hard to process, as most don’t follow the same structure.
     They also often contain figures and tables that most systems can’t handle correctly.
+  id: totrans-62
   prefs: []
   type: TYPE_NORMAL
 - en: Nevertheless, a tool like Docling can help us at least parse normal tables properly
     and map out each element to the correct page and element number.
+  id: totrans-63
   prefs: []
   type: TYPE_NORMAL
 - en: From here, we can create our own programmatic logic by mapping sections and
     subsections for each element, and smart-merging snippets so chunks read naturally
     (i.e. don’t split mid-sentence).
+  id: totrans-64
   prefs: []
   type: TYPE_NORMAL
 - en: We also make sure to group chunks by section, keeping them together by linking
     their IDs in a field called *neighbors*.
+  id: totrans-65
   prefs: []
   type: TYPE_NORMAL
 - en: '![](../Images/7e9d59b9e4e78fee83a70cb119736306.png)'
+  id: totrans-66
   prefs: []
   type: TYPE_IMG
 - en: This allows us to keep the chunks small but still expand them after retrieval.
+  id: totrans-67
   prefs: []
   type: TYPE_NORMAL
 - en: 'The end result will be something like below:'
+  id: totrans-68
   prefs: []
   type: TYPE_NORMAL
 - en: '[PRE4]'
+  id: totrans-69
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE4]'
 - en: When we set up data like this, we can consider these chunks as seeds. We are
     searching for where there may be relevant information based on the user query,
     and expanding from there.
+  id: totrans-70
   prefs: []
   type: TYPE_NORMAL
 - en: The difference from simpler RAG systems is that we try to take advantage of
     the LLM’s growing context window to send in more information (but there are obviously
     trade offs to this).
+  id: totrans-71
   prefs: []
   type: TYPE_NORMAL
 - en: You’ll be able to see a messy solution of what this looks like when building
     the context in the retrieval pipeline later.
+  id: totrans-72
   prefs: []
   type: TYPE_NORMAL
 - en: Building the retrieval pipeline
+  id: totrans-73
   prefs:
   - PREF_H2
   type: TYPE_NORMAL
 - en: Since I’ve built this pipeline piece by piece, it allows us to test each part
     and go through why we make certain choices in how we retrieve and transform information
     before handing it over to the LLM.
+  id: totrans-74
   prefs: []
   type: TYPE_NORMAL
 - en: We’ll go through semantic, hybrid, and BM25 search, building a multi-query optimizer,
     re-ranking results, expanding content to build the context, and then handing the
     results to an LLM to answer.
+  id: totrans-75
   prefs: []
   type: TYPE_NORMAL
 - en: We’ll end the section with some discussion on latency, unnecessary complexity,
     and what to cut to make the system faster.
+  id: totrans-76
   prefs: []
   type: TYPE_NORMAL
 - en: If you want to look at the output of several runs of this pipeline, go to this
     [repository](https://medium.com/data-science-collective/agentic-rag-company-knowledge-slack-agents-98e588fd1209).
+  id: totrans-77
   prefs: []
   type: TYPE_NORMAL
 - en: Semantic, BM25 and hybrid search
+  id: totrans-78
   prefs:
   - PREF_H3
   type: TYPE_NORMAL
 - en: The first part of this pipeline is to make sure we are getting back relevant
     documents for a user query. To do this, we work with semantic, BM25, and hybrid
     search.
+  id: totrans-79
   prefs: []
   type: TYPE_NORMAL
 - en: For simple retrieval systems, people will usually just use semantic search.
     To perform semantic search, we embed dense vectors for each chunk of text using
     an embedding model.
+  id: totrans-80
   prefs: []
   type: TYPE_NORMAL
 - en: If this is new to you, note that embeddings represent each piece of text as
     a point in a high-dimensional space. The position of each point reflects how the
     model understands its meaning, based on patterns it learned during training.
+  id: totrans-81
   prefs: []
   type: TYPE_NORMAL
 - en: '![](../Images/a560c3d812ab712ee3f6c5da8f4b148b.png)'
+  id: totrans-82
   prefs: []
   type: TYPE_IMG
 - en: Texts with similar meanings will then end up close together.
+  id: totrans-83
   prefs: []
   type: TYPE_NORMAL
 - en: This means that if the model has seen many examples of similar language, it
     becomes better at placing related texts near each other, and therefore better
     at matching a query with the most relevant content.
+  id: totrans-84
   prefs: []
   type: TYPE_NORMAL
 - en: '*I have written about* [*this before,*](https://towardsdatascience.com/working-with-embeddings-closed-versus-open-source-39491f0b95c2/)
     *using clustering on various embeddings models to see how they performed for a
     use case, if you’re keen to learn more.*'
+  id: totrans-85
   prefs: []
   type: TYPE_NORMAL
 - en: To create dense vectors, I used OpenAI’s Large embedding model, since I’m working
     with scientific papers.
+  id: totrans-86
   prefs: []
   type: TYPE_NORMAL
 - en: This model is more expensive than their small one and perhaps not ideal for
     this use case.
+  id: totrans-87
   prefs: []
   type: TYPE_NORMAL
 - en: I would look into specialized models for specific domains or consider fine-tuning
     your own. Because remember if the embedding model hasn’t seen many examples similar
     to the texts you’re embedding, it will be harder to match them to relevant documents.
+  id: totrans-88
   prefs: []
   type: TYPE_NORMAL
 - en: To support hybrid and BM25 search, we also build a lexical index (sparse vectors).
     BM25 works on exact tokens (for example, “ID 826384”) instead of returning “similar-meaning”
     text the way semantic search does.
+  id: totrans-89
   prefs: []
   type: TYPE_NORMAL
 - en: 'To test semantic search, we’ll set up a query that I think the papers we’ve
     ingested can answer, such as: *“Why do LLMs get worse with longer context windows
     and what to do about it?”*'
+  id: totrans-90
   prefs: []
   type: TYPE_NORMAL
 - en: '[PRE5]'
+  id: totrans-91
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE5]'
 - en: From the results above, we can see that it’s able to match some interesting
     passages where they discuss topics that can answer the query.
+  id: totrans-92
   prefs: []
   type: TYPE_NORMAL
 - en: 'If we try BM25 (which matches exact tokens) with the same query, we get back
     these results:'
+  id: totrans-93
   prefs: []
   type: TYPE_NORMAL
 - en: '[PRE6]'
+  id: totrans-94
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE6]'
 - en: Here, the results are lackluster for this query — but sometimes queries include
     specific keywords we need to match, where BM25 is the better choice.
+  id: totrans-95
   prefs: []
   type: TYPE_NORMAL
 - en: We can test this by changing the query to *“papers from Anirban Saha Anik”*
     using BM25.
+  id: totrans-96
   prefs: []
   type: TYPE_NORMAL
 - en: '[PRE7]'
+  id: totrans-97
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE7]'
 - en: All the results above mention “Anirban Saha Anik,” which is exactly what we’re
     looking for.
+  id: totrans-98
   prefs: []
   type: TYPE_NORMAL
 - en: If we ran this with semantic search, it would return not just the name “Anirban
     Saha Anik” but similar names as well.
+  id: totrans-99
   prefs: []
   type: TYPE_NORMAL
 - en: '[PRE8]'
+  id: totrans-100
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE8]'
 - en: This is a good example of how semantic search isn’t always the ideal method — similar
     names don’t necessarily mean they’re relevant to the query.
+  id: totrans-101
   prefs: []
   type: TYPE_NORMAL
 - en: So, there are cases where semantic search is ideal, and others where BM25 (token
     matching) is the better choice.
+  id: totrans-102
   prefs: []
   type: TYPE_NORMAL
 - en: We can also use hybrid search, which combines semantic and BM25.
+  id: totrans-103
   prefs: []
   type: TYPE_NORMAL
 - en: 'You’ll see the results below from running hybrid search on the original query:
     *“why do LLMs get worse with longer context windows and what to do about it?”*'
+  id: totrans-104
   prefs: []
   type: TYPE_NORMAL
 - en: '[PRE9]'
+  id: totrans-105
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE9]'
 - en: I found semantic search worked best for this query, which is why it can be useful
     to run multi-queries with different search methods to fetch the first chunks (though
     this also adds complexity).
+  id: totrans-106
   prefs: []
   type: TYPE_NORMAL
 - en: So, let’s turn to building something that can transform the original query into
     several optimized versions and fuse the results.
+  id: totrans-107
   prefs: []
   type: TYPE_NORMAL
 - en: Multi-query optimizer
+  id: totrans-108
   prefs:
   - PREF_H3
   type: TYPE_NORMAL
 - en: For this part we look at how we can optimize messy user queries by generating
     multiple targeted variations and selecting the right search method for each. It
     can improve recall but it introduces trade-offs.
+  id: totrans-109
   prefs: []
   type: TYPE_NORMAL
 - en: All the agent abstraction systems you see usually transform the user query when
     performing search. For example, when you use the QueryTool in LlamaIndex, it uses
     an LLM to optimize the incoming query.
+  id: totrans-110
   prefs: []
   type: TYPE_NORMAL
 - en: '![](../Images/0d0f506181729bf19e8917c062715219.png)'
+  id: totrans-111
   prefs: []
   type: TYPE_IMG
 - en: We can rebuild this part ourselves, but instead we give it the ability to create
     multiple queries, while also setting the search method. *When you’re working with
     more documents, you could also have it set filters at this stage.*
+  id: totrans-112
   prefs: []
   type: TYPE_NORMAL
 - en: As for creating a lot of queries, I would try to keep it simple, as issues here
     will cause low-quality outputs in retrieval. The more unrelated queries the system
     generates, the more noise it introduces into the pipeline.
+  id: totrans-113
   prefs: []
   type: TYPE_NORMAL
 - en: The function I’ve created here will generate 1–3 academic-style queries, along
     with the search method to be used, based on a messy user query.
+  id: totrans-114
   prefs: []
   type: TYPE_NORMAL
 - en: '[PRE10]'
+  id: totrans-115
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE10]'
 - en: 'We will get back results like these:'
+  id: totrans-116
   prefs: []
   type: TYPE_NORMAL
 - en: '[PRE11]'
+  id: totrans-117
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE11]'
 - en: We can also test the system with specific keywords like names and IDs to make
     sure it chooses BM25 rather than semantic search.
+  id: totrans-118
   prefs: []
   type: TYPE_NORMAL
 - en: '[PRE12]'
+  id: totrans-119
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE12]'
 - en: This will pull up results where *Chenxin Diao* is clearly mentioned.
+  id: totrans-120
   prefs: []
   type: TYPE_NORMAL
 - en: '*I should note, BM25 may cause issues when users misspell names, such as asking
     for “Chenx Dia” instead of “Chenxin Diao.” So in reality you may just want to
     slap hybrid search on all of them (and later let the re-ranker take care of weeding
     out irrelevant results).*'
+  id: totrans-121
   prefs: []
   type: TYPE_NORMAL
 - en: If you want to do this even better, you can build a retrieval system that generates
     a few example queries based on the input, so when the original query comes in,
     you fetch examples to help guide the optimizer.
+  id: totrans-122
   prefs: []
   type: TYPE_NORMAL
 - en: This helps because smaller models aren’t great at transforming messy human queries
     into ones with more precise academic phrasing.
+  id: totrans-123
   prefs: []
   type: TYPE_NORMAL
 - en: To give you an example, when a user is asking why the LLM is lying, the optimizer
     may transform the query to something like “causes of inaccuracies in large language
     models” rather than directly look for “hallicunations.”
+  id: totrans-124
   prefs: []
   type: TYPE_NORMAL
 - en: 'After we fetch results in parallel, we fuse them. The result will look something
     like this:'
+  id: totrans-125
   prefs: []
   type: TYPE_NORMAL
 - en: '[PRE13]'
+  id: totrans-126
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE13]'
 - en: We see that there are some good matches, but also a few irrelevant ones that
     we’ll need to filter out further.
+  id: totrans-127
   prefs: []
   type: TYPE_NORMAL
 - en: As a note before we move on, this is probably the step you’ll cut or optimize
     once you’re trying to reduce latency.
+  id: totrans-128
   prefs: []
   type: TYPE_NORMAL
 - en: I find LLMs aren’t great at creating key queries that actually pull up useful
     information all that well, so if it’s not done right, it just adds more noise.
+  id: totrans-129
   prefs: []
   type: TYPE_NORMAL
 - en: Adding a re-ranker
+  id: totrans-130
   prefs:
   - PREF_H3
   type: TYPE_NORMAL
 - en: We do get results back from the retrieval system, and some of these are good
     while others are irrelevant, so most retrieval systems will use a re-ranker of
     some sort.
+  id: totrans-131
   prefs: []
   type: TYPE_NORMAL
 - en: A re-ranker takes in several chunks and gives each one a relevancy score based
     on the original user query. You have several choices here, including using something
     smaller, but I’ll use Cohere’s re-ranker.
+  id: totrans-132
   prefs: []
   type: TYPE_NORMAL
 - en: 'We can test this re-ranker on the first question we used in the previous section:
     *“Why is everyone saying RAG doesn’t scale? How are people fixing that?”*'
+  id: totrans-133
   prefs: []
   type: TYPE_NORMAL
 - en: '[PRE14]'
+  id: totrans-134
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE14]'
 - en: Remember, at this point, we’ve already transformed the user query, done semantic
     or hybrid search, and fused the results before passing the chunks to the re-ranker.
+  id: totrans-135
   prefs: []
   type: TYPE_NORMAL
 - en: If you look at the results, we can clearly see that it’s able to identify a
     few relevant chunks that we can use as seeds.
+  id: totrans-136
   prefs: []
   type: TYPE_NORMAL
 - en: '*Remember it only has 150 docs to go on in the first place. *'
+  id: totrans-137
   prefs: []
   type: TYPE_NORMAL
 - en: You can also see that it returns multiple chunks from the same document. We’ll
     set this up later in the context construction, but if you want unique documents
     fetched, you can add some custom logic here to set the limit for unique docs rather
     than chunks.
+  id: totrans-138
   prefs: []
   type: TYPE_NORMAL
 - en: 'We can try this with another question: *“hallucinations in RAG vs normal LLMs
     and how to reduce them”*'
+  id: totrans-139
   prefs: []
   type: TYPE_NORMAL
 - en: '[PRE15]'
+  id: totrans-140
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE15]'
 - en: This query also performs well enough (if you look at the full chunks returned).
+  id: totrans-141
   prefs: []
   type: TYPE_NORMAL
 - en: 'We can also test messier user queries, like: *“why is the llm lying and rag
     help with this?”*'
+  id: totrans-142
   prefs: []
   type: TYPE_NORMAL
 - en: '[PRE16]'
+  id: totrans-143
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE16]'
 - en: Before we move on, I need to note that there are moments where this re-ranker
     doesn’t do that well, as you’ll see above from the scores.
+  id: totrans-144
   prefs: []
   type: TYPE_NORMAL
 - en: At times it estimates that the chunks doesn’t answer the user’s question but
     it actually does, at least when we look at these chunks as seeds.
+  id: totrans-145
   prefs: []
   type: TYPE_NORMAL
 - en: Usually for a re-ranker, the chunks should hint at the entire content, but we’re
     using these chunks as seeds, so in some cases it will rate results very low, but
     it’s enough for us to go on.
+  id: totrans-146
   prefs: []
   type: TYPE_NORMAL
 - en: This is why I’ve kept the score threshold very low.
+  id: totrans-147
   prefs: []
   type: TYPE_NORMAL
 - en: There may be better options here that you might want to explore, maybe building
     a custom re-ranker that understands what you’re looking for.
+  id: totrans-148
   prefs: []
   type: TYPE_NORMAL
 - en: Nevertheless, now that we have a few relevant documents, we’ll use its metadata
     that we set before on ingestion to expand and fan out the chunks so the LLM will
     get enough context to understand how to answer the question.
+  id: totrans-149
   prefs: []
   type: TYPE_NORMAL
 - en: Build the context
+  id: totrans-150
   prefs:
   - PREF_H3
   type: TYPE_NORMAL
 - en: Now that we have a few chunks as seeds, we’ll pull up more information from
     Redis, expand, and build the context.
+  id: totrans-151
   prefs: []
   type: TYPE_NORMAL
 - en: This step is obviously a lot more complicated, as you need to build logic for
     which chunks to fetch and how (keys if they exist, or neighbors if there are any),
     fetch information in parallel, and then clean out the chunks further.
+  id: totrans-152
   prefs: []
   type: TYPE_NORMAL
 - en: Once you have all the chunks (plus information on the documents themselves),
     you need to put them together, i.e. de-duping chunks, perhaps setting a limit
     on how far the system can expand, and highlighting which chunks were fetched and
     which were expanded.
+  id: totrans-153
   prefs: []
   type: TYPE_NORMAL
 - en: 'The end result will look like something below:'
+  id: totrans-154
   prefs: []
   type: TYPE_NORMAL
 - en: '[PRE17]text'
+  id: totrans-155
   prefs: []
   type: TYPE_NORMAL
 - en: '[start on page 4]'
+  id: totrans-156
   prefs: []
   type: TYPE_NORMAL
 - en: LLMs in QA
+  id: totrans-157
   prefs:
   - PREF_IND
   type: TYPE_NORMAL
@@ -669,17 +866,24 @@
     can exhibit contextual ambiguity or overconfidence in their outputs (''hallucinations'')[21],
     and their substantial computational and memory requirements complicate deployment
     in resource-constrained environments.'
+  id: totrans-158
   prefs:
   - PREF_IND
   type: TYPE_NORMAL
+  zh: 随着大型语言模型（LLMs）的出现，自然语言处理（NLP）领域进入了变革时代，特别是在问答（QA）领域。这些模型在大量多样化的文本语料库上进行了预训练，展现出在自然语言理解和生成方面的复杂能力。它们在产生连贯、上下文相关且类似人类响应的广泛提示方面表现出色，这使得它们非常适合问答任务，在这些任务中，提供精确和有信息量的答案是至关重要的。BERT
+    [57] 和 ChatGPT [58] 等模型最近的进步显著推动了该领域的发展。LLMs 在开放域问答场景中表现出强大的性能——例如常识推理[20]——这得益于它们对世界的广泛嵌入知识。此外，它们理解和阐述对抽象或上下文细微的查询和推理任务[22]的响应能力，强调了它们在解决需要深度语义理解的复杂问答挑战中的实用性。尽管LLMs具有优势，但它们也带来了挑战：它们可能会在输出中表现出上下文模糊性或过度自信（“幻觉”[21]），并且它们大量的计算和内存需求使得在资源受限的环境中部署变得复杂。
 - en: RAG, fine tuning in QA
+  id: totrans-159
   prefs:
   - PREF_IND
   type: TYPE_NORMAL
+  zh: RAG，问答中的微调
 - en: '---------------------- this was the passage that we matched to the query -------------'
+  id: totrans-160
   prefs:
   - PREF_IND
   type: TYPE_NORMAL
+  zh: '---------------------- 这是我们与查询匹配的段落 -------------'
 - en: LLMs also face problems when it comes to domain specific QA or tasks where they
     are needed to recall factual information accurately instead of just probabilistically
     generating whatever comes next. Research has also explored different prompting
@@ -702,23 +906,29 @@
     precision is critical. RAG pipelines are also sensitive to the quality and domain
     alignment of the underlying knowledge base, and they often require extensive tuning
     to balance recall and precision effectively.
+  id: totrans-161
   prefs:
   - PREF_IND
   type: TYPE_NORMAL
 - en: '--------------------------------------------------------------------------------------'
+  id: totrans-162
   prefs:
   - PREF_IND
   type: TYPE_NORMAL
 - en: '[end on page 5]'
+  id: totrans-163
   prefs: []
   type: TYPE_NORMAL
 - en: '[PRE18]text'
+  id: totrans-164
   prefs: []
   type: TYPE_NORMAL
 - en: '[start on page 1]'
+  id: totrans-165
   prefs: []
   type: TYPE_NORMAL
 - en: 1 Introduction
+  id: totrans-166
   prefs:
   - PREF_IND
   type: TYPE_NORMAL
@@ -730,6 +940,7 @@
     et al., 2024) associated with LLMs has confused people for a long time, stemming
     from multiple factors such as a lack of knowledge on the given prompt (Huang et
     al., 2025b) and a biased training process (Zhao, 2025).
+  id: totrans-167
   prefs:
   - PREF_IND
   type: TYPE_NORMAL
@@ -741,9 +952,13 @@
     the similarities between a question and chunks in an external knowledge corpus,
     followed by incorporating the top K relevant chunks into the prompt to guide the
     LLMs (Lewis et al., 2020).
+  id: totrans-168
   prefs:
   - PREF_IND
   type: TYPE_NORMAL
+  zh: 作为一种高度有效的解决方案，检索增强生成（RAG）已被广泛应用于构建基础模型（Chen 等人，2024）和实用代理（Arslan 等人，2024）。与微调和提示调整等训练方法相比，其即插即用特性使
+    RAG 成为一个高效、简单且成本效益高的方法。RAG 的主要范式是首先计算问题与外部知识语料库中的块之间的相似度，然后结合前 K 个相关块到提示中，以引导
+    LLMs（Lewis 等人，2020）。
 - en: Despite the advantages of RAG, selecting the appropriate embedding models remains
     a crucial concern, as the quality of retrieved references directly influences
     the generation results of the LLM (Tu et al., 2025). Variations in training data
@@ -752,13 +967,18 @@
     often leave researchers uncertain about how to choose the optimal one. Consequently,
     improving the accuracy of RAG from the perspective of embedding models continues
     to be an ongoing area of research.
+  id: totrans-169
   prefs:
   - PREF_IND
   type: TYPE_NORMAL
+  zh: 尽管 RAG 具有优势，但选择合适的嵌入模型仍然是一个关键问题，因为检索到的参考质量直接影响 LLM（Tu 等人，2025）的生成结果。训练数据和模型架构的变化导致不同的嵌入模型在不同领域提供不同的好处。嵌入模型之间的不同相似度计算常常使研究人员不确定如何选择最佳模型。因此，从嵌入模型的角度提高
+    RAG 的准确性仍然是一个持续的研究领域。
 - en: '---------------------- this was the passage that we matched to the query -------------'
+  id: totrans-170
   prefs:
   - PREF_IND
   type: TYPE_NORMAL
+  zh: '---------------------- 这是与我们查询匹配的段落 -------------'
 - en: 'To address this research gap, we propose two methods for improving RAG by combining
     the benefits of multiple embedding models. The first method is named Mixture-Embedding
     RAG, which sorts the retrieved materials from multiple embedding models based
@@ -770,39 +990,59 @@
     using multiple LLMs and embedding models, we illustrate the superior performance
     and generalization of Confident RAG, even though MixtureEmbedding RAG may lose
     to vanilla RAG. The main contributions of this paper can be summarized as follows:'
+  id: totrans-171
   prefs:
   - PREF_IND
   type: TYPE_NORMAL
+  zh: 为了解决这一研究差距，我们提出了两种方法来通过结合多个嵌入模型的优势来改进 RAG。第一种方法命名为 Mixture-Embedding RAG，它根据归一化相似度对来自多个嵌入模型的检索材料进行排序，并选择前
+    K 个材料作为最终参考。第二种方法命名为 Confident RAG，其中我们首先使用 vanilla RAG 生成答案多次，每次使用不同的嵌入模型并记录相关的置信度指标，然后选择置信度最高的答案作为最终响应。通过使用多个
+    LLM 和嵌入模型验证我们的方法，我们展示了 Confident RAG 的优越性能和泛化能力，尽管 MixtureEmbedding RAG 可能会输给
+    vanilla RAG。本文的主要贡献可以总结如下：
 - en: 'We first point out that in RAG, different embedding models operate within their
     own prior domains. To leverage the strengths of various embedding models, we propose
     and test two novel RAG methods: MixtureEmbedding RAG and Confident RAG. These
     methods effectively utilize the retrieved results from different embedding models
     to their fullest extent.'
+  id: totrans-172
   prefs:
   - PREF_IND
   type: TYPE_NORMAL
+  zh: 我们首先指出，在 RAG 中，不同的嵌入模型在其各自的先验域内运行。为了利用各种嵌入模型的优势，我们提出了并测试了两种新的 RAG 方法：MixtureEmbedding
+    RAG 和 Confident RAG。这些方法有效地利用了从不同嵌入模型检索到的结果，达到最大程度。
 - en: '--------------------------------------------------------------------------------------'
+  id: totrans-173
   prefs:
   - PREF_IND
   type: TYPE_NORMAL
+  zh: '--------------------------------------------------------------------------------------'
 - en: While Mixture-Embedding RAG performs similarly to vanilla RAG, the Confident
     RAG method exhibits superior performance compared to both the vanilla LLM and
     vanilla RAG, with average improvements of 9.9% and 4.9%, respectively, when using
     the best confidence metric. Additionally, we discuss the optimal number of embedding
     models for the Confident RAG method based on the results.
+  id: totrans-174
   prefs:
   - PREF_IND
   type: TYPE_NORMAL
+  zh: 虽然 Mixture-Embedding RAG 的表现与 vanilla RAG 相似，但 Confident RAG 方法在性能上优于 vanilla
+    LLM 和 vanilla RAG，在使用最佳置信度指标时，平均分别提高了 9.9% 和 4.9%。此外，我们还基于结果讨论了 Confident RAG
+    方法的最佳嵌入模型数量。
 - en: '[...]'
+  id: totrans-175
   prefs: []
   type: TYPE_NORMAL
+  zh: '[...]'
 - en: '[PRE19]'
+  id: totrans-176
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE19]'
 - en: '[optimize query... retrieve... fuse... re-rank... expand... build context...]'
+  id: totrans-177
   prefs: []
   type: TYPE_NORMAL
 - en: 'LLM Answers:'
+  id: totrans-178
   prefs: []
   type: TYPE_NORMAL
 - en: LLMs sometimes "lie" because they generate the next likely words based on patterns,
@@ -811,6 +1051,7 @@
     be outdated or incomplete [6][3]. This is risky in domains that demand strict
     accuracy (e.g., law or telecom regulations) where small errors have big consequences
     [3].
+  id: totrans-179
   prefs: []
   type: TYPE_NORMAL
 - en: RAG helps by having the model first retrieve relevant documents from an external
@@ -819,6 +1060,7 @@
     has raised accuracy substantially; for example, a radio‑regulations RAG pipeline
     boosted GPT‑4o accuracy by +11.9% over vanilla prompting and achieved up to 97%
     retrieval accuracy, supporting more reliable answers [3].
+  id: totrans-180
   prefs: []
   type: TYPE_NORMAL
 - en: However, RAG is only as good as its retrieval and how well the model uses the
@@ -827,6 +1069,7 @@
     query reformulation [2]. Naive RAG can also drown the model in long, noisy contexts
     or pull semantically similar but irrelevant chunks-the "needle‑in‑a‑haystack"
     problem-leading to wrong answers [4].
+  id: totrans-181
   prefs: []
   type: TYPE_NORMAL
 - en: 'Better RAG practices address this: instruction‑tuning for RAG that teaches
@@ -834,188 +1077,244 @@
     before answering" approach (HIRAG) improves use of evidence [1]; adaptive, feedback‑driven
     retrieval decides when and how to retrieve and re‑rank evidence [2]; and pipeline
     designs that optimize chunking and retrieval raise answer accuracy [4].'
+  id: totrans-182
   prefs: []
   type: TYPE_NORMAL
 - en: If hallucination still persists, techniques that steer decoding directly (beyond
     RAG) can further suppress it [5].
+  id: totrans-183
   prefs: []
   type: TYPE_NORMAL
 - en: 'cited documents:'
+  id: totrans-184
   prefs: []
   type: TYPE_NORMAL
 - en: '[1] doc::b0610cc6134b401db0ea68a77096e883 - HIRAG: Hierarchical-Thought Instruction-Tuning
     Retrieval-Augmented Generation'
+  id: totrans-185
   prefs: []
   type: TYPE_NORMAL
 - en: '[2] doc::53b521e646b84289b46e648c66dde56a - Test-time Corpus Feedback: From
     Retrieval to RAG'
+  id: totrans-186
   prefs: []
   type: TYPE_NORMAL
 - en: '[3] doc::9694bd0124d0453c81ecb32dd75ab489 - Retrieval-Augmented Generation
     for Reliable Interpretation of Radio Regulations'
+  id: totrans-187
   prefs: []
   type: TYPE_NORMAL
 - en: '[4] doc::6d7a7d88cfc04636b20931fdf22f1e61 - KeyKnowledgeRAG (K^2RAG): An Enhanced
     RAG method for improved LLM question-answering capabilities'
+  id: totrans-188
   prefs: []
   type: TYPE_NORMAL
 - en: '[5] doc::3c9a1937ecbc454b8faff4f66bdf427f - DSCC-HS: A Dynamic Self-Reinforcing
     Framework for Hallucination Suppression in Large Language Models'
+  id: totrans-189
   prefs: []
   type: TYPE_NORMAL
 - en: '[6] doc::688cfbc0abdc4520a73e219ac26aff41 - A Systematic Review of Key Retrieval-Augmented
     Generation (RAG) Systems: Progress, Gaps, and Future Directions'
+  id: totrans-190
   prefs: []
   type: TYPE_NORMAL
 - en: '```'
+  id: totrans-191
   prefs: []
   type: TYPE_NORMAL
 - en: You’ll see that it cites sources correctly and uses the information it has been
     handed, but as we’re using GPT-5, the latency is quite high with this large context.
+  id: totrans-192
   prefs: []
   type: TYPE_NORMAL
 - en: It takes about 9 seconds to first token with GPT-5 (but it will depend on your
     environment).
+  id: totrans-193
   prefs: []
   type: TYPE_NORMAL
 - en: If the entire retrieval pipeline takes about 4–5 seconds (and this is not optimized),
     this means the last part will take about 2–3 times longer.
+  id: totrans-194
   prefs: []
   type: TYPE_NORMAL
 - en: Some people will argue that you need to send in less information in the context
     window to decrease latency for this part but that also defeats the purpose of
     what we’re trying to do.
+  id: totrans-195
   prefs: []
   type: TYPE_NORMAL
 - en: Others will argue for using chain prompting, having one smaller LLM extract
     useful information and then letting another bigger LLM answer with an optimized
     context window but I’m not sure how much you save in terms of time or if it’s
     worth it.
+  id: totrans-196
   prefs: []
   type: TYPE_NORMAL
 - en: Others will go as small as possible, sacrificing “intelligence” for speed and
     cost. But there is also a risk of using smaller with more than a 2k window as
     they can start to hallucinate.
+  id: totrans-197
   prefs: []
   type: TYPE_NORMAL
 - en: Nevertheless, it’s up to you how you optimize the system. That is the hard part.
+  id: totrans-198
   prefs: []
   type: TYPE_NORMAL
 - en: If you want to examine the entire pipeline for a few queries see [this](https://github.com/ilsilfverskiold/Awesome-LLM-Resources-List/tree/main/guides/RAG/Custom)
     folder.
+  id: totrans-199
   prefs: []
   type: TYPE_NORMAL
 - en: Let’s talk latency & cost
+  id: totrans-200
   prefs:
   - PREF_H2
   type: TYPE_NORMAL
 - en: People talking about sending in entire docs into an LLM are probably not ruthlessly
     optimizing for latency in their systems. This is the part you’ll spend the most
     time with, users don’t want to wait.
+  id: totrans-201
   prefs: []
   type: TYPE_NORMAL
 - en: Yes you can apply some UX tricks, but devs might think you’re lazy if your retrieval
     pipeline is slower than a few seconds.
+  id: totrans-202
   prefs: []
   type: TYPE_NORMAL
 - en: This is also why it’s interesting that we see this shift into agentic search
     in the wild, it’s so much slower to add large context windows, LLM-based query
     transforms, auto “router” chains, sub-question decomposition and multi-step “agentic”
     query engines.
+  id: totrans-203
   prefs: []
   type: TYPE_NORMAL
 - en: For this system here (mostly built with Codex and my instructions) we land at
     around 4–5 seconds for retrieval in a Serverless environment.
+  id: totrans-204
   prefs: []
   type: TYPE_NORMAL
 - en: '![](../Images/9d7efaf256c0e672f9daa0ba62cc7ca3.png)'
+  id: totrans-205
   prefs: []
   type: TYPE_IMG
 - en: This is kind of slow (but pretty cheap).
+  id: totrans-206
   prefs: []
   type: TYPE_NORMAL
 - en: You can optimize each step here to bring that number down, keeping most things
     warm. However, using the APIs you can’t always control how fast they return a
     response.
+  id: totrans-207
   prefs: []
   type: TYPE_NORMAL
 - en: Some people will argue to host your own smaller models for the optimizer and
     routers, but then you need to add in costs to host which can easily add a few
     hundred dollars per month.
+  id: totrans-208
   prefs: []
   type: TYPE_NORMAL
 - en: With this pipeline here, each run (without caching) cost us 1.2 cents ($0.0121)
     so if you had your org ask 200 questions every day you would pay around $2.42
     with GPT-5.
+  id: totrans-209
   prefs: []
   type: TYPE_NORMAL
 - en: If you switch to GPT-5-mini for the main LLM, one pipeline run would drop to
     0.0041 cents, and amount to about $0.82 per day for 200 runs.
+  id: totrans-210
   prefs: []
   type: TYPE_NORMAL
 - en: As for embedding the documents, I paid around $0.5 for 200 PDF files using OpenAI’s
     large model. This cost will increase as you scale which is something to consider,
     then it can make sense with small or specialized fine-tuned model.
+  id: totrans-211
   prefs: []
   type: TYPE_NORMAL
 - en: How to improve it
+  id: totrans-212
   prefs:
   - PREF_H2
   type: TYPE_NORMAL
 - en: As we’re only working with recent RAG papers, once you scale it, you can add
     some stuff to make it more robust.
+  id: totrans-213
   prefs: []
   type: TYPE_NORMAL
 - en: I should first note though that you may not see most of the real issues until
     your docs start growing. Whatever feels solid with a few hundred docs will start
     to feel messy once you ingest tens of thousands.
+  id: totrans-214
   prefs: []
   type: TYPE_NORMAL
+  zh: 我首先应该注意的是，您可能不会在文档开始增长之前看到大多数真正的问题。当您处理成千上万的文档时，那些看起来稳固的几百个文档将会开始显得杂乱无章。
 - en: You can have the optimizer set filters, perhaps using semantic matching for
     topics. You can also have it set the dates to keep the information fresh while
     introducing an authority signal in re-ranking that boosts certain sources.
+  id: totrans-215
   prefs: []
   type: TYPE_NORMAL
+  zh: 您可以为优化器设置过滤器，可能使用语义匹配来处理主题。您还可以设置日期以保持信息的时效性，同时在重新排序时引入权威信号，以提升某些来源的排名。
 - en: Some teams take this a bit further and design their own scoring functions to
     decide what should surface and how to prioritize documents, but this depends entirely
     on what your corpus looks like.
+  id: totrans-216
   prefs: []
   type: TYPE_NORMAL
+  zh: 一些团队会将此方法进一步发展，并设计自己的评分函数来决定哪些内容应该出现以及如何优先处理文档，但这完全取决于您的语料库是什么样的。
 - en: If you need to ingest several thousand docs, it might make sense to skip the
     LLM during ingestion and instead use it in the retrieval pipeline, where it analyzes
     documents only when a query asks for it. You can then cache that result for next
     time.
+  id: totrans-217
   prefs: []
   type: TYPE_NORMAL
+  zh: 如果您需要处理几千个文档，在导入过程中跳过LLM可能是有意义的，而改在检索管道中使用它，在那里它仅在查询请求时分析文档。然后您可以缓存该结果以供下次使用。
 - en: Lastly, always remember to add proper evals to show retrieval quality and groundedness,
     especially if you’re switching models to optimize for cost. I’ll try to do some
     writing on this in the future.
+  id: totrans-218
   prefs: []
   type: TYPE_NORMAL
+  zh: 最后，始终记得添加适当的评估来展示检索质量和稳定性，尤其是如果您正在切换模型以优化成本。我将来会尝试写一些关于这个话题的文章。
 - en: '* * *'
+  id: totrans-219
   prefs: []
   type: TYPE_NORMAL
+  zh: '* * *'
 - en: If you’re still with me this far, a question you can ask yourself is whether
     it’s worth it to build a system like this or if it is too much work.
+  id: totrans-220
   prefs: []
   type: TYPE_NORMAL
+  zh: 如果您一直读到这儿，您可以问自己一个问题：构建这样一个系统是否值得，或者这工作是否过于繁重。
 - en: I might do something that will clearly compare the output quality for naive
     RAG vs better-chunked RAG with expansion/metadata in the future.
+  id: totrans-221
   prefs: []
   type: TYPE_NORMAL
+  zh: 我可能在将来做一些明确比较原始RAG与更好的分块RAG（带有扩展/元数据）的输出质量的工作。
 - en: I’d also like to compare the same use case using knowledge graphs.
+  id: totrans-222
   prefs: []
   type: TYPE_NORMAL
+  zh: 我还想要比较使用知识图谱的相同用例。
 - en: To check out more of my work and follow my future writing, connect with me on
     [LinkedIn](https://www.linkedin.com/in/ida-silfverskiold/), [Medium](https://medium.com/@ilsilfverskiold),
     [Substack](https://howtouseai.substack.com/), or check my [website](https://www.ilsilfverskiold.com/).
+  id: totrans-223
   prefs: []
   type: TYPE_NORMAL
+  zh: 要查看我的更多作品并关注我的未来写作，请通过[LinkedIn](https://www.linkedin.com/in/ida-silfverskiold/)、[Medium](https://medium.com/@ilsilfverskiold)、[Substack](https://howtouseai.substack.com/)或访问我的[网站](https://www.ilsilfverskiold.com/)与我联系。
 - en: ❤
+  id: totrans-224
   prefs: []
   type: TYPE_NORMAL
+  zh: ❤
 - en: PS. I’m looking for some work in January. If you need someone who’s building
     in this space (and enjoys building weird, fun things while explaining difficult
     technical concepts), get in [touch.](https://www.linkedin.com/in/ida-silfverskiold/)
+  id: totrans-225
   prefs: []
   type: TYPE_NORMAL
+  zh: PS. 我在1月份正在寻找一些工作。如果您需要一位在这个领域构建（并且喜欢在解释复杂技术概念的同时构建奇怪、有趣的东西）的人，请通过[联系我](https://www.linkedin.com/in/ida-silfverskiold/)。
