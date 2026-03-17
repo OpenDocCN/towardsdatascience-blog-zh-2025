@@ -1,0 +1,737 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.1//EN"
+  "http://www.w3.org/TR/xhtml11/DTD/xhtml11.dtd">
+
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+<title>Smarter Model Tuning: An AI Agent with LangGraph + Streamlit That Boosts ML Performance</title>
+<link href="../Styles/Style.css" type="text/css" rel="stylesheet"/>
+</head>
+<body>
+<h1>Smarter Model Tuning: An AI Agent with LangGraph + Streamlit That Boosts ML Performance</h1>
+<blockquote>原文：<a href="https://towardsdatascience.com/smarter-model-tuning-an-ai-agent-with-langgraph-streamlit-that-boosts-ml-performance/">https://towardsdatascience.com/smarter-model-tuning-an-ai-agent-with-langgraph-streamlit-that-boosts-ml-performance/</a></blockquote>
+<p class="wp-block-paragraph"><mdspan datatext="el1755717950212" class="mdspan-comment">Lately, I have been enjoying</mdspan> each day a little more while working with LangGraph.</p>
+
+
+
+<p class="wp-block-paragraph">Let’s face it: since LangChain is one of the first frameworks to handle the integration with LLMs, it took off earlier and became kind of a <em>go-to</em> option when it comes to building production-ready agents, whether you like it or not.</p>
+
+
+
+<p class="wp-block-paragraph">LangChain’s younger brother is <strong>LangGraph</strong>. This framework uses a graph notation with nodes and edges to build the applications, making them highly customizable and very robust. That is what I am enjoying so much.</p>
+
+
+
+<p class="wp-block-paragraph">At first, some notations felt strange to me (maybe it’s just me!). But I kept digging and learning more. And I strongly believe we learn better while we’re implementing stuff, because that’s when the real problems pop up. So, after a few lines of code and some hours of code debugging, that graph architecture started to make much more sense to me, and I started to enjoy creating things with LangGraph.</p>
+
+
+
+<p class="wp-block-paragraph">Anyway, if you don’t have any introduction to the framework, I recommend you look at this post <a href="https://medium.com/code-applied/building-your-first-ai-agent-with-langgraph-599a7bcf01cd?sk=a22e309c1e6e3602ae37ef28835ee843">[1]</a>.</p>
+
+
+
+<p class="wp-block-paragraph">Now, let’s learn more about the project of this article.</p>
+
+
+
+<h2 class="wp-block-heading">The Project</h2>
+
+
+
+<p class="wp-block-paragraph">In this project, we are going to build a multi-step agent:</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">It takes in a machine learning model type: <em>classification </em>or <em>regression</em>.</li>
+
+
+
+<li class="wp-block-list-item">And we will also input the metrics of our model, such as accuracy, RMSE, confusion matrix, ROC, etc. The more we provide to the agent, the better the response.</li>
+</ul>
+
+
+
+<p class="wp-block-paragraph">The agent, equipped with Google Gemini 2.0 Flash:</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">Reads the input</li>
+
+
+
+<li class="wp-block-list-item">Evaluate the model’s metric inputted by the user</li>
+
+
+
+<li class="wp-block-list-item">Return an actionable list of suggestions to tune the model and improve its performance.</li>
+</ul>
+
+
+
+<p class="wp-block-paragraph">This is the project folder structure:</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-markup">ml-model-tuning/
+├── langgraph_agent/
+│ ├── graph.py #LangGraph logic
+│ ├── nodes.py #LLMs and tools
+├── main.py # Streamlit interface to run the agent
+├── requirements.txt</code></pre>
+
+
+
+<p class="wp-block-paragraph">The Agent is live and <a href="https://ml-tuning-assistant.streamlit.app/">deployed in this web app</a>.</p>
+
+
+
+<h2 class="wp-block-heading">Dataset</h2>
+
+
+
+<p class="wp-block-paragraph">The dataset to be used is a very simple toy dataset named <em>Tips, </em>from the Seaborn package, and open-sourced under the license BSD 3. I decided to use a simple dataset like this because it has both categorical and numerical features, being suited for both types of model creation. In addition, the start of the article is the agent, so that is where we want to spend more attention.</p>
+
+
+
+<p class="wp-block-paragraph">To load the data, use the following code.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">import seaborn as sns
+
+# Data
+df = sns.load_dataset('tips')</code></pre>
+
+
+
+<p class="wp-block-paragraph">Next, we will build the nodes.</p>
+
+
+
+<h2 class="wp-block-heading">Nodes</h2>
+
+
+
+<p class="wp-block-paragraph">The nodes of a LangGraph object are Python functions. They can be tools that the agent will use or an instance of an LLM. We build each node as a separate function.</p>
+
+
+
+<p class="wp-block-paragraph">But first, we have to load the modules.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">import os
+from textwrap import dedent
+from dotenv import load_dotenv
+load_dotenv()
+
+import streamlit as st
+from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder</code></pre>
+
+
+
+<p class="wp-block-paragraph">Our first node is the one to get the model type. It simply gets the input from the user on whether the model to be enhanced is a regression or a classification.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">def get_model_type(state):
+    """Check if the user is implementing a classification or regression model. """
+    
+    # Define the model type
+    modeltype = st.text_input("Please let me know the type of model you are working on and hit Enter:", 
+                              placeholder="(C)lassification or (R)egression", 
+                              help="C for Classification or R for Regression")
+    
+    # Check if the model type is valid
+    if modeltype.lower() not in ["c", "r", "classification", "regression"]:
+        st.info("Please enter a valid model type: C for (C)lassification or R for (R)egression.")
+        st.stop()
+        
+    if modeltype.lower() in ["c", "classification"]:
+        modeltype = "classification"
+    elif modeltype.lower() in ["r", "regression"]:
+        modeltype = "regression"
+    
+    return {"model_type": modeltype.lower()} # "classification" or "regression"  </code></pre>
+
+
+
+<p class="wp-block-paragraph">The other two nodes from this graph are almost the same, but they differ in the system prompt. One is optimized for regression models evaluation, while the other is specialized in classification. I will paste only one of them here. The complete code is available on GitHub, though. <a href="https://github.com/gurezende/ML-Tuning-Assistant/blob/main/langgraph_agent/nodes.py">See all the nodes’ code here.</a></p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">def llm_node_regression(state):
+    """
+    Processes the user query and search results using the LLM and returns an answer.
+    """
+    llm = ChatGoogleGenerativeAI(
+        model="gemini-2.5-flash",
+        api_key=os.environ.get("GEMINI_API_KEY"),
+        temperature=0.5,
+        max_tokens=None,
+        timeout=None,
+        max_retries=2
+    )
+
+    # Create a prompt
+    messages = ChatPromptTemplate.from_messages([
+        ("system", dedent("""\
+                          You are a seasoned data scientist, specialized in regression models. 
+                          You have a deep understanding of regression models and their applications.
+                          You will get the user's result for a regression model and your task is to build a summary of how to improve the model.
+                          Use the context to answer the question.
+                          Give me actionable suggestions in the form of bullet points.
+                          Be concise and avoid unnecessary details. 
+                          If the question is not about regression, say 'Please input regression model metrics.'.
+                          \
+                          """)),
+        MessagesPlaceholder(variable_name="messages"),
+        ("user", state["metrics_to_tune"])
+    ])
+    
+    # Create a chain
+    chain = messages | llm
+    response = chain.invoke(state)
+    return {"final_answer": [response]}</code></pre>
+
+
+
+<p class="wp-block-paragraph">Great. Now it is time to stick these nodes together by building the edges to connect them. In other words, building the flow of the information from the user input to the final output.</p>
+
+
+
+<h2 class="wp-block-heading">Graph</h2>
+
+
+
+<p class="wp-block-paragraph">The file <a href="https://github.com/gurezende/ML-Tuning-Assistant/blob/main/langgraph_agent/graph.py"><code>graph.py</code></a> will be used to generate the LangGraph object. First, we need to import the modules.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">from langgraph.graph import StateGraph, END
+from typing_extensions import TypedDict
+from langgraph.graph.message import add_messages
+from langchain_core.messages import AnyMessage
+from langgraph.graph import StateGraph, END
+from typing import TypedDict, Annotated
+from langgraph_agent.nodes import llm_node_classification, llm_node_regression, get_model_type</code></pre>
+
+
+
+<p class="wp-block-paragraph">The next step is to create the state of the graph. <strong>StateGraph</strong> manages the agent’s state throughout the workflow. It <strong>keeps track of the information</strong> the agent has gathered and processed. It is nothing but a class with the names of the variables and their type written in dictionary style.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python"># Create a state graph
+class AgentState(TypedDict):
+    """
+    Represents the state of our graph.
+
+    Attributes:
+        messages: A list of messages in the conversation, including user input and agent outputs.
+        model_type: The type of model being used, either "classification" or "regression".
+        question: The initial question from the user.
+        final_answer: The final answer provided by the agent.
+    """
+    messages: Annotated[AnyMessage, add_messages] # accumulate messages
+    model_type: str
+    metrics_to_tune: str
+    final_answer: str
+</code></pre>
+
+
+
+<p class="wp-block-paragraph">To build the graph, we will use a function that:</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">Adds each node with a tuple <code>("name", node_function_name)</code></li>
+
+
+
+<li class="wp-block-list-item">Defines the starting point at the <em>get_model_type</em> node. <code>.set_entry_point("get_model_type")</code></li>
+
+
+
+<li class="wp-block-list-item">Then, there is a conditional edge, that decides to go to the appropriate node depending on the response from the <code>get_model_type</code> node.</li>
+
+
+
+<li class="wp-block-list-item">Finally, connect the LLM nodes to the <code>END</code> state.</li>
+
+
+
+<li class="wp-block-list-item">Compile the graph to make it ready for use.</li>
+</ul>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">def build_graph():
+    # Build the LangGraph flow
+    builder = StateGraph(AgentState)
+
+    # Add nodes
+    builder.add_node("get_model_type", get_model_type)
+    builder.add_node("classification", llm_node_classification)
+    builder.add_node("regression", llm_node_regression)
+
+    # Define edges and flow
+    builder.set_entry_point("get_model_type")
+
+    builder.add_conditional_edges(
+        "get_model_type",
+        lambda state: state["model_type"],
+        {
+            "classification": "classification",
+            "regression": "regression"
+        }
+    )
+
+    builder.add_edge("classification", END)
+    builder.add_edge("regression", END)
+
+    # Compile the graph
+    return builder.compile()
+</code></pre>
+
+
+
+<p class="wp-block-paragraph">If you want to see the graph, you can use this little snippet.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-"># Create the graph image and save png
+from IPython.display import display, Image
+graph = build_graph()
+display(Image(graph.get_graph().draw_mermaid_png(output_file_path="graph.png")))</code></pre>
+
+
+
+<figure class="wp-block-image aligncenter size-full"><img decoding="async" src="../Images/32da801cc01a17b4e9ad34f09058d935.png" alt="" class="wp-image-615801" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/08/graph.png"/><figcaption class="wp-element-caption">Image of the graph created. Image by the author.</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">It is a simple agent, but it works very well. We will get to that soon. But we need to build the front-end piece first.</p>
+
+
+
+<h2 class="wp-block-heading">Building the User Interface</h2>
+
+
+
+<p class="wp-block-paragraph">The user interface is a Streamlit app. I have chosen this option due to easy prototyping and deployment features.</p>
+
+
+
+<p class="wp-block-paragraph">Let’s load the libraries needed once again.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">import os
+from langgraph_agent.graph import AgentState, build_graph
+from textwrap import dedent
+import streamlit as st</code></pre>
+
+
+
+<p class="wp-block-paragraph">Configuring the page layout (title, icon, sidebar etc).</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">## Config page
+st.set_page_config(page_title="ML Model Tuning Assistant",
+                   page_icon='🤖',
+                   layout="wide",
+                   initial_sidebar_state="expanded")</code></pre>
+
+
+
+<p class="wp-block-paragraph">Creating the sidebar that holds the field to add a Google Gemini API Key and the <em>restart session </em>button.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">## SIDEBAR | Add a place to enter the API key
+with st.sidebar:
+    api_key = st.text_input("GOOGLE_API_KEY", type="password")
+
+    # Save the API key to the environment variable
+    if api_key:
+        os.environ["GEMINI_API_KEY"] = api_key
+
+    # Clear
+    if st.button('Clear'):
+        st.rerun()</code></pre>
+
+
+
+<p class="wp-block-paragraph">Now, we add the page’s title and instructions to use the agent. This is all simple code using mostly the function <code>st.write()</code>.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-">## Title and Instructions
+if not api_key:
+    st.warning("Please enter your OpenAI API key in the sidebar.")
+    
+st.title('ML Model Tuning Assistant | 🤖')
+st.caption('This AI Agent is will help you tuning your machine learning model.')
+st.write(':red[**1**] | 👨‍💻 Add the metrics of your ML model to be tuned in the text box. The more metrics you add, the better.')
+st.write(':red[**2**] | ℹ️ Inform the AI Agent what type of model you are working on.')
+st.write(':red[**3**] | 🤖 The AI Agent will respond with suggestions on how to improve your model.')
+st.divider()
+
+# Get the user input
+text = st.text_area('**👨‍💻 Add here the metrics of your ML model to be tuned:**')
+
+st.divider()</code></pre>
+
+
+
+<p class="wp-block-paragraph">And, lastly, the code to:</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">Run the <code>build_graph()</code> function and create the agent.</li>
+
+
+
+<li class="wp-block-list-item">Create the initial state of the agent, with an empty <code>messages</code>.</li>
+
+
+
+<li class="wp-block-list-item">Invoke the agent.</li>
+
+
+
+<li class="wp-block-list-item">Print the results on screen.</li>
+</ul>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">## Run the graph
+
+# Spinner
+with st.spinner("Gathering Tuning Suggestions...", show_time=True):
+    from langgraph_agent.graph import build_graph
+    agent = build_graph()
+
+    # Create the initial state for the agent, with blank messages and the user input
+    prompt = {
+        "messages": [],
+        "metrics_to_tune": text
+    }
+
+    # Invoke the agent
+    result = agent.invoke(prompt)
+
+    # Print the agent's response
+    st.write('**🤖 Agent Response:**')
+    st.write(result['final_answer'][0].content)</code></pre>
+
+
+
+<p class="wp-block-paragraph">All created. It is time to put this AI Agent to work! </p>
+
+
+
+<p class="wp-block-paragraph">So, we will build some models and ask the agent for tuning suggestions.</p>
+
+
+
+<h2 class="wp-block-heading">Running the Agent</h2>
+
+
+
+<p class="wp-block-paragraph">Well, as this is an agent that helps us with model tuning suggestions, we must have a model to tune. </p>
+
+
+
+<h3 class="wp-block-heading">Regression Model</h3>
+
+
+
+<p class="wp-block-paragraph">We will try the regression model first. We can quickly build a simple model.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python"># Imports
+import pandas as pd
+import numpy as np
+import seaborn as sns
+from sklearn.pipeline import Pipeline
+from feature_engine.encoding import OneHotEncoder
+from sklearn.model_selection import train_test_split
+from sklearn.linear_model import LinearRegression
+from sklearn.metrics import root_mean_squared_error
+
+## Baseline Model
+# Data
+df = sns.load_dataset('tips')
+
+# Train Test Split
+X = df.drop('tip', axis=1)
+y = df['tip']
+X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+
+# Categorical
+cat_vars = df.select_dtypes(include=['object']).columns
+
+# Pipeline
+pipe = Pipeline([
+    ('encoder', OneHotEncoder(variables=['sex', 'smoker', 'day', 'time'],
+                              drop_last=True)),
+    ('model', LinearRegression())
+])
+
+# Fit
+pipe.fit(X_train, y_train)</code></pre>
+
+
+
+<p class="wp-block-paragraph">Now, we have to gather metrics data to present to our AI Agent in order to get tuning suggestions. The more data, the better. As I am working with a regression model, I chose to present the following information:</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">Feature names</li>
+
+
+
+<li class="wp-block-list-item">Statistical description of the dataset</li>
+
+
+
+<li class="wp-block-list-item">R²</li>
+
+
+
+<li class="wp-block-list-item">Root Mean Squared Error (RMSE)</li>
+
+
+
+<li class="wp-block-list-item">Regression intercept and coefficients</li>
+
+
+
+<li class="wp-block-list-item">VIF</li>
+</ul>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-markup">        total_bill         tip   sex smoker  day    time        size
+count   244.000000  244.000000   244    244  244     244  244.000000
+unique         NaN         NaN     2      2    4       2         NaN
+top            NaN         NaN  Male     No  Sat  Dinner         NaN
+freq           NaN         NaN   157    151   87     176         NaN
+mean     19.785943    2.998279   NaN    NaN  NaN     NaN    2.569672
+std       8.902412    1.383638   NaN    NaN  NaN     NaN    0.951100
+min       3.070000    1.000000   NaN    NaN  NaN     NaN    1.000000
+25%      13.347500    2.000000   NaN    NaN  NaN     NaN    2.000000
+50%      17.795000    2.900000   NaN    NaN  NaN     NaN    2.000000
+75%      24.127500    3.562500   NaN    NaN  NaN     NaN    3.000000
+max      50.810000   10.000000   NaN    NaN  NaN     NaN    6.000000
+
+---
+Model: Linear Regression
+Score: 0.44
+RMSE: 0.84
+Intercept: 0.45
+
+Coefficients:
+       feature  coefficient
+0   total_bill     0.094700
+1         size     0.233484
+2     sex_Male     0.028819
+3    smoker_No     0.192353
+4      day_Sat    -0.006064
+5      day_Fri     0.179721
+6      day_Sun     0.128928
+7  time_Dinner    -0.094957
+
+VIF:
+total_bill    2.226294
+tip           1.879238
+size          1.590524</code></pre>
+
+
+
+<p class="wp-block-paragraph">Now I will run the agent.</p>
+
+
+
+<figure class="wp-block-image size-full"><img decoding="async" src="../Images/22e6ceba0d8f6aaf904944d83f3b01db.png" alt="" class="wp-image-615811" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/08/Tuning_Agent.gif"/><figcaption class="wp-element-caption">AI Agent in action. GIF by the author.</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">Here is the agent’s response:</p>
+
+
+
+<blockquote class="wp-block-quote is-layout-flow wp-block-quote-is-layout-flow">
+<p class="wp-block-paragraph">🤖 Agent Response:</p>
+
+
+
+<p class="wp-block-paragraph">Here are actionable suggestions to improve your regression model:</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item"><strong>Explore non-linear relationships: </strong>Consider adding polynomial features for total_bill and size, or interaction terms between features (e.g., total_bill * size), as the current linear model might be too simplistic for the underlying data patterns.</li>
+
+
+
+<li class="wp-block-list-item"><strong>Evaluate alternative regression models: </strong>Given the R-squared of 0.44, test other models like Random Forest Regressor, Gradient Boosting Regressor, or Support Vector Regressor, which can capture more complex, non-linear relationships.</li>
+
+
+
+<li class="wp-block-list-item"><strong>Address data distribution and outliers:</strong> Investigate and handle outliers in total_bill and the target variable tip. Consider applying transformations (e.g., log transform) to skewed features to better meet linearity assumptions and improve model performance.</li>
+
+
+
+<li class="wp-block-list-item"><strong>Analyze feature statistical significance:</strong> Obtain p-values for each coefficient to identify features that may not be statistically significant. Removing or re-evaluating such features can simplify the model and potentially improve generalization.</li>
+</ul>
+</blockquote>
+
+
+
+<p class="wp-block-paragraph">There are a couple of suggestions here. We can now choose what we will accept or not. Here is what I tried (code in GitHub):</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">I trained a Random Forest Regressor, but the result was not good with the out of the box model, dropping the R² to 0.25 and the RMSE to 0.97. So I discarded that option.</li>
+
+
+
+<li class="wp-block-list-item">So, if I am keeping the Linear Regression, another suggestion is to use log transformations and treat outliers. I tried that, and the result is better. The model goes to an R² of 0.55 and RMSE of 0.23. A significant improvement.</li>
+</ul>
+
+
+
+<h3 class="wp-block-heading">Classification Model</h3>
+
+
+
+<p class="wp-block-paragraph">I followed the same drill here, but now working on a classification model, using the same dataset and trying to predict if the restaurant’s customer is a smoker or not.</p>
+
+
+
+<ol class="wp-block-list">
+<li class="wp-block-list-item">Trained a classification model</li>
+
+
+
+<li class="wp-block-list-item"><strong>Got the initial metrics: <code>Score = 0.69</code>; <code>RMSE = 0.55</code></strong></li>
+
+
+
+<li class="wp-block-list-item">Ran the AI Agent for suggestions</li>
+
+
+
+<li class="wp-block-list-item">Applied some tuning suggestions: <code>class_weight='balanced'</code> and <code>BayesSearchCV</code>.</li>
+
+
+
+<li class="wp-block-list-item"><strong>Got the tuned metrics: <code>Score = 0.71</code>; <code>RMSE = 0.52</code></strong></li>
+</ol>
+
+
+
+<figure class="wp-block-image aligncenter size-large"><img decoding="async" src="../Images/9b1edc70c73547c925b7b4446360f3e0.png" alt="" class="wp-image-615820" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/08/image-144-1024x382.png"/><figcaption class="wp-element-caption">AI Agent’s suggestions. Image by the author.</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">Notice how the Precision vs. Recall is more balanced as well.</p>
+
+
+
+<figure class="wp-block-image aligncenter size-full"><img decoding="async" src="../Images/d0321e76163230c9cf21a8e99c2b7a22.png" alt="" class="wp-image-615822" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/08/image-146.png"/><figcaption class="wp-element-caption">Score Before vs. After tuning. Image by the author.</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">Our job is complete. The agent is working as designed.</p>
+
+
+
+<h2 class="wp-block-heading">Before You Go</h2>
+
+
+
+<p class="wp-block-paragraph">We have reached the end of this project. Overall, I am satisfied with the result. This project is quite simple and quick to build, and yet it delivers a lot of value!</p>
+
+
+
+<p class="wp-block-paragraph">Tuning models is not a <em>one-size-fits-all </em>action. There are many options to try. Thus, having the help of an AI Agent to give us a few ideas to try is very valuable and makes our job easier without replacing us.</p>
+
+
+
+<p class="wp-block-paragraph">Try the app for yourself and let me know if it helped you get an improved performance metric!</p>
+
+
+
+<p class="wp-block-paragraph"><a href="https://ml-tuning-assistant.streamlit.app">https://ml-tuning-assistant.streamlit.app</a></p>
+
+
+
+<h2 class="wp-block-heading">GitHub Repository</h2>
+
+
+
+<p class="wp-block-paragraph"><a href="https://github.com/gurezende/ML-Tuning-Assistant">https://github.com/gurezende/ML-Tuning-Assistant</a></p>
+
+
+
+<h2 class="wp-block-heading">Find Me Online</h2>
+
+
+
+<p class="wp-block-paragraph"><a href="https://gustavorsantos.me">https://gustavorsantos.me</a></p>
+
+
+
+<h2 class="wp-block-heading">References</h2>
+
+
+
+<p class="wp-block-paragraph"><strong>[1. Building Your First AI Agent with LangGraph] </strong><a href="https://medium.com/code-applied/building-your-first-ai-agent-with-langgraph-599a7bcf01cd?sk=a22e309c1e6e3602ae37ef28835ee843">https://medium.com/code-applied/building-your-first-ai-agent-with-langgraph-599a7bcf01cd?sk=a22e309c1e6e3602ae37ef28835ee843</a></p>
+
+
+
+<p class="wp-block-paragraph"><strong>[2. Using Gemini with LangGraph] </strong><a href="https://python.langchain.com/docs/integrations/chat/google_generative_ai/">https://python.langchain.com/docs/integrations/chat/google_generative_ai/</a></p>
+
+
+
+<p class="wp-block-paragraph"><strong>[3. LangGraph Docs]</strong> <a href="https://langchain-ai.github.io/langgraph/tutorials/get-started/1-build-basic-chatbot/">https://langchain-ai.github.io/langgraph/tutorials/get-started/1-build-basic-chatbot/</a></p>
+
+
+
+<p class="wp-block-paragraph"><strong>[4. Streamlit Docs] </strong><a href="https://docs.streamlit.io/">https://docs.streamlit.io/</a></p>
+
+
+
+<p class="wp-block-paragraph"><strong>[5. Get a Gemini API Key] </strong><a href="https://tinyurl.com/gemini-api-key">https://tinyurl.com/gemini-api-key</a></p>
+
+
+
+<p class="wp-block-paragraph"><strong>[6. GitHub Repository ML Tuning Agent]</strong> <a href="https://github.com/gurezende/ML-Tuning-Assistant">https://github.com/gurezende/ML-Tuning-Assistant</a></p>
+
+
+
+<p class="wp-block-paragraph"><strong>[7. Guide to Hyperparameter Tuning with Bayesian Search] </strong><a href="https://medium.com/code-applied/dont-guess-get-the-best-a-smart-guide-to-hyperparameter-tuning-with-bayesian-search-123e4e98e845?sk=ff4c378d816bca0c82988f0e8e1d2cdf">https://medium.com/code-applied/dont-guess-get-the-best-a-smart-guide-to-hyperparameter-tuning-with-bayesian-search-123e4e98e845?sk=ff4c378d816bca0c82988f0e8e1d2cdf</a></p>
+
+
+
+<p class="wp-block-paragraph"><strong>[8. Deployed App]</strong> <a href="https://ml-tuning-assistant.streamlit.app/">https://ml-tuning-assistant.streamlit.app/</a></p>
+
+
+
+<p class="wp-block-paragraph"/>
+    
+</body>
+</html>

@@ -1,0 +1,608 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.1//EN"
+  "http://www.w3.org/TR/xhtml11/DTD/xhtml11.dtd">
+
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+<title>Beyond Code Generation: Continuously Evolve Text with LLMs</title>
+<link href="../Styles/Style.css" type="text/css" rel="stylesheet"/>
+</head>
+<body>
+<h1>Beyond Code Generation: Continuously Evolve Text with LLMs</h1>
+<blockquote>原文：<a href="https://towardsdatascience.com/beyond-code-generation-continuously-evolve-text-with-llms/">https://towardsdatascience.com/beyond-code-generation-continuously-evolve-text-with-llms/</a></blockquote>
+<p class="wp-block-paragraph" id="2a7c"><mdspan datatext="el1750311146010" class="mdspan-comment">What do you do when</mdspan> the initial response from an LLM doesn’t suit you? You rerun it, right? Now, if you were to automate that…</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">success = false
+while not success:
+    response = prompt.invoke()
+    success = evaluate(response)</code></pre>
+
+
+
+<p class="wp-block-paragraph" id="1d34">Alright, something like that. People have done it for code, and the same applies to non-code if the <em>evaluate()</em> function is suitable. Nowadays, you can use <strong>LLMs for content generation and evaluation.</strong> However, a simple while loop that waits for the best random result is not always good enough. Sometimes, you need to modify the prompt. Experiment and mix things up, and keep track of what works and what doesn’t. Follow along different ideation paths to keep your options open…</p>
+
+
+
+<p class="wp-block-paragraph" id="94db">In this article, we will discuss how <strong>OpenEvolve</strong> [1], an open-source implementation of Google’s AlphaEvolve paper [2], can be used for content creation. In the background, it applies this “experiment and mix, follow different paths” approach to optimize the LLM prompts.</p>
+
+
+
+<p class="wp-block-paragraph" id="8ab4">The AlphaEvolve paper applied an <strong>evolutionary system</strong> to the code generation with LLMs. Read more about the exciting, brand-new results of this paper in my article, <a href="https://towardsdatascience.com/googles-alphaevolve-getting-started-with-evolutionary-coding-agents/" target="_blank" rel="noreferrer noopener">Google’s AlphaEvolve: Getting Started with Evolutionary Coding Agents</a>. In essence, in a survival of the fittest scheme, programs are mixed and improved upon. The authors suggest that these evolutionary coding agents can achieve research breakthroughs and present several results.</p>
+
+
+
+<p class="wp-block-paragraph" id="af22">Due to the sheer number of things that content can be, I think there may be<em> </em>potential for <strong>high-value content creation other than code</strong> that utilizes such a long-running, continuous evolution process. In this article, we explore how to apply the same technology to a non-code use case where LLMs, rather than algorithms, judge the results of the LLM-generated solution. We also dicuss how to examine the results.</p>
+
+
+
+<h2 class="wp-block-heading" id="1639">Prerequisites</h2>
+
+
+
+<p class="wp-block-paragraph" id="76db">First, let’s prepare a quick, basic setup.</p>
+
+
+
+<h3 class="wp-block-heading" id="986b">LLM server</h3>
+
+
+
+<p class="wp-block-paragraph" id="0482">In order to use OpenEvolve, you will need access to an LLM server with OpenAI-compatible API endpoints. You can register with Cerebras (they have a free tier), OpenAI, Google Gemini, or a similar service. Alternatively, if you have a capable GPU, you can set up your own server, for example with ollama. You will need to pick at least two different LLM models, a weak one (e.g., 4bn parameters) and a strong one (e.g., 17bn parameters).</p>
+
+
+
+<h3 class="wp-block-heading" id="55a6">Python envionment &amp; git</h3>
+
+
+
+<p class="wp-block-paragraph" id="3e34">I presume that you are running a Linux system with a prepared Python environment, in which you can create virtual environments and install packages from the Python Package index.</p>
+
+
+
+<h3 class="wp-block-heading" id="3e3e">OpenEvolve setup</h3>
+
+
+
+<p class="wp-block-paragraph" id="d704">Install OpenEvolve, then prepare your own project &amp; prompt folders:</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-bash">git clone https://github.com/codelion/openevolve.git
+cd openevolve
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -e .
+mkdir -p examples/my_project/prompts</code></pre>
+
+
+
+<p class="wp-block-paragraph">A little warning: OpenEvolve is currently a research project. Its code base is still developing quickly. Therefore, it is a good idea to follow all updates closely.</p>
+
+
+
+<h2 class="wp-block-heading" id="1674">Configuration</h2>
+
+
+
+<p class="wp-block-paragraph" id="d99c">Create the file <em>examples/my_project/config.yaml:</em></p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-yaml">checkpoint_interval: 1
+
+# LLM configuration
+llm:
+  models:
+    - name: "llama3.1-8b"
+      weight: 0.8
+      temperature: 1.5
+    - name: "llama-4-scout-17b-16e-instruct"
+      weight: 0.2
+      temperature: 0.9
+  evaluator_models:
+    - name: "llama-4-scout-17b-16e-instruct"
+      weight: 1.0
+      temperature: 0.9
+  api_base: "https://api.cerebras.ai/v1/" # The base URL of your LLM server API
+
+# Prompt configuration
+prompt:
+  template_dir: "examples/my_project/prompts"
+  num_top_programs: 0
+  num_diverse_programs: 0
+
+# Database configuration
+database:
+  num_islands: 3
+
+# Evaluator configuration
+evaluator:
+  timeout: 60
+  cascade_evaluation: false
+  use_llm_feedback: true
+  llm_feedback_weight: 1.0 # (Non-LLM metrics are weighed with a factor of 1)
+
+diff_based_evolution: true
+allow_full_rewrites: false</code></pre>
+
+
+
+<p class="wp-block-paragraph" id="35c0">To get a general idea of what you are configuring here, consider how new solutions are generated and evaluated in OpenEvolve. Solutions consist of their respective text content and are stored in a database alongside their evaluation metrics and “side channel” textual results (e.g., errors during execution or textual improvement suggestions). The database also stores a list of elite programs and programs that perform particularly well on different metrics (MAP-Elites) to be able to provide inspirations for new solutions. An LLM generates these new, mutated solutions based on a single parent. Programmatic and/or LLM evaluators then judge the new solution before feeding it back into the database.</p>
+
+
+
+<figure class="wp-block-image"><img decoding="async" src="../Images/7b0fe7535d383105ac506fd1d22a486b.png" alt="Sketch of the OpenEvolve generation &amp; evaluation flow" class="wp-image-606390" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/06/1qw_S2cxzTo-GQ0Z1RzsGrg.png"/><figcaption class="wp-element-caption">The OpenEvolve generation and evaluation flow: Sample a parent and inspirations, generate a new child, evaluate it, and store it in the same island as the parent. (Image by author)</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph" id="a3e7">The configuration options include:</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item"><strong>llm: models, evaluator_models</strong><br/>For generation and evaluation, you can configure any number of models.<br/>The idea behind using multiple models is to use a fast (weak) model that quickly explores many different options and a slower (stronger) model that adds quality. For generation, the weight parameter controls the probability that each model will be selected in an iteration — it is only one model at a time, not multiple. For evaluation, all models will be executed each time, and their output metrics are weighed with the specified parameter.<br/>The temperature setting influence how random these models behave. A value of 1.5 is very high, and 0.9 is still a high temperature value. For the creative use case, I think these are good. For business content or code, use lower values. The OpenEvolve default setting is 0.7.</li>
+
+
+
+<li class="wp-block-list-item"><strong>prompt: template_dir</strong><br/>The template_dir option specifies the directory that contains the prompt templates that are used to overwrite the defaults. See below for more information on the folder’s contents.</li>
+
+
+
+<li class="wp-block-list-item"><strong>database: num_top_programs, num_diverse_programs</strong><br/>The prompts for generating new solutions can include inspirations from other programs in the database. With a value of 0, I turned this function off, because I found that the inspirations — which do not include the content itself, rather just metrics and change summary — were not too useful for creative content evolution.</li>
+
+
+
+<li class="wp-block-list-item"><strong>database: num_islands </strong>controls how many separate sub-populations are maintained in the database. The more islands you use, the more diverging solution paths will result, whereas within the same island you will observe fewer substantial variations. For creative use cases, if you have enough time and resources to run many iterations, it may be beneficial to increase the number of islands.</li>
+
+
+
+<li class="wp-block-list-item"><strong>evaluator: llm_feedback_weight</strong><br/>The combined metrics generated by the evaluation LLMs are multiplied with this parameter. Together with the algorithmically generated metrics, the numeric average is then used to find the best program. Say the generated metrics were<br/><em>length: 1.0<br/>llm_correctness: 0.5<br/>llm_style: 0.7</em><br/>with an <em>llm_feedback_weight</em> of 1.0, the overall score would be (1.0+0.5*1.0+0.7*1.0)/3</li>
+
+
+
+<li class="wp-block-list-item"><strong>diff_base_evolution / allow_full_rewrites:</strong><br/>Two different prompt approaches for the generator LLM are supported. In the diff mode, the LLM uses a search-and-replace response format to replace specific elements in the current solution. In the full_rewrite mode, the LLM simply outputs a full rewrite. The latter mode is less demanding for less capable LLMs, but it is also less suitable for long content. Quality is also better with diff mode, based on my tests.</li>
+</ul>
+
+
+
+<p class="wp-block-paragraph" id="3ff9">For more options, refer to <em>configs/default_config.yaml.</em></p>
+
+
+
+<h2 class="wp-block-heading" id="a256">Prompts</h2>
+
+
+
+<p class="wp-block-paragraph" id="c6d2">OpenEvolve’s default prompts are written for code evolution. Therefore, its prompts are not suitable for non-code generation by default. Fortunately, we can overwrite them. The default prompts are encoded in the file <em>openevolve/prompt/templates.py</em>.</p>
+
+
+
+<p class="wp-block-paragraph" id="3e80">Create the following files and adapt the prompts to match your use case. Let’s try a simple example for creating poems.</p>
+
+
+
+<p class="wp-block-paragraph" id="ebf5"><strong>Initial placeholder content: </strong><em>examples/my_project/initial_content.txt</em></p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-markdown">No initial poem, invent your own.</code></pre>
+
+
+
+<p class="wp-block-paragraph" id="eff8">The initial prompt represents the “first generation” parent. It affects its offspring, the second-generation solutions.<br/>For the initial content, you could provide an existing version or an empty placeholder text. You could also provide specific instructions, such as “Make sure it mentions cats,” to guide the initial generation in a desired direction. If you need more general context for all generations, include it in the system prompt.</p>
+
+
+
+<p class="wp-block-paragraph" id="cbb6"><strong>The system prompt:</strong> <em>examples/my_project/prompts/system_message.txt</em></p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-markdown">You are a Shakespeare level poem writer, turning content into beautiful poetry and improving it further and further.</code></pre>
+
+
+
+<p class="wp-block-paragraph" id="e604">The system prompt just sets the general context for your generator model so it knows what your use case is all about. In this example, we are not creating code, we are writing poems.</p>
+
+
+
+<p class="wp-block-paragraph" id="5577"><strong>User prompt for content generation:</strong> <em>examples/my_project/prompts/diff_user.txt</em></p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-markdown"># Current Solution Information
+- Current performance metrics: {metrics}
+- Areas identified for improvement: {improvement_areas}
+
+{artifacts}
+
+# Evolution History
+{evolution_history}
+
+# Current Solution
+```
+{current_program}
+```
+
+# Task
+Suggest improvements to the answer that will lead to better performance on the specified metrics.
+
+You MUST use the exact SEARCH/REPLACE diff format shown below to indicate changes:
+
+&lt;&lt;&lt;&lt;&lt;&lt;&lt; SEARCH
+# Original text to find and replace (must match exactly)
+=======
+# New replacement text
+&gt;&gt;&gt;&gt;&gt;&gt;&gt; REPLACE
+
+Example of valid diff format:
+&lt;&lt;&lt;&lt;&lt;&lt;&lt; SEARCH
+poem stub
+=======
+Tyger Tyger, burning bright, In the forests of the night; What immortal hand or eye
+&gt;&gt;&gt;&gt;&gt;&gt;&gt; REPLACE
+
+You can suggest multiple changes. Each SEARCH section must exactly match text in the current solution. If the solution is a blank placeholder, make sure to respond with exactly one diff replacement -- searching for the existing placeholder string, replacing it with your initial solution.</code></pre>
+
+
+
+<p class="wp-block-paragraph">The content generation user prompt is very general. It contains several placeholders, that will be replaced with the content from the solution database, including the evaluation results of the parent program. This prompt illustrates how the evolution process influences the generation of new solutions.</p>
+
+
+
+<p class="wp-block-paragraph"><strong>User prompt for content generation without the diff method:</strong> <em>examples/my_project/prompts/full_rewrite.txt</em></p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-markdown"># Current Solution Information
+- Current metrics: {metrics}
+- Areas identified for improvement: {improvement_areas}
+
+{artifacts}
+
+# Evolution History
+{evolution_history}
+
+# Current Solution
+```
+{current_program}
+```
+
+# Task
+Rewrite the answer to improve its performance on the specified metrics.
+Provide the complete new answer. Do not add reasoning, changelog or comments after the answer!
+
+# Your rewritten answer here</code></pre>
+
+
+
+<p class="wp-block-paragraph"><strong>Prompt fragment for the evolution history:<em> </em></strong><em>examples/my_project/prompts/</em>evolution_history.txt</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-markdown">## Previous Attempts
+
+{previous_attempts}
+
+## Top Performing Solution
+
+{top_programs}</code></pre>
+
+
+
+<p class="wp-block-paragraph"><strong>Prompt fragment for the top programs:<em> </em></strong><em>examples/my_project/prompts/</em>top_programs.txt</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-markdown">### Solution {program_number} (Score: {score})
+```
+{program_snippet}
+```
+Key features: {key_features}</code></pre>
+
+
+
+<p class="wp-block-paragraph"><strong>System prompt for the evaluator:</strong> <em>examples/my_project/prompts/evaluator_system_message.txt</em></p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-markdown">You are a Shakespeare level poem writer and are being asked to review someone else's work.</code></pre>
+
+
+
+<p class="wp-block-paragraph">This system prompt for the evaluator models is essentially the same as the system prompt for the generator LLM.</p>
+
+
+
+<p class="wp-block-paragraph"><strong>User prompt for the evaluator: </strong><em>examples/my_project/prompts/evaluation.txt</em></p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-markdown">Evaluate the following poem:
+1. Beauty: Is it beautiful?
+2. Inspiring: Is its message inspired and meaningful?
+3. Emotion: Does the poem trigger an emotional response?
+4. Creativity: Is it creative?
+5. Syntax: Is its syntax good? Is it only a poem or does it also contain non-poem content (if yes, rate as 0)? Are its lines overly long (if yes, rate low)?
+6. Overall score: Give an overall rating. If Poem, Syntax or Length evaluation was not okay, give a bad overall feedback.
+
+For each metric, provide a score between 0.0 and 1.0, where 1.0 is best.
+
+Answer to evaluate:
+```
+{current_program}
+```
+
+Return your evaluation as a JSON object with the following format:
+{{
+    "beauty": score1,
+    "inspiring": score2,
+    "emotion": score3,
+    "creativity": score4,
+    "syntax": score5,
+    "overall_score": score6,
+    "improvement_suggestion": "..",
+}}
+Even for invalid input, return nothing but the JSON object.</code></pre>
+
+
+
+<p class="wp-block-paragraph" id="da30">This is where the magic happens. In this prompt, you must think of metrics that represent what you are optimizing. What determines whether the content is good or bad? Correctness? Humor? Writing skill? Decide what is important to you, and encode it wisely. This may take some experimentation before you see the evolution converge the way you intended. Play around as you observe the evolution of your content (more on that below).</p>
+
+
+
+<p class="wp-block-paragraph" id="af0e">Be careful — every metric is rated equally. They are multiplied by the <em>llm_feedback_weight</em> factor in your <em>config.yaml.</em> It is also a good idea to keep an <em>overall_score</em> metric that provides a summary of the big picture evaluation. You can then sort the generated solutions by it.</p>
+
+
+
+<p class="wp-block-paragraph" id="44d3">The<em> improvement_suggestion</em> is a textual recommendation from the evaluator LLM. It will be stored along with the metrics in the database and provided to the generator LLM when this solution is used as a parent, as part of the <em>{artifacts} </em>placeholder you saw above. (Note: As of this writing, textual LLM feedback is still a pull request <a href="https://github.com/codelion/openevolve/pull/68" rel="noreferrer noopener" target="_blank">under review</a> in the OpenEvolve codebase, be sure to use a version that supports it.)</p>
+
+
+
+<h2 class="wp-block-heading" id="b589">The evaluator program</h2>
+
+
+
+<p class="wp-block-paragraph" id="0b9d">OpenEvolve was designed for code generation with algorithmic evaluators. Although it is difficult to write an algorithm that judges the beauty of a poem, we <em>can</em> design a useful algorithmic evaluation function also for our content generation use case. For instance, we can define a metric that targets a particular number of lines or words.</p>
+
+
+
+<p class="wp-block-paragraph" id="543e">Create a file <em>examples/my_project/evaluation.txt:</em></p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">from openevolve.evaluation_result import EvaluationResult
+
+
+def linear_feedback(actual, target):
+    deviation = abs(actual - target) / target
+    return 1 - min(1.0, deviation)
+
+
+def evaluate_stage1(file_path):
+    # Read in file_path
+    with open(file_path, 'r') as file:
+        content = file.read()
+
+    # Count lines and words
+    lines = content.splitlines()
+    num_lines = len(lines)
+    num_words = sum(len(line.split()) for line in lines)
+
+    # Target length
+    line_target = 5
+    word_target = line_target*7
+
+    # Linear feedback between 0 (worst) and 1 (best)
+    line_rating = linear_feedback(num_lines, line_target)
+    word_rating = linear_feedback(num_words, word_target)
+    combined_rating = (line_rating + word_rating) / 2
+
+    # Create textual feedback
+    length_comment_parts = []
+
+    # Line count feedback
+    line_ratio = num_lines / line_target
+    if line_ratio &gt; 1.2:
+        length_comment_parts.append("Reduce the number of lines.")
+    elif line_ratio &lt; 0.8:
+        length_comment_parts.append("Increase the number of lines.")
+    else:
+        length_comment_parts.append("Line count is just right.")
+
+    # Words per line feedback
+    words_per_line = num_words / num_lines if num_lines else 0
+    target_words_per_line = word_target / line_target
+    words_per_line_ratio = words_per_line / target_words_per_line
+
+    if words_per_line_ratio &gt; 1.2:
+        length_comment_parts.append("Reduce the number of words per line.")
+    elif words_per_line_ratio &lt; 0.8:
+        length_comment_parts.append("Increase the number of words per line.")
+
+    length_comment = " ".join(length_comment_parts)
+
+    return EvaluationResult(
+        metrics={
+            "length_good": combined_rating,
+        },
+        artifacts={
+            "length_recommendation": length_comment,
+        },
+    )
+
+
+def evaluate(file_path):
+    return evaluate_stage1(file_path)</code></pre>
+
+
+
+<p class="wp-block-paragraph">This code has two aspects:<br/>First, it creates a metric value that allows us to quantify the quality of the response length. If the response is too short <em>or</em> too long, the score is lower. If the response is just right, the score reaches 1.<br/>Second, this code prepares <em>textual feedback</em> that the LLM can intuitively understand, so it knows what to change without getting lured into a predetermined idea of what to do when the length is not good. For example, it won’t mistakenly think: “I need to write more.. and more..”.</p>
+
+
+
+<h2 class="wp-block-heading">Data review: Evolution at play</h2>
+
+
+
+<p class="wp-block-paragraph">Run the evolution process:</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-bash">source .venv/bin/activate
+export OPENAI_API_KEY="sk-.."
+python3 openevolve-run.py \
+    examples/my_project/initial_program.py \
+    examples/my_project/evaluator.py \
+    --config examples/my_project/config.yaml \
+    --iterations 9</code></pre>
+
+
+
+<p class="wp-block-paragraph">It is best to begin with only a few iterations and analyze the results closely to ensure everything is functioning properly. To do so, start the visualization web server and observe in real time:</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-bash">python3 scripts/visualizer.py</code></pre>
+
+
+
+<p class="wp-block-paragraph">Or, if you have a specific past checkpoint that you wish to analyze, open it with:</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-bash">python3 scripts/visualizer.py --path examples/content_writing/openevolve_output/checkpoints/checkpoint_2</code></pre>
+
+
+
+<p class="wp-block-paragraph">When rerunning your tests after making improvements, be sure to move the current checkpoint folders out of the way before starting over:</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-bash">mkdir -p examples/my_project/archive
+mv examples/my_project/openevolve_output/ examples/my_project/archive/</code></pre>
+
+
+
+<figure class="wp-block-image"><img decoding="async" src="../Images/27601f5da01b029d0ce4cc013004e774.png" alt="" class="wp-image-606388" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/06/1nxcCedKN0-gtQvKYS-OZMg.png"/><figcaption class="wp-element-caption">If everything is configured properly, you should see an evolution of improving results (Image by author)</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">In the visualization front end, click the nodes to see the associated current solution text, as well as all of their metrics, prompts and LLM responses. You can also easily click through children in the sidebar. Use the yellow locator button if you get lost in the graph and can’t see a node. By observing the prompts, you can trace how the evaluation response from a parent affects the generation user prompt of the child. (Note: As of this writing, prompt &amp; response logging is still a pull request <a href="https://github.com/codelion/openevolve/pull/73" target="_blank" rel="noreferrer noopener">under review</a> in the OpenEvolve codebase, be sure to use a version that supports it.)</p>
+
+
+
+<p class="wp-block-paragraph">If you are interested in comparing all solutions by a specific metric, select it from the top bar:</p>
+
+
+
+<figure class="wp-block-image"><img decoding="async" src="../Images/74e7eb14cc9f2aab826c418a793ab9c9.png" alt="" class="wp-image-606389" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/06/11yVMH_bnUa0RF2-Q46je4g.png"/><figcaption class="wp-element-caption">The metrics select box shows all the metrics produced by your evaluation.py logic and evaluation.txt prompt. With it, you can change the metric used to determine the radii of the nodes in the graph. (Image by author)</figcaption></figure>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">The node colors represent the islands, in which evolution takes place largely separately (if you run it long enough!) and in different directions. Occasionally, depending on the migration parameters in the configuration, individuals from one island can be copied over into another.</li>
+
+
+
+<li class="wp-block-list-item">The size of each node indicates its performance on the currently selected metric.</li>
+
+
+
+<li class="wp-block-list-item">The edges in the visualization show which parent was modified to produce the child. This clearly has the strongest influence on the descendant.</li>
+</ul>
+
+
+
+<p class="wp-block-paragraph">In fact, the AlphaEvolve algorithm incorporates learnings from several previous programs in its prompting (configurable top-<em>n</em> programs). The generation prompt is augmented with a summary of previous changes and their influence on the resulting metrics. This “prompt crossover” is not visualized. Also not visualized are the relations of “clones”: When a solution migrates to another island, it is copied with all of its data, including its ID. The copy shows up as an unlinked element in the graph.</p>
+
+
+
+<p class="wp-block-paragraph">In any case, the best solution will be saved to <em>examples/my_project/openevolve_output/best/best_program.txt:</em></p>
+
+
+
+<blockquote class="wp-block-quote is-layout-flow wp-block-quote-is-layout-flow">
+<p class="wp-block-paragraph">In silken moonlight, where night’s veil is lifted,<br/>A constellation of dreams is gently shifted,<br/>The heart, a canvas, painted with vibrant hues,<br/>A symphony of feelings, in tender Muse.</p>
+</blockquote>
+
+
+
+<h2 class="wp-block-heading">Can I…<br/></h2>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item"><strong>..use my own start prompt?</strong><br/>Yes! Just put the solution you already have in your initial_content.txt.</li>
+
+
+
+<li class="wp-block-list-item"><strong>..not create my own start prompt?</strong><br/>Yes! Just put a placeholder like <em>“No initial poem, invent your own. Make sure it mentions cats.” </em>in your <em>initial_content.txt.</em></li>
+
+
+
+<li class="wp-block-list-item"><strong>..not write any code?</strong><br/>Yes! If you don’t want an algorithmic evaluator, put a stub in your <em>evaluator.py</em> like this: </li>
+</ul>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">def evaluate_stage1(file_path):
+    return {}
+def evaluate(file_path):
+    return evaluate_stage1(file_path)</code></pre>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item"><strong>…use a local or non-OpenAI LLM?</strong><br/>Yes, as long as it is compatible with the OpenAI API! In your <em>config.yaml</em>, change the <em>llm: api_base:</em> to a value like ”http://localhost:11434/v1/” for a default ollama configuration. On the command-line, set your API key before calling the Python program:</li>
+</ul>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-bash">export OPENAI_API_KEY="ollama"</code></pre>
+
+
+
+<h2 class="wp-block-heading">Final thought</h2>
+
+
+
+<p class="wp-block-paragraph">This article described an experiment with the use of LLM feedback in the context of evolutionary algorithms. I wanted to enable and explore this use case, because the AlphaEvolve paper itself hinted at it — and mentioned that they hadn’t optimized for that yet. This is only the beginning. The right use cases where this comparatively high effort for content generation is worth it and more experiments still need to follow. Hopefully, all of this will become easier to use in the future.</p>
+
+
+
+<p class="wp-block-paragraph">Real-life results: In practice I find that improvements across all metrics are observable up to a certain point. However, it is difficult to obtain good numeric metrics from an LLM because their ratings are not fine-grained and therefore quickly plateau. Better prompts, especially for the evaluator, could possibly improve upon this. Either way, the combination of algorithmic and LLM evaluation with a powerful evolutionary algorithm and many configuration options makes the overall approach very effective.</p>
+
+
+
+<p class="wp-block-paragraph">To generate more exciting LLM metrics that justify the long-running evolution, multi-stage LLM evaluator pipelines could be incorporated. These pipelines could summarize content and ensure the presence of certain facts, among other things. By calling these pipelines from the<em> evaluator.py</em> file, this is possible right now within OpenEvolve.</p>
+
+
+
+<p class="wp-block-paragraph">With knowledge bases and tools, the capabilities of such evolutionary systems that incorporate LLM feedback can be extended further. An exciting addition for OpenEvolve could be the support for MCP servers in the future, but again, in the <em>evaluator.py</em> file you could already make use of these to generate feedback.</p>
+
+
+
+<p class="wp-block-paragraph">This whole approach could also be applied with multi-modal LLMs or a separate backend LLM, that generates the actual content in a different modality, and is prompted by the evolutionary system. Existing MCP servers could generate images, audio and more. As long as we have an LLM suitable for evaluating the result, we can then refine the prompt to generate new, improved offspring.</p>
+
+
+
+<p class="wp-block-paragraph">In summary, there are many more experiments within this exciting framework waiting to be done. I look forward to your responses and am eager to see the outcome of this. Thanks for reading!</p>
+
+
+
+<h3 class="wp-block-heading">References</h3>
+
+
+
+<ol class="wp-block-list">
+<li class="wp-block-list-item">Asankhaya Sharma, <a href="https://github.com/codelion/openevolve" target="_blank" rel="noreferrer noopener">OpenEvolve: Open-source implementation of AlphaEvolve</a> (2025), Github</li>
+
+
+
+<li class="wp-block-list-item">Novikov et al., <a href="https://deepmind.google/discover/blog/alphaevolve-a-gemini-powered-coding-agent-for-designing-advanced-algorithms/" target="_blank" rel="noreferrer noopener">AlphaEvolve: A Gemini-Powered Coding Agent for Designing Advanced Algorithms</a> (2025), Google DeepMind</li>
+</ol>
+    
+</body>
+</html>

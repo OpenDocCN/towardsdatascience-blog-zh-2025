@@ -1,0 +1,412 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.1//EN"
+  "http://www.w3.org/TR/xhtml11/DTD/xhtml11.dtd">
+
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+<title>Why Regularization Isn’t Enough: A Better Way to Train Neural Networks with Two Objectives</title>
+<link href="../Styles/Style.css" type="text/css" rel="stylesheet"/>
+</head>
+<body>
+<h1>Why Regularization Isn’t Enough: A Better Way to Train Neural Networks with Two Objectives</h1>
+<blockquote>原文：<a href="https://towardsdatascience.com/why-regularization-isnt-enough-a-better-way-to-train-neural-networks-with-two-objectives/">https://towardsdatascience.com/why-regularization-isnt-enough-a-better-way-to-train-neural-networks-with-two-objectives/</a></blockquote>
+<p class="wp-block-paragraph"><mdspan datatext="el1748303089072" class="mdspan-comment">When training</mdspan> neural networks, we often juggle <strong>two competing objectives. </strong>For example, maximizing predictive performance while also meeting a secondary goal like fairness, interpretability, or energy efficiency. The <strong>default approach</strong> is usually to fold the secondary objective into the loss function as a weighted regularization term. This <em>one-size-fits-all loss</em> might be simple to implement, but it isn’t always ideal. In fact, research has shown that <strong>just adding a regularization term can overlook complex interdependencies between objectives and lead to suboptimal trade-offs</strong>.</p>
+
+
+
+<p class="wp-block-paragraph">Enter <strong>bilevel optimization</strong>, a strategy that treats the problem as two linked sub-problems (a leader and a follower) instead of a single blended objective. In this post, we’ll explore why the naive regularization approach can fall short for multi-objective problems, and how a bilevel formulation with dedicated model components for each goal can significantly improve both clarity and convergence in practice. We’ll use examples beyond fairness (like interpretability vs. performance, or domain-specific constraints in bioinformatics and robotics) to illustrate the point. We’ll also dive into some <strong>actual code snippets</strong> from the open-source <em>FairBiNN</em> project, which uses a bilevel strategy for fairness vs. accuracy, and discuss practical considerations from the original paper including its limitations in scalability, continuity assumptions, and challenges with attention-based models.</p>
+
+
+
+<p class="wp-block-paragraph"><strong>TL;DR:</strong> If you’ve been tuning weighting parameters to balance conflicting objectives in your neural network, there’s a more principled alternative. Bilevel optimization gives each objective its own “space” (layers, parameters, even optimizer), yielding cleaner design and often better performance on the primary task all while meeting secondary goals to a Pareto-optimal degree. Let’s see how and why this works.</p>
+
+
+
+<figure class="wp-block-image size-large"><img decoding="async" src="../Images/4798562c3319242985b922020f06072e.png" alt="" class="wp-image-604716" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/05/1TILz_LGMfeew1hGDZ-hsuQ-1024x427.webp"/><figcaption class="wp-element-caption">FairBiNN Network Architecture</figcaption></figure>
+
+
+
+<h2 class="wp-block-heading">The Two-Objective Dilemma: Why Weighted Regularization Falls Short</h2>
+
+
+
+<p class="wp-block-paragraph">Multi-objective learning — say you want high accuracy <em>and</em> low bias is usually set up as a single loss:</p>
+
+
+
+<figure class="wp-block-image size-full"><img decoding="async" src="../Images/d06382c16f76c93898b002b2a7ad2d9e.png" alt="" class="wp-image-604717" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/05/1Mtoa49HVbllHBLbl8EXFIA.webp"/></figure>
+
+
+
+<p class="wp-block-paragraph">where L secondary​ is a penalty term (e.g., a fairness or simplicity metric) and λ is a tunable weight. This <strong>Lagrangian approach</strong> treats the problem as one big optimization, blending objectives with a knob to tune. In theory, by adjusting λ you can trace out a Pareto curve of solutions balancing the two goals. In practice, however, this approach has <strong>several pitfalls</strong>:</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item"><strong>Choosing the Trade-off is Tricky:</strong> The outcome is highly sensitive to the weight λ. A slight change in λ can swing the solution from one extreme to the other. There is no intuitive way to pick a “correct” value without extensive trial and error to find a acceptable trade-off. This hyperparameter search is essentially manual exploration of the Pareto frontier.</li>
+
+
+
+<li class="wp-block-list-item"><strong>Conflicting Gradients:</strong> With a combined loss, <em>the same set of model parameters</em> is responsible for both objectives. The gradients from the primary and secondary terms might point in opposite directions. For example, to improve fairness a model might need to adjust weights in a way that hurts accuracy, and vice versa. The optimizer updates become a tug-of-war on the same weights. This can lead to unstable or inefficient training, as the model oscillates trying to satisfy both criteria at once.</li>
+
+
+
+<li class="wp-block-list-item"><strong>Compromised Performance:</strong> Because the network’s weights have to satisfy both objectives simultaneously, the primary task can be <strong>unduly compromised</strong>. You often end up dialing back the model’s capacity to fit the data in order to reduce the penalty. Indeed, we note that a regularization-based approach may <em>“overlook the complex interdependencies”</em> between the two goals. In plain terms, a single weighted loss can gloss over how improving one metric truly impacts the other. It’s a blunt instrument sometimes <strong>improvements in the secondary objective come at an outsized expense of the primary objective</strong>, or vice versa.</li>
+
+
+
+<li class="wp-block-list-item"><strong>Lack of Theoretical Guarantees:</strong> The weighted-sum method will find <em>a</em>solution, but there’s no guarantee it finds a Pareto-optimal one except in special convex cases. If the problem is non-convex (as neural network training usually is), the solution you converge to might be dominated by another solution (i.e. another model could be strictly better in one objective without being worse in the other). In fact, we showed a bilevel formulation can ensure <strong>Pareto-optimal solutions under certain assumptions</strong>, with an upper bound on loss that is <em>no worse (and potentially better) than the Lagrangian approach.</em></li>
+</ul>
+
+
+
+<p class="wp-block-paragraph">In summary, adding a penalty term is often a <strong>blunt and opaque fix</strong>. Yes, it bakes the secondary objective into the training process, but it also entangles the objectives in a single black-box model. You lose clarity on how each objective is being handled, and you might be paying more in primary performance than necessary to satisfy the secondary goal.</p>
+
+
+
+<p class="wp-block-paragraph"><strong>Example Pitfall:</strong> Imagine a health diagnostic model that must be accurate <em>and</em> fair across demographics. A standard approach might add a fairness penalty (say, the difference in false positive rates between groups) to the loss. If this penalty’s weight (λ) is too high, the model might nearly equalize group outcomes but at the cost of tanking overall accuracy. Too low, and you get high accuracy with unacceptable bias. Even with careful tuning, the single-model approach might converge to a point where neither objective is really optimized: perhaps the model sacrifices accuracy more than needed without fully closing the fairness gap. The FairBiNN paper actually proves that the bilevel method achieves an equal or lower loss bound compared to the weighted approach suggesting that the naive combined loss can leave performance on the table.</p>
+
+
+
+<h2 class="wp-block-heading">A Tale of Two Optimizations: How Bilevel Learning Works</h2>
+
+
+
+<p class="wp-block-paragraph"><strong>Bilevel optimization</strong> reframes the problem as a game between two “players” often called the <strong>leader </strong>(upper-level) and <strong>follower</strong> (lower-level). Instead of blending the objectives, we assign each objective to a different level with <strong>dedicated parameters</strong> (e.g., separate sets of weights, or even separate sub-networks). Conceptually, it’s like having two models that interact: one exclusively focuses on the primary task, and the other exclusively focuses on the secondary task, with a defined order of optimization.</p>
+
+
+
+<p class="wp-block-paragraph">In the case of <em>two</em> objectives, the bilevel setup typically works as follows:</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item"><strong>Leader (Upper Level):</strong> Optimizes the primary loss (e.g., accuracy) with respect to its own parameters, <strong>assuming that</strong> the follower will optimally respond for the secondary objective. The leader “leads” the game by setting the conditions (often this just means it knows the follower will do its job as well as possible).</li>
+
+
+
+<li class="wp-block-list-item"><strong>Follower (Lower Level):</strong> Optimizes the secondary loss (e.g., fairness or another constraint) with respect to <em>its</em> own parameters, in response to the leader’s choices. The follower treats the leader’s parameters as fixed (for that iteration) and tries to best satisfy the secondary objective.</li>
+</ul>
+
+
+
+<p class="wp-block-paragraph">This arrangement aligns with a <strong>Stackelberg game</strong>: the leader moves first and the follower reacts. But in practice, we usually solve it by <em>alternating optimization</em>: at each training iteration, we update one set of parameters while holding the other fixed, and then vice versa. Over many iterations, this alternation converges to an equilibrium where neither update can improve its objective much without the other compensating. Ideally a Stackelberg equilibrium that is also Pareto-optimal for the joint problem.<br/><br/><strong>Crucially, each objective now has its own “slot” in the model.</strong> This can yield several practical and theoretical advantages:</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item"><strong>Dedicated Model Capacity:</strong> The primary objective’s parameters are free to focus on predictive performance, without having to also account for fairness/interpretability/etc. Meanwhile, the secondary objective has its own dedicated parameters to address that goal. There’s less internal competition for representational capacity. For example, one can allocate a small subnetwork or a set of layers specifically to encode fairness constraints, while the rest of the network concentrates on accuracy.</li>
+
+
+
+<li class="wp-block-list-item"><strong>Separate Optimizers &amp; Hyperparameters:</strong> Nothing says the two sets of parameters must be trained with the same optimizer or learning rate. In fact, FairBiNN uses <strong>different learning rates for the accuracy vs fairness parameters</strong> (e.g. fairness layers train with a smaller step size). You could even use entirely different optimization algorithms if it makes sense (SGD for one, Adam for the other, etc.). This flexibility lets you tailor the training dynamics to each objective’s needs. We highlight that <em>“the leader and follower can utilize different network architectures, regularizers, optimizers, etc. as best suited for each task”</em>, which is a powerful freedom.</li>
+
+
+
+<li class="wp-block-list-item"><strong>No More Gradient Tug-of-War:</strong> When we update the primary weights, we <em>only</em> use the primary loss gradient. The secondary objective doesn’t directly pull on these weights (at least not in the same update). Conversely, when updating the secondary’s weights, we only look at the secondary loss. This decoupling means each objective can make progress on its own terms, rather than interfering in every gradient step. The result is often more stable training. As the FairBiNN paper puts it, <em>“the leader problem remains a pure minimization of the primary loss, without any regularization terms that may slow or hinder its progress”</em>.</li>
+
+
+
+<li class="wp-block-list-item"><strong>Improved Trade-off (Pareto Optimality):</strong> By explicitly modeling the interaction between the two objectives in a leader-follower structure, bilevel optimization can <strong>find better balanced solutions</strong> than a naive weighted sum. Intuitively, the follower continuously fine-tunes the secondary objective for any given state of the primary objective. The leader, anticipating this, can choose a setting that gives the best primary performance knowing the secondary will be taken care of as much as possible. Under certain mathematical conditions (e.g. smoothness and optimal responses), one can prove this yields Pareto-optimal solutions. In fact, a theoretical result in the FairBiNN work shows that if the bilevel approach converges, it may achieve strictly <strong>better primary-loss performance than the Lagrangian approach</strong> in some cases. In other words, you might get <em>higher accuracy for the same fairness</em> (or better fairness for the same accuracy) compared to the traditional penalty method.</li>
+
+
+
+<li class="wp-block-list-item"><strong>Clarity and Interpretability of Roles:</strong> Architecturally, having separate modules for each objective makes the design more interpretable <strong>to the engineers</strong> (if not necessarily interpretable to end-users like model explainability). You can <strong>point to part of the network and say “this part handles the secondary objective.”</strong> This modularity improves transparency in the model’s design. For example, if you have a set of fairness-specific layers, you can monitor their outputs or weights to understand how the model is adjusting to satisfy fairness. If the trade-off needs adjusting, you might tweak the size or learning rate of that subnetwork rather than guessing a new loss weight. This separation of concerns is analogous to good software engineering practice each component has a single responsibility. As one summary of FairBiNN noted, <em>“the bilevel framework enhances interpretability by clearly separating accuracy and fairness objectives”</em>. Even beyond fairness, this idea applies: a model that balances accuracy and interpretability might have a dedicated module to enforce sparsity or monotonicity (making the model more interpretable), which is easier to reason about than an opaque regularization term.</li>
+</ul>
+
+
+
+<p class="wp-block-paragraph">To make this concrete, let’s look at how the <strong>Fair Bilevel Neural Network (FairBiNN)</strong> implements these ideas for the fairness (secondary) vs. accuracy (primary) problem. FairBiNN is a NeurIPS 2024 project that demonstrated a bilevel training strategy achieves better fairness/accuracy trade-offs than standard methods. It’s a great case study in bilevel optimization applied to neural nets.</p>
+
+
+
+<h2 class="wp-block-heading">Bilevel Architecture in Action: FairBiNN Example</h2>
+
+
+
+<p class="wp-block-paragraph" id="ed66">FairBiNN’s model is designed with <strong>two sets of parameters</strong>: one set θa​ for accuracy-related layers, and another set θf​ for fairness-related layers. These are integrated into a single network architecture, but logically you can think of it as two sub-networks:</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">The <strong>accuracy network</strong> (with weights θa​) produces the main prediction (e.g., probability of the positive class).</li>
+
+
+
+<li class="wp-block-list-item">The <strong>fairness network</strong> (with weights θf​) influences the model in a way that promotes fairness (specifically group fairness like demographic parity).</li>
+</ul>
+
+
+
+<p class="wp-block-paragraph" id="8a2c">How are these combined? FairBiNN inserts the fairness-focused layers at a certain point in the network. For example, in an MLP for tabular data, you might have:</p>
+
+
+
+<blockquote class="wp-block-quote is-layout-flow wp-block-quote-is-layout-flow">
+<p class="wp-block-paragraph" id="4fa4"><strong><em>Input → [Accuracy layers] → [Fairness layers] → [Accuracy layers] → Output</em></strong></p>
+</blockquote>
+
+
+
+<p class="wp-block-paragraph" id="fbf8">The <code>--fairness_position</code> parameter in FairBiNN controls where the fairness layers are inserted in the stack of layers. For instance, <code>--fairness_position 2</code>means after two layers of the accuracy subnetwork, the pipeline passes through the fairness subnetwork, and then returns to the remaining accuracy layers. This forms an <em>“intervention point”</em> where the fairness module can modulate the intermediate representation to reduce bias, before the final prediction is made.</p>
+
+
+
+<p class="wp-block-paragraph" id="9c5e">Let’s see a simplified code sketch (in PyTorch-like pseudocode) inspired by the FairBiNN implementation. This defines a model with separate accuracy and fairness components:</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">import torch
+import torch.nn as nn
+
+class FairBiNNModel(nn.Module):
+    def __init__(self, input_dim, acc_layers, fairness_layers, fairness_position):
+        super(FairBiNNModel, self).__init__()
+        # Accuracy subnetwork (before fairness)
+        acc_before_units = acc_layers[:fairness_position]      # e.g. first 2 layers
+        acc_after_units  = acc_layers[fairness_position:]      # remaining layers (including output layer)
+        
+        # Build accuracy network (before fairness)
+        self.acc_before = nn.Sequential()
+        prev_dim = input_dim
+        for i, units in enumerate(acc_before_units):
+            self.acc_before.add_module(f"acc_layer{i+1}", nn.Linear(prev_dim, units))
+            self.acc_before.add_module(f"acc_act{i+1}", nn.ReLU())
+            prev_dim = units
+        
+        # Build fairness network
+        self.fair_net = nn.Sequential()
+        for j, units in enumerate(fairness_layers):
+            self.fair_net.add_module(f"fair_layer{j+1}", nn.Linear(prev_dim, units))
+            if j &lt; len(fairness_layers) - 1:
+                self.fair_net.add_module(f"fair_act{j+1}", nn.ReLU())
+            prev_dim = units
+        
+        # Build accuracy network (after fairness)
+        self.acc_after = nn.Sequential()
+        for k, units in enumerate(acc_after_units):
+            self.acc_after.add_module(f"acc_layer{fairness_position + k + 1}", nn.Linear(prev_dim, units))
+            # If this is not the final output layer, add an activation
+            if k &lt; len(acc_after_units) - 1:
+                self.acc_after.add_module(f"acc_act{fairness_position + k + 1}", nn.ReLU())
+            prev_dim = units
+        # Note: For binary classification, the final output could be a single logit (no activation here, use BCEWithLogitsLoss).
+    
+    def forward(self, x):
+        x = self.acc_before(x)      # pass through initial accuracy layers
+        x = self.fair_net(x)        # pass through fairness layers (may transform representation)
+        out = self.acc_after(x)     # pass through remaining accuracy layers to get prediction
+        return out</code></pre>
+
+
+
+<p class="wp-block-paragraph" id="c3f9">In this structure, <code>acc_before</code> and <code>acc_after</code> together make up the accuracy-focused part of the network (θa ​parameters), while <code>fair_net</code> contains the fairness-focused parameters (θf). The fairness layers take the intermediate representation and can push it towards a form that yields fair outcomes. For instance, these layers might suppress information correlated with sensitive attributes or otherwise adjust the feature distribution to minimize bias.</p>
+
+
+
+<p class="wp-block-paragraph" id="60c2"><strong>Why insert fairness in the middle?</strong> One reason is that it gives the fairness module a direct handle on the model’s learned representation, rather than just post-processing outputs. By the time data flows through a couple of layers, the network has learned some features; inserting the fairness subnetwork there means it can modify those features to remove biases (as much as possible) before the final prediction is made. The remaining accuracy layers then take this “de-biased” representation and try to predict the label without reintroducing bias.</p>
+
+
+
+<p class="wp-block-paragraph" id="354f">Now, the training loop sets up <strong>two optimizers </strong>one for θa and one for θf and alternates updates as described. Here’s a schematic training loop illustrating the bilevel update scheme:</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">model = FairBiNNModel(input_dim=INPUT_DIM, 
+                      acc_layers=[128, 128, 1],       # example: 2 hidden layers of 128, then output layer
+                      fairness_layers=[128, 128],    # example: 2 hidden fairness layers of 128 units each
+                      fairness_position=2)
+criterion = nn.BCEWithLogitsLoss()        # binary classification loss for accuracy
+# Fairness loss: we'll define demographic parity difference (details below)
+
+# Separate parameter groups
+acc_params = list(model.acc_before.parameters()) + list(model.acc_after.parameters())
+fair_params = list(model.fair_net.parameters())
+optimizer_acc = torch.optim.Adam(acc_params, lr=1e-3)
+optimizer_fair = torch.optim.Adam(fair_params, lr=1e-5)  # note: smaller LR for fairness
+
+for epoch in range(num_epochs):
+    for X_batch, y_batch, sensitive_attr in train_loader:
+        # Forward pass
+        logits = model(X_batch)
+        # Compute primary loss (e.g., accuracy loss)
+        acc_loss = criterion(logits, y_batch)
+        # Compute secondary loss (e.g., fairness loss - demographic parity)
+        y_pred = torch.sigmoid(logits.detach())  # use detached logits for fairness calc
+        # Demographic Parity: difference in positive prediction rates between groups
+        group_mask = (sensitive_attr == 1)
+        pos_rate_priv  = y_pred[group_mask].mean()
+        pos_rate_unpriv = y_pred[~group_mask].mean()
+        fairness_loss = torch.abs(pos_rate_priv - pos_rate_unpriv)  # absolute difference
+        
+        # Update accuracy (leader) parameters, keep fairness frozen
+        optimizer_acc.zero_grad()
+        acc_loss.backward(retain_graph=True)   # retain computation graph for fairness backprop
+        optimizer_acc.step()
+        
+        # Update fairness (follower) parameters, keep accuracy frozen
+        optimizer_fair.zero_grad()
+        # Backprop fairness loss through fairness subnetwork only
+        fairness_loss.backward()
+        optimizer_fair.step()</code></pre>
+
+
+
+<p class="wp-block-paragraph" id="e5c5">A few things to note in this training snippet:</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">We separate <code>acc_params</code> and <code>fair_params</code> and give each to its own <code>optimizer</code>. In the example above, we chose Adam for both, but with different learning rates. This reflects FairBiNN’s strategy (they used 1e-3 vs 1e-5 for classifier vs fairness layers on tabular data). The fairness objective often benefits from a smaller learning rate to ensure stable convergence, since it’s optimizing a subtle statistical property.</li>
+
+
+
+<li class="wp-block-list-item">We compute the <strong>accuracy loss</strong> (<code>acc_loss</code>) as usual (binary cross-entropy in this case). The <strong>fairness loss</strong> here is illustrated as the <em>demographic parity (DP) difference</em> – the absolute difference in positive prediction rates between the privileged and unprivileged groups. In practice, FairBiNN supports multiple fairness metrics (like equalized odds as well) by plugging in different formulas for <code>fairness_loss</code>. The key is that this loss is differentiable with respect to the fairness network’s parameters. We use <code>logits.detach()</code> to ensure the fairness loss gradient doesn’t propagate back into the accuracy weights (only into <code>fair_net</code>), keeping with the idea that during fairness update, accuracy weights are treated as fixed.</li>
+
+
+
+<li class="wp-block-list-item">The order of updates shown is: <strong>update accuracy weights first, then update fairness weights</strong>. This corresponds to treating accuracy as the leader (upper-level) and fairness as the follower. Interestingly, one might think fairness (the constraint) should lead, but FairBiNN’s formulation sets accuracy as the leader. In practice, it means we first take a step to improve classification accuracy (with the current fairness parameters held fixed), then we take a step to improve fairness (with the new accuracy parameters held fixed). This alternating procedure repeats. Each iteration, the fairness player is reacting to the latest state of the accuracy player. In theory, if we could solve the follower’s optimization <em>exactly</em>for each leader update (e.g., find the perfect fairness parameters given current accuracy params), we’d be closer to a true bilevel solution. In practice, doing one gradient step at a time in alternation is an effective heuristic that gradually brings the system to equilibrium. (FairBiNN’s authors note that under certain conditions, unrolling the follower optimization and computing an exact hypergradient for the leader can provide guarantees, but in implementation they use the simpler alternating updates.)</li>
+
+
+
+<li class="wp-block-list-item">We call <code>backward(retain_graph=True)</code> on the accuracy loss because we need to later backpropagate the fairness loss through (part of) the same graph. The fairness loss depends on the model’s predictions as well, which depend on both θaθa​ and θfθf​. By retaining the graph, we avoid recomputing the forward pass for the fairness backward pass. (Alternatively, one could recompute logits after the accuracy step – the end result is similar. FairBiNN’s code likely uses one forward per batch and two backward passes, as shown above.)</li>
+</ul>
+
+
+
+<p class="wp-block-paragraph" id="a7a0">During training, you would see two gradients flowing: one into the accuracy layers (from <code>acc_loss</code>), and one into the fairness layers (from <code>fairness_loss</code>). They are kept separate. Over time, this should lead to a model where θa​ has learned to predict well <em>given that</em> θf​ will continually nudge the representation towards fairness, and θf has learned to mitigate bias <em>given</em> how θa​ likes to behave. Neither is having to directly compromise its objective; instead, they arrive at a balanced solution through this interplay.</p>
+
+
+
+<p class="wp-block-paragraph" id="20b2"><strong>Clarity in practice:</strong> One immediate benefit of this setup is that it’s much clearer to <strong>diagnose and adjust</strong> the behavior of each objective. If after training you find the model isn’t fair enough, you can examine the fairness network: perhaps it’s underpowered (maybe too few layers or too low learning rate) you could boost its capacity or training aggressiveness. Conversely, if accuracy dropped too much, you might realize the fairness objective was overweighted (in bilevel terms, maybe you gave it too many layers or a too-large learning rate). These are high-level dials distinct from the primary network. In a single network + reg term approach, all you had was the λ weight to tweak, and it wasn’t obvious <em>why</em> a certain λ failed (was the model unable to represent a fair solution, or did the optimizer get stuck, or was it just the wrong trade-off?). In the bilevel approach, the division of labor is explicit. This makes it <strong>more practical to adopt</strong> in real engineering pipelines you can assign teams to handle the “fairness module” or “safety module” separately from the “performance module,” and they can reason about their component in isolation to some extent.</p>
+
+
+
+<p class="wp-block-paragraph" id="0e08">To give a sense of results: FairBiNN, with this architecture, was able to achieve <strong>Pareto-optimal fairness-accuracy trade-offs</strong> that dominated those from standard single-loss training in their experiments. In fact, under assumptions of smoothness and optimal follower response, they prove any solution from their method will not incur higher loss than the corresponding Lagrangian solution (and often incurs less on the primary loss). Empirically, on datasets like UCI Adult (income prediction) and Heritage Health, the bilevel-trained model had <strong>higher accuracy at the same fairness level</strong>compared to models trained with a fairness regularization term. It essentially <strong>bridged the accuracy-fairness gap</strong> more effectively. And notably, this approach did not come with a heavy performance penalty in training time the authors reported <em>“no tangible difference in the average epoch time between the FairBiNN (bilevel) and Lagrangian methods”</em> when running on the same data. In other words, splitting into two optimizers and networks doesn’t double your training time; thanks to modern librarie training per epoch was about as fast as the single-objective case.</p>
+
+
+
+<h2 class="wp-block-heading" id="1cf4">Beyond Fairness: Other Use Cases for Two-Objective Optimization</h2>
+
+
+
+<p class="wp-block-paragraph" id="3d33">While FairBiNN showcases bilevel optimization in the context of fairness vs. accuracy, the <strong>principle is broadly applicable</strong>. Whenever you have two objectives that partially conflict, especially if one is a domain-specific constraint or an auxiliary goal, a bilevel design can be beneficial. Here are a few examples across different domains:</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item"><strong>Interpretability vs. Performance:</strong> In many settings, we seek models that are highly accurate but also <strong>interpretable</strong> (for example, a medical diagnostic tool that doctors can trust and understand). Interpretability often means constraints like sparsity (using fewer features), monotonicity (respecting known directional relationships), or simplicity of the model’s structure. Instead of baking these into one loss (which might be a complex concoction of L1 penalties, monotonicity regularizers, etc.), we could split the model into two parts. <br/><br/><em>Example:</em> The leader network focuses on accuracy, while a follower network could manage a mask or gating mechanism on input features to enforce sparsity. One implementation could be a small subnetwork that outputs feature weights (or selects features) aiming to maximize an interpretability score (like high sparsity or adherence to known rules), while the main network takes the pruned features to predict the outcome. During training, the main predictor is optimized for accuracy given the current feature selection, and then the feature-selection network is optimized to improve interpretability (e.g., increase sparsity or drop insignificant features) given the predictor’s behavior. This mirrors how one might do feature selection via bilevel optimization (where feature mask indicators are learned as continuous parameters in a lower-level problem). The advantage is the predictor isn’t directly penalized for complexity; It just has to work with whatever features the interpretable part allows. Meanwhile, the interpretability module finds the simplest feature subset that the predictor can still do well on. Over time, they converge to a balance of accuracy vs simplicity. This approach was hinted at in some meta-learning literature (treating feature selection as an inner optimization). Practically, it means we get a model that is easier to explain (because the follower pruned it) without a huge hit to accuracy, because the follower only prunes as much as the leader can tolerate. If we had done a single L1-regularized loss, we’d have to tune the weight of L1 and might either kill accuracy or not get enough sparsity! With bilevel, the sparsity level adjusts dynamically to maintain accuracy.</li>
+
+
+
+<li class="wp-block-list-item"><strong>Robotics: Energy or Safety vs. Task Performance:</strong> Consider a robot that needs to perform a task <em>quickly </em>(performance objective) but also <em>safely and efficiently</em> (secondary objective, e.g., minimize energy usage or avoid risky maneuvers). These objectives often conflict: the fastest trajectory might be aggressive on motors and less safe. A bilevel approach could involve a <strong>primary controller network</strong> that tries to minimize time or tracking error (leader), and a <strong>secondary controller or modifier</strong> that adjusts the robot’s actions to conserve energy or stay within safety limits (follower). For instance, the follower could be a network that adds a small corrective bias to the action outputs or that adjusts the control gains, with the goal of minimizing a measured energy consumption or jerkiness. During training (which could be in simulation), you’d alternate: train the main controller on the task performance given the current safety/energy corrections, then train the safety/energy module to minimize those costs given the controller’s behavior. Over time, the controller learns to accomplish the task in a way that the safety module can easily tweak to stay safe, and the safety module learns the minimal intervention needed to meet constraints. The outcome might be a trajectory that is a bit slower than the unconstrained optimum but uses far less energy and you achieved that without having to fiddle with a single weighted reward that mixes time and energy (a common pain point in reinforcement learning reward design). Instead, each part had a clear goal. In fact, this idea is akin to “shielding” in reinforcement learning, where a secondary policy ensures safety constraints, but bilevel training would <em>learn</em> the shield in conjunction with the primary policy.</li>
+
+
+
+<li class="wp-block-list-item"><strong>Bioinformatics: Domain Constraints vs. Prediction Accuracy:</strong> In bioinformatics or computational biology, you might predict outcomes (protein function, gene expression, etc.) but also want the model to respect domain knowledge. For example, you train a neural net to predict disease risk from genetic data (primary objective), while ensuring the model’s behavior aligns with known biological pathways or constraints (secondary objective). A concrete scenario: maybe we want the model’s decisions to depend on groups of genes that make sense together (pathways), not arbitrary combinations, to aid scientific interpretability and trust. We could implement a follower network that penalizes the model if it uses gene groupings that are nonsensical, or that encourages it to utilize certain known biomarker genes. Bilevel training would let the main predictor maximize predictive accuracy, and then a secondary “regulator” network could slightly adjust weights or inputs to enforce the constraints (e.g., suppress signals from gene interactions that shouldn’t matter biologically). Alternating updates would yield a model that predicts well but, say, relies on biologically plausible signals. This is preferable to hard-coding those constraints or adding a stiff penalty that might prevent the model from learning subtle but valid signals that deviate slightly from known biology. Essentially, the model itself finds a compromise between data-driven learning and prior knowledge, through the interplay of two sets of parameters.</li>
+</ul>
+
+
+
+<p class="wp-block-paragraph" id="e0e0">These examples are a bit speculative, but they highlight a pattern: <strong>whenever you have a secondary objective that could be handled by a specialized mechanism, consider giving it its own module and training it in a bilevel fashion. </strong>Instead of baking everything into one monolithic model, you get an architecture with parts corresponding to each concern.</p>
+
+
+
+<h2 class="wp-block-heading" id="7262">Caveats and Considerations in Practice</h2>
+
+
+
+<p class="wp-block-paragraph" id="f3a0">Before you rush to refactor all your loss functions into bilevel optimizations, it’s important to understand the limitations and requirements of this approach. The FairBiNN paper — while very encouraging — is upfront about several <strong>caveats</strong> that apply to bilevel methods:</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item"><strong>Continuity and Differentiability Assumptions:</strong> Bilevel optimization, especially with gradient-based methods, typically assumes the secondary objective is reasonably smooth and differentiable with respect to the model parameters. In FairBiNN’s theory, we assume things like <strong>Lipschitz continuity</strong> of the neural network functions and losses In plain terms, the gradients shouldn’t be exploding or wildly erratic, and the follower’s optimal response should change smoothly as the leader’s parameters change. If your secondary objective is not differentiable (e.g., a hard constraint or a metric like accuracy which is piecewise-constant), you may need to approximate it with a smooth surrogate to use this approach. FairBiNN specifically focused on <em>binary classification with a sigmoid output</em>, avoiding the non-differentiability of the argmax in multi-class classification. In fact, we point out that the commonly used <em>softmax activation is not Lipschitz continuous</em>, which <em>“limits the direct application of our method to multiclass classification problems”</em>. This means if you have many classes, the current theory might not hold and the training could be unstable unless you find a workaround (they suggest exploring alternative activations or normalization to enforce Lipschitz continuity for multi-class settings). So, one caveat: <strong>bilevel works best when both objectives are nice smooth functions of the parameters</strong>. Discontinuous jumps or highly non-convex objectives might still work heuristically, but the theoretical guarantees evaporate.</li>
+
+
+
+<li class="wp-block-list-item"><strong>Attention and Complex Architectures:</strong> Modern deep learning models (like Transformers with attention mechanisms) pose an extra challenge. We call out that <strong>attention layers are not Lipschitz continuous</strong> either, which <em>“presents a challenge for extending our method to state-of-the-art architectures in NLP and other domains that heavily rely on attention.” </em>wereference research attempting to make attention Lipschitz (e.g., LipschitzNorm for self-attention (<a href="https://arxiv.org/html/2410.16432v2#:~:text=extending%20our%20method%20to%20state,performance%20of%20deep%20attention%20models" target="_blank" rel="noreferrer noopener">arxiv.org</a>) ), but as of now, applying bilevel fairness to a Transformer would be non-trivial. The concern is that attention can amplify small changes a lot, breaking the smooth interaction needed for stable leader-follower updates. If your application uses architectures with components like attention or other non-Lipschitz operations, you might need to be cautious. It doesn’t mean bilevel won’t work, but the theory doesn’t directly cover it, and you might have to empirically tune more. We might see future research addressing how to incorporate such components (perhaps by constraining or regularizing them to behave more nicely). <br/><strong>Bottom line:</strong> the current bilevel successes have been in relatively straightforward networks (MLPs, simple CNNs, GCNs). Extra fancy architectures could require additional care.</li>
+
+
+
+<li class="wp-block-list-item"><strong>No Silver Bullet Guarantees:</strong> While the bilevel method can provably achieve Pareto-optimal solutions under the right conditions, that doesn’t automatically mean your model is “perfectly fair” or “fully interpretable” at the end. There’s a difference between <em>balancing objectives optimally</em> and <em>satisfying an objective absolutely</em>. FairBiNN’s theory provides guarantees <em>relative to the best trade-off</em> (and relative to the Lagrangian method) it <strong>does not guarantee absolute fairness</strong> or zero bias. In our case, we still had residual bias, just much less for the accuracy we achieved compared to baselines. So, if your secondary objective is a hard constraint (like “must never violate safety condition X”), a soft bilevel optimization might not be enough! you might need to enforce it in a stricter way or verify the results after training. Also, FairBiNN so far handled <strong>one </strong>fairness metric at a time (demographic parity in most experiments). In real-world scenarios, you might care about multiple constraints (e.g., fairness across multiple attributes, or fairness and interpretability and accuracy a tri-objective problem). Extending bilevel to handle <em>multiple</em> followers or a more complex hierarchy is an open challenge (it could become a multi-level or multi-follower game). One idea could be to collapse multiple metrics into one secondary objective (maybe as a weighted sum or some worst-case metric), but that reintroduces the weighting problem internally. Alternatively, one could have multiple follower networks, each for a different metric, and round-robin through them but theory and practice for that are not fully established.</li>
+
+
+
+<li class="wp-block-list-item"><strong>Hyperparameter Tuning and Initialization:</strong> While we escape tuning λ in a direct sense, the bilevel approach introduces other hyperparameters: the learning rates for each optimizer, the relative capacity of the two subnetworks, maybe the number of steps to train follower vs leader, etc. In FairBiNN’s case, we had to choose the number of fairness layers and where to insert them, as well as the learning rates. These were set based on some intuition and some held-out validation (e.g., we chose a very low LR for fairness to ensure stability). In general, you’ll still need to tune these aspects. However, these tend to be more <strong>interpretable hyperparameters </strong>e.g., “how expressive is my fairness module” is easier to reason about than “what’s the right weight for this ethereal fairness term.” In some sense, the architectural hyperparameters replace the weight tuning. Also, initialization of the two parts could matter; one heuristic could be pre-training the main model for a bit before introducing the secondary objective (or vice versa), to give a good starting point. FairBiNN did not require a separate pre-training; we trained both from scratch simultaneously. But that might not always be the case for other problems.</li>
+</ul>
+
+
+
+<p class="wp-block-paragraph" id="27da">Despite these caveats, it’s worth highlighting that the bilevel approach is <strong>feasible with today’s tools</strong>. The FairBiNN implementation was done in PyTorch with custom training loops something most practitioners are comfortable with and it’s available on GitHub for reference (<a href="https://github.com/yazdanimehdi/FairBiNN" rel="noreferrer noopener" target="_blank">Github</a>). The extra effort (writing a loop with two optimizers) is relatively small considering the potential gains in performance and clarity. If you have a critical application with two competing metrics, the payoff can be significant.</p>
+
+
+
+<h2 class="wp-block-heading" id="3c8b">Conclusion: Designing Models that Understand Trade-offs</h2>
+
+
+
+<p class="wp-block-paragraph" id="9757">Optimizing neural networks with multiple objectives will always involve trade-offs that’s inherent to the problem. But <em>how</em> we handle those trade-offs is under our control. The conventional wisdom of “just throw it into the loss function with a weight” often leaves us wrestling with that weight and wondering if we could have done better. As we’ve discussed, <strong>bilevel optimization offers a more structured and principled way to handle two-objective problems</strong>. By giving each objective its own dedicated parameters, layers, and optimization process, we allow each goal to be pursued to the fullest extent possible without being in perpetual conflict with the other.</p>
+
+
+
+<p class="wp-block-paragraph" id="baca">The example of FairBiNN demonstrates that this approach isn’t just academic fancy it delivered state-of-the-art results in fairness/accuracy trade-offs, <em>proving mathematically</em> that it can match or beat the old regularization approach in terms of the loss achieved. More importantly for practitioners, it did so with a fairly straightforward implementation and reasonable training cost. The model architecture became a conversation between two parts: one ensuring fairness, the other ensuring accuracy. This kind of <strong>architectural transparency</strong> is refreshing in a field where we often just adjust scalar knobs and hope for the best.</p>
+
+
+
+<p class="wp-block-paragraph" id="df1a">For those in ML research and engineering, the take-home message is: <strong>next time you face a competing objective; be it model interpretability, fairness, safety, latency, or domain constraints consider formulating it as a second player in a bilevel setup.</strong> Design a module (however simple or complex) devoted to that concern, and train it in tandem with your main model using an alternating optimization. You might find that you can achieve a better balance and have a clearer understanding of your system. It encourages a more modular design: rather than entangling everything into one opaque model, you delineate which part of the network handles what.</p>
+
+
+
+<p class="wp-block-paragraph" id="bdb6">Practically, adopting bilevel optimization requires careful attention to the assumptions and some tuning of training procedures. It’s not a magic wand if your secondary goal is fundamentally at odds with the primary, there’s a limit to how happy an equilibrium you can reach. But even then, this approach will clarify the nature of the trade-off. In the best case, it finds win-win solutions that the single-objective method missed. In the worst case, you at least have a modular framework to iterate on.</p>
+
+
+
+<p class="wp-block-paragraph" id="f5fe">As machine learning models are increasingly deployed in high-stakes settings, <strong>balancing objectives</strong> (accuracy with fairness, performance with safety, etc.) becomes crucial. The engineering community is realizing that these problems might be better solved with smarter optimization frameworks rather than just heuristics. Bilevel optimization is one such framework that deserves a place in the practical toolbox. It aligns with a systems-level view of ML model design: sometimes, to solve a complex problem, you need to break it into parts and let each part do what it’s best at, under a clear protocol of interaction.</p>
+
+
+
+<p class="wp-block-paragraph" id="7b02">In closing, the next time you find yourself lamenting <em>“if only I could get high accuracy and satisfy X without tanking Y,”</em>remember that you can try giving each desire its own knob. Bilevel training might just offer the <strong>elegant compromise</strong> you need <em>an “optimizer for each objective,” working together in harmony</em>. Instead of fighting a battle of gradients within one weight space, you orchestrate a dialogue between two sets of parameters. And as the FairBiNN results indicate, that dialogue can lead to outcomes where <strong>everybody wins, or at least no one unnecessarily loses</strong>.</p>
+
+
+
+<p class="wp-block-paragraph" id="277c">Happy optimizing, on <em>both</em> your objectives!</p>
+
+
+
+<p class="wp-block-paragraph" id="b19e">If you find this approach valuable and plan to incorporate it into your research or implementation, please consider citing our original FairBiNN paper:</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-">@inproceedings{NEURIPS2024_bef7a072,
+ author = {Yazdani-Jahromi, Mehdi and Yalabadi, Ali Khodabandeh and Rajabi, AmirArsalan and Tayebi, Aida and Garibay, Ivan and Garibay, Ozlem Ozmen},
+ booktitle = {Advances in Neural Information Processing Systems},
+ editor = {A. Globerson and L. Mackey and D. Belgrave and A. Fan and U. Paquet and J. Tomczak and C. Zhang},
+ pages = {105780--105818},
+ publisher = {Curran Associates, Inc.},
+ title = {Fair Bilevel Neural Network (FairBiNN): On Balancing fairness and accuracy via Stackelberg Equilibrium},
+ url = {https://proceedings.neurips.cc/paper_files/paper/2024/file/bef7a072148e646fcb62641cc351e599-Paper-Conference.pdf},
+ volume = {37},
+ year = {2024}
+}</code></pre>
+
+
+
+<p class="wp-block-paragraph" id="de8f"><strong>References:</strong></p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">Mehdi Yazdani-Jahromi et al., <em>“Fair Bilevel Neural Network (FairBiNN): On Balancing Fairness and Accuracy via Stackelberg Equilibrium,”</em> NeurIPS 2024.<a href="https://arxiv.org/html/2410.16432v2#:~:text=Attention%20mechanisms%2C%20which%20are%20widely,that%20enforcing%20Lipschitz%20continuity%20generally" target="_blank" rel="noreferrer noopener">arxiv.org</a></li>
+
+
+
+<li class="wp-block-list-item">FairBiNN Open-Source Implementation (GitHub)<a href="https://github.com/yazdanimehdi/FairBiNN#:~:text=%2A%20%60,default%3A%20200" target="_blank" rel="noreferrer noopener">github.co</a>m: code examples and documentation for the bilevel fairness approach.</li>
+
+
+
+<li class="wp-block-list-item">Moonlight AI Research Review on FairBiNN — summarizes the methodology and key insights <a href="https://www.themoonlight.io/en/review/fair-bilevel-neural-network-fairbinn-on-balancing-fairness-and-accuracy-via-stackelberg-equilibrium#:~:text=1,fairness%20parameters%2C%20and%20vice%20versa" target="_blank" rel="noreferrer noopener">themoonlight.io</a>, including the alternating optimization procedure and assumptions (like Lipschitz continuity).</li>
+</ul>
+    
+</body>
+</html>

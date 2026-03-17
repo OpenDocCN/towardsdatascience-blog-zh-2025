@@ -1,0 +1,1163 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.1//EN"
+  "http://www.w3.org/TR/xhtml11/DTD/xhtml11.dtd">
+
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+<title>Building a Сustom MCP Chatbot</title>
+<link href="../Styles/Style.css" type="text/css" rel="stylesheet"/>
+</head>
+<body>
+<h1>Building a Сustom MCP Chatbot</h1>
+<blockquote>原文：<a href="https://towardsdatascience.com/building-a-%d1%81ustom-mcp-chatbot/">https://towardsdatascience.com/building-a-%d1%81ustom-mcp-chatbot/</a></blockquote>
+<p class="wp-block-paragraph"><mdspan datatext="el1752176987570" class="mdspan-comment"><strong>MCP (Model Context Protocol)</strong> is </mdspan>a method to standardise communication between AI applications and external tools or data sources. This standardisation helps to reduce the number of integrations needed (<em>from N*M to N+M</em>): </p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">You can use community-built MCP servers when you need common functionality, saving time and avoiding the need to reinvent the wheel every time.</li>
+
+
+
+<li class="wp-block-list-item">You can also expose your own tools and resources, making them available for others to use.</li>
+</ul>
+
+
+
+<p class="wp-block-paragraph">In <a href="https://towardsdatascience.com/your-personal-analytics-toolbox/">my previous article</a>, we built the analytics toolbox (a collection of tools that might automate your day-to-day routine). We built an MCP server and used its capabilities with existing clients like MCP Inspector or Claude Desktop. </p>
+
+
+
+<p class="wp-block-paragraph">Now, we want to use those tools directly in our AI applications. To do that, let’s build our own MCP client. We will write fairly low-level code, which will also give you a clearer picture of how tools like Claude Code interact with MCP under the hood.</p>
+
+
+
+<p class="wp-block-paragraph">Additionally, I would like to implement the feature that is currently (<em>July 2025</em>) missing from Claude Desktop: the ability for the LLM to automatically check whether it has a suitable prompt template for the task at hand and use it. Right now, you have to pick the template manually, which isn’t very convenient. </p>
+
+
+
+<p class="wp-block-paragraph">As a bonus, I will also share a high-level implementation using the smolagents framework, which is ideal for scenarios when you work only with MCP tools and don’t need much customisation.</p>
+
+
+
+<h3 class="wp-block-heading">MCP protocol overview</h3>
+
+
+
+<p class="wp-block-paragraph">Here’s a quick recap of the MCP to ensure we’re on the same page. MCP is a protocol developed by Anthropic to standardise the way LLMs interact with the outside world. </p>
+
+
+
+<p class="wp-block-paragraph">It follows a client-server architecture and consists of three main components: </p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item"><strong>Host</strong> is the user-facing application. </li>
+
+
+
+<li class="wp-block-list-item"><strong>MCP client</strong> is a component within the host that establishes a one-to-one connection with the server and communicates using messages defined by the MCP protocol.</li>
+
+
+
+<li class="wp-block-list-item"><strong>MCP server</strong> exposes capabilities such as prompt templates, resources and tools. </li>
+</ul>
+
+
+
+<figure class="wp-block-image"><img data-dominant-color="b9b478" data-has-transparency="false" style="--dominant-color: #b9b478;" decoding="async" src="../Images/a67aa82a555288a4ebe98309b6f602a9.png" alt="" class="wp-image-608363 not-transparent" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/07/1emfHVLZDPjEbOpXV7azkNA-1.png"/><figcaption class="wp-element-caption">Image by author</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">Since we’ve already <a href="https://github.com/miptgirl/mcp-analyst-toolkit" rel="noreferrer noopener" target="_blank">implemented the MCP server</a> before, this time we will focus on building the MCP client. We will start with a relatively simple implementation and later add the ability to dynamically select prompt templates on the fly.</p>
+
+
+
+<blockquote class="wp-block-quote is-layout-flow wp-block-quote-is-layout-flow">
+<p class="wp-block-paragraph"><em>You can find the full code on <a href="https://github.com/miptgirl/miptgirl_medium/tree/main/mcp_client_example" target="_blank" rel="noreferrer noopener">GitHub</a>.</em></p>
+</blockquote>
+
+
+
+<h2 class="wp-block-heading">Building the MCP chatbot</h2>
+
+
+
+<p class="wp-block-paragraph">Let’s begin with the initial setup: we’ll load the Anthropic API key from a config file and adjust Python’s <code>asyncio</code> event loop to support nested event loops.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python"># Load configuration and environment
+with open('../../config.json') as f:
+    config = json.load(f)
+os.environ["ANTHROPIC_API_KEY"] = config['ANTHROPIC_API_KEY']
+
+nest_asyncio.apply()</code></pre>
+
+
+
+<p class="wp-block-paragraph">Let’s start by building a skeleton of our program to get a clear picture of the application’s high-level architecture.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">async def main():
+    """Main entry point for the MCP ChatBot application."""
+    chatbot = MCP_ChatBot()
+    try:
+        await chatbot.connect_to_servers()
+        await chatbot.chat_loop()
+    finally:
+        await chatbot.cleanup()
+
+if __name__ == "__main__":
+    asyncio.run(main())</code></pre>
+
+
+
+<p class="wp-block-paragraph">We start by creating an instance of the <code>MCP_ChatBot</code> class. The chatbot starts by discovering available MCP capabilities (iterating through all configured MCP servers, establishing connections and requesting their lists of capabilities). </p>
+
+
+
+<p class="wp-block-paragraph">Once connections are set up, we will initialise an infinite loop where the chatbot listens to the user queries, calls tools when needed and continues this cycle until the process is stopped manually. </p>
+
+
+
+<p class="wp-block-paragraph">Finally, we will perform a cleanup step to close all open connections.</p>
+
+
+
+<p class="wp-block-paragraph">Let’s now walk through each stage in more detail.</p>
+
+
+
+<h3 class="wp-block-heading">Initialising the ChatBot class</h3>
+
+
+
+<p class="wp-block-paragraph">Let’s start by creating the class and defining the <code>__init__</code> method. The main fields of the ChatBot class are: </p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item"><code>exit_stack</code> manages the lifecycle of multiple async threads (connections to MCP servers), ensuring that all connections will be closed appropriately, even if we face an error during execution. This logic is implemented in the <code>cleanup</code> function.</li>
+
+
+
+<li class="wp-block-list-item"><code>anthropic</code> is a client for Anthropic API used to send messages to LLM.</li>
+
+
+
+<li class="wp-block-list-item"><code>available_tools</code> and <code>available_prompts</code> are the lists of tools and prompts exposed by all MCP servers we are connected to. </li>
+
+
+
+<li class="wp-block-list-item"><code>sessions</code> is a mapping of tools, prompts and resources to their respective MCP sessions. This allows the chatbot to route requests to the correct MCP server when the LLM selects a specific tool.</li>
+</ul>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">class MCP_ChatBot:
+  """
+  MCP (Model Context Protocol) ChatBot that connects to multiple MCP servers
+  and provides a conversational interface using Anthropic's Claude.
+    
+  Supports tools, prompts, and resources from connected MCP servers.
+  """
+    
+  def __init__(self):
+    self.exit_stack = AsyncExitStack() 
+    self.anthropic = Anthropic() # Client for Anthropic API
+    self.available_tools = [] # Tools from all connected servers
+    self.available_prompts = [] # Prompts from all connected servers  
+    self.sessions = {} # Maps tool/prompt/resource names to MCP sessions
+
+  async def cleanup(self):
+    """Clean up resources and close all connections."""
+    await self.exit_stack.aclose()</code></pre>
+
+
+
+<h3 class="wp-block-heading">Connecting to servers</h3>
+
+
+
+<p class="wp-block-paragraph">The first task for our chatbot is to initiate connections with all configured MCP servers and discover what capabilities we can use. </p>
+
+
+
+<p class="wp-block-paragraph">The list of MCP servers that our agent can connect to is defined in the <code>server_config.json</code> file. I’ve set up connections with three MCP servers:</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item"><a href="https://github.com/miptgirl/mcp-analyst-toolkit" target="_blank" rel="noreferrer noopener">analyst_toolkit</a> is my implementation of the everyday analytical tools we discussed in the previous article, </li>
+
+
+
+<li class="wp-block-list-item"><a href="https://github.com/modelcontextprotocol/servers/tree/main/src/filesystem" target="_blank" rel="noreferrer noopener">Filesystem</a> allows the agent to work with files,</li>
+
+
+
+<li class="wp-block-list-item"><a href="https://github.com/modelcontextprotocol/servers/tree/main/src/fetch" target="_blank" rel="noreferrer noopener">Fetch</a> helps LLMs retrieve the content of webpages and convert it from HTML to markdown for better readability.</li>
+</ul>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-json">{
+  "mcpServers": {
+    "analyst_toolkit": {
+      "command": "uv",
+      "args": [
+        "--directory",
+        "/path/to/github/mcp-analyst-toolkit/src/mcp_server",
+        "run",
+        "server.py"
+      ],
+      "env": {
+          "GITHUB_TOKEN": "your_github_token"
+      }
+    },
+    "filesystem": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-filesystem",
+        "/Users/marie/Desktop",
+        "/Users/marie/Documents/github"
+      ]
+    },
+    "fetch": {
+        "command": "uvx",
+        "args": ["mcp-server-fetch"]
+      }
+  }
+}</code></pre>
+
+
+
+<p class="wp-block-paragraph">First, we will read the config file, parse it and then connect to each listed server.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">async def connect_to_servers(self):
+  """Load server configuration and connect to all configured MCP servers."""
+  try:
+    with open("server_config.json", "r") as file:
+      data = json.load(file)
+    
+    servers = data.get("mcpServers", {})
+    for server_name, server_config in servers.items():
+      await self.connect_to_server(server_name, server_config)
+  except Exception as e:
+    print(f"Error loading server config: {e}")
+    traceback.print_exc()
+    raise</code></pre>
+
+
+
+<p class="wp-block-paragraph">For each server, we perform several steps to establish the connection:</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item"><strong>At the transport level, </strong>we<strong> </strong>launch the MCP server as a stdio process and get streams for sending and receiving messages. </li>
+
+
+
+<li class="wp-block-list-item"><strong>At the session level</strong>, we create a <code>ClientSession</code> incorporating the streams, and then we perform the MCP handshake by calling <code>initialize</code> method.</li>
+
+
+
+<li class="wp-block-list-item">We registered both the session and transport objects in the context manager <code>exit_stack</code> to ensure that all connections will be closed properly in the end. </li>
+
+
+
+<li class="wp-block-list-item">The last step is to <strong>register server capabilities</strong>. We wrapped this functionality into a separate function, and we will discuss it shortly.</li>
+</ul>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">async def connect_to_server(self, server_name, server_config):
+    """Connect to a single MCP server and register its capabilities."""
+    try:
+      server_params = StdioServerParameters(**server_config)
+      stdio_transport = await self.exit_stack.enter_async_context(
+          stdio_client(server_params)
+      )
+      read, write = stdio_transport
+      session = await self.exit_stack.enter_async_context(
+          ClientSession(read, write)
+      )
+      await session.initialize()
+      await self._register_server_capabilities(session, server_name)
+            
+    except Exception as e:
+      print(f"Error connecting to {server_name}: {e}")
+      traceback.print_exc()</code></pre>
+
+
+
+<p class="wp-block-paragraph">Registering capabilities involves iterating over all the tools, prompts and resources retrieved from the session. As a result, we update the internal variables <code>sessions</code> (<em>mapping between resources and a particular session between the MCP client and server</em>), <code>available_prompts</code> and <code>available_tools</code>.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">async def _register_server_capabilities(self, session, server_name):
+  """Register tools, prompts and resources from a single server."""
+  capabilities = [
+    ("tools", session.list_tools, self._register_tools),
+    ("prompts", session.list_prompts, self._register_prompts), 
+    ("resources", session.list_resources, self._register_resources)
+  ]
+  
+  for capability_name, list_method, register_method in capabilities:
+    try:
+      response = await list_method()
+      await register_method(response, session)
+    except Exception as e:
+      print(f"Server {server_name} doesn't support {capability_name}: {e}")
+
+async def _register_tools(self, response, session):
+  """Register tools from server response."""
+  for tool in response.tools:
+    self.sessions[tool.name] = session
+    self.available_tools.append({
+        "name": tool.name,
+        "description": tool.description,
+        "input_schema": tool.inputSchema
+    })
+
+async def _register_prompts(self, response, session):
+  """Register prompts from server response."""
+  if response and response.prompts:
+    for prompt in response.prompts:
+        self.sessions[prompt.name] = session
+        self.available_prompts.append({
+            "name": prompt.name,
+            "description": prompt.description,
+            "arguments": prompt.arguments
+        })
+
+async def _register_resources(self, response, session):
+  """Register resources from server response."""
+  if response and response.resources:
+    for resource in response.resources:
+        resource_uri = str(resource.uri)
+        self.sessions[resource_uri] = session</code></pre>
+
+
+
+<p class="wp-block-paragraph">By the end of this stage, our <code>MCP_ChatBot</code> object has everything it needs to start interacting with users:</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">connections to all configured MCP servers are established,</li>
+
+
+
+<li class="wp-block-list-item">all prompts, resources and tools are registered, including descriptions needed for LLM to understand how to use these capabilities,</li>
+
+
+
+<li class="wp-block-list-item">mappings between these resources and their respective sessions are stored, so we know exactly where to send each request.</li>
+</ul>
+
+
+
+<h3 class="wp-block-heading">Chat loop</h3>
+
+
+
+<p class="wp-block-paragraph">So, it’s time to start our chat with users by creating the <code>chat_loop</code> function. </p>
+
+
+
+<p class="wp-block-paragraph">We will first share all the available commands with the user: </p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">listing resources, tools and prompts </li>
+
+
+
+<li class="wp-block-list-item">executing a tool call </li>
+
+
+
+<li class="wp-block-list-item">viewing a resource </li>
+
+
+
+<li class="wp-block-list-item">using a prompt template</li>
+
+
+
+<li class="wp-block-list-item">quitting the chat (<em>it’s important to have a clear way to exit the infinite loop</em>).</li>
+</ul>
+
+
+
+<p class="wp-block-paragraph">After that, we will enter an infinite loop where, based on user input, we will execute the appropriate action: whether it’s one of the commands above or making a request to the LLM.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">async def chat_loop(self):
+  """Main interactive chat loop with command processing."""
+  print("\nMCP Chatbot Started!")
+  print("Commands:")
+  print("  quit                           - Exit the chatbot")
+  print("  @periods                       - Show available changelog periods") 
+  print("  @&lt;period&gt;                      - View changelog for specific period")
+  print("  /tools                         - List available tools")
+  print("  /tool &lt;name&gt; &lt;arg1=value1&gt;     - Execute a tool with arguments")
+  print("  /prompts                       - List available prompts")
+  print("  /prompt &lt;name&gt; &lt;arg1=value1&gt;   - Execute a prompt with arguments")
+  
+  while True:
+    try:
+      query = input("\nQuery: ").strip()
+      if not query:
+          continue
+
+      if query.lower() == 'quit':
+          break
+      
+      # Handle resource requests (@command)
+      if query.startswith('@'):
+        period = query[1:]
+        resource_uri = "changelog://periods" if period == "periods" else f"changelog://{period}"
+        await self.get_resource(resource_uri)
+        continue
+      
+      # Handle slash commands
+      if query.startswith('/'):
+        parts = self._parse_command_arguments(query)
+        if not parts:
+          continue
+            
+        command = parts[0].lower()
+        
+        if command == '/tools':
+          await self.list_tools()
+        elif command == '/tool':
+          if len(parts) &lt; 2:
+            print("Usage: /tool &lt;name&gt; &lt;arg1=value1&gt; &lt;arg2=value2&gt;")
+            continue
+            
+          tool_name = parts[1]
+          args = self._parse_prompt_arguments(parts[2:])
+          await self.execute_tool(tool_name, args)
+        elif command == '/prompts':
+          await self.list_prompts()
+        elif command == '/prompt':
+          if len(parts) &lt; 2:
+            print("Usage: /prompt &lt;name&gt; &lt;arg1=value1&gt; &lt;arg2=value2&gt;")
+            continue
+          
+          prompt_name = parts[1]
+          args = self._parse_prompt_arguments(parts[2:])
+          await self.execute_prompt(prompt_name, args)
+        else:
+          print(f"Unknown command: {command}")
+        continue
+      
+      # Process regular queries
+      await self.process_query(query)
+            
+    except Exception as e:
+      print(f"\nError in chat loop: {e}")
+      traceback.print_exc()</code></pre>
+
+
+
+<p class="wp-block-paragraph">There are a bunch of helper functions to parse arguments and return the lists of available tools and prompts we registered earlier. Since it’s fairly straightforward, I won’t go into much detail here. You can check <a href="https://github.com/miptgirl/miptgirl_medium/blob/main/mcp_client_example/mcp_client_example_base.py" rel="noreferrer noopener" target="_blank">the full code</a> if you are interested.</p>
+
+
+
+<p class="wp-block-paragraph">Instead, let’s dive deeper into how the interactions between the MCP client and server work in different scenarios.</p>
+
+
+
+<p class="wp-block-paragraph">When working with resources, we use the <code>self.sessions</code> mapping to find the appropriate session (with a fallback option if needed) and then use that session to read the resource.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">async def get_resource(self, resource_uri):
+  """Retrieve and display content from an MCP resource."""
+  session = self.sessions.get(resource_uri)
+  
+  # Fallback: find any session that handles this resource type
+  if not session and resource_uri.startswith("changelog://"):
+    session = next(
+        (sess for uri, sess in self.sessions.items() 
+         if uri.startswith("changelog://")), 
+        None
+    )
+      
+  if not session:
+    print(f"Resource '{resource_uri}' not found.")
+    return
+
+  try:
+    result = await session.read_resource(uri=resource_uri)
+    if result and result.contents:
+        print(f"\nResource: {resource_uri}")
+        print("Content:")
+        print(result.contents[0].text)
+    else:
+        print("No content available.")
+  except Exception as e:
+    print(f"Error reading resource: {e}")
+    traceback.print_exc()</code></pre>
+
+
+
+<p class="wp-block-paragraph">To execute a tool, we follow a similar process: start by finding the session and then use it to call the tool, passing its name and arguments.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">async def execute_tool(self, tool_name, args):
+  """Execute an MCP tool directly with given arguments."""
+  session = self.sessions.get(tool_name)
+  if not session:
+      print(f"Tool '{tool_name}' not found.")
+      return
+  
+  try:
+      result = await session.call_tool(tool_name, arguments=args)
+      print(f"\nTool '{tool_name}' result:")
+      print(result.content)
+  except Exception as e:
+      print(f"Error executing tool: {e}")
+      traceback.print_exc()</code></pre>
+
+
+
+<p class="wp-block-paragraph">No surprise here. The same approach works for executing the prompt.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">async def execute_prompt(self, prompt_name, args):
+    """Execute an MCP prompt with given arguments and process the result."""
+    session = self.sessions.get(prompt_name)
+    if not session:
+        print(f"Prompt '{prompt_name}' not found.")
+        return
+    
+    try:
+        result = await session.get_prompt(prompt_name, arguments=args)
+        if result and result.messages:
+            prompt_content = result.messages[0].content
+            text = self._extract_prompt_text(prompt_content)
+            
+            print(f"\nExecuting prompt '{prompt_name}'...")
+            await self.process_query(text)
+    except Exception as e:
+        print(f"Error executing prompt: {e}")
+        traceback.print_exc()</code></pre>
+
+
+
+<p class="wp-block-paragraph">The only major use case we haven’t covered yet is handling a general, free-form input from a user (not one of specific commands). <br/>In this case, we send the initial request to the LLM first, then we parse the output, defining whether there are any tool calls. If tool calls are present, we execute them. Otherwise, we exit the infinite loop and return the answer to the user.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">async def process_query(self, query):
+  """Process a user query through Anthropic's Claude, handling tool calls iteratively."""
+  messages = [{'role': 'user', 'content': query}]
+  
+  while True:
+    response = self.anthropic.messages.create(
+        max_tokens=2024,
+        model='claude-3-7-sonnet-20250219', 
+        tools=self.available_tools,
+        messages=messages
+    )
+    
+    assistant_content = []
+    has_tool_use = False
+    
+    for content in response.content:
+        if content.type == 'text':
+            print(content.text)
+            assistant_content.append(content)
+        elif content.type == 'tool_use':
+            has_tool_use = True
+            assistant_content.append(content)
+            messages.append({'role': 'assistant', 'content': assistant_content})
+            
+            # Execute the tool call
+            session = self.sessions.get(content.name)
+            if not session:
+                print(f"Tool '{content.name}' not found.")
+                break
+                
+            result = await session.call_tool(content.name, arguments=content.input)
+            messages.append({
+                "role": "user", 
+                "content": [{
+                    "type": "tool_result",
+                    "tool_use_id": content.id,
+                    "content": result.content
+                }]
+            })
+      
+      if not has_tool_use:
+          break</code></pre>
+
+
+
+<p class="wp-block-paragraph">So, we have now fully covered how the MCP chatbot actually works under the hood. Now, it’s time to test it in action. You can run it from the command line interface with the following command. </p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-bash">python mcp_client_example_base.py</code></pre>
+
+
+
+<p class="wp-block-paragraph">When you run the chatbot, you’ll first see the following introduction message outlining potential options:</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-markup">MCP Chatbot Started!
+Commands:
+  quit                           - Exit the chatbot
+  @periods                       - Show available changelog periods
+  @&lt;period&gt;                      - View changelog for specific period
+  /tools                         - List available tools
+  /tool &lt;name&gt; &lt;arg1=value1&gt;     - Execute a tool with arguments
+  /prompts                       - List available prompts
+  /prompt &lt;name&gt; &lt;arg1=value1&gt;   - Execute a prompt with arguments</code></pre>
+
+
+
+<p class="wp-block-paragraph">From there, you can try out different commands, for example, </p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">call the tool to list the databases available in the DB</li>
+
+
+
+<li class="wp-block-list-item">list all available prompts </li>
+
+
+
+<li class="wp-block-list-item">use the prompt template, calling it like this <code>/prompt sql_query_prompt question=”How many customers did we have in May 2024?”</code>. </li>
+</ul>
+
+
+
+<p class="wp-block-paragraph">Finally, I can finish your chat by typing <code>quit</code>.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-markup">Query: /tool list_databases
+[07/02/25 18:27:28] INFO     Processing request of type CallToolRequest                server.py:619
+Tool 'list_databases' result:
+[TextContent(type='text', text='INFORMATION_SCHEMA\ndatasets\ndefault\necommerce\necommerce_db\ninformation_schema\nsystem\n', annotations=None, meta=None)]
+
+Query: /prompts
+Available prompts:
+- sql_query_prompt: Create a SQL query prompt
+  Arguments:
+    - question
+
+Query: /prompt sql_query_prompt question="How many customers did we have in May 2024?"
+[07/02/25 18:28:21] INFO     Processing request of type GetPromptRequest               server.py:619
+Executing prompt 'sql_query_prompt'...
+I'll create a SQL query to find the number of customers in May 2024.
+[07/02/25 18:28:25] INFO     Processing request of type CallToolRequest                server.py:619
+Based on the query results, here's the final SQL query:
+```sql
+select uniqExact(user_id) as customer_count
+from ecommerce.sessions
+where toStartOfMonth(action_date) = '2024-05-01'
+format TabSeparatedWithNames
+```
+Query: /tool execute_sql_query query="select uniqExact(user_id) as customer_count from ecommerce.sessions where toStartOfMonth(action_date) = '2024-05-01' format TabSeparatedWithNames"
+I'll help you execute this SQL query to get the unique customer count for May 2024. Let me run this for you.
+[07/02/25 18:30:09] INFO     Processing request of type CallToolRequest                server.py:619
+The query has been executed successfully. The results show that there were 246,852 unique customers (unique user_ids) in May 2024 based on the ecommerce.sessions table.
+
+Query: quit</code></pre>
+
+
+
+<p class="wp-block-paragraph">Looks pretty cool! Our basic version is working well! Now, it’s time to take it one step further and make our chatbot smarter by teaching it to suggest relevant prompts on the fly based on customer input. </p>
+
+
+
+<h2 class="wp-block-heading">Prompt suggestions</h2>
+
+
+
+<p class="wp-block-paragraph">In practice, suggesting prompt templates that best match the user’s task can be incredibly helpful. Right now, users of our chatbot need to either already know about available prompts or at least be curious enough to explore them on their own to benefit from what we’ve built. By adding a prompt suggestions feature, we can do this discovery for our users and make our chatbot significantly more convenient and user-friendly.<br/><br/>Let’s brainstorm ways to add this functionality. I would approach this feature in the following way:<br/><br/><strong>Evaluate the relevance of the prompts using the LLM. </strong>Iterate through all available prompt templates and, for each one, assess whether the prompt is a good match for the user’s query.<br/><br/><strong>Suggest a matching prompt to the user.</strong> If we found the relevant prompt template, share it with the user and ask whether they would like to execute it. <br/><br/><strong>Merge the prompt template with the user input.</strong> If the user accepts, combine the selected prompt with the original query. Since prompt templates have placeholders, we might need the LLM to fill them in. Once we’ve merged the prompt template with the user’s query, we’ll have an updated message ready to send to the LLM.<br/><br/>We will add this logic to the <code>process_query</code> function. Thanks to our modular design, it’s pretty easy to add this enhancement without disrupting the rest of the code. <br/><br/>Let’s start by implementing a function to find the most relevant prompt template. We will use the LLM to evaluate each prompt and assign it a relevance score from 0 to 5. After that, we’ll filter out any prompts with a score of 2 or lower and return only the most relevant one (the one with the highest relevance score among the remaining results).</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">async def _find_matching_prompt(self, query):
+  """Find a matching prompt for the given query using LLM evaluation."""
+  if not self.available_prompts:
+    return None
+  
+  # Use LLM to evaluate prompt relevance
+  prompt_scores = []
+  
+  for prompt in self.available_prompts:
+    # Create evaluation prompt for the LLM
+    evaluation_prompt = f"""
+You are an expert at evaluating whether a prompt template is relevant for a user query.
+
+User Query: "{query}"
+
+Prompt Template:
+- Name: {prompt['name']}
+- Description: {prompt['description']}
+
+Rate the relevance of this prompt template for the user query on a scale of 0-5:
+- 0: Completely irrelevant
+- 1: Slightly relevant
+- 2: Somewhat relevant  
+- 3: Moderately relevant
+- 4: Highly relevant
+- 5: Perfect match
+
+Consider:
+- Does the prompt template address the user's intent?
+- Would using this prompt template provide a better response than a generic query?
+- Are the topics and context aligned?
+
+Respond with only a single number (0-5) and no other text.
+"""
+      
+    try:
+      response = self.anthropic.messages.create(
+          max_tokens=10,
+          model='claude-3-7-sonnet-20250219',
+          messages=[{'role': 'user', 'content': evaluation_prompt}]
+      )
+      
+      # Extract the score from the response
+      score_text = response.content[0].text.strip()
+      score = int(score_text)
+      
+      if score &gt;= 3:  # Only consider prompts with score &gt;= 3
+          prompt_scores.append((prompt, score))
+            
+    except Exception as e:
+        print(f"Error evaluating prompt {prompt['name']}: {e}")
+        continue
+  
+  # Return the prompt with the highest score
+  if prompt_scores:
+      best_prompt, best_score = max(prompt_scores, key=lambda x: x[1])
+      return best_prompt
+  
+  return None</code></pre>
+
+
+
+<p class="wp-block-paragraph">The next function we need to implement is one that combines the selected prompt template with the user input. We will rely on the LLM to intelligently combine them, filling all placeholders as needed.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">async def _combine_prompt_with_query(self, prompt_name, user_query):
+  """Use LLM to combine prompt template with user query."""
+  # First, get the prompt template content
+  session = self.sessions.get(prompt_name)
+  if not session:
+      print(f"Prompt '{prompt_name}' not found.")
+      return None
+  
+  try:
+      # Find the prompt definition to get its arguments
+      prompt_def = None
+      for prompt in self.available_prompts:
+          if prompt['name'] == prompt_name:
+              prompt_def = prompt
+              break
+      
+      # Prepare arguments for the prompt template
+      args = {}
+      if prompt_def and prompt_def.get('arguments'):
+          for arg in prompt_def['arguments']:
+              arg_name = arg.name if hasattr(arg, 'name') else arg.get('name', '')
+              if arg_name:
+                  # Use placeholder format for arguments
+                  args[arg_name] = '&lt;' + str(arg_name) + '&gt;'
+      
+      # Get the prompt template with arguments
+      result = await session.get_prompt(prompt_name, arguments=args)
+      if not result or not result.messages:
+          print(f"Could not retrieve prompt template for '{prompt_name}'")
+          return None
+      
+      prompt_content = result.messages[0].content
+      prompt_text = self._extract_prompt_text(prompt_content)
+      
+      # Create combination prompt for the LLM
+      combination_prompt = f"""
+You are an expert at combining prompt templates with user queries to create optimized prompts.
+
+Original User Query: "{user_query}"
+
+Prompt Template:
+{prompt_text}
+
+Your task:
+1. Analyze the user's query and the prompt template
+2. Combine them intelligently to create a single, coherent prompt
+3. Ensure the user's specific question/request is addressed within the context of the template
+4. Maintain the structure and intent of the template while incorporating the user's query
+
+Respond with only the combined prompt text, no explanations or additional text.
+"""
+      
+      response = self.anthropic.messages.create(
+          max_tokens=2048,
+          model='claude-3-7-sonnet-20250219',
+          messages=[{'role': 'user', 'content': combination_prompt}]
+      )
+      
+      return response.content[0].text.strip()
+      
+  except Exception as e:
+      print(f"Error combining prompt with query: {e}")
+      return None</code></pre>
+
+
+
+<p class="wp-block-paragraph">Then, we will simply update the <code>process_query</code> logic to check for matching prompts, ask the user for confirmation and decide which message to send to the LLM.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">async def process_query(self, query):
+  """Process a user query through Anthropic's Claude, handling tool calls iteratively."""
+  # Check if there's a matching prompt first
+  matching_prompt = await self._find_matching_prompt(query)
+  
+  if matching_prompt:
+    print(f"Found matching prompt: {matching_prompt['name']}")
+    print(f"Description: {matching_prompt['description']}")
+    
+    # Ask user if they want to use the prompt template
+    use_prompt = input("Would you like to use this prompt template? (y/n): ").strip().lower()
+    
+    if use_prompt == 'y' or use_prompt == 'yes':
+        print("Combining prompt template with your query...")
+        
+        # Use LLM to combine prompt template with user query
+        combined_prompt = await self._combine_prompt_with_query(matching_prompt['name'], query)
+        
+        if combined_prompt:
+            print(f"Combined prompt created. Processing...")
+            # Process the combined prompt instead of the original query
+            messages = [{'role': 'user', 'content': combined_prompt}]
+        else:
+            print("Failed to combine prompt template. Using original query.")
+            messages = [{'role': 'user', 'content': query}]
+    else:
+        # Use original query if user doesn't want to use the prompt
+        messages = [{'role': 'user', 'content': query}]
+  else:
+    # Process the original query if no matching prompt found
+    messages = [{'role': 'user', 'content': query}]
+
+  # print(messages)
+  
+  # Process the final query (either original or combined)
+  while True:
+    response = self.anthropic.messages.create(
+        max_tokens=2024,
+        model='claude-3-7-sonnet-20250219', 
+        tools=self.available_tools,
+        messages=messages
+    )
+    
+    assistant_content = []
+    has_tool_use = False
+    
+    for content in response.content:
+      if content.type == 'text':
+          print(content.text)
+          assistant_content.append(content)
+      elif content.type == 'tool_use':
+          has_tool_use = True
+          assistant_content.append(content)
+          messages.append({'role': 'assistant', 'content': assistant_content})
+          
+          # Log tool call information
+          print(f"\n[TOOL CALL] Tool: {content.name}")
+          print(f"[TOOL CALL] Arguments: {json.dumps(content.input, indent=2)}")
+          
+          # Execute the tool call
+          session = self.sessions.get(content.name)
+          if not session:
+              print(f"Tool '{content.name}' not found.")
+              break
+              
+          result = await session.call_tool(content.name, arguments=content.input)
+          
+          # Log tool result
+          print(f"[TOOL RESULT] Tool: {content.name}")
+          print(f"[TOOL RESULT] Content: {result.content}")
+          
+          messages.append({
+              "role": "user", 
+              "content": [{
+                  "type": "tool_result",
+                  "tool_use_id": content.id,
+                  "content": result.content
+              }]
+          })
+      
+    if not has_tool_use:
+        break</code></pre>
+
+
+
+<p class="wp-block-paragraph">Now, let’s test our updated version with a question about our data. Excitingly, the chatbot was able to find the right prompt and use it to find the right answer.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-markup">Query: How many customers did we have in May 2024?
+Found matching prompt: sql_query_prompt
+Description: Create a SQL query prompt
+Would you like to use this prompt template? (y/n): y
+Combining prompt template with your query...
+[07/05/25 14:38:58] INFO     Processing request of type GetPromptRequest               server.py:619
+Combined prompt created. Processing...
+I'll write a query to count unique customers who had sessions in May 2024. Since this is a business metric, I'll exclude fraudulent sessions.
+
+[TOOL CALL] Tool: execute_sql_query
+[TOOL CALL] Arguments: {
+  "query": "/* Count distinct users with non-fraudulent sessions in May 2024\n   Using uniqExact for precise user count\n   Filtering for May 2024 using toStartOfMonth and adding date range */\nSELECT \n    uniqExactIf(s.user_id, s.is_fraud = 0) AS active_customers_count\nFROM ecommerce.sessions s\nWHERE toStartOfMonth(action_date) = toDate('2024-05-01')\nFORMAT TabSeparatedWithNames"
+}
+[07/05/25 14:39:17] INFO     Processing request of type CallToolRequest                server.py:619
+[TOOL RESULT] Tool: execute_sql_query
+[TOOL RESULT] Content: [TextContent(type='text', text='active_customers_count\n245287\n', annotations=None, meta=None)]
+The query shows we had 245,287 unique customers with legitimate (non-fraudulent) sessions in May 2024. Here's a breakdown of why I wrote the query this way:
+
+1. Used uniqExactIf() to get precise count of unique users while excluding fraudulent sessions in one step
+2. Used toStartOfMonth() to ensure we capture all days in May 2024
+3. Specified the date format properly with toDate('2024-05-01')
+4. Used TabSeparatedWithNames format as required
+5. Provided a meaningful column alias
+
+Would you like to see any variations of this analysis, such as including fraudulent sessions or breaking down the numbers by country?</code></pre>
+
+
+
+<p class="wp-block-paragraph">It’s always a good idea to test negative examples as well. In this case, the chatbot behaves as expected and doesn’t suggest an SQL-related prompt when given an unrelated question.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-markup">Query: How are you?
+I should note that I'm an AI assistant focused on helping you work with the available tools, which include executing SQL queries, getting database/table information, and accessing GitHub PR data. I don't have a tool specifically for responding to personal questions.
+
+I can help you:
+- Query a ClickHouse database
+- List databases and describe tables
+- Get information about GitHub Pull Requests
+
+What would you like to know about these areas?</code></pre>
+
+
+
+<p class="wp-block-paragraph">Now that our chatbot is up and running, we’re ready to wrap things up.</p>
+
+
+
+<h2 class="wp-block-heading">BONUS: quick and easy MCP client with smolagents</h2>
+
+
+
+<p class="wp-block-paragraph">We’ve looked at low-level code that enables building highly customised MCP clients, but many use cases require only basic functionality. So, I decided to share with you a quick and straightforward implementation for scenarios when you need just the tools. We will use one of my favourite agent frameworks — smolagents from HuggingFace (<em>I’ve discussed this framework in detail in </em><a href="https://towardsdatascience.com/code-agents-the-future-of-agentic-ai/" target="_blank" rel="noreferrer noopener"><em>my previous article</em></a>).</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python"># needed imports
+from smolagents import CodeAgent, DuckDuckGoSearchTool, LiteLLMModel, VisitWebpageTool, ToolCallingAgent, ToolCollection
+from mcp import StdioServerParameters
+import json
+import os
+
+# setting OpenAI APIKey 
+with open('../../config.json') as f:
+    config = json.loads(f.read())
+
+os.environ["OPENAI_API_KEY"] = config['OPENAI_API_KEY']
+
+# defining the LLM 
+model = LiteLLMModel(
+    model_id="openai/gpt-4o-mini",  
+    max_tokens=2048
+)
+
+# configuration for the MCP server
+server_parameters = StdioServerParameters(
+    command="uv",
+    args=[
+        "--directory",
+        "/path/to/github/mcp-analyst-toolkit/src/mcp_server",
+        "run",
+        "server.py"
+    ],
+    env={"GITHUB_TOKEN": "github_&lt;your_token&gt;"},
+)
+
+# prompt 
+CLICKHOUSE_PROMPT_TEMPLATE = """
+You are a senior data analyst with more than 10 years of experience writing complex SQL queries, specifically optimized for ClickHouse to answer user questions.
+
+## Database Schema
+
+You are working with an e-commerce analytics database containing the following tables:
+
+### Table: ecommerce.users 
+**Description:** Customer information for the online shop
+**Primary Key:** user_id
+**Fields:** 
+- user_id (Int64) - Unique customer identifier (e.g., 1000004, 3000004)
+- country (String) - Customer's country of residence (e.g., "Netherlands", "United Kingdom")
+- is_active (Int8) - Customer status: 1 = active, 0 = inactive
+- age (Int32) - Customer age in full years (e.g., 31, 72)
+
+### Table: ecommerce.sessions 
+**Description:** User session data and transaction records
+**Primary Key:** session_id
+**Foreign Key:** user_id (references ecommerce.users.user_id)
+**Fields:** 
+- user_id (Int64) - Customer identifier linking to users table (e.g., 1000004, 3000004)
+- session_id (Int64) - Unique session identifier (e.g., 106, 1023)
+- action_date (Date) - Session start date (e.g., "2021-01-03", "2024-12-02")
+- session_duration (Int32) - Session duration in seconds (e.g., 125, 49)
+- os (String) - Operating system used (e.g., "Windows", "Android", "iOS", "MacOS")
+- browser (String) - Browser used (e.g., "Chrome", "Safari", "Firefox", "Edge")
+- is_fraud (Int8) - Fraud indicator: 1 = fraudulent session, 0 = legitimate
+- revenue (Float64) - Purchase amount in USD (0.0 for non-purchase sessions, &gt;0 for purchases)
+
+## ClickHouse-Specific Guidelines
+
+1. **Use ClickHouse-optimized functions:**
+   - uniqExact() for precise unique counts
+   - uniqExactIf() for conditional unique counts
+   - quantile() functions for percentiles
+   - Date functions: toStartOfMonth(), toStartOfYear(), today()
+
+2. **Query formatting requirements:**
+   - Always end queries with "format TabSeparatedWithNames"
+   - Use meaningful column aliases
+   - Use proper JOIN syntax when combining tables
+   - Wrap date literals in quotes (e.g., '2024-01-01')
+
+3. **Performance considerations:**
+   - Use appropriate WHERE clauses to filter data
+   - Consider using HAVING for post-aggregation filtering
+   - Use LIMIT when finding top/bottom results
+
+4. **Data interpretation:**
+   - revenue &gt; 0 indicates a purchase session
+   - revenue = 0 indicates a browsing session without purchase
+   - is_fraud = 1 sessions should typically be excluded from business metrics unless specifically analyzing fraud
+
+## Response Format
+Provide only the SQL query as your answer. Include brief reasoning in comments if the query logic is complex. 
+
+## Examples
+
+**Question:** How many customers made purchase in December 2024?
+**Answer:** select uniqExact(user_id) as customers from ecommerce.sessions where toStartOfMonth(action_date) = '2024-12-01' and revenue &gt; 0 format TabSeparatedWithNames
+
+**Question:** What was the fraud rate in 2023, expressed as a percentage?
+**Answer:** select 100 * uniqExactIf(user_id, is_fraud = 1) / uniqExact(user_id) as fraud_rate from ecommerce.sessions where toStartOfYear(action_date) = '2023-01-01' format TabSeparatedWithNames
+
+**Question:** What was the share of users using Windows yesterday?
+**Answer:** select 100 * uniqExactIf(user_id, os = 'Windows') / uniqExact(user_id) as windows_share from ecommerce.sessions where action_date = today() - 1 format TabSeparatedWithNames
+
+**Question:** What was the revenue from Dutch users aged 55 and older in December 2024?
+**Answer:** select sum(s.revenue) as total_revenue from ecommerce.sessions as s inner join ecommerce.users as u on s.user_id = u.user_id where u.country = 'Netherlands' and u.age &gt;= 55 and toStartOfMonth(s.action_date) = '2024-12-01' format TabSeparatedWithNames
+
+**Question:** What are the median and interquartile range (IQR) of purchase revenue for each country?
+**Answer:** select country, median(revenue) as median_revenue, quantile(0.25)(revenue) as q25_revenue, quantile(0.75)(revenue) as q75_revenue from ecommerce.sessions as s inner join ecommerce.users as u on u.user_id = s.user_id where revenue &gt; 0 group by country format TabSeparatedWithNames
+
+**Question:** What is the average number of days between the first session and the first purchase for users who made at least one purchase?
+**Answer:** select avg(first_purchase - first_action_date) as avg_days_to_purchase from (select user_id, min(action_date) as first_action_date, minIf(action_date, revenue &gt; 0) as first_purchase, max(revenue) as max_revenue from ecommerce.sessions group by user_id) where max_revenue &gt; 0 format TabSeparatedWithNames
+
+**Question:** What is the number of sessions in December 2024, broken down by operating systems, including the totals?
+**Answer:** select os, uniqExact(session_id) as session_count from ecommerce.sessions where toStartOfMonth(action_date) = '2024-12-01' group by os with totals format TabSeparatedWithNames
+
+**Question:** Do we have customers who used multiple browsers during 2024? If so, please calculate the number of customers for each combination of browsers.
+**Answer:** select browsers, count(*) as customer_count from (select user_id, arrayStringConcat(arraySort(groupArray(distinct browser)), ', ') as browsers from ecommerce.sessions where toStartOfYear(action_date) = '2024-01-01' group by user_id) group by browsers order by customer_count desc format TabSeparatedWithNames
+
+**Question:** Which browser has the highest share of fraud users?
+**Answer:** select browser, 100 * uniqExactIf(user_id, is_fraud = 1) / uniqExact(user_id) as fraud_rate from ecommerce.sessions group by browser order by fraud_rate desc limit 1 format TabSeparatedWithNames
+
+**Question:** Which country had the highest number of first-time users in 2024?
+**Answer:** select country, count(distinct user_id) as new_users from (select user_id, min(action_date) as first_date from ecommerce.sessions group by user_id having toStartOfYear(first_date) = '2024-01-01') as t inner join ecommerce.users as u on t.user_id = u.user_id group by country order by new_users desc limit 1 format TabSeparatedWithNames
+
+---
+
+**Your Task:** Using all the provided information above, write a ClickHouse SQL query to answer the following customer question: 
+{question}
+"""
+
+with ToolCollection.from_mcp(server_parameters, trust_remote_code=True) as tool_collection:
+  agent = ToolCallingAgent(tools=[*tool_collection.tools], model=model)
+  prompt = CLICKHOUSE_PROMPT_TEMPLATE.format(
+      question = 'How many customers did we have in May 2024?'
+  )
+  response = agent.run(prompt)</code></pre>
+
+
+
+<p class="wp-block-paragraph">As a result, we received the correct answer.</p>
+
+
+
+<figure class="wp-block-image"><img decoding="async" src="../Images/3b3d0409ac716b51e4deeb2d9da9f8d9.png" alt="" class="wp-image-608364" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/07/12m1sKkzkno94bQIkGkw2GA.png"/><figcaption class="wp-element-caption">Image by author</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">If you don’t need much customisation or integration with prompts and resources, this implementation is definitely the way to go.</p>
+
+
+
+<h2 class="wp-block-heading">Summary</h2>
+
+
+
+<p class="wp-block-paragraph">In this article, we built a chatbot that integrates with MCP servers and leverages all the benefits of standardisation to access tools, prompts, and resources seamlessly.</p>
+
+
+
+<p class="wp-block-paragraph">We started with a basic implementation capable of listing and accessing MCP capabilities. Then, we enhanced our chatbot with a smart feature that suggests relevant prompt templates to users based on their input. This makes our product more intuitive and user-friendly, especially for users unfamiliar with the complete library of available prompts.</p>
+
+
+
+<p class="wp-block-paragraph">To implement our chatbot, we used relatively low-level code, giving you a better understanding of how the MCP protocol works under the hood and what happens when you use AI tools like Claude Desktop or Cursor.</p>
+
+
+
+<p class="wp-block-paragraph">As a bonus, we also discussed the smolagents implementation that lets you quickly deploy an MCP client integrated with tools.</p>
+
+
+
+<blockquote class="wp-block-quote is-layout-flow wp-block-quote-is-layout-flow">
+<p class="wp-block-paragraph"><em>Thank you for reading. I hope this article was insightful. Remember Einstein’s advice: “The important thing is not to stop questioning. Curiosity has its own reason for existing.” May your curiosity lead you to your next great insight.</em></p>
+</blockquote>
+
+
+
+<h2 class="wp-block-heading">Reference</h2>
+
+
+
+<p class="wp-block-paragraph">This article is inspired by the <a href="https://www.deeplearning.ai/short-courses/ai-agents-in-langgraph/" rel="noreferrer noopener" target="_blank"><em>“</em></a><a href="https://www.deeplearning.ai/short-courses/mcp-build-rich-context-ai-apps-with-anthropic/" rel="noreferrer noopener" target="_blank"><em>MCP: Build Rich-Context AI Apps with Anthropic</em></a><a href="https://www.deeplearning.ai/short-courses/ai-agents-in-langgraph/" rel="noreferrer noopener" target="_blank"><em>”</em></a> short course from <em>DeepLearning.AI.</em></p>
+    
+</body>
+</html>

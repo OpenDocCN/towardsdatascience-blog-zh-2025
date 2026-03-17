@@ -1,0 +1,403 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.1//EN"
+  "http://www.w3.org/TR/xhtml11/DTD/xhtml11.dtd">
+
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+<title>Under the Hood: How DAX Works with Filters</title>
+<link href="../Styles/Style.css" type="text/css" rel="stylesheet"/>
+</head>
+<body>
+<h1>Under the Hood: How DAX Works with Filters</h1>
+<blockquote>原文：<a href="https://towardsdatascience.com/under-the-hood-how-dax-works-with-filters/">https://towardsdatascience.com/under-the-hood-how-dax-works-with-filters/</a></blockquote>
+<h2 class="wp-block-heading"><mdspan datatext="el1759192734018" class="mdspan-comment">Introduction</mdspan></h2>
+
+
+
+<p class="wp-block-paragraph">Let’s start with a simple table:</p>
+
+
+
+<figure class="wp-block-image aligncenter size-full"><img decoding="async" src="../Images/e2f890567aa074b8fe027f73bce7ae89.png" alt="" class="wp-image-623428" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/09/image-422.png"/><figcaption class="wp-element-caption">Figure 1 – The simple table to start with (Figure by the Author)</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">Each row in the matrix visual shows the total online sales for each month.<br/>So far, so good.</p>
+
+
+
+<p class="wp-block-paragraph">The interpretation is that we see the total online sales filtered by month.</p>
+
+
+
+<p class="wp-block-paragraph">But this isn’t the entire truth.</p>
+
+
+
+<p class="wp-block-paragraph">Let’s take a look at the data model:</p>
+
+
+
+<figure class="wp-block-image aligncenter size-full"><img decoding="async" src="../Images/2ef0c4115645224fb02b9ebd61194b6a.png" alt="" class="wp-image-623429" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/09/image-423.png"/><figcaption class="wp-element-caption">Figure 2 – The part of the data model with the Date table and the fact table (Figure by the Author)</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">When you look carefully, you see that the relationship is built between the two date columns.</p>
+
+
+
+<p class="wp-block-paragraph">There is no relationship to the month column.</p>
+
+
+
+<p class="wp-block-paragraph">When we take this route, the interpretation above is not entirely accurate.</p>
+
+
+
+<p class="wp-block-paragraph">The complete interpretation should be: Each row shows the total of online sales filtered by the date table. The rows of the Date table are grouped by the months. Each row shows the total sales for all days for each month.</p>
+
+
+
+<p class="wp-block-paragraph">We are a step closer to understanding DAX in general, and time intelligence functions in particular, when we realize this detail.</p>
+
+
+
+<p class="wp-block-paragraph">Let’s go one step further.</p>
+
+
+
+<h2 class="wp-block-heading">YTD and the Basic query</h2>
+
+
+
+<p class="wp-block-paragraph">Now, let’s add a YTD Measure to examine what happens:</p>
+
+
+
+<figure class="wp-block-image aligncenter size-full"><img decoding="async" src="../Images/ef401daee616456dc55ea63620b03787.png" alt="" class="wp-image-623432" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/09/image-425.png"/><figcaption class="wp-element-caption">Figure 3 – The YTD Measure and the results are in the same table as before (Figure by the Author)</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">The Measure is nothing special, and the results are easy to understand.</p>
+
+
+
+<p class="wp-block-paragraph">Now, let’s take a look at what precisely the <a href="https://dax.guide/datesytd/">DATESYTD()</a> function does.</p>
+
+
+
+<p class="wp-block-paragraph">The explanation from <a href="https://dax.guide/">dax.guide</a> says: “Returns a <strong>set of dates</strong> in the year up to the last date visible in the filter context”.</p>
+
+
+
+<p class="wp-block-paragraph">What does this mean exactly?</p>
+
+
+
+<p class="wp-block-paragraph">To dive into this question, let’s write a DAX query first, to get the list of dates in June 2024, as is done in the visualization above:</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-sql">DEFINE
+    VAR YearFilter = TREATAS({ 2024 }, 'Date'[Year])
+    VAR MonthFilter = TREATAS({ 6 }, 'Date'[Month])
+    
+    
+EVALUATE
+    SUMMARIZECOLUMNS('Date'[Date]
+                        ,YearFilter
+                        ,MonthFilter
+                        )</code></pre>
+
+
+
+<p class="wp-block-paragraph">The result is a list of 30 days for June:</p>
+
+
+
+<figure class="wp-block-image aligncenter size-full"><img decoding="async" src="../Images/1f24580d5068c7ab9f3e0c1e32f3ca0c.png" alt="" class="wp-image-623430" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/09/image-424.png"/><figcaption class="wp-element-caption">Figure 4 – Basis Query to get all days for June 2024 (Figure by the Author)</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">This is the filter applied to the row for June 2024 in the Matrix shown above.</p>
+
+
+
+<p class="wp-block-paragraph">What is the result when we apply the DATESYTD() function to the result?</p>
+
+
+
+<p class="wp-block-paragraph">Here is the query:</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-sql">DEFINE
+    VAR YearFilter = TREATAS({ 2024 }, 'Date'[Year])
+    VAR MonthFilter = TREATAS({ 6 }, 'Date'[Month])
+    
+    VAR BasisDates = CALCULATETABLE(
+                            SUMMARIZECOLUMNS('Date'[Date]
+                                        ,YearFilter
+                                        ,MonthFilter
+                                        )
+                                    )
+    
+    VAR YTDDates = DATESYTD(TREATAS(BasisDates, 'Date'[Date])
+                                    )
+                                    
+EVALUATE
+    YTDDates</code></pre>
+
+
+
+<p class="wp-block-paragraph">And here, the result:</p>
+
+
+
+<figure class="wp-block-image aligncenter size-full"><img decoding="async" src="../Images/7c2c298543ea3305361ce48083c8344e.png" alt="" class="wp-image-623436" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/09/image-428.png"/><figcaption class="wp-element-caption">Figure 5 – List of dates starting on the first of January up to the last day of June 2024 (Figure by the Author)</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">It’s a list of 182 rows, containing all dates starting from the beginning of the year up to the last day of June 2024.</p>
+
+
+
+<p class="wp-block-paragraph">This is the definition of YTD.</p>
+
+
+
+<p class="wp-block-paragraph">When we look at the following Measure:</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-sql">Online Sales (YTD) =
+VAR YTDDates = DATESYTD('Date'[Date])
+
+RETURN
+    CALCULATE([Sum Online Sales]
+                ,YTDDates
+                )</code></pre>
+
+
+
+<p class="wp-block-paragraph">We realize that the variable YTDDates is “only” a list of dates applied as a filter to the CALCULATE() function.</p>
+
+
+
+<p class="wp-block-paragraph">This is the key to all Time intelligence functions.</p>
+
+
+
+<h2 class="wp-block-heading">Go back one year – some examples</h2>
+
+
+
+<p class="wp-block-paragraph">What happens when applying another function to the result?</p>
+
+
+
+<p class="wp-block-paragraph">For example, <a href="https://dax.guide/sameperiodlastyear/">SAMEPERIODLASTYEAR()</a>?</p>
+
+
+
+<p class="wp-block-paragraph">To answer this question, I use the following DAX query:</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-sql">DEFINE
+    VAR YearFilter = TREATAS({ 2024 }, 'Date'[Year])
+    VAR MonthFilter = TREATAS({ 6 }, 'Date'[Month])
+    
+    VAR BasisDates = CALCULATETABLE(
+                            SUMMARIZECOLUMNS('Date'[Date]
+                                        ,YearFilter
+                                        ,MonthFilter
+                                        )
+                                    )
+    
+    VAR YTDDates = DATESYTD(TREATAS(BasisDates, 'Date'[Date])
+                                    )
+                                    
+    VAR YTDDatesPY = SAMEPERIODLASTYEAR(YTDDates)
+                                    
+EVALUATE
+    YTDDatesPY</code></pre>
+
+
+
+<p class="wp-block-paragraph">I intentionally separated the calling of SAMEPERIODLASTYEAR() from DATESYTD() to make it easier to read. It would have been possible to nest DATESYTD() into SAMEPERIODLASTYEAR().</p>
+
+
+
+<p class="wp-block-paragraph">This time, we have 181 rows, as 2024 was a leap year.<br/>And the dates are shifted back by one year:</p>
+
+
+
+<figure class="wp-block-image aligncenter size-full"><img decoding="async" src="../Images/14665aab9576eeaa02b0ceefdefb4fcc.png" alt="" class="wp-image-623433" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/09/image-426.png"/><figcaption class="wp-element-caption">Figure 6 – The result of the query after applying SAMEPERIODLASTYEAR() (Figure by the Author)</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">So, again, when we apply a Time Intelligence function to a measure, the function, for example, DATESYTD(), returns a list of dates.<br/>Please note: When applying the filter, <strong><u>any</u></strong> existing filters on the date table are removed.</p>
+
+
+
+<h2 class="wp-block-heading">Custom logic</h2>
+
+
+
+<p class="wp-block-paragraph">Now, let’s use this knowledge on custom time intelligence logic.</p>
+
+
+
+<p class="wp-block-paragraph">First, let’s slightly change the filter for the year and month:</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-sql">DEFINE
+    VAR YearMonthFilter = TREATAS({ 202406  }, 'Date'[MonthKey])
+    
+EVALUATE
+    SUMMARIZECOLUMNS('Date'[Date]
+                        , YearMonthFilter
+                        )</code></pre>
+
+
+
+<p class="wp-block-paragraph">The result of this query is the same as at the beginning of this article.</p>
+
+
+
+<p class="wp-block-paragraph">This time, I set the filter with a numerical value on the [MonthKey] column.</p>
+
+
+
+<p class="wp-block-paragraph">How can I go back to the previous year?</p>
+
+
+
+<p class="wp-block-paragraph">If you think mathematically, it’s just by subtracting 100:</p>
+
+
+
+<p class="wp-block-paragraph">202406 – 100 = 202306</p>
+
+
+
+<p class="wp-block-paragraph">Let’s try it:</p>
+
+
+
+<figure class="wp-block-image aligncenter size-full"><img decoding="async" src="../Images/000239f4257cd4ac844e1cafe1bfa444.png" alt="" class="wp-image-623435" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/09/image-427.png"/><figcaption class="wp-element-caption">Figure 7 – The result of the query after deducting 100 from the [MonthKey] column (Figure by the Author)</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">You can also do this with other numeric formats.</p>
+
+
+
+<p class="wp-block-paragraph">When you take a fiscal year, for example, like this: 2425 (For the Fiscal Year 24/25)</p>
+
+
+
+<p class="wp-block-paragraph">You can deduce 101 to get the previous fiscal year: 2425 – 101 = 2324</p>
+
+
+
+<p class="wp-block-paragraph">Another example of a custom time intelligence logic is a running average, where for each day, we calculate the average value over the past 10 days:</p>
+
+
+
+<figure class="wp-block-image aligncenter size-full"><img decoding="async" src="../Images/9581617524a2a5879289fe983c07a078.png" alt="" class="wp-image-623434" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/09/image-2.jpg"/><figcaption class="wp-element-caption">Figure 8 – The Code and the results of the Measure for a moving average over the previous ten days (Figure by the Author)</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">As the content of the variable DateRange is again a list of dates, I can apply the SAMEPERIODLASTYEAR() function to it, and get the result I need:</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-sql">DEFINE
+    VAR YearFilter = TREATAS({ 2024 }, 'Date'[Year])
+    VAR MonthFilter = TREATAS({ 6 }, 'Date'[Month])
+    
+    // 1. Get the first and last Date for the current Filter Context
+    VAR MaxDate = CALCULATE(MAX( 'Date'[Date] )
+                            ,YearFilter
+                            ,MonthFilter
+                            )
+    
+    VAR MinDate =
+        CALCULATE(
+            DATEADD( 'Date'[Date], - 10, DAY )
+            ,'Date'[Date] = MaxDate
+            )
+    
+    // 2. Generate the Date range needed for the Moving average (Four months)
+    VAR  DateRange =
+     CALCULATETABLE(
+        DATESBETWEEN( 'Date'[Date]
+            ,MinDate
+            ,MaxDate
+        )
+    )
+    
+EVALUATE
+    SAMEPERIODLASTYEAR( DateRange )</code></pre>
+
+
+
+<p class="wp-block-paragraph">And this is the result:</p>
+
+
+
+<figure class="wp-block-image aligncenter size-full"><img decoding="async" src="../Images/3b07b9ed45bb5cf132e8f4270fff9713.png" alt="" class="wp-image-623431" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/09/image.jpg"/><figcaption class="wp-element-caption">Figure 9 – The result for the moving average for the previous year (Figure by the Author)</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">This logic returns 11 rows, as it includes the last day of the month. Depending on the required result, we need to adjust the way we calculate the first and last dates of the date list (the filter applied to the measure).</p>
+
+
+
+<p class="wp-block-paragraph">Of course, this is a repetition of what I showed above. However, it demonstrates that the same approach can be applied to various scenarios.</p>
+
+
+
+<p class="wp-block-paragraph">As soon as you understand this, your work with time intelligence functions and other functions that accept tables of values as input will become much easier to comprehend and master.</p>
+
+
+
+<h2 class="wp-block-heading">Conclusion</h2>
+
+
+
+<p class="wp-block-paragraph">While I used DAX Studio for the queries, you can use the same queries in the DAX Query tool within Power BI Desktop.</p>
+
+
+
+<p class="wp-block-paragraph">I intentionally used these queries to demonstrate that we work with tables all the time in DAX, even though we may not always be aware of it.</p>
+
+
+
+<p class="wp-block-paragraph">But it’s an important detail that helps us on our way to understanding DAX.</p>
+
+
+
+<p class="wp-block-paragraph">Although some of the DAX code shown here may be obsolete with the advent of the new <a href="https://powerbi.microsoft.com/en-us/blog/calendar-based-time-intelligence-time-intelligence-tailored-preview/">calendar-based time intelligence</a> feature in Power BI, the principles explained here remain valid. The functions, such as DATESYTD() or SAMEPERIODLASTYEAR(), still exist and work in the same way as before. For the time being, nothing will change on this side, as the concepts described here are still valid.</p>
+
+
+
+<h2 class="wp-block-heading">References</h2>
+
+
+
+<p class="wp-block-paragraph">Like in my previous articles, I use the Contoso sample dataset. You can download the ContosoRetailDW Dataset for free from Microsoft <a href="https://www.microsoft.com/en-us/download/details.aspx?id=18279">here</a>.</p>
+
+
+
+<p class="wp-block-paragraph">The Contoso Data can be freely used under the MIT License, as described <a href="https://github.com/microsoft/Power-BI-Embedded-Contoso-Sales-Demo">in this document</a>. I changed the dataset to shift the data to contemporary dates.<br/></p>
+
+
+
+<p class="wp-block-paragraph"/>
+    
+</body>
+</html>

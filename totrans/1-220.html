@@ -1,0 +1,976 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.1//EN"
+  "http://www.w3.org/TR/xhtml11/DTD/xhtml11.dtd">
+
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+<title>MobileNetV2 Paper Walkthrough: The Smarter Tiny Giant</title>
+<link href="../Styles/Style.css" type="text/css" rel="stylesheet"/>
+</head>
+<body>
+<h1>MobileNetV2 Paper Walkthrough: The Smarter Tiny Giant</h1>
+<blockquote>原文：<a href="https://towardsdatascience.com/mobilenetv2-paper-walkthrough-the-smarter-tiny-giant/">https://towardsdatascience.com/mobilenetv2-paper-walkthrough-the-smarter-tiny-giant/</a></blockquote>
+<h2 class="wp-block-heading">Introduction</h2>
+
+
+
+<p class="wp-block-paragraph"><mdspan datatext="el1759430128089" class="mdspan-comment">MobileNetV1</mdspan> was a breakthrough in the field of computer vision as it proved that deep learning models do not necessarily need to be computationally expensive to achieve high accuracy. Last month I posted an article where I explained everything about the model as well as its PyTorch implementation from scratch. Check the link at reference number [1] at the end of this article if you are interested in reading it. This first version of MobileNet was first proposed back in April 2017 in a paper titled <em>MobileNets: Efficient Convolutional Neural Networks for Mobile Vision Applications </em>[2] by Howard <em>et al</em>. from Google. Not long after — in January 2018 to be precise — Sandler <em>et al</em>. from the same institution introduced the successor of MobileNetV1 in a paper titled <em>MobileNetV2: Inverted Residuals and Linear Bottlenecks</em> [3], which brings significant improvement over the previous one in terms of both accuracy and efficiency. In this article, I am going to walk you through the ideas proposed in the MobileNetV2 paper and show you how to implement the architecture from scratch.</p>
+
+
+
+<hr class="wp-block-separator has-alpha-channel-opacity is-style-dotted"/>
+
+
+
+<h2 class="wp-block-heading">The Improvements</h2>
+
+
+
+<p class="wp-block-paragraph">The first version of MobileNet relies solely on the so-called <em>depthwise separable convolution</em> layers. It is indeed necessary to acknowledge that using these layers as a replacement of standard convolutions allows the model to be extremely lightweight. However, authors thought that this architecture could still be improved even further. They came up with an idea where instead of only using depthwise separable convolutions, they also adopted the <em>inverted residual</em> and <em>linear bottleneck</em> mechanisms — which is where the title of the MobileNetV2 paper came from.</p>
+
+
+
+<h3 class="wp-block-heading">Inverted Residual</h3>
+
+
+
+<p class="wp-block-paragraph">If you’re familiar with ResNet, I believe you know the so-called <em>bottleneck block</em>. For those who don’t, it is essentially a mechanism where the building block of the network works by following the <em>wide → narrow → wide</em> pattern. Figure 1 below displays the illustration of a bottleneck block used in ResNet. Here we can see that it initially accepts a 256-channel tensor, shrink it to 64, and expands it back to 256.</p>
+
+
+
+<figure class="wp-block-image aligncenter"><img decoding="async" src="../Images/e95a571184c04f54d6b18b2953b61fcc.png" alt="" class="wp-image-623745" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/09/1XiRg8sn5199WZzzlyd9DZg.png"/><figcaption class="wp-element-caption">Figure 1. The building block of ResNet, commonly known as “bottleneck” [4].</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">The inverted version of the above block is commonly known as <em>inverted bottleneck</em>, which follows the <em>narrow → wide → narrow</em> structure. Figure 2 below shows an example from the ConvNeXt paper [5], where the number of channels in the input tensor is 96, expanded to 384, and compressed back to 96 by the last convolution layer. It is important to note that in MobileNetV2 an <em>inverted bottleneck</em> block is called <em>inverted residual</em> for some reasons. So, starting from now on, I will use the term to avoid confusion.</p>
+
+
+
+<figure class="wp-block-image aligncenter"><img decoding="async" src="../Images/fc6b76bdc703471fee269bf01e930ae0.png" alt="" class="wp-image-623743" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/09/1kQbs0C5VGSzlAU1z_jIxTQ.png"/><figcaption class="wp-element-caption">Figure 2. The inverted bottleneck block introduced in ConvNeXt [5].</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">At this point you might be wondering why we don’t just use the standard bottleneck for MobileNetV2. The answer lies in the original purpose of the standard bottleneck design, where it was first introduced to reduce computational complexity. This was essentially done because ResNet is computationally expensive by nature yet rich in information. For this reason, ResNet authors proposed to reduce computational cost by shrinking the tensor size in the middle of each building block, which is how the bottleneck block was born.</p>
+
+
+
+<p class="wp-block-paragraph">This reduction in the number of channels does not hurt the model capacity that much since ResNet already has a large number of channels overall. On the other hand, MobileNetV2 is intended to be as lightweight as possible in the first place, which means the model capacity is not as high as ResNet. In order to increase model capacity, authors expand the tensor size in the middle to form the inverted residual block, which allows the model to learn more patterns while only slightly increasing complexity. So in short, the middle part of a bottleneck block (<em>narrow</em>) is used for efficiency, while the middle part of an inverted residual block (<em>wide</em>) is used to learn complex patterns. If we try to apply a standard bottleneck on MobileNetV2 instead, the computation is going to be even faster, but this might cause a drop in accuracy since the model will lose a significant amount of information.</p>
+
+
+
+<h3 class="wp-block-heading">Linear Bottleneck</h3>
+
+
+
+<p class="wp-block-paragraph">The next concept we need to understand is the so-called <em>linear bottleneck</em>. This one is actually pretty simple since what we essentially do here is just to omit the nonlinearity (i.e., the ReLU activation function) in the last layer of each inverted residual block. The use of activation functions in neural networks at the first place is to allow the network to capture complex patterns. However, it will destroy important information instead if we apply it on a low-dimensional tensor, especially in the context of MobileNetV2 where the inverted residual block projects a high dimensional tensor to a smaller one in the last convolution layer. By removing the activation function in the last convolution layer like this, we essentially prevent the model from losing important information. Figure 3 below shows what the inverted residual block used in MobileNetV2 looks like. Notice that ReLU is not applied in the last pointwise convolution, which essentially means that this layer behaves somewhat similarly to a standard linear regression layer. In addition to this figure, the variables <em>k</em> and <em>k’</em> denote the number of input and output channels, respectively. In the intermediate process, we essentially expand the number of channels by <em>t</em> before eventually shrink it to <em>k’</em>. I’ll go into more detail on these variables in the next section.</p>
+
+
+
+<figure class="wp-block-image aligncenter"><img decoding="async" src="../Images/91ab54ddaf9fe0de7740ec09a94ce199.png" alt="" class="wp-image-623741" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/09/1BQRqCLgKgbXH3kW77zkaCw.png"/><figcaption class="wp-element-caption">Figure 3. The inverted residual block used in MobileNetV2. Notice that we don’t apply ReLU after the last pointwise convolution layer [3].</figcaption></figure>
+
+
+
+<h3 class="wp-block-heading">ReLU6</h3>
+
+
+
+<p class="wp-block-paragraph">So why do we use ReLU6 instead of regular ReLU? In case you’re not yet familiar with it, this activation function is actually similar to ReLU, except that the output value is capped at 6. So, any input greater than 6 will be mapped to that number. Meanwhile, the behavior for negative inputs is exactly the same. Thus, we can simply say that the output of ReLU6 will always be within the range of 0 to 6 (inclusive). Look at Figure 4 below to better understand this idea.</p>
+
+
+
+<figure class="wp-block-image aligncenter"><img decoding="async" src="../Images/e2f17bdfb96ffa5b9c7e16a4447317d7.png" alt="" class="wp-image-623746" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/09/1WnGJqtl9LL55EtZT3mH6ng.png"/><figcaption class="wp-element-caption">Figure 4. The ReLU6 activation function [6].</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">In standard ReLU, there is a possibility where the input — and therefore the output — value goes arbitrarily large, in which it potentially causes instability in low-precision environments. Remember that MobileNet is intended to be able to work on small devices, in which we know that such devices typically expect small numbers to save memory, say 8-bit integer. In this particular case, having very large activation values could lead to precision loss or clipping when quantized to low-bit representations. Thus, to keep the values small and within a manageable range, we can simply employ ReLU6 to do so.</p>
+
+
+
+<hr class="wp-block-separator has-alpha-channel-opacity is-style-dotted"/>
+
+
+
+<h2 class="wp-block-heading">The Complete MobileNetV2 Architecture</h2>
+
+
+
+<p class="wp-block-paragraph">Now let’s take a look at the complete MobileNetV2 architecture in Figure 5 below. Just like the first version of MobileNet which mostly consists of depthwise separable convolutions, most of the components inside MobileNetV2 are the inverted residual blocks with linear bottlenecks we discussed earlier. Every row in the following table labeled as <em>bottleneck</em> corresponds to a single <em>stage</em>, in which each of them consists of several inverted residual blocks. Talking about the columns in the table, <em>t</em> represents <em>expansion factor</em> used in the middle part of each block, <em>c</em> denotes the number of output channels of each block, <em>n</em> is the number of repeats of the block within that stage, and <em>s</em> indicates the stride of the first block within the stage.</p>
+
+
+
+<p class="wp-block-paragraph">To better understand this idea, let’s take a closer look at the stage which the input shape is 56×56×24. Here you can see that the corresponding parameters of this stage are <em>t</em>=6, <em>c</em>=32, <em>n</em>=3, and <em>s</em>=2. This essentially means that the inverted residual stage consists of 3 blocks. All these blocks are identical except that the first one uses stride 2, reducing the spatial dimension by half from 56×56 to 28×28. Next, <em>c</em>=32 is pretty straightforward as it basically says that the number of output channel of each block within the stage is 32. Meanwhile, <em>t</em>=6 indicates that the intermediate layer inside the blocks is 6 times wider than the input, forming the inverted bottleneck structure. So, in this case the number of channels in the process is going to be 32 → 192 → 32. However, it is important to note that the first block within that stage is different, where it uses 24 → 144 → 32 structure thanks to the 24-channel input tensor. If we refer back to Figure 3, these two structures essentially follow the <em>k → kt → k’</em> pattern.</p>
+
+
+
+<figure class="wp-block-image aligncenter"><img decoding="async" src="../Images/85c21e25c4d18d73b54da99804f936c4.png" alt="" class="wp-image-623748" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/09/1OqBGfoiQ4KDkI_6ZfCKfug.png"/><figcaption class="wp-element-caption">Figure 5. The MobileNetV2 architecture we are about to implement [3].</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">In addition to the above architecture, here we also have skip-connections placed within the inverted residual blocks. This skip-connection will only be applied whenever the stride of the block is set to 1. This is essentially because the spatial dimension of the image will change whenever we use stride 2, causing the output tensor to have different shape to that of the input. Such a difference in tensor shapes will effectively prevent us from performing element-wise summation between the original flow and the skip-connection. See Figure 6 below for the details. Note that the two illustrations in this figure are basically just the visualization of the table in Figure 3.</p>
+
+
+
+<figure class="wp-block-image aligncenter"><img decoding="async" src="../Images/40ccac6002dfb59522d5796431f87ac9.png" alt="" class="wp-image-623742" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/09/1b-pep8VdcY30ZvmPKP4YSQ.png"/><figcaption class="wp-element-caption">Figure 6. We don’t implement skip-connection when the stride is set to 2 (i.e., when the layer performs spatial downsampling) [3].</figcaption></figure>
+
+
+
+<h3 class="wp-block-heading">Parameter Tuning</h3>
+
+
+
+<p class="wp-block-paragraph">Similar to MobileNetV1, MobileNetV2 also has two adjustable parameters called <em>width multiplier</em> and <em>input resolution</em>. The former is used to adjust the width of the network, while the latter is for changing the resolution of the input image. The architecture you see in Figure 5 is the base configuration, where we set the width multiplier to 1 and the input resolution to 224×224. With these two parameters, we can tune the model to find a sweet spot that balances accuracy and efficiency based on our needs.</p>
+
+
+
+<p class="wp-block-paragraph">We can technically choose arbitrary numbers for the two parameters, but authors already provided several predetermined numbers for their experiments. To the width multiplier, we can use 0.75, 0.5 or 0.35, in which all of them will make the model smaller. For instance, if we use 0.5 then all numbers in column <em>c</em> in Figure 5 will be reduced to half of their defaults. To the input resolution, we can choose either 192×192, 160×160, 128×128 or 96×96 as a replacement for 224×224 if you want to lower the number of operations during inference.</p>
+
+
+
+<h3 class="wp-block-heading">Some Experimental Results</h3>
+
+
+
+<p class="wp-block-paragraph">Figure 7 below shows what the experimental results done by the authors look like. Even though MobileNetV1 is considered lightweight already, MobileNetV2 proved that its performance is even better in terms of all metrics compared to its predecessor. However, it is necessary to acknowledge that the base MobileNetV2 is not completely superior to other lightweight models especially when taking into account all aspects at once.</p>
+
+
+
+<figure class="wp-block-image aligncenter"><img decoding="async" src="../Images/0fd0244863334b554b1094562fda2017.png" alt="" class="wp-image-623747" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/09/13gI1XP9YNQnH2nC9v7ttJw.png"/><figcaption class="wp-element-caption">Figure 7. The performance of MobileNetV2 compared to other lightweight models on ImageNet dataset [3].</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">In order to achieve even better accuracy, authors also tried to enlarge the model instead by changing the width multiplier to 1.4 for the 224×224 input resolution, which in the above figure corresponds to the result in the last row. Doing this definitely causes the model complexity as well as the computation time to get higher, but in return it allows the model to obtain the highest accuracy. The results in Figure 8 also show the similar thing, where all MobileNetV2 variants completely outperform the MobileNetV1 counterpart, with the largest MobileNetV2 obtaining the highest accuracy among all models.</p>
+
+
+
+<figure class="wp-block-image aligncenter"><img decoding="async" src="../Images/a814f3f37ef7760a9639ffdc348efc8f.png" alt="" class="wp-image-623744" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/09/1J6Sgg7QxdXebJmBKuYrTbA.png"/><figcaption class="wp-element-caption">Figure 8. More results showing the superiority of MobileNetV2 over the existing models and how input resolution affects accuracy [3].</figcaption></figure>
+
+
+
+<hr class="wp-block-separator has-alpha-channel-opacity is-style-dotted"/>
+
+
+
+<h2 class="wp-block-heading">MobileNetV2 Implementation</h2>
+
+
+
+<p class="wp-block-paragraph">Every time I finished learning something, I always wonder if I really understand what I just learned. In the case of deep learning, I (almost) always try to implement the architecture on my own right after reading the paper just to prove to myself that I understand. And here’s the quote that drives me that way:</p>
+
+
+
+<figure class="wp-block-pullquote"><blockquote><p><em>What I cannot create, I do not understand.</em></p><cite><em>Richard Feynman</em></cite></blockquote></figure>
+
+
+
+<p class="wp-block-paragraph">This is essentially the reason why I always include the code implementation of the paper I am explaining in my post.</p>
+
+
+
+<hr class="wp-block-separator has-alpha-channel-opacity is-style-dotted"/>
+
+
+
+<p class="wp-block-paragraph">What an intermezzo that was. — Now let’s get back our focus to MobileNetV2. In this section I am going to show you how we can implement the architecture from scratch. As always, the very first thing we need to do is to import the required modules.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python"># Codeblock 1
+import torch
+import torch.nn as nn
+from torchinfo import summary</code></pre>
+
+
+
+<p class="wp-block-paragraph">Next, we also need to initialize some configuration variables so that we can easily rescale our model if we want to. The two variables I want to highlight in the Codeblock 2 below are the <code>WIDTH_MULTIPLIER</code> and <code>IMAGE_SIZE</code>, where these two essentially correspond to the <em>width multiplier</em> and <em>input resolution</em> parameters we discussed earlier. Here I set the two to 1.0 and 224 because I want to implement the base MobileNetV2 architecture.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python"># Codeblock 2
+BATCH_SIZE        = 1
+IMAGE_SIZE        = 224
+IN_CHANNELS       = 3
+NUM_CLASSES       = 1000
+WIDTH_MULTIPLIER  = 1.0</code></pre>
+
+
+
+<p class="wp-block-paragraph">If we take a look at the architectural details in Figure 5, we can see that the rows labeled as <em>bottleneck</em> is a group of blocks, which we previously refer to as <em>stage</em>. Meanwhile, each row labeled as <em>conv2d</em> is basically just a standard convolution layer. I’ll start with the latter first because that one is easier to implement.</p>
+
+
+
+<h3 class="wp-block-heading">The Standard Convolution Layer</h3>
+
+
+
+<p class="wp-block-paragraph">Talking about the rows labeled with <em>conv2d</em>, you might be asking why we really need to wrap this single convolution layer in a separate class. Can’t we just directly use <code>nn.Conv2d</code> in the main class? — In fact, it is mentioned in the paper that every conv layer is always followed by a batch normalization layer before eventually being processed by the ReLU6 activation function. This is actually in accordance with MobileNetV1, where it uses the <em>conv-BN-ReLU</em> structure. In order to make the code cleaner, we can just wrap these layers within a single class so that we don’t necessarily need to define all of them repeatedly. Take a look at the Codeblock 3 below to see how I create the <code>Conv</code> class.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python"># Codeblock 3
+class Conv(nn.Module):
+    def __init__(self, first=False):      #(1)
+        super().__init__()
+        
+        if first:
+            in_channels = 3               #(2)
+            out_channels = int(32*WIDTH_MULTIPLIER)          #(3)
+            kernel_size = 3               #(4)
+            stride = 2                    #(5)
+            padding = 1                   #(6)
+        else:
+            in_channels  = int(320*WIDTH_MULTIPLIER)         #(7)
+            out_channels = int(1280*WIDTH_MULTIPLIER)        #(8)
+            kernel_size = 1               #(9)
+            stride = 1                    #(10)
+            padding = 0                   #(11)
+        
+        self.conv = nn.Conv2d(in_channels=in_channels,       #(12)
+                              out_channels=out_channels, 
+                              kernel_size=kernel_size,
+                              stride=stride, 
+                              padding=padding, 
+                              bias=False)
+        self.bn = nn.BatchNorm2d(num_features=out_channels)  #(13)
+        self.relu6 = nn.ReLU6()           #(14)
+    
+    def forward(self, x):
+        x = self.relu6(self.bn(self.conv(x)))                #(15)
+        return x</code></pre>
+
+
+
+<p class="wp-block-paragraph">Every time we want to instantiate a <code>Conv</code> instance, we need to pass a value for the <code>first</code> parameter as shown at the line marked with <code>#(1)</code> in the above code. If you take a look at the architecture, you will notice that this <code>Conv</code> layer will be used either before the sequence of inverted residuals or right after the sequence. The Figure 9 below displays the architecture again with the two convolutions highlighted in pink and green, respectively. Later in the main class, if we want to instantiate the pink layer, we can simply set the <code>first</code> flag to <code>True</code>, and if we want to instantiate the green one, we can run it without passing any arguments since I’ve set the flag to <code>False</code> by default.</p>
+
+
+
+<figure class="wp-block-image"><img decoding="async" src="../Images/21b54431740ee9ebc11399c73785e5bb.png" alt="" class="wp-image-623749" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/09/1NJ7v7Q7DWNIOsilS56108A.png"/><figcaption class="wp-element-caption">Figure 9. The <strong>Conv</strong> class will be used to instantiate these two convolution layers [3][6].</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">Using a flag like this helps us to apply different configurations for the two convolutions. When we use <code>first=True</code>, we set the convolution layer to accept 3 input channels (<code>#(2)</code>) and produce a 32-channel tensor (<code>#(3)</code>). The kernel size used will be 3×3 (<code>#(4)</code>) with a stride of 2 (<code>#(5)</code>), effectively downsampling the spatial dimension by half. With this kernel size, we need to set the padding to 1 (<code>#(6)</code>) to prevent the convolution process from reducing the spatial dimension even further. All these configurations are essentially taken from the conv layer highlighted in pink.</p>
+
+
+
+<p class="wp-block-paragraph">Meanwhile, when we use <code>first=False</code>, this convolution layer will take a tensor of 320 channels for the input (<code>#(7)</code>) and produce another one having 1280 channels (<code>#(8)</code>). This green-highlighted layer is a pointwise convolution, hence we need to set the kernel size to 1 (<code>#(9)</code>). Since here we won’t perform spatial downsampling, the stride parameter must be set to 1 as shown at line <code>#(10)</code> (notice that the input size of this layer and the next one are both 7×7 spatially). Lastly, we set the padding to 0 (<code>#(11)</code>) because by nature a 1×1 kernel cannot reduce spatial dimensions on its own.</p>
+
+
+
+<p class="wp-block-paragraph">As the parameters for the convolution layer have been defined, the next thing we do in the <code>Conv</code> class above is to initialize the convolution layer itself using <code>nn.Conv2d</code> (<code>#(12)</code>) as well as the batch normalization layer (<code>#(13)</code>) and the ReLU6 activation function (<code>#(14)</code>). Lastly, we assemble these layers to form the <em>conv-BN-ReLU</em> structure in the <code>forward()</code> method (<code>#(15)</code>). In addition to the above code, don’t forget to apply <code>WIDTH_MULTIPLIER</code> when specifying the number of input and output channels, i.e., at line <code>#(3)</code>, <code>#(7)</code>, and <code>#(8)</code>, so that we can adjust the model size simply by changing the value of the variable.</p>
+
+
+
+<p class="wp-block-paragraph">Now let’s check if we have implemented the <code>Conv</code> class correctly by running the two test cases below. The one in Codeblock 4 demonstrates the pink layer while the Codeblock 5 shows the green one. The shape of the dummy tensor <code>x</code> used in both tests are set according to the input shapes required by each of the two layers. Based on the resulting outputs, we can confirm that our implementation is correct since the output tensor shapes match exactly with the expected input shapes of the corresponding subsequent layers.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python"># Codeblock 4
+conv = Conv(first=True)
+x = torch.randn(1, 3, 224, 224)
+
+out = conv(x)
+out.shape</code></pre>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-http"># Codeblock 4 Output
+torch.Size([1, 32, 112, 112])</code></pre>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python"># Codeblock 5
+conv = Conv(first=False)
+x = torch.randn(1, int(320*WIDTH_MULTIPLIER), 7, 7)
+
+out = conv(x)
+out.shape</code></pre>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-http"># Codeblock 5 Output
+torch.Size([1, 1280, 7, 7])</code></pre>
+
+
+
+<hr class="wp-block-separator has-alpha-channel-opacity is-style-dotted"/>
+
+
+
+<h3 class="wp-block-heading">Inverted Residual Block for Stride 2</h3>
+
+
+
+<p class="wp-block-paragraph">As we have completed the class for standard convolution layers, we will now talk about the one for the inverted residual blocks. Keep in mind that there are cases where we use either stride 1 or 2, which results in a slight difference in the block structure (see Figure 6). In this case I decided to implement them in two separate classes. In terms of practicality, it might indeed be cleaner if we just put them within the same class. However, for the sake of this tutorial I feel like breaking them down into two will make things easier to follow. I am going to implement the one with stride 2 first since this one is simpler thanks to the absence of the skip-connection. See the <code>InvResidualS2</code> class in Codeblock 6 below for the details.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python"># Codeblock 6
+class InvResidualS2(nn.Module):
+    def __init__(self, in_channels, out_channels, t):         #(1)
+        super().__init__()
+        
+        in_channels  = int(in_channels*WIDTH_MULTIPLIER)      #(2)
+        out_channels = int(out_channels*WIDTH_MULTIPLIER)     #(3)
+        
+        self.pwconv0 = nn.Conv2d(in_channels=in_channels,     #(4)
+                                 out_channels=in_channels*t,
+                                 kernel_size=1, 
+                                 stride=1, 
+                                 bias=False)
+        
+        self.bn_pwconv0 = nn.BatchNorm2d(num_features=in_channels*t)
+        
+        self.dwconv = nn.Conv2d(in_channels=in_channels*t,    #(5)
+                                out_channels=in_channels*t, 
+                                kernel_size=3,                #(6)
+                                stride=2, 
+                                padding=1,
+                                groups=in_channels*t,         #(7)
+                                bias=False)
+        
+        self.bn_dwconv = nn.BatchNorm2d(num_features=in_channels*t)
+        
+        self.pwconv1 = nn.Conv2d(in_channels=in_channels*t,   #(8)
+                                 out_channels=out_channels, 
+                                 kernel_size=1, 
+                                 stride=1, 
+                                 bias=False)
+        
+        self.bn_pwconv1 = nn.BatchNorm2d(num_features=out_channels)
+        
+        self.relu6 = nn.ReLU6()
+    
+    def forward(self, x):
+        print('original\t\t:', x.shape)
+        
+        x = self.pwconv0(x)
+        print('after pwconv0\t\t:', x.shape)
+        x = self.bn_pwconv0(x)
+        print('after bn0_pwconv0\t:', x.shape)
+        x = self.relu6(x)
+        print('after relu\t\t:', x.shape)
+        
+        x = self.dwconv(x)
+        print('after dwconv\t\t:', x.shape)
+        x = self.bn_dwconv(x)
+        print('after bn_dwconv\t\t:', x.shape)
+        x = self.relu6(x)
+        print('after relu\t\t:', x.shape)
+        
+        x = self.pwconv1(x)
+        print('after pwconv1\t\t:', x.shape)
+        x = self.bn_pwconv1(x)
+        print('after bn_pwconv1\t:', x.shape)
+        
+        return x</code></pre>
+
+
+
+<p class="wp-block-paragraph">The above class takes three parameters in order to work: <code>in_channels</code>, <code>out_channels</code>, and <code>t</code>, as written at line <code>#(1)</code>. The first two corresponds to the number of input and output channels of the inverted residual block, whereas <code>t</code> is the expansion factor for determining the channel count of the <em>wide</em> part of the block. So, what we basically do here is just to make the middle tensors to have <code>t</code> times more channels than the input. The number of input and output channels themselves are adjustable via the <code>WIDTH_MULTIPLIER</code> variable we initialized earlier as shown at line <code>#(2)</code> and <code>#(3)</code>.</p>
+
+
+
+<p class="wp-block-paragraph">What we need to do next is to initialize the layers within the inverted residual block according to the structure in Figure 3 and 6. Notice in the two figures that we have a depthwise convolution layer placed between two pointwise convolutions. The first pointwise convolution (<code>#(4)</code>) is used to expand the channel dimension from <code>in_channels</code> to <code>in_channels*t</code>. Subsequently, the depthwise convolution at line <code>#(5)</code> is responsible to capture information along the spatial dimension. Here we set the kernel size to 3×3 (<code>#(6)</code>), which allows the layer to capture spatial information from its neighboring pixels. Don’t forget to set the <code>groups</code> parameter to be the same as the number of input channels to this layer (<code>#(7)</code>) since we want the convolution operation to be performed independently of each channel. Next, we process the resulting tensor with the second pointwise convolution (<code>#(8)</code>), in which this layer is used to project the tensor to the expected number of output channels of the block.</p>
+
+
+
+<p class="wp-block-paragraph">In the <code>forward()</code> method, we place the layers one after another. Remember that we use the <em>conv-BN-ReLU</em> structure except for the last convolution, following the convention of linear bottleneck we discussed earlier. Additionally, here I also print out the output shape after each layer so that you can clearly see how the tensor transforms during the process.</p>
+
+
+
+<p class="wp-block-paragraph">Next, we are going to test whether the <code>InvResidualS2</code> class works properly. The following testing code simulates the first inverted residual block (<em>n=1</em>) of the third row in the architecture (i.e., the one having 16×112×112 input shape).</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python"># Codeblock 7
+inv_residual_s2 = InvResidualS2(in_channels=16, out_channels=24, t=6)
+x = torch.randn(1, int(16*WIDTH_MULTIPLIER), 112, 112)
+
+out = inv_residual_s2(x)</code></pre>
+
+
+
+<p class="wp-block-paragraph">You can see at the line marked with <code>#(1)</code> in the following output that the first pointwise convolution successfully expands the channel axis from 16 to 96. The spatial dimension shrinks from 112×112 to 56×56 after the tensor being processed by the depthwise convolution layer in the middle (<code>#(2)</code>). Lastly, our second pointwise convolution compresses the number of channels to 24 as written at line <code>#(3)</code>. This final tensor dimension is now ready to be passed through the next inverted residual block within the same stage.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-http"># Codeblock 7 Output
+original          : torch.Size([1, 16, 112, 112])
+after pwconv0     : torch.Size([1, 96, 112, 112])  #(1)
+after bn0_pwconv0 : torch.Size([1, 96, 112, 112])
+after relu        : torch.Size([1, 96, 112, 112])
+after dwconv      : torch.Size([1, 96, 56, 56])    #(2)
+after bn_dwconv   : torch.Size([1, 96, 56, 56])
+after relu        : torch.Size([1, 96, 56, 56])
+after pwconv1     : torch.Size([1, 24, 56, 56])    #(3)
+after bn_pwconv1  : torch.Size([1, 24, 56, 56])</code></pre>
+
+
+
+<hr class="wp-block-separator has-alpha-channel-opacity is-style-dotted"/>
+
+
+
+<h3 class="wp-block-heading">Inverted Residual Block for Stride 1</h3>
+
+
+
+<p class="wp-block-paragraph">The code used for implementing the inverted residual block with stride 1 is mostly similar to the one with stride 2. See the <code>InvResidualS1</code> class in Codeblock 8 below.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python"># Codeblock 8
+class InvResidualS1(nn.Module):
+    def __init__(self, in_channels, out_channels, t):
+        super().__init__()
+        
+        in_channels  = int(in_channels*WIDTH_MULTIPLIER)    #(1)
+        out_channels = int(out_channels*WIDTH_MULTIPLIER)   #(2)
+        
+        self.in_channels  = in_channels
+        self.out_channels = out_channels
+        
+        self.pwconv0 = nn.Conv2d(in_channels=in_channels, 
+                                 out_channels=in_channels*t, 
+                                 kernel_size=1, 
+                                 stride=1, 
+                                 bias=False)
+        
+        self.bn_pwconv0 = nn.BatchNorm2d(num_features=in_channels*t)
+        
+        self.dwconv = nn.Conv2d(in_channels=in_channels*t, 
+                                out_channels=in_channels*t, 
+                                kernel_size=3, 
+                                stride=1,            #(3)
+                                padding=1,
+                                groups=in_channels*t, 
+                                bias=False)
+        
+        self.bn_dwconv = nn.BatchNorm2d(num_features=in_channels*t)
+        
+        self.pwconv1 = nn.Conv2d(in_channels=in_channels*t, 
+                                 out_channels=out_channels, 
+                                 kernel_size=1, 
+                                 stride=1, 
+                                 bias=False)
+        
+        self.bn_pwconv1 = nn.BatchNorm2d(num_features=out_channels)
+        
+        self.relu6 = nn.ReLU6()
+        
+    def forward(self, x):
+        
+        if self.in_channels == self.out_channels:    #(4)
+            residual = x          #(5)
+            print(f'residual\t\t: {residual.size()}')
+        
+        x = self.pwconv0(x)
+        print('after pwconv0\t\t:', x.shape)
+        x = self.bn_pwconv0(x)
+        print('after bn_pwconv0\t:', x.shape)
+        x = self.relu6(x)
+        print('after relu\t\t:', x.shape)
+        
+        x = self.dwconv(x)
+        print('after dwconv\t\t:', x.shape)
+        x = self.bn_dwconv(x)
+        print('after bn_dwconv\t\t:', x.shape)
+        x = self.relu6(x)
+        print('after relu\t\t:', x.shape)
+        
+        x = self.pwconv1(x)
+        print('after pwconv1\t\t:', x.shape)
+        x = self.bn_pwconv1(x)
+        print('after bn_pwconv1\t:', x.shape)
+        
+        if self.in_channels == self.out_channels:
+            x = x + residual      #(6)
+            print('after summation\t\t:', x.shape)
+        
+        return x</code></pre>
+
+
+
+<p class="wp-block-paragraph">The first difference we have here is definitely the <code>stride</code> parameter itself, especially the one belongs to the depthwise convolution layer at line <code>#(3)</code>. By setting the <code>stride</code> parameter to 1 like this, the spatial output dimension of this inverted residual block is going to be the same as the input.</p>
+
+
+
+<p class="wp-block-paragraph">Another thing that we didn’t do previously is creating instance attributes for <code>in_channels</code> and <code>out_channels</code> as shown at lines <code>#(1)</code> and <code>#(2)</code>. We do this now because later on we will need to access these values from the <code>forward()</code> method. This is actually just a basic OOP concept, where if we don’t assign them to <code>self</code>, then they will only exist locally within the <code>__init__()</code> method and won’t be available to other methods in the class.</p>
+
+
+
+<p class="wp-block-paragraph">Inside the <code>forward()</code> method itself, what we need to do first is to check whether the number of input and output channels are the same (<code>#(4)</code>). If so, we will keep the original input tensor (<code>#(5)</code>) to implement the skip-connection, in which this tensor will be element-wise summed with the one from the main flow (<code>#(6)</code>). This tensor dimensionality checking is performed because we need to ensure that the two tensors to be summed have the exact same size. We indeed have guaranteed the spatial dimension to remain unchanged since we have set all the three convolution layers to use stride 1. However, there is still a possibility that the number of output channels differs from the input, just like the first block within the stages highlighted in purple, blue and orange in Figure 10 below. In such cases, skip-connection will not be applied because it’s just impossible to perform element-wise summation on tensors with different shapes.</p>
+
+
+
+<figure class="wp-block-image"><img decoding="async" src="../Images/b9ca904efbd438d4822ff2f472eeca10.png" alt="" class="wp-image-623750" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/09/1jxCUfRi7f-FKTxaeXpsLWA.png"/><figcaption class="wp-element-caption">Figure 10. Despite not performing spatial downsampling, there is no skip-connection within the first block in the three highlighted stages since the number of input and output channels are different [3][6].</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">Now let’s test the <code>InvResidualS1</code> class by running the Codeblock 9 below. Here I am going to simulate the second inverted residual block (<em>n</em>=2) of the third row in the architecture, in which this is actually just the continuation of the previous test case. Here you can see that the dummy tensor we use has the exact same shape as the one we obtained from Codeblock 7, i.e., 24×56×56.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python"># Codeblock 9
+inv_residual_s1 = InvResidualS1(in_channels=24, out_channels=24, t=6)
+x = torch.randn(1, int(24*WIDTH_MULTIPLIER), 56, 56)
+
+out = inv_residual_s1(x)</code></pre>
+
+
+
+<p class="wp-block-paragraph">And below is what the resulting output looks like. It is clearly seen here that the network indeed follows the <em>narrow → wide → narrow</em> structure, which in this case is 24 → 144 → 24. In addition to this, since the spatial dimensions of the input and the output tensors are the same, we can technically stack this inverted residual block as many times as we want.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-http"># Codeblock 9 Output
+residual          : torch.Size([1, 24, 56, 56])
+after pwconv0     : torch.Size([1, 144, 56, 56])
+after bn_pwconv0  : torch.Size([1, 144, 56, 56])
+after relu        : torch.Size([1, 144, 56, 56])
+after dwconv      : torch.Size([1, 144, 56, 56])
+after bn_dwconv   : torch.Size([1, 144, 56, 56])
+after relu        : torch.Size([1, 144, 56, 56])
+after pwconv1     : torch.Size([1, 24, 56, 56])
+after bn_pwconv1  : torch.Size([1, 24, 56, 56])
+after summation   : torch.Size([1, 24, 56, 56])</code></pre>
+
+
+
+<hr class="wp-block-separator has-alpha-channel-opacity is-style-dotted"/>
+
+
+
+<h3 class="wp-block-heading">The Entire MobileNetV2 Architecture</h3>
+
+
+
+<p class="wp-block-paragraph">As we have completed defining the <code>Conv</code>, <code>InvResidualS2</code> and <code>InvResidualS1</code> classes, we can now assemble them all to construct the entire MobileNetV2 architecture. Look at the Codeblock 10 below to see how I do that.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python"># Codeblock 10
+class MobileNetV2(nn.Module):
+    def __init__(self):
+        super().__init__()
+        
+        # Input shape: 3x224x224
+        self.first_conv = Conv(first=True)
+        
+        # Input shape: 32x112x112
+        self.inv_residual0 = InvResidualS1(in_channels=32, 
+                                           out_channels=16, 
+                                           t=1)
+        
+        # Input shape: 16x112x112
+        self.inv_residual1 = nn.ModuleList([InvResidualS2(in_channels=16, 
+                                                          out_channels=24, 
+                                                          t=6)])
+        
+        self.inv_residual1.append(InvResidualS1(in_channels=24, 
+                                                out_channels=24, 
+                                                t=6))
+        
+        # Input shape: 24x56x56
+        self.inv_residual2 = nn.ModuleList([InvResidualS2(in_channels=24, 
+                                                          out_channels=32, 
+                                                          t=6)])
+        
+        for _ in range(2):
+            self.inv_residual2.append(InvResidualS1(in_channels=32, 
+                                                    out_channels=32, 
+                                                    t=6))
+        
+        # Input shape: 32x28x28
+        self.inv_residual3 = nn.ModuleList([InvResidualS2(in_channels=32, 
+                                                          out_channels=64, 
+                                                          t=6)])
+        
+        for _ in range(3):
+            self.inv_residual3.append(InvResidualS1(in_channels=64, 
+                                                    out_channels=64, 
+                                                    t=6))
+            
+        # Input shape: 64x14x14
+        self.inv_residual4 = nn.ModuleList([InvResidualS1(in_channels=64, 
+                                                          out_channels=96, 
+                                                          t=6)])
+        
+        for _ in range(2):
+            self.inv_residual4.append(InvResidualS1(in_channels=96, 
+                                                    out_channels=96, 
+                                                    t=6))
+        
+        
+        # Input shape: 96x14x14
+        self.inv_residual5 = nn.ModuleList([InvResidualS2(in_channels=96, 
+                                                          out_channels=160, 
+                                                          t=6)])
+        
+        for _ in range(2):
+            self.inv_residual5.append(InvResidualS1(in_channels=160, 
+                                                    out_channels=160, 
+                                                    t=6))
+        
+        # Input shape: 160x7x7
+        self.inv_residual6 = InvResidualS1(in_channels=160, 
+                                           out_channels=320, 
+                                           t=6)
+        
+        # Input shape: 320x7x7
+        self.last_conv = Conv(first=False)
+        
+        self.avgpool = nn.AdaptiveAvgPool2d(output_size=(1,1))        #(1)
+        self.dropout = nn.Dropout(p=0.2)                              #(2)
+        self.fc = nn.Linear(in_features=int(1280*WIDTH_MULTIPLIER),   #(3)
+                            out_features=1000)
+
+    def forward(self, x):
+        x = self.first_conv(x)
+        print(f"after first_conv\t: {x.shape}")
+        
+        x = self.inv_residual0(x)
+        print(f"after inv_residual0\t: {x.shape}")
+            
+        for i, layer in enumerate(self.inv_residual1):
+            x = layer(x)
+            print(f"after inv_residual1 #{i}\t: {x.shape}")
+            
+        for i, layer in enumerate(self.inv_residual2):
+            x = layer(x)
+            print(f"after inv_residual2 #{i}\t: {x.shape}")
+            
+        for i, layer in enumerate(self.inv_residual3):
+            x = layer(x)
+            print(f"after inv_residual3 #{i}\t: {x.shape}")
+            
+        for i, layer in enumerate(self.inv_residual4):
+            x = layer(x)
+            print(f"after inv_residual4 #{i}\t: {x.shape}")
+            
+        for i, layer in enumerate(self.inv_residual5):
+            x = layer(x)
+            print(f"after inv_residual5 #{i}\t: {x.shape}")
+        
+        x = self.inv_residual6(x)
+        print(f"after inv_residual6\t: {x.shape}")
+        
+        x = self.last_conv(x)
+        print(f"after last_conv\t\t: {x.shape}")
+        
+        x = self.avgpool(x)
+        print(f"after avgpool\t\t: {x.shape}")
+        
+        x = torch.flatten(x, start_dim=1)
+        print(f"after flatten\t\t: {x.shape}")
+        
+        x = self.dropout(x)
+        print(f"after dropout\t\t: {x.shape}")
+        
+        x = self.fc(x)
+        print(f"after fc\t\t: {x.shape}")
+                
+        return x</code></pre>
+
+
+
+<p class="wp-block-paragraph">Despite being quite long, I think the above code is pretty straightforward since what we basically do here is just to place the blocks according to the given architectural details. However, I really want you to pay attention to the number of block repeats within a single stage (<em>n</em>) as well as whether or not the first block in a stage performs downsampling (<em>s</em>). This is because the architecture doesn’t seem to follow a specific pattern. There is a case where the block is repeated four times, there are other cases where the repeats is done two or three times, and there is even a stage that consists of a single block only. Not only that, it is also unclear under what conditions authors decided to use stride 1 or 2 for the first block in the stage. However, I believe that this final architecture was obtained based on their internal design iterations and experiments that are not discussed in the paper.</p>
+
+
+
+<p class="wp-block-paragraph">Going back to the code, after the stages have been initialized, what we need to do next is to initialize the remaining layers, namely an average pooling layer (<code>#(1)</code>), a dropout layer (<code>#(2)</code>) and a linear layer (<code>#(3)</code>) for the classification head. If you go back to the architectural details, you will notice that the final layer should be a pointwise convolution, not a linear layer like this. In fact, in the case when the spatial dimension of the input tensor is 1×1, a pointwise convolution and a linear layer are equivalent. So, it’s basically fine to use either one.</p>
+
+
+
+<p class="wp-block-paragraph">To ensure our MobileNetV2 is working properly, we can run the Codeblock 11 below. Here we can see that this class instance runs without any errors. More importantly, the output shape also matches exactly with the architecture specified in the paper. This confirms that our implementation is correct, and thus ready for training — just don’t forget to adjust the output size of the final layer to match the number of classes in your dataset.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python"># Codeblock 11
+mobilenetv2 = MobileNetV2()
+x = torch.randn(BATCH_SIZE, IN_CHANNELS, IMAGE_SIZE, IMAGE_SIZE)
+
+out = mobilenetv2(x)</code></pre>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-http"># Codeblock 11 Output
+after first_conv       : torch.Size([1, 32, 112, 112])
+after inv_residual1    : torch.Size([1, 16, 112, 112])
+after inv_residual1 #0 : torch.Size([1, 24, 56, 56])
+after inv_residual1 #1 : torch.Size([1, 24, 56, 56])
+after inv_residual2 #0 : torch.Size([1, 32, 28, 28])
+after inv_residual2 #1 : torch.Size([1, 32, 28, 28])
+after inv_residual2 #2 : torch.Size([1, 32, 28, 28])
+after inv_residual3 #0 : torch.Size([1, 64, 14, 14])
+after inv_residual3 #1 : torch.Size([1, 64, 14, 14])
+after inv_residual3 #2 : torch.Size([1, 64, 14, 14])
+after inv_residual3 #3 : torch.Size([1, 64, 14, 14])
+after inv_residual4 #0 : torch.Size([1, 96, 14, 14])
+after inv_residual4 #1 : torch.Size([1, 96, 14, 14])
+after inv_residual4 #2 : torch.Size([1, 96, 14, 14])
+after inv_residual5 #0 : torch.Size([1, 160, 7, 7])
+after inv_residual5 #1 : torch.Size([1, 160, 7, 7])
+after inv_residual5 #2 : torch.Size([1, 160, 7, 7])
+after inv_residual6    : torch.Size([1, 320, 7, 7])
+after last_conv        : torch.Size([1, 1280, 7, 7])
+after avgpool          : torch.Size([1, 1280, 1, 1])
+after flatten          : torch.Size([1, 1280])
+after dropout          : torch.Size([1, 1280])
+after fc               : torch.Size([1, 1000])</code></pre>
+
+
+
+<p class="wp-block-paragraph">Alternatively, it is also possible to test our MobileNetV2 model using the <code>summary()</code> function from <code>torchinfo</code>, which will also show us the number of parameters contained within each layer. If you scroll down all the way to the end of the output, you’ll see that this model with default <em>width multiplier</em> has 3,505,960 trainable params. This number is different from the one disclosed in the paper, where according to Figure 7 it should be 3.4 million. However, if we go to the official PyTorch documentation [7], it says that the parameter count of this model is 3,504,872, which is very close to our implementation. Let me know in the comments if you know which parts of the code I should change to make this number match exactly with the one from PyTorch.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python"># Codeblock 12
+mobilenetv2 = MobileNetV2()
+summary(mobilenetv2, input_size=(BATCH_SIZE, IN_CHANNELS, IMAGE_SIZE, IMAGE_SIZE))</code></pre>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-http"># Codeblock 12 Output
+==========================================================================================
+Layer (type:depth-idx)                   Output Shape              Param #
+==========================================================================================
+MobileNetV2                              [1, 1000]                 --
+├─Conv: 1-1                              [1, 32, 112, 112]         --
+│    └─Conv2d: 2-1                       [1, 32, 112, 112]         864
+│    └─BatchNorm2d: 2-2                  [1, 32, 112, 112]         64
+│    └─ReLU6: 2-3                        [1, 32, 112, 112]         --
+├─InvResidualS1: 1-2                     [1, 16, 112, 112]         --
+│    └─Conv2d: 2-4                       [1, 32, 112, 112]         1,024
+│    └─BatchNorm2d: 2-5                  [1, 32, 112, 112]         64
+│    └─ReLU6: 2-6                        [1, 32, 112, 112]         --
+│    └─Conv2d: 2-7                       [1, 32, 112, 112]         288
+│    └─BatchNorm2d: 2-8                  [1, 32, 112, 112]         64
+│    └─ReLU6: 2-9                        [1, 32, 112, 112]         --
+│    └─Conv2d: 2-10                      [1, 16, 112, 112]         512
+│    └─BatchNorm2d: 2-11                 [1, 16, 112, 112]         32
+├─ModuleList: 1-3                        --                        --
+│    └─InvResidualS2: 2-12               [1, 24, 56, 56]           --
+│    │    └─Conv2d: 3-1                  [1, 96, 112, 112]         1,536
+│    │    └─BatchNorm2d: 3-2             [1, 96, 112, 112]         192
+│    │    └─ReLU6: 3-3                   [1, 96, 112, 112]         --
+│    │    └─Conv2d: 3-4                  [1, 96, 56, 56]           864
+│    │    └─BatchNorm2d: 3-5             [1, 96, 56, 56]           192
+│    │    └─ReLU6: 3-6                   [1, 96, 56, 56]           --
+│    │    └─Conv2d: 3-7                  [1, 24, 56, 56]           2,304
+│    │    └─BatchNorm2d: 3-8             [1, 24, 56, 56]           48
+│    └─InvResidualS1: 2-13               [1, 24, 56, 56]           --
+│    │    └─Conv2d: 3-9                  [1, 144, 56, 56]          3,456
+│    │    └─BatchNorm2d: 3-10            [1, 144, 56, 56]          288
+│    │    └─ReLU6: 3-11                  [1, 144, 56, 56]          --
+│    │    └─Conv2d: 3-12                 [1, 144, 56, 56]          1,296
+│    │    └─BatchNorm2d: 3-13            [1, 144, 56, 56]          288
+│    │    └─ReLU6: 3-14                  [1, 144, 56, 56]          --
+│    │    └─Conv2d: 3-15                 [1, 24, 56, 56]           3,456
+│    │    └─BatchNorm2d: 3-16            [1, 24, 56, 56]           48
+├─ModuleList: 1-4                        --                        --
+│    └─InvResidualS2: 2-14               [1, 32, 28, 28]           --
+│    │    └─Conv2d: 3-17                 [1, 144, 56, 56]          3,456
+│    │    └─BatchNorm2d: 3-18            [1, 144, 56, 56]          288
+│    │    └─ReLU6: 3-19                  [1, 144, 56, 56]          --
+│    │    └─Conv2d: 3-20                 [1, 144, 28, 28]          1,296
+│    │    └─BatchNorm2d: 3-21            [1, 144, 28, 28]          288
+│    │    └─ReLU6: 3-22                  [1, 144, 28, 28]          --
+│    │    └─Conv2d: 3-23                 [1, 32, 28, 28]           4,608
+│    │    └─BatchNorm2d: 3-24            [1, 32, 28, 28]           64
+│    └─InvResidualS1: 2-15               [1, 32, 28, 28]           --
+│    │    └─Conv2d: 3-25                 [1, 192, 28, 28]          6,144
+│    │    └─BatchNorm2d: 3-26            [1, 192, 28, 28]          384
+│    │    └─ReLU6: 3-27                  [1, 192, 28, 28]          --
+│    │    └─Conv2d: 3-28                 [1, 192, 28, 28]          1,728
+│    │    └─BatchNorm2d: 3-29            [1, 192, 28, 28]          384
+│    │    └─ReLU6: 3-30                  [1, 192, 28, 28]          --
+│    │    └─Conv2d: 3-31                 [1, 32, 28, 28]           6,144
+│    │    └─BatchNorm2d: 3-32            [1, 32, 28, 28]           64
+│    └─InvResidualS1: 2-16               [1, 32, 28, 28]           --
+│    │    └─Conv2d: 3-33                 [1, 192, 28, 28]          6,144
+│    │    └─BatchNorm2d: 3-34            [1, 192, 28, 28]          384
+│    │    └─ReLU6: 3-35                  [1, 192, 28, 28]          --
+│    │    └─Conv2d: 3-36                 [1, 192, 28, 28]          1,728
+│    │    └─BatchNorm2d: 3-37            [1, 192, 28, 28]          384
+│    │    └─ReLU6: 3-38                  [1, 192, 28, 28]          --
+│    │    └─Conv2d: 3-39                 [1, 32, 28, 28]           6,144
+│    │    └─BatchNorm2d: 3-40            [1, 32, 28, 28]           64
+├─ModuleList: 1-5                        --                        --
+│    └─InvResidualS2: 2-17               [1, 64, 14, 14]           --
+│    │    └─Conv2d: 3-41                 [1, 192, 28, 28]          6,144
+│    │    └─BatchNorm2d: 3-42            [1, 192, 28, 28]          384
+│    │    └─ReLU6: 3-43                  [1, 192, 28, 28]          --
+│    │    └─Conv2d: 3-44                 [1, 192, 14, 14]          1,728
+│    │    └─BatchNorm2d: 3-45            [1, 192, 14, 14]          384
+│    │    └─ReLU6: 3-46                  [1, 192, 14, 14]          --
+│    │    └─Conv2d: 3-47                 [1, 64, 14, 14]           12,288
+│    │    └─BatchNorm2d: 3-48            [1, 64, 14, 14]           128
+│    └─InvResidualS1: 2-18               [1, 64, 14, 14]           --
+│    │    └─Conv2d: 3-49                 [1, 384, 14, 14]          24,576
+│    │    └─BatchNorm2d: 3-50            [1, 384, 14, 14]          768
+│    │    └─ReLU6: 3-51                  [1, 384, 14, 14]          --
+│    │    └─Conv2d: 3-52                 [1, 384, 14, 14]          3,456
+│    │    └─BatchNorm2d: 3-53            [1, 384, 14, 14]          768
+│    │    └─ReLU6: 3-54                  [1, 384, 14, 14]          --
+│    │    └─Conv2d: 3-55                 [1, 64, 14, 14]           24,576
+│    │    └─BatchNorm2d: 3-56            [1, 64, 14, 14]           128
+│    └─InvResidualS1: 2-19               [1, 64, 14, 14]           --
+│    │    └─Conv2d: 3-57                 [1, 384, 14, 14]          24,576
+│    │    └─BatchNorm2d: 3-58            [1, 384, 14, 14]          768
+│    │    └─ReLU6: 3-59                  [1, 384, 14, 14]          --
+│    │    └─Conv2d: 3-60                 [1, 384, 14, 14]          3,456
+│    │    └─BatchNorm2d: 3-61            [1, 384, 14, 14]          768
+│    │    └─ReLU6: 3-62                  [1, 384, 14, 14]          --
+│    │    └─Conv2d: 3-63                 [1, 64, 14, 14]           24,576
+│    │    └─BatchNorm2d: 3-64            [1, 64, 14, 14]           128
+│    └─InvResidualS1: 2-20               [1, 64, 14, 14]           --
+│    │    └─Conv2d: 3-65                 [1, 384, 14, 14]          24,576
+│    │    └─BatchNorm2d: 3-66            [1, 384, 14, 14]          768
+│    │    └─ReLU6: 3-67                  [1, 384, 14, 14]          --
+│    │    └─Conv2d: 3-68                 [1, 384, 14, 14]          3,456
+│    │    └─BatchNorm2d: 3-69            [1, 384, 14, 14]          768
+│    │    └─ReLU6: 3-70                  [1, 384, 14, 14]          --
+│    │    └─Conv2d: 3-71                 [1, 64, 14, 14]           24,576
+│    │    └─BatchNorm2d: 3-72            [1, 64, 14, 14]           128
+├─ModuleList: 1-6                        --                        --
+│    └─InvResidualS1: 2-21               [1, 96, 14, 14]           --
+│    │    └─Conv2d: 3-73                 [1, 384, 14, 14]          24,576
+│    │    └─BatchNorm2d: 3-74            [1, 384, 14, 14]          768
+│    │    └─ReLU6: 3-75                  [1, 384, 14, 14]          --
+│    │    └─Conv2d: 3-76                 [1, 384, 14, 14]          3,456
+│    │    └─BatchNorm2d: 3-77            [1, 384, 14, 14]          768
+│    │    └─ReLU6: 3-78                  [1, 384, 14, 14]          --
+│    │    └─Conv2d: 3-79                 [1, 96, 14, 14]           36,864
+│    │    └─BatchNorm2d: 3-80            [1, 96, 14, 14]           192
+│    └─InvResidualS1: 2-22               [1, 96, 14, 14]           --
+│    │    └─Conv2d: 3-81                 [1, 576, 14, 14]          55,296
+│    │    └─BatchNorm2d: 3-82            [1, 576, 14, 14]          1,152
+│    │    └─ReLU6: 3-83                  [1, 576, 14, 14]          --
+│    │    └─Conv2d: 3-84                 [1, 576, 14, 14]          5,184
+│    │    └─BatchNorm2d: 3-85            [1, 576, 14, 14]          1,152
+│    │    └─ReLU6: 3-86                  [1, 576, 14, 14]          --
+│    │    └─Conv2d: 3-87                 [1, 96, 14, 14]           55,296
+│    │    └─BatchNorm2d: 3-88            [1, 96, 14, 14]           192
+│    └─InvResidualS1: 2-23               [1, 96, 14, 14]           --
+│    │    └─Conv2d: 3-89                 [1, 576, 14, 14]          55,296
+│    │    └─BatchNorm2d: 3-90            [1, 576, 14, 14]          1,152
+│    │    └─ReLU6: 3-91                  [1, 576, 14, 14]          --
+│    │    └─Conv2d: 3-92                 [1, 576, 14, 14]          5,184
+│    │    └─BatchNorm2d: 3-93            [1, 576, 14, 14]          1,152
+│    │    └─ReLU6: 3-94                  [1, 576, 14, 14]          --
+│    │    └─Conv2d: 3-95                 [1, 96, 14, 14]           55,296
+│    │    └─BatchNorm2d: 3-96            [1, 96, 14, 14]           192
+├─ModuleList: 1-7                        --                        --
+│    └─InvResidualS2: 2-24               [1, 160, 7, 7]            --
+│    │    └─Conv2d: 3-97                 [1, 576, 14, 14]          55,296
+│    │    └─BatchNorm2d: 3-98            [1, 576, 14, 14]          1,152
+│    │    └─ReLU6: 3-99                  [1, 576, 14, 14]          --
+│    │    └─Conv2d: 3-100                [1, 576, 7, 7]            5,184
+│    │    └─BatchNorm2d: 3-101           [1, 576, 7, 7]            1,152
+│    │    └─ReLU6: 3-102                 [1, 576, 7, 7]            --
+│    │    └─Conv2d: 3-103                [1, 160, 7, 7]            92,160
+│    │    └─BatchNorm2d: 3-104           [1, 160, 7, 7]            320
+│    └─InvResidualS1: 2-25               [1, 160, 7, 7]            --
+│    │    └─Conv2d: 3-105                [1, 960, 7, 7]            153,600
+│    │    └─BatchNorm2d: 3-106           [1, 960, 7, 7]            1,920
+│    │    └─ReLU6: 3-107                 [1, 960, 7, 7]            --
+│    │    └─Conv2d: 3-108                [1, 960, 7, 7]            8,640
+│    │    └─BatchNorm2d: 3-109           [1, 960, 7, 7]            1,920
+│    │    └─ReLU6: 3-110                 [1, 960, 7, 7]            --
+│    │    └─Conv2d: 3-111                [1, 160, 7, 7]            153,600
+│    │    └─BatchNorm2d: 3-112           [1, 160, 7, 7]            320
+│    └─InvResidualS1: 2-26               [1, 160, 7, 7]            --
+│    │    └─Conv2d: 3-113                [1, 960, 7, 7]            153,600
+│    │    └─BatchNorm2d: 3-114           [1, 960, 7, 7]            1,920
+│    │    └─ReLU6: 3-115                 [1, 960, 7, 7]            --
+│    │    └─Conv2d: 3-116                [1, 960, 7, 7]            8,640
+│    │    └─BatchNorm2d: 3-117           [1, 960, 7, 7]            1,920
+│    │    └─ReLU6: 3-118                 [1, 960, 7, 7]            --
+│    │    └─Conv2d: 3-119                [1, 160, 7, 7]            153,600
+│    │    └─BatchNorm2d: 3-120           [1, 160, 7, 7]            320
+├─InvResidualS1: 1-8                     [1, 320, 7, 7]            --
+│    └─Conv2d: 2-27                      [1, 960, 7, 7]            153,600
+│    └─BatchNorm2d: 2-28                 [1, 960, 7, 7]            1,920
+│    └─ReLU6: 2-29                       [1, 960, 7, 7]            --
+│    └─Conv2d: 2-30                      [1, 960, 7, 7]            8,640
+│    └─BatchNorm2d: 2-31                 [1, 960, 7, 7]            1,920
+│    └─ReLU6: 2-32                       [1, 960, 7, 7]            --
+│    └─Conv2d: 2-33                      [1, 320, 7, 7]            307,200
+│    └─BatchNorm2d: 2-34                 [1, 320, 7, 7]            640
+├─Conv: 1-9                              [1, 1280, 7, 7]           --
+│    └─Conv2d: 2-35                      [1, 1280, 7, 7]           409,600
+│    └─BatchNorm2d: 2-36                 [1, 1280, 7, 7]           2,560
+│    └─ReLU6: 2-37                       [1, 1280, 7, 7]           --
+├─AdaptiveAvgPool2d: 1-10                [1, 1280, 1, 1]           --
+├─Dropout: 1-11                          [1, 1280]                 --
+├─Linear: 1-12                           [1, 1000]                 1,281,000
+==========================================================================================
+Total params: 3,505,960
+Trainable params: 3,505,960
+Non-trainable params: 0
+Total mult-adds (Units.MEGABYTES): 313.65
+==========================================================================================
+Input size (MB): 0.60
+Forward/backward pass size (MB): 113.28
+Params size (MB): 14.02
+Estimated Total Size (MB): 127.91
+==========================================================================================</code></pre>
+
+
+
+<hr class="wp-block-separator has-alpha-channel-opacity is-style-dotted"/>
+
+
+
+<h2 class="wp-block-heading">Ending</h2>
+
+
+
+<p class="wp-block-paragraph">And that’s pretty much everything about MobileNetV2. I do encourage you to explore this architecture on your own — at least by actually training it on an image classification dataset. Don’t forget to play around with the <em>width multiplier</em> and the <em>input resolution</em> parameters to find the right balance between prediction accuracy and computational efficiency. You can also find the code used in this article in my GitHub repository [8] by the way.</p>
+
+
+
+<p class="wp-block-paragraph">I hope you learned something new today. Thanks for reading!</p>
+
+
+
+<hr class="wp-block-separator has-alpha-channel-opacity is-style-dotted"/>
+
+
+
+<h2 class="wp-block-heading">References</h2>
+
+
+
+<p class="wp-block-paragraph">[1] Muhammad Ardi. MobileNetV1 Paper Walkthrough: The Tiny Giant. Towards Data Science. <a href="https://towardsdatascience.com/the-tiny-giant-mobilenetv1/">https://towardsdatascience.com/the-tiny-giant-mobilenetv1/</a> [Accessed September 25, 2025].</p>
+
+
+
+<p class="wp-block-paragraph">[2] Andrew G. Howard <em>et al.</em> MobileNets: Efficient Convolutional Neural Networks for Mobile Vision Applications. Arxiv. <a href="https://arxiv.org/abs/1704.04861" rel="noreferrer noopener" target="_blank">https://arxiv.org/abs/1704.04861</a> [Accessed April 7, 2025].</p>
+
+
+
+<p class="wp-block-paragraph">[3] Mark Sandler <em>et al.</em> MobileNetV2: Inverted Residuals and Linear Bottlenecks. Arxiv. <a href="https://arxiv.org/abs/1801.04381" rel="noreferrer noopener" target="_blank">https://arxiv.org/abs/1801.04381</a> [Accessed April 12, 2025].</p>
+
+
+
+<p class="wp-block-paragraph">[4] Kaiming He <em>et al.</em> Deep Residual Learning for Image Recognition. Arxiv. <a href="https://arxiv.org/abs/1512.03385" rel="noreferrer noopener" target="_blank">https://arxiv.org/abs/1512.03385</a> [Accessed April 12, 2025].</p>
+
+
+
+<p class="wp-block-paragraph">[5] Zhuang Liu <em>et al.</em> A ConvNet for the 2020s. Arxiv. <a href="https://arxiv.org/abs/2201.03545" rel="noreferrer noopener" target="_blank">https://arxiv.org/abs/2201.03545</a> [Accessed April 12, 2025].</p>
+
+
+
+<p class="wp-block-paragraph">[6] Image created originally by author.</p>
+
+
+
+<p class="wp-block-paragraph">[7] mobilenet_v2. PyTorch. <a href="https://pytorch.org/vision/main/models/generated/torchvision.models.mobilenet_v2.html#mobilenet-v2" rel="noreferrer noopener" target="_blank">https://pytorch.org/vision/main/models/generated/torchvision.models.mobilenet_v2.html#mobilenet-v2</a> [Accessed April 12, 2025].</p>
+
+
+
+<p class="wp-block-paragraph">[8] MuhammadArdiPutra. The Smarter Tiny Giant — MobileNetV2. GitHub. <a href="https://github.com/MuhammadArdiPutra/medium_articles/blob/main/The%20Smarter%20Tiny%20Giant%20-%20MobileNetV2.ipynb" rel="noreferrer noopener" target="_blank">medium_articles/The Smarter Tiny Giant — MobileNetV2.ipynb at main · MuhammadArdiPutra/medium_articles</a> [Accessed April 12, 2025].</p>
+    
+</body>
+</html>

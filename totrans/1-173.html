@@ -1,0 +1,892 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.1//EN"
+  "http://www.w3.org/TR/xhtml11/DTD/xhtml11.dtd">
+
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+<title>Scaling Recommender Transformers to a Billion Parameters</title>
+<link href="../Styles/Style.css" type="text/css" rel="stylesheet"/>
+</head>
+<body>
+<h1>Scaling Recommender Transformers to a Billion Parameters</h1>
+<blockquote>原文：<a href="https://towardsdatascience.com/scaling-recommender-transformers-to-a-billion-parameters/">https://towardsdatascience.com/scaling-recommender-transformers-to-a-billion-parameters/</a></blockquote>
+<p class="wp-block-paragraph"><mdspan datatext="el1761073953789" class="mdspan-comment">Hi TDS</mdspan>! My name is Kirill Khrylchenko, and I lead the RecSys R&amp;D team at Yandex. One of our goals is to develop transformer technologies within the context of recommender systems, an objective we’ve been pursuing for five years now. Not too long ago, we reached a new milestone in the development of recommendation technologies, which I would like to share with you in this article.</p>
+
+
+
+<p class="wp-block-paragraph">The relevance of recommender systems in the world is easy to justify: the amount of content is growing incredibly fast, making it impossible to view in its entirety, and we need recommender systems to address the information overload. Music, movies, books, products, videos, posts, friends, but it’s important to remember that these services benefit not only users but also content creators who need to find their target audience.</p>
+
+
+
+<p class="wp-block-paragraph">We’ve deployed a new generation of transformer recommenders in several services and are actively integrating them with other services. We’ve significantly improved the quality of the recommendations across the board. </p>
+
+
+
+<p class="wp-block-paragraph">If you’re an ML engineer working with recommendations, this article will provide you with some ideas on how to implement a similar approach for your recommender system. And if you are a user, you have an opportunity to learn more about how that very recommender system works.</p>
+
+
+
+<h2 class="wp-block-heading">How Recommender Systems Work</h2>
+
+
+
+<p class="has-text-align-left wp-block-paragraph">The recommendation problem itself has a simple mathematical definition: for each user<img decoding="async" class="wp-image-626782" style="width: 50px;" src="../Images/40314512d08173b32632fc9cf8047540.png" alt="u∈U" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/10/латекс1.svg"/></p>
+
+
+
+<p class="wp-block-paragraph">we want to select items, objects, documents, or products <img decoding="async" class="wp-image-626787" style="width: 44px;" src="../Images/c33171b9a56cc3c322dd6c4be3ff0970.png" alt="" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/10/488d4fde7b7a13a196d657d6619d97e3.svg"/></p>
+
+
+
+<p class="wp-block-paragraph">that they are likely to like.</p>
+
+
+
+<p class="wp-block-paragraph"><img decoding="async" class="wp-image-626788" style="width: 50px;" src="../Images/bc1525640fb5fa85fce1e3fd2df6838d.png" alt="" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/10/5dc9270eea7eb1776a53353cbf3bbc16.svg"/></p>
+
+
+
+<p class="wp-block-paragraph">But there’s a catch:</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">Item catalogs are vast (up to billions of items).</li>
+
+
+
+<li class="wp-block-list-item">There is a significant number of users, and their interests are constantly shifting.</li>
+
+
+
+<li class="wp-block-list-item">Interactions between users and items are very sparse.</li>
+
+
+
+<li class="wp-block-list-item">It is unclear how to define actual user preferences.</li>
+</ul>
+
+
+
+<p class="wp-block-paragraph">To tackle the recommendation problem effectively, we need to leverage non-trivial models that use machine learning.</p>
+
+
+
+<p class="wp-block-paragraph">Neural networks are a potent machine learning tool, especially when there’s a large amount of unstructured data, such as text or images. While traditional classical machine learning involves expert domain knowledge and considerable manual work (feature engineering), neural networks can extract complex relationships and patterns from raw data almost automatically.</p>
+
+
+
+<p class="wp-block-paragraph">In the RecSys domain, we have a large amount of mostly unstructured data (literally trillions of anonymized user-item interactions), as well as entities that are content-based (items consist of titles, descriptions, images, videos, and audio; users can be represented as sequences of events). Additionally, it is crucial that the recommender system performs well for new items and cold users, and encoding users and items through content helps achieve this.</p>
+
+
+
+<p class="wp-block-paragraph">The time we have to generate recommendations for the user is very strictly limited. Every millisecond counts! Additionally, we don’t have infinite resources (in terms of hardware), and the catalogs we need recommendations from are quite large. This is why recommendations are usually formed in multiple stages:</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">First, we select a relatively small set of candidates from the entire catalog using lightweight models (<strong>retrieval</strong> stage).</li>
+
+
+
+<li class="wp-block-list-item">Then, we run these candidates through more complex models that utilize additional information and more intensive computations for each candidate (<strong>ranking</strong> stage).</li>
+</ul>
+
+
+
+<p class="wp-block-paragraph">Architecturally, models vary significantly between stages, making it challenging to discuss any aspect without referring to specific stages of the recommender system.</p>
+
+
+
+<figure class="wp-block-image size-large"><img decoding="async" src="../Images/aad0e13baf69f22baf59258274945c59.png" alt="" class="wp-image-624149" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/10/image-16-1024x595.png"/><figcaption class="wp-element-caption">Multi-stage recommender systems, Image by Author</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">The two-tower neural network architecture is very popular for the retrieval stage. Users and items (for information retrieval, this would be queries and documents, independently encoded into vector representations) are used, and the dot product is employed to calculate the similarity between them. </p>
+
+
+
+<p class="wp-block-paragraph">You could also say that such models “embed” users and items into a shared “semantic space”, where the semantic aspect represents the fact that the closer the user-item pair is in terms of vector space, the more similar they are.</p>
+
+
+
+<p class="wp-block-paragraph">Two-tower models are high-speed. Let’s assume the user requests recommendations. The two-tower model then needs to calculate:</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">The “user tower” once per request.</li>
+
+
+
+<li class="wp-block-list-item">Vectors of all candidate items for which you want to calculate user-item affinity.</li>
+
+
+
+<li class="wp-block-list-item">Dot products.</li>
+</ul>
+
+
+
+<p class="wp-block-paragraph">You don’t even need to recalculate the vectors of candidate items for each user query, because they are the same for all users and rarely change; for instance, we don’t assume that a movie or a music track often changes its title. In practice, we regularly recalculate item vectors for the entire catalog offline (for example, daily) and upload them to either the service where we need to calculate the dot product or to another service that we access online to retrieve the necessary item vectors. </p>
+
+
+
+<p class="wp-block-paragraph">But that’s me describing a use case where you have some reasonable, small number of candidates you want to calculate user-item affinities for. This is true for the ranking stage. However, at the candidate generation stage, the problem becomes more complicated: we need to calculate proximities for all items in the catalog, select the top-N (where N is typically expressed in hundreds to thousands) with the highest affinity values, and then forward them to the subsequent stages.</p>
+
+
+
+<p class="wp-block-paragraph">This is where two-tower models are <strong>invaluable</strong>: we can quickly generate an approximate top-N by scalar product, even for massive catalogs, using approximate search methods. We build a specific “index” (typically a graph structure, such as in the HNSW method) for the set of already calculated item vectors that we can store in the service and use to feed user vectors, extracting an approximate top for these vectors.</p>
+
+
+
+<p class="wp-block-paragraph">Building this index is difficult and time-consuming (with a separate challenge of quickly updating and rebuilding an index). With that being said, it can still be done offline, and then the binary and the index can be uploaded to the service, where we’ll search for candidates in the runtime environment.</p>
+
+
+
+<figure class="wp-block-image size-large"><img decoding="async" src="../Images/f032c886871202d7eb817b0f1fccfead.png" alt="" class="wp-image-624151" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/10/image-17-1024x576.png"/><figcaption class="wp-element-caption">Two-tower neural network, Image by Author</figcaption></figure>
+
+
+
+<h2 class="wp-block-heading">How Do We Encode a User Into a Vector?</h2>
+
+
+
+<p class="wp-block-paragraph">Classical algorithms solved this problem quite easily: in matrix factorization methods (like ALS), the user vector was “trainable”, represented by the model parameters, and determined within the optimization procedure. In user-item collaborative filtering methods, a user was assigned a vector of catalog dimensionality in which the i-th coordinate corresponded to a particular item and represented how often the user interacted with that item (e.g., how frequently they bought it or how they rated it).</p>
+
+
+
+<p class="wp-block-paragraph">The modern approach would be to encode users with transformers, suggesting that a user can be encoded into a vector using transformers. We take the user’s anonymized history—that is, a sequence of events—and encode these events into vectors, then utilize a transformer. In the most basic case, events are represented by purchases or likes; however, in other cases, it could be the entire history of interactions within a company’s ecosystem.</p>
+
+
+
+<p class="wp-block-paragraph">Initially, when transformers were first used in recommendations, researchers drew analogies from similarities with NLP: a user is like a sentence, and the words in it represent purchases, likes, and other interactions.</p>
+
+
+
+<figure class="wp-block-image size-large"><img decoding="async" src="../Images/757c27e896f3d1b248fec3ab67ec6270.png" alt="" class="wp-image-624152" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/10/image-18-1024x576.png"/><figcaption class="wp-element-caption">Two-tower neural network design with a transformer Image by Author</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">Another type of neural network recommender model is models with early fusion. These models don’t separate user and item information into two towers but rather process all information together. That is, we fuse all information about the user, the item, and their interaction at an early stage. In contrast, two-tower models are said to feature late fusion through the scalar product. Early-fusion models are more expressive than two-tower models. They can capture more complex signals and learn more non-trivial dependencies. </p>
+
+
+
+<p class="wp-block-paragraph">However, it’s difficult to apply them outside the ranking stage because of their computational burden and the need to recalculate the entire model for each user query and each candidate. Unlike two-tower models, they don’t support the factorization of computations. </p>
+
+
+
+<p class="wp-block-paragraph">We utilize various architecture types, including two-tower models with transformers and models with early fusion. We use two-tower architectures more often because they are highly efficient, suitable for all stages simultaneously, and still yield good quality gains with considerably fewer resources.</p>
+
+
+
+<p class="wp-block-paragraph">We used to train two-tower models in two stages:</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item"><strong>Pre-training with contrastive learning</strong>. We train the model to align users with their positive user-item interactions using contrastive learning,</li>
+
+
+
+<li class="wp-block-list-item"><strong>Task-specific fine-tuning</strong>. As with NLP, fine-tuning is a task-specific approach. If the model will be used for ranking, we train it to accurately rank the recommendations shown to the user. We showed two items—the user liked one, disliked the other—we want to rank items in the same order. With retrieval, the task resembles pre-training but employs additional techniques that enhance the candidates’ recall.</li>
+</ul>
+
+
+
+<p class="wp-block-paragraph">In the next section, we’ll explore how this process has changed with our newer models.</p>
+
+
+
+<h2 class="wp-block-heading">Scaling Recommender Systems</h2>
+
+
+
+<p class="wp-block-paragraph">Is there a limit to the size of recommender models, after which we no longer see size-related improvements in the quality of recommendations?</p>
+
+
+
+<p class="wp-block-paragraph">For a long time, our recommender models (and not just ours, but models across industry and academia) were very small, which suggested that the answer to this question was “yes”. </p>
+
+
+
+<p class="wp-block-paragraph">However, in deep learning, there is the scaling hypothesis, which states that as models become larger and the volume of data increases, the model quality should improve significantly.</p>
+
+
+
+<p class="wp-block-paragraph">Much of the progress in deep learning over the past decade can be attributed to this hypothesis. Even the earliest successes in deep learning were based on scaling, with the emergence of an extensive dataset for image classification, ImageNet, and the good performance of neural networks (AlexNet) on that dataset.</p>
+
+
+
+<p class="wp-block-paragraph">The scaling hypothesis is even more evident in language models and natural language processing (NLP): you can predict the dependence of quality improvement on the amount of computations and express the corresponding scaling laws.</p>
+
+
+
+<figure class="wp-block-image size-large"><img decoding="async" src="../Images/651d1f4c29c6805934fe0a548163d7b3.png" alt="" class="wp-image-624156" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/10/image-19-1024x435.png"/><figcaption class="wp-element-caption">Dashboard parameter overview. Image by Author</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">What do I mean when I say recommender models can be made bigger? </p>
+
+
+
+<p class="wp-block-paragraph">There are as many as four different axes to scale. </p>
+
+
+
+<p class="wp-block-paragraph"><strong>Embeddings</strong>. We have a variety of information about users and items, so we have access to a wide range of features, and a large portion of these features are categorical. An example of a categorical feature is Item ID, artist ID, genre, or language.</p>
+
+
+
+<p class="wp-block-paragraph">Categorical features have a very high cardinality (number of unique values)—reaching billions—so if you make large trainable embeddings (vector representations) for them, you get huge embedding matrices.</p>
+
+
+
+<p class="wp-block-paragraph">That said, embeddings are the bottleneck between the input data and the model, so you need to make them large for good quality. For example, Meta* has embedding matrices with dimensions ranging from <a href="https://arxiv.org/abs/2403.02545">675 billion</a> to <a href="https://arxiv.org/abs/2104.05158">13 trillion</a> parameters, while Google reported at least 1 billion parameters in <a href="https://dl.acm.org/doi/10.1145/2959100.2959190" data-type="link" data-id="https://dl.acm.org/doi/10.1145/2959100.2959190">YoutubeDNN</a> back in 2016. Even Pinterest, which had long promoted inductive graph embeddings from PinSage [<a href="https://arxiv.org/abs/1806.01973" data-type="link" data-id="https://arxiv.org/abs/1806.01973">1</a>, <a href="https://arxiv.org/abs/2205.10666" data-type="link" data-id="https://arxiv.org/abs/2205.10666">2</a>], has recently started using <a href="https://dl.acm.org/doi/10.1145/3640457.3688053" data-type="link" data-id="https://dl.acm.org/doi/10.1145/3640457.3688053">large embedding matrices</a>.</p>
+
+
+
+<p class="wp-block-paragraph"><strong>Context length</strong>. For decades, recommender system engineers have been busy generating features. In modern ranking systems, the number of features can reach hundreds or even thousands, and Yandex also offers such services.</p>
+
+
+
+<p class="wp-block-paragraph">Another example of “context” in a model is the user’s history in a transformer. Here, the size of the context is determined by the length of the history. In both industry and academia, the number tends to be very small, with only a few hundred events at best.</p>
+
+
+
+<p class="wp-block-paragraph"><strong>Training dataset size.</strong> I already mentioned that we have a lot of data. Recommender systems produce hundreds of datasets that are similar in size to the GPT-3 training dataset. </p>
+
+
+
+<p class="wp-block-paragraph">The industry has multiple use cases of massive datasets with billions of training examples on display: <a href="https://arxiv.org/abs/1706.06978" data-type="link" data-id="https://arxiv.org/abs/1706.06978">2 billion</a>, <a href="https://arxiv.org/abs/2404.06078" data-type="link" data-id="https://arxiv.org/abs/2404.06078">2.1 billion</a>, <a href="https://arxiv.org/abs/2306.00248" data-type="link" data-id="https://arxiv.org/abs/2306.00248">3 billion</a>, <a href="https://arxiv.org/abs/2104.05158" data-type="link" data-id="https://arxiv.org/abs/2104.05158">60 billion</a>, <a href="https://arxiv.org/abs/2008.13535" data-type="link" data-id="https://arxiv.org/abs/2008.13535">100 billion</a>, <a href="https://arxiv.org/abs/2403.02545" data-type="link" data-id="https://arxiv.org/abs/2403.02545">146 billion</a>, <a href="https://arxiv.org/abs/1606.07792" data-type="link" data-id="https://arxiv.org/abs/1606.07792">500 billion</a>.</p>
+
+
+
+<p class="wp-block-paragraph"><strong>Encoder size</strong>. The standard for early-fusion models will be in millions or tens of millions of parameters. According to the Google papers, “simplified” versions of their Wide&amp;Deep models had 1 to 68 million parameters for the experiments [<a href="https://dl.acm.org/doi/10.1145/3298689.3346997" data-type="link" data-id="https://dl.acm.org/doi/10.1145/3298689.3346997">1</a>, <a href="https://dl.acm.org/doi/10.1145/3298689.3346997" data-type="link" data-id="https://dl.acm.org/doi/10.1145/3298689.3346997">2</a>]. And if we use a two-layer DCN-v2 (a popular neural network layer for early-fusion models) over a thousand continuous features, we’ll get no more than 10 million parameters.</p>
+
+
+
+<p class="wp-block-paragraph">Two-tower models most often use tiny transformers to encode the user: for example, two transformer blocks with hidden layer dimensionality not exceeding a couple of hundred. This configuration will have at most a few million parameters.</p>
+
+
+
+<p class="wp-block-paragraph">And while the sizes of the embedding matrices and training datasets are already quite large, scaling the length of user history and the capacity of the encoder part of the model remains an open question. Is there any significant scaling by these parameters or not?</p>
+
+
+
+<p class="wp-block-paragraph">This was the question on our minds in February, 2024. Then an article from researchers at Meta, titled Actions Speak Louder than Words, cheered us all up a bit.</p>
+
+
+
+<p class="wp-block-paragraph">The аuthors presented a new encoder architecture called <a href="https://arxiv.org/abs/2402.17152" data-type="link" data-id="https://arxiv.org/abs/2402.17152">HSTU</a> and formulated both the ranking problem and the candidate generation problem as a generative model. The model had a very long history length (8000 events!) along with an extensive training dataset (100 billion examples), and the user history encoder was much larger than the previous few million parameters. However, even here, the largest encoder configuration mentioned, has only 176 million parameters, and it’s unclear whether they implemented it (judging by the subsequent articles, they didn’t).</p>
+
+
+
+<p class="wp-block-paragraph">Are 176 million parameters in an encoder a lot or a little? If we look at language models, the answer is clear: an LLM with 176 million parameters in the encoder will be highly inferior in capability and problem-solving quality to modern SOTA models with billions or even trillions of parameters.</p>
+
+
+
+<p class="wp-block-paragraph">Why, then, do we have such small models in recommender systems? </p>
+
+
+
+<p class="wp-block-paragraph">Why can’t we achieve a similar leap in quality if we replace natural language texts with anonymized user histories in which actions act as words? Have recommender models already reached the ceiling of their baseline quality, and all we have left is to make small incremental improvements, tweaking features and target values.</p>
+
+
+
+<p class="wp-block-paragraph">These were the existential questions we asked ourselves when designing our own new ARGUS approach.</p>
+
+
+
+<h2 class="wp-block-heading"><br/>RecSys × LLM × RL</h2>
+
+
+
+<p class="wp-block-paragraph">After plowing through the extensive literature on scaling, we found that three main conditions determine the success of neural network scaling:</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">Lots of data.</li>
+
+
+
+<li class="wp-block-list-item">Quite expressive architecture with a large model capacity.</li>
+
+
+
+<li class="wp-block-list-item">The most general, fundamental learning task possible.</li>
+</ul>
+
+
+
+<p class="wp-block-paragraph">For example, LLMs are very expressive and powerful transformers that learn from literally all the data on the internet. Additionally, the task of predicting the next word is a fundamental task that, in reality, decomposes into various tasks related to different fields, including grammar, erudition, mathematics, physics, and programming. All three conditions are met!</p>
+
+
+
+<p class="wp-block-paragraph">If we look at recommender systems:</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">We also have a lot of data: trillions of interactions between users and items.</li>
+
+
+
+<li class="wp-block-list-item">We can just as easily use transformers.</li>
+
+
+
+<li class="wp-block-list-item">We just need to find the right learning task to scale the recommender model. </li>
+</ul>
+
+
+
+<p class="wp-block-paragraph">That’s what we did.</p>
+
+
+
+<figure class="wp-block-image size-large"><img decoding="async" src="../Images/7b4822a1ebbcc1688df5df026e375682.png" alt="" class="wp-image-624188" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/10/image-20-1024x392.png"/><figcaption class="wp-element-caption">LLM process flow. Image by Author</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">There’s an interesting aspect of pre-training large language models. If you just ask a pre-trained LLM about something, it will give an average answer. The most likely answer it has encountered in the training data. That answer won’t necessarily be good or right. </p>
+
+
+
+<p class="wp-block-paragraph">But if you add a prompt before the question, like “Imagine you are an expert in X”, it will start providing much more relevant and correct answers. </p>
+
+
+
+<p class="wp-block-paragraph">That’s because LLMs don’t just learn to imitate answers from the internet; they also acquire a more fundamental understanding of the world in an attempt to condense all the information from the training set. It learns patterns and abstractions. And it’s precisely because the LLM knows a wide range of answers and yet possesses a fundamental understanding of the world that we can obtain good answers from it.</p>
+
+
+
+<figure class="wp-block-image size-large"><img decoding="async" src="../Images/107c5b7c38fcf0494cfeb5ebe862cc72.png" alt="" class="wp-image-624191" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/10/image-22-1024x578.png"/><figcaption class="wp-element-caption">Venn Diagram : What Makes for a Good Answer? Image by Author</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">We tried to apply this logic to recommender systems. First, you need to express the recommendations as a reinforcement learning task:</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">A recommender system is an agent.</li>
+
+
+
+<li class="wp-block-list-item">Actions are recommendations. In the most basic case, the recommender system recommends one item at a time (for example, recommends one music track in the music streaming app each time).</li>
+
+
+
+<li class="wp-block-list-item">The environment means users, their behaviors, patterns, preferences, and interests.</li>
+
+
+
+<li class="wp-block-list-item">The policy is a probability distribution over items.</li>
+
+
+
+<li class="wp-block-list-item">The reward is a user’s positive feedback in response to a recommendation.</li>
+</ul>
+
+
+
+<figure class="wp-block-image size-large"><img decoding="async" src="../Images/9b82fd734253c9e6bd2305e71852ad05.png" alt="" class="wp-image-624193" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/10/image-24-1024x579.png"/><figcaption class="wp-element-caption">Recommendations as a Reinforcement Learning Task, Image by Author</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">There’s a direct analogy to the LLM example. “Answers from the internet” are the actions of past recommender systems (logging policies), and fundamental knowledge about the world is understanding users, their patterns, and preferences. We want our new model to be able to:</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">Imitate the actions of past recommender systems.</li>
+
+
+
+<li class="wp-block-list-item">Have a good understanding of the users.</li>
+
+
+
+<li class="wp-block-list-item">Adjust their actions to achieve a better outcome.</li>
+</ul>
+
+
+
+<p class="wp-block-paragraph">Before we move on to our new approach, let’s examine the most popular setup for training recommendation transformers: next—item prediction. The SASRec model is very representative here. The system accumulates a user’s history of positive interactions with the service (for example, purchases), and the model learns to predict which purchase is likely to come next in the sequence. That is, instead of next-token prediction, as in NLP, we opt for next-item prediction.</p>
+
+
+
+<figure class="wp-block-image size-large"><img decoding="async" src="../Images/013ef820b67879d7230b19047653d9fe.png" alt="" class="wp-image-624194" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/10/image-25-1024x578.png"/><figcaption class="wp-element-caption">Self-Attentive Sequential Recommendation. <a href="https://arxiv.org/abs/1808.09781" data-type="link" data-id="https://arxiv.org/abs/1808.09781">Source</a></figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">This approach (SASRec and common next item prediction) is not consistent with the philosophy I described earlier, which focused on adjusting the logging policy based on fundamental knowledge of the world. It would seem that to predict what the user will buy next, the model should operate under this philosophy:</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">It should understand what could be shown to the user by the recommender system that was in production at the time for which the prediction should be made. That is, it should have a good model of logging policy behavior (i.e., a model that can be used to imitate).</li>
+
+
+
+<li class="wp-block-list-item">It needs to understand what the user might have liked from the things shown by the past recommender system, meaning that it needs to understand their preferences, which are the very fundamental beliefs about the world.</li>
+</ul>
+
+
+
+<p class="wp-block-paragraph">But models like SASRec don’t explicitly model any of these things. They lack complete information about past logging policies (we only see recommendations with positive outcomes), and we also don’t learn how to replicate these logging policies. There’s no way to know what the past recommender system could have offered. At the same time, we don’t fully understand the model of the world or the user: we ignore all negative feedback and only consider positive feedback.</p>
+
+
+
+<h2 class="wp-block-heading"><br/>ARGUS: AutoRegressive Generative User Sequential Modeling</h2>
+
+
+
+<p class="wp-block-paragraph">AutoRegressive Generative User Sequential modeling (ARGUS) is our new approach to training recommendation transformers.</p>
+
+
+
+<p class="wp-block-paragraph">First, we examine the entire anonymized user history, including positive interactions but also all other interactions. We capture the essence of the interaction context, the time it occurred, the device used, the product page the user was on, their My Vibe personalization settings, and other relevant details.</p>
+
+
+
+<figure class="wp-block-image size-large"><img decoding="async" src="../Images/273dbd6da6a11bdbf1654c83b3bc78bc.png" alt="" class="wp-image-624196" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/10/image-26-1024x288.png"/><figcaption class="wp-element-caption">ARGUS: AutoRegressive Generative User Sequential Modeling</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">User history is a specific sequence of triples (context, item, feedback), where context refers to the interaction context, item represents the object the user interacts with, and feedback denotes the user’s reaction to the interaction (such as whether the user liked the item, bought it, etc.).</p>
+
+
+
+<p class="wp-block-paragraph">Next, we identify two new learning tasks, both of which extend beyond the conventional next-item prediction widely used in industry and academia.</p>
+
+
+
+<h2 class="wp-block-heading"><br/>Next item prediction</h2>
+
+
+
+<p class="wp-block-paragraph">Our first task is also called next item prediction. Looking at the history and the current interaction context, we predict which item will be interacted with: P(item | history, context).</p>
+
+
+
+<figure class="wp-block-image size-large"><img decoding="async" src="../Images/0efc4538f0f9bbe603300a507377ae58.png" alt="" class="wp-image-624347" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/10/image-75-1024x323.png"/><figcaption class="wp-element-caption">Next Item Prediction Flow, Image by Author</figcaption></figure>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">If the history contains only recommendation traffic (events generated directly by the recommender system), then the model learns to imitate the logging policy (recommendations from the past recommender system).</li>
+</ul>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">If there is also organic traffic (any traffic other than referral traffic, such as traffic from search engines, or if the user visits the library and listens to their favorite track), we also gain more fundamental knowledge about the user, unrelated to the logging policy.</li>
+</ul>
+
+
+
+<p class="wp-block-paragraph"><br/><strong>Important</strong>: though this task has the same name as in SASRec (next item prediction), it’s not the same task at all. We predict not only positive but also negative interactions, and also take into account the current context. The context helps us understand whether the action is organic or not, and if it’s a recommendation, what surface it’s on (place, page, or carousel). Also, it generally reduces the noise level during model training.</p>
+
+
+
+<p class="wp-block-paragraph">Context is essential for music recommendations: the user’s mood and their current situation have a significant impact on the type of music they want to listen to.</p>
+
+
+
+<p class="wp-block-paragraph">The task of predicting an element from a set is typically expressed as a classification problem, where the elements of the original set serve as classes. Then, we need to use a cross-entropy loss function for training, where the softmax function is applied to the logits (unnormalized outputs of the neural network). Softmax calculation requires computing the sum of exponents from logits across all classes.</p>
+
+
+
+<p class="wp-block-paragraph">While the size of dictionaries in LLMs can reach hundreds of thousands of items in the worst case, and softmax calculation is not a significant problem, it becomes a concern in recommender systems. Here, catalogs consist of millions or even billions of items, and calculating the full softmax is an impossible task. This is a topic for a separate big article, but eventually, we have to use a tricky loss function called “sampled softmax” with a l<a href="https://arxiv.org/abs/2507.09331" data-type="link" data-id="https://arxiv.org/abs/2507.09331">ogQ correction</a>:</p>
+
+
+
+<figure class="wp-block-image size-full is-resized"><img decoding="async" src="../Images/1a4e082973ae98868a270f5b19935f9b.png" alt="" class="wp-image-624197" style="width:385px;height:auto" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/10/image-27.png"/></figure>
+
+
+
+<figure class="wp-block-image size-full is-resized"><img decoding="async" src="../Images/c823d7e8b2910ae9f0e5c313fdd83193.png" alt="" class="wp-image-624199" style="width:166px;height:auto" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/10/image-29.png"/></figure>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">N means a mix of in-batch and uniform negatives</li>
+
+
+
+<li class="wp-block-list-item"><code>logQ(n)</code>means logQ correction</li>
+
+
+
+<li class="wp-block-list-item">Temperature <code>T</code>means a trained parameter <code>Eᵀ</code>clipped to [0.01, 100].</li>
+</ul>
+
+
+
+<h2 class="wp-block-heading">Feedback prediction</h2>
+
+
+
+<p class="wp-block-paragraph">Feedback prediction is the second learning task. Considering history, the current context, and the item, we predict user feedback: P(feedback | history, context, item).</p>
+
+
+
+<figure class="wp-block-image size-large"><img decoding="async" src="../Images/d198ed506bac4d729a924a2b19ff9a9d.png" alt="" class="wp-image-624201" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/10/image-30-1024x323.png"/><figcaption class="wp-element-caption">Feedback prediction learning task. Image by Author</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">The first task, next item prediction, teaches us how to imitate logging policies (and understanding users if there is organic traffic). The feedback prediction task, on the other hand, is focused exclusively, on getting fundamental knowledge about users, their preferences, and interests. </p>
+
+
+
+<p class="wp-block-paragraph">It is very similar to how the ranking variant of the model from “<a href="https://arxiv.org/abs/2402.17152" data-type="link" data-id="https://arxiv.org/abs/2402.17152">Actions Speak Louder than Words</a>” learns on a sequence of pairs (item, action). Still, here the context token is treated separately, and there are more than just recommender contexts present.</p>
+
+
+
+<p class="wp-block-paragraph">Feedback can have multiple components: whether a track was liked, disliked, added to a playlist, and what portion of the track was listened to. We predict all types of feedback by decomposing them into individual loss functions. You can use any loss function as a specific loss function, including cross-entropy or regression. For example, binary cross-entropy is sufficient to predict whether a like was present or not.</p>
+
+
+
+<p class="wp-block-paragraph">Although some feedback is more common (there are usually far fewer likes than long listens), the model does a good job of learning to predict all signals. The larger the model, the easier it is to learn all tasks at once, without conflicts. Moreover, frequent feedback (listens), on the contrary, helps the model learn how to simulate rare, sparse feedback (likes).</p>
+
+
+
+<figure class="wp-block-image size-large"><img decoding="async" src="../Images/7f0bff5c81bf243ef1b2f8260bec7b65.png" alt="" class="wp-image-624206" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/10/image-33-1024x578.png"/><figcaption class="wp-element-caption">Diagram illustrating how the transformer model performs next-item and feedback prediction.  Image by Author</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">If we combine all this into a single learning task, we get the following:</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">Create histories for the user from triples (context, item, feedback).</li>
+
+
+
+<li class="wp-block-list-item">Use the transformer.</li>
+
+
+
+<li class="wp-block-list-item">Predict the next item based on the hidden state of the context.</li>
+
+
+
+<li class="wp-block-list-item">Predict the user’s feedback after interacting with the item based on the item’s hidden state.</li>
+</ul>
+
+
+
+<figure class="wp-block-image size-large"><img decoding="async" src="../Images/c2b109164f3b40f58f372ace8d470966.png" alt="" class="wp-image-624205" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/10/image-32-1024x578.png"/><figcaption class="wp-element-caption">The image illustrates the difference between the ARGUS and SASRec approaches: with ARGUS, we train the model to imitate the behavior of past recommender systems and predict the user’s response; in contrast, with SASRec, we train the model to predict the next positive interaction.</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph"><br/>Let me also comment on how this differs from HSTU. In Actions Speak Louder than Words, the authors train two separate models for candidate generation and ranking. The candidate generation model contains the entire history, but, like SASRec, it models only positive interactions and doesn’t consider the loss function in cases where there’s a negative interaction. The ranking model, as mentioned earlier, learns for a task similar to our feedback prediction.</p>
+
+
+
+<p class="wp-block-paragraph">Our solution offers a more comprehensive next item prediction task and a more comprehensive feedback prediction task, and the model learns in both functions simultaneously.</p>
+
+
+
+<h2 class="wp-block-heading"><br/>Simplified ARGUS</h2>
+
+
+
+<p class="wp-block-paragraph">Our approach has one big problem—we’re inflating the user’s history. Because each interaction with an item is represented by three tokens at once (context, item, feedback), we would have to feed almost 25,000 tokens into the transformer to analyze 8192 recent user listens.</p>
+
+
+
+<figure class="wp-block-image size-large"><img decoding="async" src="../Images/f64ee4a7875cd5f67ca5d5d2ea98af41.png" alt="" class="wp-image-624204" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/10/image-31-1024x578.png"/><figcaption class="wp-element-caption">Simplified ARGUS. Image by Author</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">One could argue that this is still not significant and that the context length is much longer in LLMs; however, this is not entirely accurate. LLMs, on average, have much smaller numbers, typically hundreds of tokens, especially during pre-training.</p>
+
+
+
+<p class="wp-block-paragraph">In contrast, in our music streaming platform, for example, users often have thousands or even tens of thousands of events. We already have much longer context lengths, and inflating those lengths by a factor of three has an even greater impact on learning speed. To tackle this, we created a simplified version of the model, in which each triple (context, item, feedback) is condensed into a single vector. In terms of input format, it resembles our previous generations of transformer models; however, we maintain the same two learning tasks—next item prediction and feedback prediction.</p>
+
+
+
+<p class="wp-block-paragraph">To predict the next item, we take the hidden state from the transformer corresponding to the triple (c, i, f) at a past point in time, concatenate the current context vector to it, compress it to a lower dimension using an MLP, and then use the sampled softmax to learn to predict the next item.</p>
+
+
+
+<p class="wp-block-paragraph">To predict the feedback, we concatenate the vector of the current item and then use an MLP to predict all the required target variables. In terms of recommender transformer architectures, our model becomes less target-aware and less context-aware; however, it still performs well, enabling a three-fold acceleration.</p>
+
+
+
+<h2 class="wp-block-heading"><br/>ARGUS Implementation</h2>
+
+
+
+<p class="wp-block-paragraph">A model trained in this two-headed mode for both tasks simultaneously (next item prediction and feedback prediction) can be implemented as is. The NIP head is responsible for candidate selection, and the FP head for final ranking.<br/>But we didn’t want to do that, at least not for our first implementation:</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">Our goal was to implement a very large model, so we initially focused on offline deployment. With offline deployment, user and item vectors are recalculated daily within a separate regular process, and you only need to calculate the dot product in the runtime environment. </li>
+</ul>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">The pre-trained version of ARGUS implies access to the user’s history without any delay: we see all events in their history up to the current point in time when the prediction is made. That is, it needs to be applied at runtime.</li>
+
+
+
+<li class="wp-block-list-item">The NIP head predicts all user interactions, and the model is usually trained to predict only future positive interactions to generate candidates. But predicting positive interactions is a heuristic, a surrogate learning task. It might even be better to use a head that predicts all interactions because it learns to be consistent with the ranking. If an item has been recommended, it means the ranking liked it. But in this situation, we weren’t ready to experiment with that and instead wanted to follow the well-trodden path.</li>
+
+
+
+<li class="wp-block-list-item">The FP head learns for pointwise losses: whether a track will be liked or not, what portion of the track will be heard, and so on. But we still often train models for pairwise ranking: we learn to rank items that were recommended “next to each other” and received different feedback. Some argue that pointwise losses are sufficient for training ranking models, but in this case, we don’t replace the entire ranking stack. Instead, we aim to add a new, powerful, neural-network-based feature to the final ranking model. If the final ranking model is trained for a particular task (such as pairwise ranking), then the neural network that generates the feature is most efficiently trained for that task; otherwise, the final model will rely less on our feature. Accordingly, we’d like to pre-train ARGUS for the same task as the original ranking model, allowing us to utilize it in ranking.</li>
+</ul>
+
+
+
+<p class="wp-block-paragraph">There are other deployment use cases beyond the conventional candidate generation and ranking stages, and we’re actively researching these as well. However, for our first deployment, we went with an offline two-tower ranking:</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">We decided to fine-tune ARGUS so that it could be used as an offline two-tower model. We use it to recalculate user and item vectors daily, while user preferences are determined through the dot product of the user with the items.</li>
+</ul>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">We pre-trained ARGUS for a pairwise ranking task similar to the one on which the final ranking model is trained. This means that we have somehow selected pairs of tracks that the user heard and rated differently in terms of positive feedback, and we want to learn how to rank them correctly.</li>
+</ul>
+
+
+
+<p class="wp-block-paragraph">We build these models quite often: they are easy to train and implement in terms of resources and development costs. However, our previous models were significantly smaller and learned differently. Not with the ARGUS procedure, but first with the usual contrastive learning between users and positives, and then fine-tuned for the task.</p>
+
+
+
+<p class="wp-block-paragraph">Our previous contrastive pre-training procedure implied compiling multiple training examples for a user: if the user had n purchases, then there would be n samples in the dataset. That said, we didn’t use autoregressive learning. That is, we ran the transformer n times during training. This approach enabled us to be very flexible in creating pairs (user, item) for training, use any history format, encode context together with the user, and account for lags. When predicting likes, we can use a one-day lag in the user’s history. However, things were running pretty slowly.</p>
+
+
+
+<p class="wp-block-paragraph">ARGUS pre-training employs autoregressive learning, where we learn from all events in the user’s activity simultaneously in a single transformer run. This is a powerful acceleration that allowed us to train much larger models using the same resources.</p>
+
+
+
+<p class="wp-block-paragraph">During fine-tuning, we also ran the transformer many times for a single user. It is called impression-level learning that Meta used to have before HSTU. If a user is shown an item at a specific moment, we generate a sample of the form (user, item). The dataset can contain a large number of such impressions for a single user, and we will rerun the transformer for each one of them. For pairwise ranking, we considered triples of the form (user, item1, item2). The ones we used before.</p>
+
+
+
+<p class="wp-block-paragraph">Examining the acceleration during the pre-training stage, we decided to employ a similar approach with fine-tuning. We develop a fine-tuning procedure for the two-tower model to teach it ranking, where the transformer only needs to be run once.</p>
+
+
+
+<figure class="wp-block-image size-large"><img decoding="async" src="../Images/0237f259cf2c0ddbe8c9fab006f1f295.png" alt="" class="wp-image-624321" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/10/image-56-1024x578.png"/><figcaption class="wp-element-caption">Diagram of how transformers use historical impressions and user states to form predictions. Image by Author</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">Let’s say we have the user’s entire history for a year, and all the recommendations shown to the user within the same period. By implementing a transformer with a causal mask over the entire history, we get vector representations of the user for all the moments in that year at once, and so we can:</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">Separately calculate the vectors of the shown items.</li>
+
+
+
+<li class="wp-block-list-item">Review the timestamps and map recommendation impressions to user vectors corresponding to the required lag in user history delivery.</li>
+
+
+
+<li class="wp-block-list-item">Calculate all the required scalar products and all terms of the loss function.</li>
+</ul>
+
+
+
+<p class="wp-block-paragraph">And all of this at once for the entire year—in a single transformer run.</p>
+
+
+
+<p class="wp-block-paragraph">Previously, we would rerun the transformer for each pair of impressions; now, we process all the impressions at once in a single run. This is a massive acceleration: by a factor of tens, hundreds, or even thousands. To employ a two-tower model like this, we can simply use the vector representation of the user at the last moment in time (corresponding to the last event in the history) as the current vector representation. For the items, we can use the encoder that was used during training for the impressions. In training, we simulate a one-day user history lag and then run the model as an offline model, recalculating user vectors daily.</p>
+
+
+
+<p class="wp-block-paragraph">When I say that we process the user’s entire year of history in a single transformer run, I’m being somewhat misleading. In reality, we have a certain limit on the maximum history length that we enforce, and a user in a dataset can have multiple samples or chunks. For pre-training, these chunks don’t overlap.</p>
+
+
+
+<p class="wp-block-paragraph">However, during fine-tuning, there are limits not only on the maximum history length but also on its minimum length, as well as on the maximum number of recommendation impressions in a single training example used to train the model for ranking.</p>
+
+
+
+<h2 class="wp-block-heading"><br/>Results</h2>
+
+
+
+<p class="wp-block-paragraph">We chose our music streaming as the first service to experiment with. Recommendations are crucial here, and the service has a large number of active users. We’ve built a giant training dataset with over 300 billion listens from millions of users. This is tens or even hundreds of times larger than the training datasets we’d used before.</p>
+
+
+
+<p class="wp-block-paragraph">What’s a triple (context, item, feedback) in a music streaming service?</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item"><strong>Context</strong>: whether the current interaction is a recommendation or organic. If it’s a recommendation—what surface it’s on, and if it’s My Vibe—what the settings are.</li>
+
+
+
+<li class="wp-block-list-item"><strong>Item</strong>: a music track. The most important feature for item encoding is the item ID. We use unified embeddings to encode features with high cardinality. In this case, we take three 512K hashes per item. We use a fixed unified embedding matrix with 130 million parameters in our experiments.</li>
+
+
+
+<li class="wp-block-list-item"><strong>User feedback</strong>: whether a track was liked, and what portion of the track was heard.</li>
+</ul>
+
+
+
+<p class="wp-block-paragraph">For offline quality assessment, we use data from the week following the training period through the global temporal split.</p>
+
+
+
+<p class="wp-block-paragraph">To assess the quality of the pre-trained model, we examine the loss function values in the pre-training tasks: next item prediction and feedback prediction. That is, we measure how well the model learned to solve the tasks we created for it. The smaller the value, the better.</p>
+
+
+
+<p class="wp-block-paragraph"><strong>Important</strong>: We consider the user’s history over a long period, but the loss function is only calculated for events that occur within the test period.</p>
+
+
+
+<p class="wp-block-paragraph">During fine-tuning, we learn to correctly rank item pairs based on user feedback, making PairAccuracy— a metric that measures the share of pairs correctly ordered by the model —a suitable offline metric for us. In practice, we reweigh pairs slightly more based on feedback: for example, pairs in which the person liked and skipped a track have a higher weight than those in which the person listened to and skipped a track.</p>
+
+
+
+<p class="wp-block-paragraph">Our deployment scenario involves adding a powerful new feature to the final ranker. For this reason, we measure the relative increase in PairAccuracy for the final ranker with the new feature added, compared to the final ranker without it. The final ranker in our music streaming platform is gradient boosting.<br/></p>
+
+
+
+<h2 class="wp-block-heading">A/B Test Results and Measurements</h2>
+
+
+
+<p class="wp-block-paragraph">Our initial goal was to scale recommendation transformers. To test the scaling, we selected four different-sized transformer configurations, ranging from 3.2 million to 1.007 billion parameters.</p>
+
+
+
+<figure class="wp-block-image size-large"><img decoding="async" src="../Images/52c05ebefcc32cd71e508a588ad68756.png" alt="" class="wp-image-624348" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/10/image-76-1024x579.png"/><figcaption class="wp-element-caption">HSTU Performance test. Image by Author</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">We also decided to test the performance of the HSTU architecture. In “<a href="https://arxiv.org/abs/2402.17152" data-type="link" data-id="https://arxiv.org/abs/2402.17152">Actions Speak Louder than Words</a>“, the authors proposed a new encoder architecture, which is quite different from the transformer architecture. Based on the authors’ experiments, this architecture outperforms transformers in recommendation tasks.</p>
+
+
+
+<figure class="wp-block-image size-large"><img decoding="async" src="../Images/6e2b50d89a0266da9a020c4a4484ba7b.png" alt="" class="wp-image-624349" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/10/image-77-1024x434.png"/><figcaption class="wp-element-caption">Performance test dashboard. Image by Author</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">There’s scaling! Each new jump in architecture size results in a quality gain, both in pre-training and fine-tuning.</p>
+
+
+
+<p class="wp-block-paragraph">HSTU proved to be no better than transformers. We used the largest configuration mentioned by the authors in “<a href="https://arxiv.org/abs/2402.17152" data-type="link" data-id="https://arxiv.org/abs/2402.17152">Actions Speak Louder than Words</a>.” It has one and a half times more parameters than our medium transformer, while having roughly the same quality.</p>
+
+
+
+<figure class="wp-block-image size-large"><img decoding="async" src="../Images/552904e015d89d1e8c018ce3e78112ef.png" alt="" class="wp-image-624320" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/10/image-55-1024x578.png"/><figcaption class="wp-element-caption">Graph describing the relationship between model size, entropy prediction, and ranking uplift. Image by Author.</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">Let’s visualize the metrics from the table as a graph. In that case, we can observe the scaling law for our four points: the dependence of quality on the logarithm of the number of parameters appears linear.</p>
+
+
+
+<p class="wp-block-paragraph">We performed a small ablation study to find out whether we could simplify our model or remove any parts from the training.</p>
+
+
+
+<figure class="wp-block-image size-large"><img decoding="async" src="../Images/cb5abc20aed8998c18e44a5961d3aeaa.png" alt="" class="wp-image-624258" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/10/image-44-1024x321.png"/><figcaption class="wp-element-caption">Results with pre-training vs without, Image by Author</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">If you remove pre-training, the model’s quality drops.</p>
+
+
+
+<figure class="wp-block-image size-large"><img decoding="async" src="../Images/4f20549d9273b803de6e2c615d83729f.png" alt="" class="wp-image-624257" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/10/image-43-1024x344.png"/><figcaption class="wp-element-caption">Fine-tuning and pairwise accuracy results, Image by Author</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">If you reduce the duration of fine-tuning, the drop becomes even more pronounced.</p>
+
+
+
+<figure class="wp-block-image size-large"><img decoding="async" src="../Images/4733d4634469904ad628eb9a7fc9691a.png" alt="" class="wp-image-624256" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/10/image-42-1024x320.png"/><figcaption class="wp-element-caption">Noticeable scaling in history length, Image by Author </figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">At the beginning of this article, I mentioned that the authors of “Actions Speak Louder than Words” trained a model with a history length of 8,000 items. We decided to give it a try: it turns out that handling such a deep user’s musical history results in a noticeable improvement in recommendations. Previously, our models utilized a maximum of 1,500–2,000 events. This was the first time we had the opportunity to cross this threshold.</p>
+
+
+
+<h2 class="wp-block-heading"><br/>Implementation Results</h2>
+
+
+
+<p class="wp-block-paragraph">We’ve been working to develop transformers for music recommendations for about three years now and we’ve come a long way. Here’s everything we have learned and how we have progressed developing transformer-based models for music recommendations over this time. </p>
+
+
+
+<figure class="wp-block-image size-large"><img decoding="async" src="../Images/5ed65a8f0fa06c401ec10e8938cd692d.png" alt="" class="wp-image-624253" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/10/image-41-1024x364.png"/><figcaption class="wp-element-caption">Project Roadmap, Image by Author</figcaption></figure>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">Our first three transformers were all offline. User and item vectors were recalculated daily. Then, user vectors were loaded into a key-value store, and item vectors were stored in the service’s RAM, while only the dot product was calculated at runtime. We utilized some of these models not only for ranking, but also for candidate generation (we are familiar with building multi-head models that perform both tasks). In cases like this, the HNSW index, from which candidates can be retrieved, also resides in the service’s RAM.</li>
+
+
+
+<li class="wp-block-list-item">The first model only had a signal about likes, the second model had a signal about listens (including skips), and in the third model, we combined both signal types (explicit and implicit).</li>
+
+
+
+<li class="wp-block-list-item">The v4 version of the model is an adaptation of v3, which is implemented in runtime with a slight lag in user history, its encoder is 6x smaller than that of the v3 model.</li>
+
+
+
+<li class="wp-block-list-item">The new ARGUS model has eight times the user history length and ten times the encoder size. It also uses a new learning process I described earlier.</li>
+</ul>
+
+
+
+<figure class="wp-block-image size-large"><img decoding="async" src="../Images/a77cf0ffb8d4961d37308a10fa77842f.png" alt="" class="wp-image-624252" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/10/image-40-1024x469.png"/><figcaption class="wp-element-caption">Implementation version dashboard, Image by Author</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">TLT is the total listening time. The “like” likelihood represents the chances of a user liking a recommendation when it’s shown to them. Each implementation resulted in a metrics boost for our user-tailored recommendations. And the first ARGUS gave about the same increase in metrics as all the previous implementations combined!</p>
+
+
+
+<figure class="wp-block-image size-large"><img decoding="async" src="../Images/350c3b958d73fad0a539f79fa35b4668.png" alt="" class="wp-image-624250" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/10/image-39-1024x434.png"/><figcaption class="wp-element-caption">ARGUS Test Results Dashboard, Image by Author </figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">My Vibe also has a special setting, which we use a separate ranking stack for: Unfamiliar. We had a separate ARGUS implementation for this setting, achieving a 12% increase in total listening time and a 10% growth in likelihood. The Unfamiliar setting is used by people who are interested in discovering new recommendations. The fact that we experienced a significant increase in this category confirms that ARGUS is more effective at handling non-trivial scenarios.</p>
+
+
+
+<p class="wp-block-paragraph">We implemented ARGUS in music scenarios on smart devices and successfully increased the total time users spend with an active speaker by 0.75%. Here, the final ranker is not a gradient boosting model, but a full-scale ranking neural network. Because of this, we were able to not only feed a single scalar feature from ARGUS but also pass full user and item vectors as input to the final ranker. Compared to a single scalar feature, this increased the quality gain by another one and a half to two times.</p>
+
+
+
+<p class="wp-block-paragraph">ARGUS has already been implemented not only as a ranking feature, but also to generate candidates. The team has adapted the offline ARGUS into a runtime version. These implementations yielded significant gains in key metrics. Neural networks are the future of recommender systems but there’s still a long journey ahead. </p>
+
+
+
+<p class="wp-block-paragraph">Thank you for reading.</p>
+    
+</body>
+</html>

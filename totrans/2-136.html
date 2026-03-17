@@ -1,0 +1,342 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.1//EN"
+  "http://www.w3.org/TR/xhtml11/DTD/xhtml11.dtd">
+
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+<title>Exploring Prompt Learning: Using English Feedback to Optimize LLM Systems</title>
+<link href="../Styles/Style.css" type="text/css" rel="stylesheet"/>
+</head>
+<body>
+<h1>Exploring Prompt Learning: Using English Feedback to Optimize LLM Systems</h1>
+<blockquote>原文：<a href="https://towardsdatascience.com/exploring-prompt-learning-using-english-feedback-to-optimize-llm-systems/">https://towardsdatascience.com/exploring-prompt-learning-using-english-feedback-to-optimize-llm-systems/</a></blockquote>
+<p class="wp-block-paragraph"><mdspan datatext="el1752703563922" class="mdspan-comment">Applications of reinforcement</mdspan> learning (RL) in AI model building has been a growing topic over the past few months. From Deepseek models incorporating RL mechanics into their training processes to other success stories of RL-based improvement, “AI Twitter” has been ablaze.</p>
+
+
+
+<p class="wp-block-paragraph">As more agents get deployed, a question emerges: can reinforcement learning control systems be built only in prompts? After all, reinforcement learning is all about using real-world feedback to optimize toward a goal, traditionally by adjusting model weights. But prompts themselves are the primary interface for guiding large language models. </p>
+
+
+
+<p class="wp-block-paragraph">We’ve been experimenting with a new approach to optimizing LLM prompts that we’re calling <strong>“Prompt Learning” (PL)</strong>. Unlike traditional optimization methods that rely on numerical scores, PL uses natural language feedback to iteratively improve prompts. The roots of this approach are in the <a href="https://arize.com/blog/voyager-an-open-ended-embodied-agent-with-llms-paper-reading-and-discussion/">Voyager paper</a> by Jim Fan’s team at NVIDIA. It is also alluded to by Andrej Karpathy in <a href="https://x.com/karpathy/status/1944435412489171119">several</a> recent <a href="https://x.com/karpathy/status/1921368644069765486">tweets</a>, where he argues prompt-centric learning will be a key technique. </p>
+
+
+
+<p class="wp-block-paragraph">Despite these early inklings, to our knowledge no one has yet rigorously researched, characterized, and measured a full implementation of a reinforcement learning based approach to prompt tuning. That’s exactly what we set out to do. </p>
+
+
+
+<p class="wp-block-paragraph">This implementation is inspired by an idea introduced in the original Voyager paper. The iterative prompting mechanism used in the original Voyager paper as the agent acquires and refines forms the basis for our <strong>prompt learning</strong> approach.</p>
+
+
+
+<h2 class="wp-block-heading">What Is Prompt Learning?</h2>
+
+
+
+<p class="wp-block-paragraph">Prompt learning differs from MetaPrompt prompt optimization in a couple major ways. </p>
+
+
+
+<p class="wp-block-paragraph">First and foremost, the error term is in English and is not a score. The English error term allows for English feedback that is used directly to tune instructions. An explanation from an eval tells you exactly why the evaluation failed and prompt learning then adds instructions to help fix the problem to the system prompt. The English error term allows us to solve a set of problems that are unsolvable by current pure prompt optimization techniques. </p>
+
+
+
+<p class="wp-block-paragraph">Secondly, prompt learning is an online approach to manage your system instructions that is designed to be run continually against your prompt – tuning instructions back into the context. LLM-based systems can assist with context engineering your system instructions.</p>
+
+
+
+<p class="wp-block-paragraph">The English instructions in the prompt context allow for management of instructions, such as how to deal with competing instructions or expiring instructions or human review of instructions, all in English. In our prompt learning meta prompt we even allow keywords where it will only make edits to a specific instructions-based area of the prompt. In “weights” and “gradient”-based prompt optimization approaches, this is nearly impossible.</p>
+
+
+
+<p class="wp-block-paragraph">This implementation of prompt learning uses evaluations, explanations, and annotations on runs of an application to automatically improve your prompt.</p>
+
+
+
+<p class="wp-block-paragraph">The results are promising: prompt learning can make significant levels of improvements, with only one-tenth or one-hundredth the number of labeled examples.</p>
+
+
+
+<p class="wp-block-paragraph">Let’s dive into the mechanics of prompt learning and examine exactly why it’s working.</p>
+
+
+
+<h2 class="wp-block-heading">What’s the Difference Between Reinforcement Learning and Prompt Learning?</h2>
+
+
+
+<p class="wp-block-paragraph">Traditional reinforcement learning relies on using scores or errors to generate gradient error terms, which then update your original model. Each gradient error term pushes your model slightly closer to optimal performance.</p>
+
+
+
+<figure class="wp-block-image size-full"><img decoding="async" src="../Images/40160d207aaa51f1ec06e04ba68d7a56.png" alt="" class="wp-image-609818" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/07/Screenshot-2025-07-16-at-10.19.23 AM.png"/><figcaption class="wp-element-caption">Traditional RL (image created by author)</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">The key here is that you need many, many examples to align your model. Over time, these myriad examples push your model towards outputting the correct values across your possible inputs. It works by accumulating error gradients and nudging your model in a certain direction.</p>
+
+
+
+<figure class="wp-block-image"><img decoding="async" src="../Images/fe32ccf503aa979923e66dcd7a0c6919.png" alt="" class="wp-image-609819" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/07/AD_4nXc9Ln3XQd-fF7BndE0UhtH67NGAvNgUydmBBHMnIcmCPfcLyIYXz6YVLZ9FnkyyPXzh_UXhr_UHT2MjCt4tV-Wsd77znBnPMEhhYcHqnBOtMb5njbrYusbfdhiOL8_QqX228HQLWQ.png"/><figcaption class="wp-element-caption">Image created by author</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">Reinforcement learning is a very powerful technique. But what if you don’t have thousands of examples? What if you have a complex set of goals and those goals don’t easily express as a score? Lastly, what if someone, an annotator or human expert, has relayed to you in English what the problem actually is and how to fix it?</p>
+
+
+
+<p class="wp-block-paragraph">Prompt learning allows you to make powerful changes using <em>individual</em> examples. Instead of gradient error terms calculated for each example, you calculate full text explanations of why an example was scored a certain way. These examples are then fed back into the optimization flow and incorporated into the prompt. </p>
+
+
+
+<p class="wp-block-paragraph">The key idea is:</p>
+
+
+
+<ol class="wp-block-list">
+<li class="wp-block-list-item">The “error”, an Eval explanation OR annotation term is in English </li>
+
+
+
+<li class="wp-block-list-item">The modification that changes your actions are done in the prompt context, not weights</li>
+
+
+
+<li class="wp-block-list-item">The reward function is an evaluation or human annotation </li>
+
+
+
+<li class="wp-block-list-item">The instructions are maintained and managed in the prompt context, allowing instruction management </li>
+</ol>
+
+
+
+<figure class="wp-block-image"><img decoding="async" src="../Images/28c7ecda250974bc4bb3ca450bcf0c7e.png" alt="" class="wp-image-609822" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/07/AD_4nXfkvKVP9SZXD4Jlx3CosrwZhJaoDNSlbiUD-_XX2109kXjNbGZnjLEnSuxyGQeF7yBE3TMpn5Hx9N3aZic4bMj1rS7EUp8CyJxbNfWhpMQl9q8oQcB6vehNT0lIBbYv74XjfHIEuQ.png"/><figcaption class="wp-element-caption">The above shows an example of a human annotation and a metaprompt added instruction (image created by author)</figcaption></figure>
+
+
+
+<figure class="wp-block-image"><img decoding="async" src="../Images/fde3504cfcec4a4cc8d0a6b0311be998.png" alt="" class="wp-image-609821" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/07/AD_4nXdMsalcvzohVJjHX-XCcSw6xTpn6XZEsKPvrV1WKgWQFTVrlavXzjaJZBSDNzTLDenKv86y0liS2S0iNG09mxkPT2EKqS2mB_Sxs4khZTG7imaoQt7emBeCI8I7aChry7pDPB4aYw.png"/><figcaption class="wp-element-caption">The above shows an example of an evaluation and a metaprompt created instruction to fix (image created by author)</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">Our research data shows examples where well-known optimization libraries fall short today. Namely, where evals with critiques or annotations contain information not available in the training set on how to fix a failure. There is not an easy way to take information-rich feedback in English and easily feed it back into a gradient update. In general you might not want to do gradient updates at all. Having all of your instructions in English allows you to deal with things that are not easy to do in “weight land,” such as what to do with competing instructions, removal of instructions, compaction of instructions and managing when to expire an instruction — essentially what we call <strong>instruction management.</strong></p>
+
+
+
+<p class="wp-block-paragraph">One other advantage of prompt learning over gradient based updates is instead of using tens of thousands of examples, you can make changes to your system prompt with a single annotation example.</p>
+
+
+
+<figure class="wp-block-image"><img decoding="async" src="../Images/feb82a21e3788e31afb16e2d91d3ac01.png" alt="" class="wp-image-609823" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/07/AD_4nXfd8qoviCQ_KLNSeTADoARcbQnnTfU2LZ0s3dDA5yLI4u4j0-N4hvD6qCQMjPtkBCV6tSR_rEZswyfuK1UooXayrgTLzwuTlQuZlx2rX7X5W7rt_VJEn8Mf7LHE2y3eFPUmG710.png"/><figcaption class="wp-element-caption">Diagram by author</figcaption></figure>
+
+
+
+<h2 class="wp-block-heading">How Is This Different from Prompt Optimization?</h2>
+
+
+
+<p class="wp-block-paragraph">There are a lot of techniques out there for <a href="https://arize.com/blog/prompt-optimization-few-shot-prompting/">prompt optimization</a>. Prompt optimization applies more traditional machine learning train and test approaches to optimizing prompts by gathering examples and attempting to find similarities with those examples.</p>
+
+
+
+<p class="wp-block-paragraph">The seed of the failure of all prompt optimization approaches comes from the focus on scores as the means of propagating failure errors. As you think about failures, not every failure expresses itself easily as a numeric number and a numeric value hides the reason for a failure. </p>
+
+
+
+<p class="wp-block-paragraph">Using a score as your main approach for propagating a failure disconnects the optimization fix from the reason it failed.</p>
+
+
+
+<figure class="wp-block-table"><table class="has-fixed-layout"><tbody><tr><td/><td><em>Prompt Learning</em></td><td><em>Reinforcement Learning</em></td><td><em>Prompt Optimization</em></td></tr><tr><td><strong>Feedback Mechanism</strong></td><td>Evaluation-based English explanations and human annotations </td><td>Numeric rewards</td><td>Numeric scores</td></tr><tr><td><strong>Optimization</strong></td><td>Metaprompt defines optimization approach </td><td>Updating model based on gradients </td><td>Varied but some support metaprompts</td></tr><tr><td><strong>Prompt Control</strong></td><td>Can optimize only specific section of prompt (instruction section)</td><td>N/A</td><td>Typically optimizes whole prompt </td></tr><tr><td><strong>Online Setup</strong></td><td>Designed to be used always on, with human control of “prompt change” acceptance or total automation </td><td>Designed to be used online</td><td>Normally one off</td></tr></tbody></table></figure>
+
+
+
+<h2 class="wp-block-heading">How Does the Optimization Loop Work?</h2>
+
+
+
+<p class="wp-block-paragraph">In many real world use cases, as we tested with customers on real data, a single optimization run with a single-shot output worked great. In cases where you need multiple loops over the optimization to improve performance, the English explanation (or critique) output of an Evaluator can improve performance. </p>
+
+
+
+<figure class="wp-block-image"><img decoding="async" src="../Images/b6f8a63186fcb9ff634433b8a7b2535d.png" alt="" class="wp-image-609824" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/07/AD_4nXdIDhx7dssgFL7KaeNLFuBgr_9Mya_I3yesDDu4hvC6j35gz1XdHaRed9cQF8b5EKFGOTy6ZhmaHDSbnrQ_iFZLeDpuVX2wvhaVBdgMyP-858emJY8MGW5ZexQ0CcfngjREZI216A.png"/><figcaption class="wp-element-caption">Image by author</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">The English explanation (Critique) is an important feature of our evaluation library, generating an explanation then allows the results to be used in a feedback loop. </p>
+
+
+
+<p class="wp-block-paragraph">In our testing, as the model was required to add more instructions back into the context window to fix the prompt, the iterative loop became more important. In cases where only 1-10 instructions needed to be added a single meta-prompt improvement loop was sufficient. </p>
+
+
+
+<h2 class="wp-block-heading">How Did We Test Prompt Learning?</h2>
+
+
+
+<p class="wp-block-paragraph">We ran a series of optimization experiments using prompt learning in order to benchmark its efficacy. To date, this has been run across a sizable production set of AI application and agent use cases:</p>
+
+
+
+<p class="wp-block-paragraph">For our demo data application, we chose a JSON generation problem where models had to generate JSON for a webpage based on natural language prompts.</p>
+
+
+
+<p class="wp-block-paragraph">We additionally generated a set of <strong>latent rules</strong> that the responses needed to follow. Things like:</p>
+
+
+
+<ol class="wp-block-list">
+<li class="wp-block-list-item">Every section needs a type value from a predefined list</li>
+
+
+
+<li class="wp-block-list-item">All images must include alt text</li>
+
+
+
+<li class="wp-block-list-item">All external asset links must use https</li>
+</ol>
+
+
+
+<p class="wp-block-paragraph">These rules were implicitly represented in feedback and explanations attached to a set of traces of our application.</p>
+
+
+
+<p class="wp-block-paragraph">We designed this test to mimic a typical evaluation cycle of an agent. Evaluation was done using a mixture of <a href="https://arize.com/llm-as-a-judge/">LLM-as-a-judge techniques</a> with human review, again to mimic real world patterns.</p>
+
+
+
+<p class="wp-block-paragraph">All of this data (the application traces, feedback, and explanations) was then fed into the optimization stage.</p>
+
+
+
+<p class="wp-block-paragraph">To perform the optimization itself, we used a modified version of meta-prompting that we later dubbed <strong>prompt learning</strong>.</p>
+
+
+
+<figure class="wp-block-image"><img decoding="async" src="../Images/b3977b077404a38483bf3a7f50b55cd0.png" alt="" class="wp-image-609820" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/07/AD_4nXeHiYAQNwGQ2VJ9OKWp9jCtNPORvjqtl0894RrDF5M_esiOrRCou0BPJ7sdM5MHUz7KMSu0h9yq_0NNr_KnAqVP-hougO4_cpkOqcJATEge7BshF4TkGzsl3uiO5ylumd9bTBUk.jpg"/><figcaption class="wp-element-caption">Diagram by author</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">Each prompt optimization loop was done with a singleLLM call, and 100 examples.</p>
+
+
+
+<h2 class="wp-block-heading">How Does Prompt Learning Perform?</h2>
+
+
+
+<p class="wp-block-paragraph">Prompt Learning is able to uncover and address the majority of latent rules within the 5-25 ruleset range. As more rules are introduced, however, performance does not drop.</p>
+
+
+
+<figure class="wp-block-table"><table class="has-fixed-layout"><tbody><tr><td><strong>Ruleset size</strong></td><td><strong>Accuracy: 1-Loop</strong></td><td><strong>Accuracy: 5-Loop</strong></td><td><strong>Average rules followed: 1-Loop</strong></td><td><strong>Average rules followed: 5-Loop</strong></td></tr><tr><td>10</td><td>15%</td><td>100%</td><td>71%</td><td>100%</td></tr><tr><td>50</td><td>0%</td><td>70%</td><td>35%</td><td>83%</td></tr><tr><td>100</td><td>0%</td><td>55%</td><td>14%</td><td>68%</td></tr></tbody></table></figure>
+
+
+
+<p class="wp-block-paragraph">As you increase the rules that the optimizer system has to learn the more optimization iterations it takes to learn the rules. </p>
+
+
+
+<h2 class="wp-block-heading">Conclusion</h2>
+
+
+
+<p class="wp-block-paragraph">Prompt learning presents a compelling approach for continuous improvement of AI applications, and its ability to drive results with relatively few examples make it suitable for both early stage and production applications.</p>
+
+
+
+<h2 class="wp-block-heading">Appendix </h2>
+
+
+
+<h3 class="wp-block-heading">Literature Review</h3>
+
+
+
+<p class="wp-block-paragraph">There have been a number of approaches that are relevant worth noting</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item"><a href="https://arxiv.org/abs/2309.16797">Promptbreeder</a> (DeepMind)
+<ul class="wp-block-list">
+<li class="wp-block-list-item">Prompt edits but no english critiques</li>
+</ul>
+</li>
+
+
+
+<li class="wp-block-list-item"><a href="https://arxiv.org/pdf/2309.03409">OPRO – “LLMs as Optimizers”</a>
+<ul class="wp-block-list">
+<li class="wp-block-list-item">Prompt edits but no english critiques</li>
+</ul>
+</li>
+
+
+
+<li class="wp-block-list-item"><a href="https://arxiv.org/abs/2310.16427">PromptAgent</a>
+<ul class="wp-block-list">
+<li class="wp-block-list-item">Uses free-form critiques to decide edits, though the final prompt doesn’t embed the critiques—search happens in an external planner instead of accumulating rules inside the prompt.</li>
+
+
+
+<li class="wp-block-list-item">No management of English instructions </li>
+</ul>
+</li>
+
+
+
+<li class="wp-block-list-item"><a href="https://arxiv.org/abs/2410.07652">StablePrompt</a>
+<ul class="wp-block-list">
+<li class="wp-block-list-item">RL updates instead of prompt edits</li>
+</ul>
+</li>
+
+
+
+<li class="wp-block-list-item"><a href="https://arxiv.org/abs/2401.12954">Meta-Prompting: Task-Agnostic Scaffolding</a>
+<ul class="wp-block-list">
+<li class="wp-block-list-item">First use of metaprompt but doesn’t use english critiques or explanations </li>
+</ul>
+</li>
+
+
+
+<li class="wp-block-list-item"><a href="https://arxiv.org/abs/2411.16646">Critic-RM</a> – Self-Generated Critiques Boost Reward Modeling</li>
+
+
+
+<li class="wp-block-list-item"><a href="https://arxiv.org/abs/2303.17651">Self-Refine: Iterative Refinement with Self-Feedback</a></li>
+
+
+
+<li class="wp-block-list-item"><a href="https://arxiv.org/abs/2411.16646">Self-Generated Critiques Boost Reward Modeling for Language Models</a>
+<ul class="wp-block-list">
+<li class="wp-block-list-item">Critique is used to help reward model learn, designed for downstream RL use</li>
+</ul>
+</li>
+</ul>
+
+
+
+<h3 class="wp-block-heading">Comparing Prompt Learning To PromptAgent</h3>
+
+
+
+<p class="wp-block-paragraph">Here is a comparison between prompt learning and PromptAgent. Monte Carlo tree search (MCTS)-based search for optimal prompts, like that in PromptAgent, could be combined with prompt learning in future work.   </p>
+
+
+
+<h3 class="wp-block-heading"><strong>PromptAgent (ICLR ’24) vs. Prompt Learning (PL)</strong></h3>
+
+
+
+<figure class="wp-block-table"><table class="has-fixed-layout"><tbody><tr><td><strong>Dimension</strong></td><td><strong>PromptAgent</strong></td><td><strong>Prompt Learning (PL)</strong></td></tr><tr><td><strong>Objective</strong></td><td>Find a <em>single</em> “expert-level” prompt that maximises a numeric task score on a dev set.</td><td><strong>Continuously</strong> maintain a production prompt so that it self-heals when evals or users uncover new failure modes.</td></tr><tr><td><strong>Optimizer</strong></td><td><strong>MCTS</strong> over the space of prompt edits; each node = a prompt, each edge = an edit derived from error feedback.<a href="https://arxiv.org/abs/2310.16427"> arXiv</a></td><td>A <strong>meta-prompt controller</strong> reads the latest English critique and decides how to mutate an <em>Instruction block</em> (add, merge, rewrite, expire). No roll-outs or search tree.</td></tr><tr><td><strong>Update granularity</strong></td><td>Edits the <em>entire</em> task prompt during search; final prompt is frozen after the run.</td><td>Edits only the <strong>Instruction section</strong> inside a fenced region; other parts of the system prompt stay intact.</td></tr><tr><td><strong>Use of critiques</strong></td><td>Generates “constructive error feedback” to guide the next MCTS action, but the literal text is <strong>not kept</strong> in the final prompt.<a href="https://arxiv.org/abs/2310.16427"> arXiv</a></td><td><strong>Primary signal.</strong> English critique (from LLM judge or human) feeds the meta-prompt; controller extracts intent and rewrites/merges instructions. Critique itself is <strong>not stored</strong>, but its meaning is distilled into the instruction set.</td></tr><tr><td><strong>Conflict / lifecycle management</strong></td><td>None once search ends; prompt can contain redundant or stale rules that an operator must prune manually.</td><td>Built-in: controller can <strong>deduplicate, version, or expire</strong> instructions and supports human approval gates before applying changes.</td></tr><tr><td><strong>Online vs. offline</strong></td><td><strong>Offline</strong>: heavy search (hundreds–thousands of roll-outs), then deployment.</td><td><strong>Online</strong>: one extra LLM call whenever a failure appears; designed to run forever alongside the app.</td></tr><tr><td><strong>Data requirement</strong></td><td>Needs a moderate-sized scored <em>dev</em> set to evaluate roll-outs.</td><td>Works with <strong>single examples</strong> because each explanation is information-rich; leverages existing eval traces or human annotations.</td></tr><tr><td><strong>Compute cost</strong></td><td>Front-loaded (search); negligible at inference.</td><td>Minimal upfront, &lt;1 extra call per optimisation; prompt grows by only the net instruction text.</td></tr><tr><td><strong>Interpretability</strong></td><td>Final prompt readable, but the reasoning path is hidden in search logs.</td><td>Full audit trail: every instruction edit is plain English; easy diff &amp; rollback.</td></tr><tr><td><strong>Typical sweet spot</strong></td><td>Boot-strapping <em>new</em> tasks where you can afford an offline optimisation pass.</td><td>Long-lived agents that must obey <strong>evolving policy &amp; domain rules</strong> with scarce labelled data.</td></tr></tbody></table></figure>
+    
+</body>
+</html>

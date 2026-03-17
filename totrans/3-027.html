@@ -1,0 +1,605 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.1//EN"
+  "http://www.w3.org/TR/xhtml11/DTD/xhtml11.dtd">
+
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+<title>The Shape‑First Tune‑Up Provides Organizations with a Means to Reduce MongoDB Expenses by 79%</title>
+<link href="../Styles/Style.css" type="text/css" rel="stylesheet"/>
+</head>
+<body>
+<h1>The Shape‑First Tune‑Up Provides Organizations with a Means to Reduce MongoDB Expenses by 79%</h1>
+<blockquote>原文：<a href="https://towardsdatascience.com/the-shape%e2%80%91first-tune%e2%80%91up-provides-organizations-with-a-means-to-reduce-mongodb-expenses-by-79/">https://towardsdatascience.com/the-shape%e2%80%91first-tune%e2%80%91up-provides-organizations-with-a-means-to-reduce-mongodb-expenses-by-79/</a></blockquote>
+<p class="wp-block-paragraph"><strong>TL;DR</strong></p>
+
+
+
+<p class="wp-block-paragraph"><mdspan datatext="el1746054440266" class="mdspan-comment">A fast‑growing</mdspan> SaaS woke up to a silent auto‑scale from <strong>M20 → M60</strong>, adding 20 % to their cloud bill overnight. In a frantic 48‑hour sprint we:</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">flattened N + 1 waterfalls with <strong><code>$lookup</code></strong> ,</li>
+
+
+
+<li class="wp-block-list-item">tamed unbounded cursors with projection, <strong><code>limit()</code></strong> and TTL,</li>
+
+
+
+<li class="wp-block-list-item">split 16 MB “jumbo” docs into lean metadata + GridFS blobs,</li>
+
+
+
+<li class="wp-block-list-item">reordered a handful of sleepy indexes</li>
+</ul>
+
+
+
+<p class="wp-block-paragraph">And watched <strong>$15 284 → $3 210/mo (‑79 %)</strong> while p95 latency toppled from <strong>1.9 s → 140 ms</strong>.</p>
+
+
+
+<p class="wp-block-paragraph">All on a plain replica set.</p>
+
+
+
+<hr class="wp-block-separator has-alpha-channel-opacity is-style-dotted"/>
+
+
+
+<h2 class="wp-block-heading">Step 1: The Day the Invoice Went Supernova</h2>
+
+
+
+<p class="wp-block-paragraph"><strong>02:17 a.m.</strong> — The on‑call phone lit up like a pinball machine. Atlas had quietly hot‑swapped our trusty <strong>M20</strong> for a maxed‑out M60. Slack filled with 🟥 <strong>BILL SHOCK</strong> alerts while Grafana’s red‑lined graphs painted a horror movie in real time.</p>
+
+
+
+<blockquote class="wp-block-quote is-layout-flow wp-block-quote-is-layout-flow">
+<p class="wp-block-paragraph">“Finance says the new spend wipes out nine months of runway. We need a fix before stand‑up.”<br/>— COO, 02:38</p>
+</blockquote>
+
+
+
+<p class="wp-block-paragraph">Half‑awake, the engineer cracked open the profiler. Three culprits leapt off the screen:</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item"><strong>Query waterfall</strong> — every order API call triggered an extra fetch for its lines. <strong>1 000</strong> orders? <strong>1 001</strong> round‑trips.</li>
+
+
+
+<li class="wp-block-list-item"><strong>Fire‑hose cursor</strong> — a click‑stream endpoint streamed <strong>30 months</strong> of events on every page load.</li>
+
+
+
+<li class="wp-block-list-item"><strong>Jumbo docs</strong> — 16 MB invoices (complete with PDFs) blew the cache to bits and back.</li>
+</ul>
+
+
+
+<p class="wp-block-paragraph">Atlas tried to help by throwing hardware at the fire—upgrading from 64 GB RAM to 320 GB, boosting IOPS, and, of course, boosting the bill.</p>
+
+
+
+<p class="wp-block-paragraph">By breakfast, the war‑room rules were clear: <strong>cut 70 % of spend in 48 hours, zero downtime, no schema nukes</strong>. The play‑by‑play starts below.</p>
+
+
+
+<hr class="wp-block-separator has-alpha-channel-opacity is-style-dotted"/>
+
+
+
+<h2 class="wp-block-heading">Step 2: Three Shape Crimes &amp; How to Fix Them</h2>
+
+
+
+<h4 class="wp-block-heading">2.1 N + 1 Query Tsunami</h4>
+
+
+
+<p class="wp-block-paragraph"><strong>Symptom</strong>: For each order the API fired a second query for its line items. 1 000 orders ⇒ 1 001 round‑trips.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-typescript">// Old (painful)
+const orders = await db.orders.find({ userId }).toArray();
+for (const o of orders) {
+  o.lines = await db.orderLines.find({ orderId: o._id }).toArray();
+}</code></pre>
+
+
+
+<p class="wp-block-paragraph"><strong>Hidden fees</strong>: 1 000 index walks, 1 000 TLS handshakes, 1 000 context switches.</p>
+
+
+
+<p class="wp-block-paragraph"><strong>Remedy (4 lines):</strong></p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-typescript">// New (single pass)
+db.orders.aggregate([
+ { $match: { userId } },
+ { $lookup: {
+   from: 'orderLines',
+   localField: '_id',
+   foreignField: 'orderId',
+   as: 'lines'
+ } },
+ { $project: { lines: 1, total: 1, ts: 1 } }
+]);</code></pre>
+
+
+
+<p class="wp-block-paragraph">Latency p95: <strong>2 300 ms → 160 ms.</strong> Read ops: <strong>101 → 1 (‑99 %).</strong><br/><br/><strong>2.2 Unbounded Query Fire‑Hose</strong><br/><br/><strong>Symptom</strong>: One endpoint streamed 30 months of click history in a single cursor.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-typescript">// Before
+const events = db.events.find({ userId }).toArray();</code></pre>
+
+
+
+<p class="wp-block-paragraph"><strong>Fix</strong>: Cap the window and project only rendered fields.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-typescript">const events = db.events.find(
+  {
+   userId,
+   ts: { $gte: new Date(Date.now() - 30*24*3600*1000) }
+  },
+  { _id: 0, ts: 1, page: 1, ref: 1 }
+).sort({ ts: -1 }).limit(1_000);</code></pre>
+
+
+
+<p class="wp-block-paragraph">Then let Mongo prune for you:</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-typescript">// 90‑day TTL
+db.events.createIndex({ ts: 1 }, { expireAfterSeconds: 90*24*3600 });</code></pre>
+
+
+
+<p class="wp-block-paragraph">A fintech client clipped <strong>72 %</strong> off their storage overnight using nothing but TTL.</p>
+
+
+
+<p class="wp-block-paragraph"><strong>2.3 Jumbo Document Money Pit</strong></p>
+
+
+
+<p class="wp-block-paragraph">Anything above <strong>256 KB</strong> already strains cache lines; one collection stored multi‑MB invoices complete with PDFs and 1 200‑row histories.</p>
+
+
+
+<p class="wp-block-paragraph"><strong>Solution</strong>: split by access pattern—hot metadata in invoices , cold BLOBs in S3/GridFS.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-bash">graph TD
+  Invoice[(invoices &lt;2 kB)] --&gt;|ref| Hist[history &lt;1 kB * N]
+  Invoice --&gt;|ref| Bin[pdf‑store (S3/GridFS)]</code></pre>
+
+
+
+<p class="wp-block-paragraph">SSD spend snow‑dropped; cache hit ratio jumped 22 p.p.</p>
+
+
+
+<hr class="wp-block-separator has-alpha-channel-opacity is-style-dotted"/>
+
+
+
+<h2 class="wp-block-heading">Step 3: Four Shape Sins Hiding in Plain Sight</h2>
+
+
+
+<p class="wp-block-paragraph">Shape isn’t just about document size—it’s how queries, indexes and access patterns intertwine.</p>
+
+
+
+<p class="wp-block-paragraph">These four anti‑patterns lurk in most production clusters and silently drain cash.</p>
+
+
+
+<p class="wp-block-paragraph"><strong>3.1 Low‑Cardinality Leading Index Key</strong></p>
+
+
+
+<p class="wp-block-paragraph"><strong>Symptom</strong> The index starts with a field that has &lt; 10 % distinct values, e.g. <strong>{ type: 1, ts: -1 }</strong> . The planner must traverse huge swaths before applying the selective part.</p>
+
+
+
+<p class="wp-block-paragraph"><strong>Cost</strong> High B‑tree fan‑out, poor cache locality, extra disk seeks.</p>
+
+
+
+<p class="wp-block-paragraph"><strong>Fix</strong> Move the selective key (<strong>userId , orgId , tenantId</strong>) first: <strong>{ userId: 1, ts: -1 }</strong> . Rebuild online, then drop the old index.</p>
+
+
+
+<p class="wp-block-paragraph"><strong>3.2 Blind <code>$regex</code> Scan</strong></p>
+
+
+
+<p class="wp-block-paragraph"><strong>Symptom</strong> <strong><code>$regex: /foo/i</code></strong> on a non‑indexed field forces a full collection scan; CPU spikes, cache churns.</p>
+
+
+
+<p class="wp-block-paragraph">Cost Each pattern match walks every document and decodes BSON in the hot path.</p>
+
+
+
+<p class="wp-block-paragraph">Fix Prefer anchored patterns ( <strong><code>/^foo/</code></strong> ) with a supporting index, or add a searchable slug field ( <strong><code>lower(name)</code></strong> ) and index that instead.</p>
+
+
+
+<p class="wp-block-paragraph"><strong>3.3 findOneAndUpdate as a Message Queue</strong></p>
+
+
+
+<p class="wp-block-paragraph"><strong>Symptom</strong> Workers poll with <strong><code>findOneAndUpdate({ status: 'new' }, { $set: { status: 'taken' } }).</code></strong></p>
+
+
+
+<p class="wp-block-paragraph"><strong>Cost</strong> Document‑level locks serialize writers; throughput collapses beyond a few thousand ops/s.</p>
+
+
+
+<p class="wp-block-paragraph"><strong>Fix</strong> Use a purpose‑built queue (Redis Streams, Kafka, SQS) or MongoDB’s native change streams to push events, keeping writes append‑only.</p>
+
+
+
+<p class="wp-block-paragraph"><strong>3.4 Offset Pagination Trap</strong></p>
+
+
+
+<p class="wp-block-paragraph"><strong>Symptom</strong> <strong><code>find().skip(N).limit(20)</code></strong> where N can reach six‑figure offsets.</p>
+
+
+
+<p class="wp-block-paragraph"><strong>Cost</strong> Mongo still counts and discards all skipped docs—linear time. Latency balloons and billing counts each read.</p>
+
+
+
+<p class="wp-block-paragraph"><strong>Fix</strong> Switch to <strong>range cursors</strong> using compound index <strong><code>(ts, _id)</code></strong> :</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-typescript">// page after the last item of previous page
+find({ ts: { $lt: lastTs } })
+ .sort({ ts: -1, _id: -1 })
+ .limit(20);</code></pre>
+
+
+
+<p class="wp-block-paragraph">Master these four and you’ll reclaim RAM, lower read units, and postpone sharding by quarters.</p>
+
+
+
+<hr class="wp-block-separator has-alpha-channel-opacity is-style-dotted"/>
+
+
+
+<h2 class="wp-block-heading">Step 4: Cost Anatomy 101</h2>
+
+
+
+<figure class="wp-block-table"><table class="has-fixed-layout"><thead><tr><th>Metric</th><th>Before</th><th>Unit $</th><th>Cost</th><th>After</th><th>Δ %</th></tr></thead><tbody><tr><td>Reads (3 k/s)</td><td>7.8 B</td><td>0.09/M</td><td>$702</td><td>2.3 B</td><td>-70</td></tr><tr><td>Writes (150/s)</td><td>380 M</td><td>0.225/M</td><td>$86</td><td>380 M</td><td>0</td></tr><tr><td>Xfer</td><td>1.5 TB</td><td>0.25/GB</td><td>$375</td><td>300 GB</td><td>-80</td></tr><tr><td>Storage</td><td>2 TB</td><td>0.24/GB</td><td>$480</td><td>800 GB</td><td>-60</td></tr><tr><td><strong>Total</strong></td><td colspan="2"/><td><strong>$1,643</strong></td><td/><td><strong>-66</strong></td></tr></tbody></table></figure>
+
+
+
+<h2 class="wp-block-heading">Step 5: 48‑Hour Rescue Timeline</h2>
+
+
+
+<figure class="wp-block-table"><table class="has-fixed-layout"><thead><tr><th>Hour</th><th>Action</th><th>Tool</th><th>Win</th></tr></thead><tbody><tr><td>0‑2</td><td>Enable profiler (slowms = 50)</td><td>mongo shell</td><td>Top 10 slow ops located</td></tr><tr><td>2‑6</td><td>Replace N + 1 with $lookup</td><td>VS Code + tests</td><td>90 % fewer reads</td></tr><tr><td>6‑10</td><td>Add projections &amp; limit()</td><td>API layer</td><td>RAM steady, API 4× faster</td></tr><tr><td>10‑16</td><td>Split jumbo docs</td><td>Scripted ETL</td><td>Working set fits in RAM</td></tr><tr><td>16‑22</td><td>Drop/re‑order weak indexes</td><td>Compass</td><td>Disk shrinks, cache hits ↑</td></tr><tr><td>22‑30</td><td>Create TTLs / Online Archive</td><td>Atlas UI</td><td>−60 % storage</td></tr><tr><td>30‑36</td><td>Wire Grafana panels</td><td>Prometheus</td><td>Early warnings live</td></tr><tr><td>36‑48</td><td>Load‑test with k6</td><td>k6 + Atlas</td><td>p95 &lt; 150 ms @ 2× load</td></tr></tbody></table></figure>
+
+
+
+<hr class="wp-block-separator has-alpha-channel-opacity is-style-dotted"/>
+
+
+
+<h2 class="wp-block-heading">Step 6: Self‑Audit Checklist</h2>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">Largest doc ÷ median &gt; 10? → Refactor.</li>
+
+
+
+<li class="wp-block-list-item">Any cursor &gt; 1 000 docs? → Paginate.</li>
+
+
+
+<li class="wp-block-list-item">TTL on every event collection? (Y/N)</li>
+
+
+
+<li class="wp-block-list-item">Index cardinality &lt; 10 %? → Drop or reorder.</li>
+
+
+
+<li class="wp-block-list-item">Profiler “slow” ops &gt; 1 %? → Optimize or cache.</li>
+</ul>
+
+
+
+<p class="wp-block-paragraph">Tape this to your monitor before Friday deploys.</p>
+
+
+
+<hr class="wp-block-separator has-alpha-channel-opacity is-style-dotted"/>
+
+
+
+<h2 class="wp-block-heading">Step 7: Why Shape &gt; Indexes (Most Days)</h2>
+
+
+
+<p class="wp-block-paragraph">Adding an index is like buying a faster forklift for the warehouse: it speeds up picking, but it does <strong>nothing</strong> if the aisles are cluttered with oversized boxes. In MongoDB terms the planner’s cost formula is roughly:</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-typescript">workUnits = ixScans + fetches + sorts + returnedDocs</code></pre>
+
+
+
+<p class="wp-block-paragraph">Indexes trim <strong>, yet</strong> and <strong>“</strong> can still dominate when documents are bloated, sparsely‑accessed, or poorly grouped.</p>
+
+
+
+<p class="wp-block-paragraph"><strong>A Tale of Two Queries</strong></p>
+
+
+
+<figure class="wp-block-table"><table class="has-fixed-layout"><thead><tr><th/><th>Skinny Doc (2 kB)</th><th>Jumbo Doc (16 MB)</th></tr></thead><tbody><tr><td>ixScans</td><td>1 000</td><td>1 000</td></tr><tr><td>fetches</td><td>1 000×2 kB = 2 MB</td><td>1 000×16 MB = 16 GB</td></tr><tr><td>Net time</td><td>80 ms</td><td>48 s + eviction storms</td></tr></tbody></table></figure>
+
+
+
+<p class="wp-block-paragraph">Same index, same query pattern — the only difference is <strong>shape</strong>.</p>
+
+
+
+<p class="wp-block-paragraph"><strong>The Rule of Thumb</strong></p>
+
+
+
+<blockquote class="wp-block-quote is-layout-flow wp-block-quote-is-layout-flow">
+<p class="wp-block-paragraph">Fix shape first, then index once.<br/>– Every reshaped document shrinks every future fetch, cache line, and replication packet.</p>
+</blockquote>
+
+
+
+<p class="wp-block-paragraph">Three shape wins easily beat a dozen extra B‑trees.</p>
+
+
+
+<hr class="wp-block-separator has-alpha-channel-opacity is-style-dotted"/>
+
+
+
+<h2 class="wp-block-heading">Step 8: Live Metrics You Should Alert On (PromQL)</h2>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-typescript"># Cache miss ratio (&gt;10 % for 5 m triggers alert)
+ (rate(wiredtiger_blockmanager_blocks_read[1m]) /
+ (rate(wiredtiger_blockmanager_blocks_read[1m]) +
+ rate(wiredtiger_blockmanager_blocks_read_from_cache[1m]))) &gt; 0.10
+
+# Docs scanned vs returned (&gt;100 triggers alert)
+ rate(mongodb_ssm_metrics_documents{state="scanned"}[1m]) /
+ rate(mongodb_ssm_metrics_documents{state="returned"}[1m]) &gt; 100</code></pre>
+
+
+
+<hr class="wp-block-separator has-alpha-channel-opacity is-style-dotted"/>
+
+
+
+<h2 class="wp-block-heading">Step 9: Thin‑Slice Migration Script</h2>
+
+
+
+<p class="wp-block-paragraph">Need to break a 1‑TB <strong><code>events</code></strong> collection into sub‑collections without downtime? Use double‑writes + backfill:</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-typescript">// 1) Forward writes
+const cs = db.events.watch([], { fullDocument: 'updateLookup' });
+cs.on('change', ev =&gt; {
+ db[`${ev.fullDocument.type}s`].insertOne(ev.fullDocument);
+});
+
+// 2) Backfill history
+let lastId = ObjectId("000000000000000000000000");
+while (true) {
+ const batch = db.events
+  .find({ _id: { $gt: lastId } })
+  .sort({ _id: 1 })
+  .limit(10_000)
+  .toArray();
+ if (!batch.length) break;
+ db[batch[0].type + 's'].insertMany(batch);
+ lastId = batch[batch.length - 1]._id;
+}</code></pre>
+
+
+
+<hr class="wp-block-separator has-alpha-channel-opacity is-style-dotted"/>
+
+
+
+<h2 class="wp-block-heading">Step 11: When Sharding Is Actually Required</h2>
+
+
+
+<p class="wp-block-paragraph">Sharding is a <strong>last‑mile tactic, not a first‑line cure</strong>. It fractures data, multiplies failure modes, and complicates every migration. Exhaust vertical upgrades and shape‑based optimizations first. Reach for a shard key only when at least one of the thresholds below is <strong>sustained</strong> under real load and cannot be solved cheaper.<br/><br/><strong>Hard Capacity Ceilings</strong></p>
+
+
+
+<figure class="wp-block-table"><table class="has-fixed-layout"><thead><tr><th>Symptom</th><th>Rule of Thumb</th><th>Why Horizontal Split Helps</th></tr></thead><tbody><tr><td>Working set sits above 80 % of physical RAM for 24 h+</td><td>&lt; 60 % is healthy; 60–80 % can be masked by a bigger box; &gt; 80 % pages constantly</td><td>Splitting puts hot partitions on separate nodes, restoring cache‑hit ratio</td></tr><tr><td>Primary write throughput &gt; 15 000 ops/s after index tuning</td><td>Below 10 000 ops/s you can often survive by batching or bulk upserts</td><td>Isolating high‑velocity chunks reduces journal lag and lock contention</td></tr><tr><td>Multi‑region product needs &lt; 70 ms p95 read latency</td><td>Speed‑of‑light sets ~80 ms US↔EU floor</td><td>Zone sharding pins data near users without resorting to edge caches</td></tr></tbody></table></figure>
+
+
+
+<p class="wp-block-paragraph"><strong>Soft Signals Sharding Is Approaching</strong></p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">Index builds exceed maintenance windows even with online indexing.</li>
+
+
+
+<li class="wp-block-list-item">Compaction time eats into disaster‑recovery SLA.</li>
+
+
+
+<li class="wp-block-list-item">A single tenant owns &gt; 25 % of cluster volume.</li>
+
+
+
+<li class="wp-block-list-item">Profiler shows &gt; 500 ms lock spikes from long transactions.</li>
+</ul>
+
+
+
+<p class="wp-block-paragraph"><strong>Checklist Before You Cut</strong></p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item"><strong>Reshape documents</strong>: if the largest doc is 20 × the median, refactor first.</li>
+
+
+
+<li class="wp-block-list-item"><strong>Enable compression</strong> ( <strong>zstd </strong>or<strong> snappy</strong> ) often buys 30 % storage headroom.</li>
+
+
+
+<li class="wp-block-list-item"><strong>Archive cold data</strong> via Online Archive or tiered S3 storage.</li>
+
+
+
+<li class="wp-block-list-item">Rewrite hottest endpoints in Go/Rust if JSON parsing dominates CPU.</li>
+
+
+
+<li class="wp-block-list-item">Run <strong><code>mongo‑perf</code></strong>; if workload fits a single replica set post‑fixes, abort the shard plan.</li>
+</ul>
+
+
+
+<p class="wp-block-paragraph"><strong>Choosing a Shard Key</strong></p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">Use <strong>high‑cardinality, monotonically increasing</strong> fields ( <strong><code>ObjectId</code></strong> , timestamp prefix).</li>
+
+
+
+<li class="wp-block-list-item">Avoid low‑entropy keys (<strong><code>status</code></strong> , <strong><code>country</code></strong> ) that funnel writes to a few chunks.</li>
+
+
+
+<li class="wp-block-list-item">Put the most common query predicate first to avoid scatter‑gather.</li>
+</ul>
+
+
+
+<blockquote class="wp-block-quote is-layout-flow wp-block-quote-is-layout-flow">
+<p class="wp-block-paragraph">Sharding is surgery; once you cut, you live with the scar. Make sure the patient truly needs the operation.</p>
+</blockquote>
+
+
+
+<hr class="wp-block-separator has-alpha-channel-opacity is-style-dotted"/>
+
+
+
+<h2 class="wp-block-heading">Conclusion — Shaping Up Before the Bill Comes Due</h2>
+
+
+
+<p class="wp-block-paragraph">When the <strong>M60</strong> upgrade landed with a silent boom, it wasn’t the hardware’s fault it was a wake-up call. This wasn’t about CPU, memory, or disk it was about shape. Shape of the documents. Shape of the queries. Shape of the assumptions that quietly bloated over months of “just ship it” sprints.</p>
+
+
+
+<p class="wp-block-paragraph">Fixing it didn’t take a new database, a weekend migration, or an army of consultants. It took a team willing to look inward, to trade panic for profiling, and to reshape what they already had.</p>
+
+
+
+<p class="wp-block-paragraph">The results were undeniable: latency down by <strong>92%</strong>, costs cut by nearly <strong>80%</strong>, and a codebase now lean enough to breathe.</p>
+
+
+
+<p class="wp-block-paragraph">But here’s the real takeaway: technical debt on shape isn’t just a performance issue it’s a financial one. And unlike indexes or caching tricks, shaping things right up front pays off every single time your query runs, every time your data replicates, every time you scale.</p>
+
+
+
+<p class="wp-block-paragraph"><br/>So before your next billing cycle spikes, ask yourself:</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">Does every endpoint need the full document?</li>
+
+
+
+<li class="wp-block-list-item">Are we designing for reads, or just writing fast?</li>
+
+
+
+<li class="wp-block-list-item">Are our indexes working, or just working hard?</li>
+</ul>
+
+
+
+<p class="wp-block-paragraph">Shape-first isn’t a technique — it’s a mindset. A habit. And the earlier you adopt it, the longer your system — and your runway — will last.</p>
+
+
+
+<hr class="wp-block-separator has-alpha-channel-opacity is-style-dotted"/>
+
+
+
+<h2 class="wp-block-heading">Sources &amp; Further Reading</h2>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">MongoDB Engineering Blog — <a href="https://www.mongodb.com/docs/manual/core/wiredtiger/">Understanding WiredTiger Cache</a></li>
+
+
+
+<li class="wp-block-list-item">AWS Architecture Blog — <a href="https://aws.amazon.com/ru/blogs/architecture/top-architecture-blog-posts-of-2024/">Cost‑Optimizing Document Stores</a></li>
+
+
+
+<li class="wp-block-list-item">Prisma – <a href="https://www.youtube.com/watch?v=7oMfBGEdwsc&amp;ab_channel=Prisma">Avoiding N+1 Queries</a></li>
+
+
+
+<li class="wp-block-list-item">MongoDB Engineering Blog  — <a href="https://www.mongodb.com/docs/manual/tutorial/optimize-query-performance-with-indexes-and-projections/">Query Optimization Techniques</a></li>
+</ul>
+
+
+
+<h2 class="wp-block-heading">About the Author</h2>
+
+
+
+<p class="wp-block-paragraph"><strong>Hayk Ghukasyan</strong> is a Chief of Engineering at Hexact, where he helps build automation platforms like Hexomatic and Hexospark. He has over 20 years of experience in large-scale systems architecture, real-time databases, and optimization engineering.</p>
+    
+</body>
+</html>

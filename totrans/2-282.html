@@ -1,0 +1,603 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.1//EN"
+  "http://www.w3.org/TR/xhtml11/DTD/xhtml11.dtd">
+
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+<title>LLMs + Pandas: How I Use Generative AI to Generate Pandas DataFrame Summaries</title>
+<link href="../Styles/Style.css" type="text/css" rel="stylesheet"/>
+</head>
+<body>
+<h1>LLMs + Pandas: How I Use Generative AI to Generate Pandas DataFrame Summaries</h1>
+<blockquote>原文：<a href="https://towardsdatascience.com/llms-pandas-how-i-use-generative-ai-to-generate-pandas-dataframe-summaries-2/">https://towardsdatascience.com/llms-pandas-how-i-use-generative-ai-to-generate-pandas-dataframe-summaries-2/</a></blockquote>
+<p class="wp-block-paragraph"><mdspan datatext="el1748909925911" class="mdspan-comment">If you’re drowning in massive</mdspan> datasets and are looking for quick insights without too much manual grind, you’ve come to the right place.</p>
+
+
+
+<p class="wp-block-paragraph">In 2025, datasets often contain millions of rows and hundreds of columns, which makes manual analysis next to impossible. Local Large Language Models can transform your raw DataFrame statistics into polished, readable reports in seconds — minutes at worst. This approach eliminates the tedious process of analyzing data by hand and writing executive reports, especially if the data structure doesn’t change.</p>
+
+
+
+<p class="wp-block-paragraph">Pandas handles the heavy lifting of data extraction while LLMs convert your technical outputs into presentable reports. You’ll still need to write functions that pull key statistics from your datasets, but it’s a one-time effort.</p>
+
+
+
+<p class="wp-block-paragraph">This guide assumes you have Ollama installed locally. If you don’t, you can still use third-party LLM vendors, but I won’t explain how to connect to their APIs.</p>
+
+
+
+<h3 class="wp-block-heading">Table of contents:</h3>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">Dataset Introduction and Exploration</li>
+
+
+
+<li class="wp-block-list-item">The Boring Part: Extracting Summary Statistics</li>
+
+
+
+<li class="wp-block-list-item">The Cool Part: Working with LLMs</li>
+
+
+
+<li class="wp-block-list-item">What You Could Improve</li>
+</ul>
+
+
+
+<h2 class="wp-block-heading">Dataset Introduction and Exploration</h2>
+
+
+
+<p class="wp-block-paragraph">For this guide, I’m using the <a href="https://www.kaggle.com/datasets/taweilo/mba-admission-dataset">MBA admissions dataset from Kaggle</a>. Download it if you want to follow along.</p>
+
+
+
+<p class="wp-block-paragraph">The dataset is licensed under the <strong>Apache 2.0 license</strong>, which means you can use it freely for both personal and commercial projects.</p>
+
+
+
+<p class="wp-block-paragraph">To get started, you’ll need a few Python libraries installed on your system.</p>
+
+
+
+<figure class="wp-block-image size-full"><img decoding="async" src="../Images/4d6f753135bbea8ef2c20f7596527341.png" alt="" class="wp-image-605217" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/06/1-1.png"/><figcaption class="wp-element-caption">Image 1 – Required Python libraries and versions (image by author)</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">Once you have everything installed, import the necessary libraries in a new script or a notebook:</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">import pandas as pd
+from langchain_ollama import ChatOllama
+from typing import Literal</code></pre>
+
+
+
+<h3 class="wp-block-heading">Dataset loading and preprocessing</h3>
+
+
+
+<p class="wp-block-paragraph">Start by loading the dataset with Pandas. This snippet loads the CSV file, prints basic information about the dataset shape, and shows how many missing values exist in each column:</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">df = pd.read_csv("data/MBA.csv")
+
+# Basic dataset info
+print(f"Dataset shape: {df.shape}\n")
+print("Missing value stats:")
+print(df.isnull().sum())
+print("-" * 25)
+df.sample(5)</code></pre>
+
+
+
+<figure class="wp-block-image alignwide size-large"><img decoding="async" src="../Images/8ed10555e1618eba66026dd384e63b75.png" alt="" class="wp-image-605218" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/06/2-1024x560.png"/><figcaption class="wp-element-caption">Image 2 – Basic dataset statistics (image by author)</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">Since data cleaning isn’t the main focus of this article, I’ll keep the preprocessing minimal. The dataset only has a couple of missing values that need attention:</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">df["race"] = df["race"].fillna("Unknown")
+df["admission"] = df["admission"].fillna("Deny")</code></pre>
+
+
+
+<p class="wp-block-paragraph">That’s it! Let’s see how to go from this to a meaningful report next.</p>
+
+
+
+<h2 class="wp-block-heading">The Boring Part: Extracting Summary Statistics</h2>
+
+
+
+<p class="wp-block-paragraph">Even with all the advances in AI capability and availability, you probably don’t want to send your entire dataset to an LLM provider. There are a couple of good reasons why.</p>
+
+
+
+<p class="wp-block-paragraph">It could <strong>consume way too many tokens</strong>, which translates directly to higher costs. Processing large datasets can <strong>take a long time</strong>, especially when you’re running models locally on your own hardware. You might also be dealing with <strong>sensitive data</strong> that shouldn’t leave your organization.</p>
+
+
+
+<p class="wp-block-paragraph">Some manual work is still the way to go.</p>
+
+
+
+<p class="wp-block-paragraph">This approach requires you to write a function that extracts key elements and statistics from your Pandas DataFrame. You’ll have to write this function from scratch for different datasets, but the core idea transfers easily between projects.</p>
+
+
+
+<p class="wp-block-paragraph">The <code>get_summary_context_message()</code> function takes in a DataFrame and returns a formatted multi-line string with a detailed summary. Here’s what it includes:</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">Total application count and gender distribution</li>
+
+
+
+<li class="wp-block-list-item">International vs domestic applicant breakdown</li>
+
+
+
+<li class="wp-block-list-item">GPA and GMAT score quartile statistics</li>
+
+
+
+<li class="wp-block-list-item">Admission rates by academic major (sorted by rate)</li>
+
+
+
+<li class="wp-block-list-item">Admission rates by work industry (top 8 industries)</li>
+
+
+
+<li class="wp-block-list-item">Work experience analysis with categorical breakdowns</li>
+
+
+
+<li class="wp-block-list-item">Key insights highlighting top-performing categories</li>
+
+
+
+<li class="wp-block-list-item"/>
+</ul>
+
+
+
+<p class="wp-block-paragraph">Here’s the complete source code for the function:</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">def get_summary_context_message(df: pd.DataFrame) -&gt; str:
+    """
+    Generate a comprehensive summary report of MBA admissions dataset statistics.
+    
+    This function analyzes MBA application data to provide detailed statistics on
+    applicant demographics, academic performance, professional backgrounds, and
+    admission rates across various categories. The summary includes gender and
+    international status distributions, GPA and GMAT score statistics, admission
+    rates by academic major and work industry, and work experience impact analysis.
+    
+    Parameters
+    ----------
+    df : pd.DataFrame
+        DataFrame containing MBA admissions data with the following expected columns:
+        - 'gender', 'international', 'gpa', 'gmat', 'major', 'work_industry', 'work_exp', 'admission'
+    
+    Returns
+    -------
+    str
+        A formatted multi-line string containing comprehensive MBA admissions
+        statistics.
+    """
+    # Basic application statistics
+    total_applications = len(df)
+
+    # Gender distribution
+    gender_counts = df["gender"].value_counts()
+    male_count = gender_counts.get("Male", 0)
+    female_count = gender_counts.get("Female", 0)
+
+    # International status
+    international_count = (
+        df["international"].sum()
+        if df["international"].dtype == bool
+        else (df["international"] == True).sum()
+    )
+
+    # GPA statistics
+    gpa_data = df["gpa"].dropna()
+    gpa_avg = gpa_data.mean()
+    gpa_25th = gpa_data.quantile(0.25)
+    gpa_50th = gpa_data.quantile(0.50)
+    gpa_75th = gpa_data.quantile(0.75)
+
+    # GMAT statistics
+    gmat_data = df["gmat"].dropna()
+    gmat_avg = gmat_data.mean()
+    gmat_25th = gmat_data.quantile(0.25)
+    gmat_50th = gmat_data.quantile(0.50)
+    gmat_75th = gmat_data.quantile(0.75)
+
+    # Major analysis - admission rates by major
+    major_stats = []
+    for major in df["major"].unique():
+        major_data = df[df["major"] == major]
+        admitted = len(major_data[major_data["admission"] == "Admit"])
+        total = len(major_data)
+        rate = (admitted / total) * 100
+        major_stats.append((major, admitted, total, rate))
+
+    # Sort by admission rate (descending)
+    major_stats.sort(key=lambda x: x[3], reverse=True)
+
+    # Work industry analysis - admission rates by industry
+    industry_stats = []
+    for industry in df["work_industry"].unique():
+        if pd.isna(industry):
+            continue
+        industry_data = df[df["work_industry"] == industry]
+        admitted = len(industry_data[industry_data["admission"] == "Admit"])
+        total = len(industry_data)
+        rate = (admitted / total) * 100
+        industry_stats.append((industry, admitted, total, rate))
+
+    # Sort by admission rate (descending)
+    industry_stats.sort(key=lambda x: x[3], reverse=True)
+
+    # Work experience analysis
+    work_exp_data = df["work_exp"].dropna()
+    avg_work_exp_all = work_exp_data.mean()
+
+    # Work experience for admitted students
+    admitted_students = df[df["admission"] == "Admit"]
+    admitted_work_exp = admitted_students["work_exp"].dropna()
+    avg_work_exp_admitted = admitted_work_exp.mean()
+
+    # Work experience ranges analysis
+    def categorize_work_exp(exp):
+        if pd.isna(exp):
+            return "Unknown"
+        elif exp &lt; 2:
+            return "0-1 years"
+        elif exp &lt; 4:
+            return "2-3 years"
+        elif exp &lt; 6:
+            return "4-5 years"
+        elif exp &lt; 8:
+            return "6-7 years"
+        else:
+            return "8+ years"
+
+    df["work_exp_category"] = df["work_exp"].apply(categorize_work_exp)
+    work_exp_category_stats = []
+
+    for category in ["0-1 years", "2-3 years", "4-5 years", "6-7 years", "8+ years"]:
+        category_data = df[df["work_exp_category"] == category]
+        if len(category_data) &gt; 0:
+            admitted = len(category_data[category_data["admission"] == "Admit"])
+            total = len(category_data)
+            rate = (admitted / total) * 100
+            work_exp_category_stats.append((category, admitted, total, rate))
+
+    # Build the summary message
+    summary = f"""MBA Admissions Dataset Summary (2025)
+    
+Total Applications: {total_applications:,} people applied to the MBA program.
+
+Gender Distribution:
+- Male applicants: {male_count:,} ({male_count/total_applications*100:.1f}%)
+- Female applicants: {female_count:,} ({female_count/total_applications*100:.1f}%)
+
+International Status:
+- International applicants: {international_count:,} ({international_count/total_applications*100:.1f}%)
+- Domestic applicants: {total_applications-international_count:,} ({(total_applications-international_count)/total_applications*100:.1f}%)
+
+Academic Performance Statistics:
+
+GPA Statistics:
+- Average GPA: {gpa_avg:.2f}
+- 25th percentile: {gpa_25th:.2f}
+- 50th percentile (median): {gpa_50th:.2f}
+- 75th percentile: {gpa_75th:.2f}
+
+GMAT Statistics:
+- Average GMAT: {gmat_avg:.0f}
+- 25th percentile: {gmat_25th:.0f}
+- 50th percentile (median): {gmat_50th:.0f}
+- 75th percentile: {gmat_75th:.0f}
+
+Major Analysis - Admission Rates by Academic Background:"""
+
+    for major, admitted, total, rate in major_stats:
+        summary += (
+            f"\n- {major}: {admitted}/{total} admitted ({rate:.1f}% admission rate)"
+        )
+
+    summary += (
+        "\n\nWork Industry Analysis - Admission Rates by Professional Background:"
+    )
+
+    # Show top 8 industries by admission rate
+    for industry, admitted, total, rate in industry_stats[:8]:
+        summary += (
+            f"\n- {industry}: {admitted}/{total} admitted ({rate:.1f}% admission rate)"
+        )
+
+    summary += "\n\nWork Experience Impact on Admissions:\n\nOverall Work Experience Comparison:"
+    summary += (
+        f"\n- Average work experience (all applicants): {avg_work_exp_all:.1f} years"
+    )
+    summary += f"\n- Average work experience (admitted students): {avg_work_exp_admitted:.1f} years"
+
+    summary += "\n\nAdmission Rates by Work Experience Range:"
+    for category, admitted, total, rate in work_exp_category_stats:
+        summary += (
+            f"\n- {category}: {admitted}/{total} admitted ({rate:.1f}% admission rate)"
+        )
+
+    # Key insights
+    best_major = major_stats[0]
+    best_industry = industry_stats[0]
+
+    summary += "\n\nKey Insights:"
+    summary += (
+        f"\n- Highest admission rate by major: {best_major[0]} at {best_major[3]:.1f}%"
+    )
+    summary += f"\n- Highest admission rate by industry: {best_industry[0]} at {best_industry[3]:.1f}%"
+
+    if avg_work_exp_admitted &gt; avg_work_exp_all:
+        summary += f"\n- Admitted students have slightly more work experience on average ({avg_work_exp_admitted:.1f} vs {avg_work_exp_all:.1f} years)"
+    else:
+        summary += "\n- Work experience shows minimal difference between admitted and all applicants"
+
+    return summary</code></pre>
+
+
+
+<p class="wp-block-paragraph">Once you’ve defined the function, simply call it and print the results:</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">print(get_summary_context_message(df))</code></pre>
+
+
+
+<figure class="wp-block-image size-large"><img decoding="async" src="../Images/eb575dfc67efcca25de3125b5dde7a3e.png" alt="" class="wp-image-605219" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/06/3-1024x908.png"/><figcaption class="wp-element-caption">Image 3 – Extracted findings and statistics from the dataset (image by author)</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">Now let’s move on to the fun part.</p>
+
+
+
+<h2 class="wp-block-heading">The Cool Part: Working with LLMs</h2>
+
+
+
+<p class="wp-block-paragraph">This is where things get interesting and your manual data extraction work pays off.</p>
+
+
+
+<h3 class="wp-block-heading">Python helper function for working with LLMs</h3>
+
+
+
+<p class="wp-block-paragraph">If you have decent hardware, I strongly recommend using local LLMs for simple tasks like this. I use <a href="https://ollama.com">Ollama</a> and the latest version of the <strong>Mistral model</strong> for the actual LLM processing.</p>
+
+
+
+<figure class="wp-block-image size-large"><img decoding="async" src="../Images/0113d2718e99aafe577d15c355ead7ae.png" alt="" class="wp-image-605220" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/06/4-1024x569.png"/><figcaption class="wp-element-caption">Image 4 – Available Ollama models (image by author)</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">If you want to use something like ChatGPT through OpenAI API, you can still do that. You’ll just need to modify the function below to set up your API key and return the appropriate instance from Langchain.</p>
+
+
+
+<p class="wp-block-paragraph">Regardless of the option you choose, a call to <code>get_llm()</code> with a test message shouldn’t return an error:</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">def get_llm(model_name: str = "mistral:latest") -&gt; ChatOllama:
+    """
+    Create and configure a ChatOllama instance for local LLM inference.
+    
+    This function initializes a ChatOllama client configured to connect to a
+    local Ollama server. The client is set up with deterministic output
+    (temperature=0) for consistent responses across multiple calls with the
+    same input.
+    
+    Parameters
+    ----------
+    model_name : str, optional
+        The name of the Ollama model to use for chat completions.
+        Must be a valid model name that is available on the local Ollama
+        installation. Default is "mistral:latest".
+    
+    Returns
+    -------
+    ChatOllama
+        A configured ChatOllama instance ready for chat completions.
+    """
+    return ChatOllama(
+        model=model_name, base_url="http://localhost:11434", temperature=0
+    )
+
+
+print(get_llm().invoke("test").content)</code></pre>
+
+
+
+<figure class="wp-block-image alignwide size-large"><img data-dominant-color="526268" data-has-transparency="false" style="--dominant-color: #526268;" decoding="async" src="../Images/40bf6497fe514b935b95ea29e7610480.png" alt="" class="wp-image-605221 not-transparent" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/06/5-1024x199.png"/><figcaption class="wp-element-caption">Image 5 – LLM test message (image by author)</figcaption></figure>
+
+
+
+<h3 class="wp-block-heading">Summarization prompt</h3>
+
+
+
+<p class="wp-block-paragraph">This is where you can get creative and write ultra-specific instructions for your LLM. I’ve decided to keep things light for demonstration purposes, but feel free to experiment here.</p>
+
+
+
+<p class="wp-block-paragraph">There isn’t a single right or wrong prompt.</p>
+
+
+
+<p class="wp-block-paragraph">Whatever you do, make sure to include the format arguments using curly brackets – these values will be filled dynamically later:</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">SUMMARIZE_DATAFRAME_PROMPT = """
+You are an expert data analyst and data summarizer. Your task is to take in complex datasets
+and return user-friendly descriptions and findings.
+
+You were given this dataset:
+- Name: {dataset_name}
+- Source: {dataset_source}
+
+This dataset was analyzed in a pipeline before it was given to you.
+These are the findings returned by the analysis pipeline:
+
+&lt;context&gt;
+{context}
+&lt;/context&gt;
+
+Based on these findings, write a detailed report in {report_format} format.
+Give the report a meaningful title and separate findings into sections with headings and subheadings.
+Output only the report in {report_format} and nothing else.
+
+Report:
+"""</code></pre>
+
+
+
+<h3 class="wp-block-heading">Summarization Python function</h3>
+
+
+
+<p class="wp-block-paragraph">With the prompt and the <code>get_llm()</code> functions declared, the only thing left is to connect the dots. The <code>get_report_summary()</code> function takes in arguments that will fill the format placeholders in the prompt, then invokes the LLM with that prompt to generate a report.</p>
+
+
+
+<p class="wp-block-paragraph">You can choose between Markdown or HTML formats:</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">def get_report_summary(
+    dataset: pd.DataFrame,
+    dataset_name: str,
+    dataset_source: str,
+    report_format: Literal["markdown", "html"] = "markdown",
+) -&gt; str:
+    """
+    Generate an AI-powered summary report from a pandas DataFrame.
+    
+    This function analyzes a dataset and generates a comprehensive summary report
+    using a large language model (LLM). It first extracts statistical context
+    from the dataset, then uses an LLM to create a human-readable report in the
+    specified format.
+    
+    Parameters
+    ----------
+    dataset : pd.DataFrame
+        The pandas DataFrame to analyze and summarize.
+    dataset_name : str
+        A descriptive name for the dataset that will be included in the
+        generated report for context and identification.
+    dataset_source : str
+        Information about the source or origin of the dataset.
+    report_format : {"markdown", "html"}, optional
+        The desired output format for the generated report. Options are:
+        - "markdown" : Generate report in Markdown format (default)
+        - "html" : Generate report in HTML format
+    
+    Returns
+    -------
+    str
+        A formatted summary report.
+    
+    """
+    context_message = get_summary_context_message(df=dataset)
+    prompt = SUMMARIZE_DATAFRAME_PROMPT.format(
+        dataset_name=dataset_name,
+        dataset_source=dataset_source,
+        context=context_message,
+        report_format=report_format,
+    )
+    return get_llm().invoke(input=prompt).content</code></pre>
+
+
+
+<p class="wp-block-paragraph">Using the function is straightforward – just pass in the dataset, its name, and source. The report format defaults to Markdown:</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">md_report = get_report_summary(
+    dataset=df, 
+    dataset_name="MBA Admissions (2025)",
+    dataset_source="https://www.kaggle.com/datasets/taweilo/mba-admission-dataset"
+)
+print(md_report)</code></pre>
+
+
+
+<figure class="wp-block-image size-large"><img decoding="async" src="../Images/904b63a1f43b5d74917e233785b0b38d.png" alt="" class="wp-image-605222" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/06/6-987x1024.png"/><figcaption class="wp-element-caption">Image 6 – Final report in Markdown format (image by author)</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">The HTML report is just as detailed, but could use some styling. Maybe you could ask the LLM to handle that as well!</p>
+
+
+
+<figure class="wp-block-image size-large"><img decoding="async" src="../Images/2589a13e0356e020c4ed61a16e641f79.png" alt="" class="wp-image-605223" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/06/7-882x1024.png"/><figcaption class="wp-element-caption">Image 7 – Final report in HTML format (image by author)</figcaption></figure>
+
+
+
+<h2 class="wp-block-heading">What You Could Improve</h2>
+
+
+
+<p class="wp-block-paragraph">I could have easily turned this into a 30-minute read by optimizing every detail of the pipeline, but I kept it simple for demonstration purposes. You don’t have to (and shouldn’t) stop here though.</p>
+
+
+
+<p class="wp-block-paragraph">Here are the things you can improve to make this pipeline even more powerful:</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item"><strong>Write a function that saves the report (Markdown or HTML) directly to disk</strong>. This way you can automate the entire process and generate reports on a schedule without manual intervention.</li>
+
+
+
+<li class="wp-block-list-item">In the prompt, <strong>ask the LLM to add CSS styling to the HTML report</strong> to make it look more presentable. You could even provide your company’s brand colors and fonts to maintain consistency across all your data reports.</li>
+
+
+
+<li class="wp-block-list-item"><strong>Expand the prompt to follow more specific instructions</strong>. You might want reports that focus on specific business metrics, follow a particular template, or include recommendations based on the findings.</li>
+
+
+
+<li class="wp-block-list-item">Expand the <code>get_llm()</code> function so it can <strong>connect both to Ollama and other vendors</strong> like OpenAI, Anthropic, or Google. This gives you flexibility to switch between local and cloud-based models depending on your needs.</li>
+
+
+
+<li class="wp-block-list-item">Do literally anything in the get_summary_context_message() function since it serves as the foundation for all <strong>context data provided to the LLM</strong>. This is where you can get creative with feature engineering, statistical analysis, and data insights that matter to your specific use case.</li>
+</ul>
+
+
+
+<p class="wp-block-paragraph">I hope this minimal example has set you on the right track to automate your own data reporting workflows.</p>
+    
+</body>
+</html>

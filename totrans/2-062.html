@@ -1,0 +1,1188 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.1//EN"
+  "http://www.w3.org/TR/xhtml11/DTD/xhtml11.dtd">
+
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+<title>The MCP Security Survival Guide: Best Practices, Pitfalls, and Real-World Lessons</title>
+<link href="../Styles/Style.css" type="text/css" rel="stylesheet"/>
+</head>
+<body>
+<h1>The MCP Security Survival Guide: Best Practices, Pitfalls, and Real-World Lessons</h1>
+<blockquote>原文：<a href="https://towardsdatascience.com/the-mcp-security-survival-guide-best-practices-pitfalls-and-real-world-lessons/">https://towardsdatascience.com/the-mcp-security-survival-guide-best-practices-pitfalls-and-real-world-lessons/</a></blockquote>
+<p class="wp-block-paragraph"><mdspan datatext="el1754530036739" class="mdspan-comment">If you’ve been reading</mdspan> my stuff, then you know that not too long ago, I wrote <a href="https://towardsdatascience.com/how-i-finally-understood-mcp-and-got-it-working-irl-2/">a piece about the Model Context Protocol (MCP)</a>—explaining what it is, how it works, and even walking you through building your own custom MCP servers. It was a deep dive into the shiny, promising world of agentic integration.</p>
+
+
+
+<p class="wp-block-paragraph">At the time, I was swept up by how elegant and powerful MCP felt. It was like discovering a universal adapter for AI agents (it is!)—finally, I could connect large language models to any data source, tool, or API with ease. Every use case suddenly looked like a perfect candidate for MCP: document generation, customer support automation, even managing cloud deployments.</p>
+
+
+
+<p class="wp-block-paragraph">Then the news started rolling in.</p>
+
+
+
+<p class="wp-block-paragraph">First, there was the <a href="https://cybernews.com/security/github-mcp-vulnerability-has-far-reaching-consequences/">GitHub MCP vulnerability</a>—a flaw that let attackers exploit open-source MCP servers and siphon off user data. Then came the <a href="https://thehackernews.com/2025/07/critical-mcp-remote-vulnerability.html">critical remote execution exploit</a> that let unauthenticated users run arbitrary commands on hosts running improperly configured servers. And the cherry on top? <a href="https://www.oligo.security/blog/critical-rce-vulnerability-in-anthropic-mcp-inspector-cve-2025-49596#practical-risks-targeting-ai-developers-and-mcp-users">Anthropic themselves had to patch a severe vulnerability in the official MCP inspector tool</a>, which had quietly opened a backdoor on thousands of developer machines.</p>
+
+
+
+<p class="wp-block-paragraph">These weren’t theoretical risks. Real users—many just like me—were getting burned for trusting a shiny new thing a little too fast.</p>
+
+
+
+<p class="wp-block-paragraph">It was around this time my partner, who is deeply serious about security, asked me point-blank: “How in the hell is any of this secure? You’re just trusting random code from GitHub to run tools on your machine?”</p>
+
+
+
+<p class="wp-block-paragraph">That question stopped me cold. And it kicked off a long-overdue journey of digging into how other people were securing MCP—if they were at all.</p>
+
+
+
+<p class="wp-block-paragraph">I started reading the spec closer, looking at how enterprise users were configuring their deployments, checking out community write-ups and criticisms. What I found was equal parts encouraging and terrifying. Encouraging, because there <em>are</em> best practices and thoughtful security models being developed. Terrifying, because almost nobody was using them.</p>
+
+
+
+<p class="wp-block-paragraph">So I decided to write this guide.</p>
+
+
+
+<p class="wp-block-paragraph">MCP makes it incredibly easy to wire up an AI agent to do real, useful things—and that’s exactly what makes it a little dangerous. When something feels that seamless, most of us don’t stop to ask the hard questions about security. We just assume it’ll be fine… until it isn’t. Unless you’re someone who lives and breathes cybersecurity, chances are you didn’t think much about authentication, network exposure, or what happens if someone else finds your server. This guide isn’t here to kill the excitement—it’s here to help you use MCP without opening the door to trouble.</p>
+
+
+
+<hr class="wp-block-separator has-alpha-channel-opacity is-style-dotted"/>
+
+
+
+<h2 class="wp-block-heading">Table of Contents</h2>
+
+
+
+<ol class="wp-block-list">
+<li class="wp-block-list-item"><a href="#id1">What “Secure MCP” Should Actually Mean</a>
+<ul class="wp-block-list">
+<li class="wp-block-list-item"><a href="#id1.1">How OAuth Works in MCP (Without Doing Anything Sketchy)</a></li>
+
+
+
+<li class="wp-block-list-item"><a href="#id1.2">How Malicious OAuth Proxying Works (a.k.a. How to Impersonate a User Without Asking)</a></li>
+</ul>
+</li>
+
+
+
+<li class="wp-block-list-item"><a href="#id2">How to Avoid Becoming the Deputy That Gets Played</a></li>
+
+
+
+<li class="wp-block-list-item"><a href="#id3">Case Studies: Learning from Real MCP Security Breaches</a>
+<ul class="wp-block-list">
+<li class="wp-block-list-item"><a href="#id3.1">Case 1: Remote Code Execution via Exposed MCP Inspector (CVE-2025-49596)</a></li>
+
+
+
+<li class="wp-block-list-item"><a href="#id3.2">Case 2: Prompt Injection via SQLite MCP Server Exploit</a></li>
+
+
+
+<li class="wp-block-list-item"><a href="#id3.3">Case 3: When Enterprise Integration Met the Real World</a></li>
+</ul>
+</li>
+
+
+
+<li class="wp-block-list-item"><a href="#id4">General Critiques—It’s Not Just MCP</a></li>
+
+
+
+<li class="wp-block-list-item"><a href="#id5">Future Outlook: Evolving Security in MCP and Agentic Protocols</a></li>
+
+
+
+<li class="wp-block-list-item"><a href="#id6">References</a></li>
+</ol>
+
+
+
+<hr class="wp-block-separator has-alpha-channel-opacity is-style-dotted"/>
+
+
+
+<h2 class="wp-block-heading" id="id1">What “Secure MCP” Should Actually Mean</h2>
+
+
+
+<p class="wp-block-paragraph">MCP does have a few things going for it: built-in tool isolation, user consent prompts, and a local-first approach that keeps data on your machine unless you say otherwise. This is the part where the spec does its job.</p>
+
+
+
+<p class="wp-block-paragraph">But—<em>and it’s a big but</em>—none of that will save you if you’re out here YOLO-deploying your servers with root access, public ports, and no logging. That’s like putting a deadbolt on your front door and then leaving the keys in it. So let’s talk about what actual secure MCP usage looks like, <a href="https://modelcontextprotocol.io/specification/draft/basic/security_best_practices">according to Anthropic</a>, the community, and people who’ve already learned these lessons the hard way.</p>
+
+
+
+<h3 class="wp-block-heading" id="id1.1">How OAuth Works in MCP (Without Doing Anything Sketchy)</h3>
+
+
+
+<p class="wp-block-paragraph">OAuth diagrams can feel like someone took a flowchart, spilled spaghetti on it, and decided that was good enough. Boxes everywhere. Arrows in all directions. Mysterious “consent cookies” floating around like they’re self-explanatory.</p>
+
+
+
+<p class="wp-block-paragraph">But at the heart of it, the idea is simple—especially if you’re using MCP and you care about not being creepy.</p>
+
+
+
+<figure class="wp-block-image size-full"><img decoding="async" src="../Images/c46a809aaf752b3d753acd37784141de.png" alt="" class="wp-image-613785" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/08/normal-oauth-flow.png"/><figcaption class="wp-element-caption">Image by author, inspired by Anthropic</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">Let’s say your MCP-powered app wants to access a third-party service on the user’s behalf—maybe Dropbox, maybe Notion, maybe some obscure SaaS tool the finance team swears by. The catch: you want to do it <em>with</em> the user’s consent, not by sneaking behind their digital back.</p>
+
+
+
+<p class="wp-block-paragraph">So here’s the flow—minus the spaghetti:</p>
+
+
+
+<h4 class="wp-block-heading">Step 0: The User Already Logged In</h4>
+
+
+
+<p class="wp-block-paragraph">You’re not starting from scratch. The user has already authenticated with your system, so you’ve got the basics: identity confirmed, session running, good to go.</p>
+
+
+
+<p class="wp-block-paragraph">No need to ask them to prove they’re not a robot again.</p>
+
+
+
+<h4 class="wp-block-heading">Step 1: Actually Ask for Consent (Like a Decent System)</h4>
+
+
+
+<p class="wp-block-paragraph">Now comes the important part—third-party access.</p>
+
+
+
+<p class="wp-block-paragraph">Instead of doing something shady like token scraping or pretending to be the user, you redirect them to the <em>actual</em> third-party authorization server. Think Google, Microsoft, or Dropbox—the real deal.</p>
+
+
+
+<p class="wp-block-paragraph">The third-party server pops up a consent screen:</p>
+
+
+
+<blockquote class="wp-block-quote is-layout-flow wp-block-quote-is-layout-flow">
+<p class="wp-block-paragraph">“Hey, this app (via MCP) wants to access your data. Cool with you?”</p>
+</blockquote>
+
+
+
+<p class="wp-block-paragraph">The user reads it, thinks, “Sure, I trust this,” and clicks <strong>Approve</strong>.</p>
+
+
+
+<p class="wp-block-paragraph">Magic doesn’t happen yet—but a very important cookie does.</p>
+
+
+
+<h4 class="wp-block-heading">Step 2: The Consent Cookie and the Golden Ticket</h4>
+
+
+
+<p class="wp-block-paragraph">Once the user approves, the third-party server sets a <strong>consent cookie</strong> for the <code>mcp-proxy</code> client. Think of it as a little flag that says, “Yes, this user gave explicit, non-coerced permission.”</p>
+
+
+
+<p class="wp-block-paragraph">Along with that, the server issues a <strong>3P (third-party) authorization code</strong> and sends it back to the MCP Proxy Server. This code is like a golden ticket—limited-use, time-bound, but powerful enough to grant access.</p>
+
+
+
+<h4 class="wp-block-heading">Step 3: Code Exchange — The Secret Handshake</h4>
+
+
+
+<p class="wp-block-paragraph">Now the MCP Proxy Server does what all good proxies do:<br/>It takes the third-party authorization code and exchanges it for an actual access token — the thing that lets your app act on the user’s behalf.</p>
+
+
+
+<p class="wp-block-paragraph">But there’s a twist: the proxy also <strong>wraps</strong> that token into a format that the MCP Client can understand—a proper <strong>MCP authorization code</strong>. Basically: it translates it from “Dropbox-speak” to “MCP-speak.”</p>
+
+
+
+<h4 class="wp-block-heading">Step 4: Pass It Back (With Boundaries)</h4>
+
+
+
+<p class="wp-block-paragraph">The Proxy sends the wrapped code back to the MCP Client.</p>
+
+
+
+<p class="wp-block-paragraph">Now, and <em>only</em> now, the MCP Client can use it to call tools or access data on behalf of the user. But—and this part is important—it can only do what the user consented to. No freelancing, no tool-hoarding, no “oops we accessed your calendar too” moments.</p>
+
+
+
+<hr class="wp-block-separator has-alpha-channel-opacity is-style-dotted"/>
+
+
+
+<h4 class="wp-block-heading">Why This Whole Thing Matters</h4>
+
+
+
+<p class="wp-block-paragraph">This flow might look a bit complicated—but it’s designed that way for a reason.</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">It puts the <strong>user</strong> in control of what gets accessed.</li>
+
+
+
+<li class="wp-block-list-item">It guarantees consent is real, <strong>not assumed</strong>.</li>
+
+
+
+<li class="wp-block-list-item">And it avoids the horror movie scenario where the MCP Proxy becomes a silent middleman with superpowers.</li>
+</ul>
+
+
+
+<p class="wp-block-paragraph">Anthropic (and most people serious about agent security) <a href="https://modelcontextprotocol.io/specification/draft/basic/security_best_practices">recommend this pattern</a> for a reason. If you’re building agent systems that interact with third-party APIs, <strong>this is the right way to do it</strong>—with transparency, with structure, and most importantly, with the user’s explicit say-so.</p>
+
+
+
+<h3 class="wp-block-heading" id="id1.2">How Malicious OAuth Proxying Works (a.k.a. How to Impersonate a User Without Asking)</h3>
+
+
+
+<p class="wp-block-paragraph">Sometimes, the most dangerous attacks don’t come from brute force. They come from <strong>confusion</strong>—not in the hacker, but in the system itself.</p>
+
+
+
+<p class="wp-block-paragraph">Enter the <strong><a href="https://en.wikipedia.org/wiki/Confused_deputy_problem">Confused Deputy Problem</a></strong>—a real thing with a real name, and yes, it sounds like something from a spaghetti western. But instead of a bumbling sheriff, we’ve got an OAuth proxy doing exactly what it was told… by the wrong person.</p>
+
+
+
+<figure class="wp-block-image size-full"><img decoding="async" src="../Images/2ded2cabd7b4f1e3cb14f0541b8be337.png" alt="" class="wp-image-613789" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/08/malicious-oauth-flow.png"/><figcaption class="wp-element-caption">Image by author, inspired by Anthropic</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">Here’s how this kind of attack goes down:</p>
+
+
+
+<h4 class="wp-block-heading">Step 1: A Misleading Setup</h4>
+
+
+
+<p class="wp-block-paragraph">Our attacker—we’ll call them EvilCorp (what can I say, I’m a fan of Mr. Robot)—starts by registering a <strong>legitimate-looking OAuth client</strong> with the third-party service. Think “TotallyRealApp, Inc.” with a redirect URI pointing to <code>attacker.com</code>.</p>
+
+
+
+<p class="wp-block-paragraph">The auth server approves it because, well, that’s how OAuth works—anyone can register a client.</p>
+
+
+
+<h4 class="wp-block-heading">Step 2: The Trap is Set</h4>
+
+
+
+<p class="wp-block-paragraph">Next, EvilCorp sends the user a <strong>malicious link</strong>. This link looks normal on the surface—it references the legitimate <code>mcp-proxy</code> client ID—but it’s crafted to redirect to the attacker’s domain after authorization.</p>
+
+
+
+<p class="wp-block-paragraph">Here’s where things start to smell fishy.</p>
+
+
+
+<h4 class="wp-block-heading">Step 3: The Cookie That Lied</h4>
+
+
+
+<p class="wp-block-paragraph">The user clicks the link. No red flags pop up, because they’ve previously given consent to <code>mcp-proxy</code>, and their browser still holds the <strong>consent cookie</strong> from that session.</p>
+
+
+
+<p class="wp-block-paragraph">So when the third-party server sees the request, it shrugs and says:</p>
+
+
+
+<blockquote class="wp-block-quote is-layout-flow wp-block-quote-is-layout-flow">
+<p class="wp-block-paragraph">“Ah, this again? Cool, they’ve already approved it. No need to bug them.”</p>
+</blockquote>
+
+
+
+<p class="wp-block-paragraph"><strong>No consent screen. No confirmation. No idea they’re being targeted.</strong></p>
+
+
+
+<p class="wp-block-paragraph">This is the <em>confused deputy</em> moment:<br/>The third-party auth server is acting as the deputy. It thinks it’s helping the legitimate client (<code>mcp-proxy</code>) do its job.<br/>But it’s actually helping the attacker—because it doesn’t realize it’s being misled about <em>who initiated the request</em> and <em>where the result is going</em>.</p>
+
+
+
+<h4 class="wp-block-heading">Step 4: The Token Goes to the Wrong Place</h4>
+
+
+
+<p class="wp-block-paragraph">The third-party service sends the <strong>authorization code</strong> to the MCP Proxy Server (still thinking this is a normal flow).<br/>The Proxy exchanges it for an access token, then wraps it into an <strong>MCP authorization code</strong>—standard procedure.</p>
+
+
+
+<p class="wp-block-paragraph">Then, the Proxy sends that MCP code to…<br/>😬 <code>attacker.com</code>, because that’s the redirect URI EvilCorp snuck into the flow.</p>
+
+
+
+<p class="wp-block-paragraph">Congratulations: the attacker now has <strong>a fully authorized token</strong> tied to the user’s identity.</p>
+
+
+
+<h4 class="wp-block-heading">Step 5: The Attacker Becomes the User</h4>
+
+
+
+<p class="wp-block-paragraph">With this MCP code, EvilCorp can impersonate the user. They didn’t need the user’s password. They didn’t need their approval. They just needed the system to confuse <em>who was asking for what.</em></p>
+
+
+
+<p class="wp-block-paragraph">The proxy became the deputy—dutifully carrying out orders—without realizing it was working for the wrong sheriff.</p>
+
+
+
+<hr class="wp-block-separator has-alpha-channel-opacity is-style-dotted"/>
+
+
+
+<h4 class="wp-block-heading">Why This Is a Security Nightmare</h4>
+
+
+
+<p class="wp-block-paragraph">This is what security folks (like Anthropic) call a <strong>Confused Deputy Problem</strong>:</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">The system that <em>has</em> the authority (the MCP Proxy) gets tricked into using it <em>on behalf of someone who shouldn’t have it</em> (the attacker).</li>
+
+
+
+<li class="wp-block-list-item">The real user? Completely out of the loop.</li>
+
+
+
+<li class="wp-block-list-item">Consent? Skipped.</li>
+
+
+
+<li class="wp-block-list-item">Damage? Potentially massive — from unauthorized data access to rogue tool execution.</li>
+</ul>
+
+
+
+<h2 class="wp-block-heading" id="id2">How to Avoid Becoming the Deputy That Gets Played</h2>
+
+
+
+<p class="wp-block-paragraph">This isn’t a “we’ll fix it later” kind of bug. It’s a <strong>fundamental architectural risk</strong> if you don’t lock things down properly.</p>
+
+
+
+<p class="wp-block-paragraph">To avoid turning your proxy into an unwitting accomplice, Anthropic recommends a few security best practices:</p>
+
+
+
+<figure class="wp-block-image alignwide size-large"><img decoding="async" src="../Images/90f3d06850c1bc2b83d4ae32e5bbb94e.png" alt="" class="wp-image-613795" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/08/securing-mcp-1024x683.jpg"/><figcaption class="wp-element-caption">Image by author</figcaption></figure>
+
+
+
+<h3 class="wp-block-heading">Authenticate Like You Mean It</h3>
+
+
+
+<p class="wp-block-paragraph">Strong auth isn’t optional. It’s not a nice-to-have. It’s your entire defense line between “useful AI assistant” and “this thing just deleted my company database.” MCP now supports OAuth 2.1, so there’s no excuse.</p>
+
+
+
+<p class="wp-block-paragraph">Always treat MCP servers like protected resources. <em><a href="https://modelcontextprotocol.io/specification/draft/basic/authorization#token-audience-validation">“MCP servers MUST validate the <code>aud</code> claim or <code>resource</code> parameter to confirm the token is intended for the resource being accessed.”</a></em> Don’t let random clients connect and ask them to execute tools unless they can prove they’re allowed. Bonus points for using per-client API keys, dynamic registration, and actually verifying the token audience.</p>
+
+
+
+<p class="wp-block-paragraph">Do <strong>not</strong>—and I can’t stress this enough—reuse static client credentials across different services. That’s how you accidentally invent a confused deputy attack and make your entire architecture one bad token reuse away from going full Mr. Robot.</p>
+
+
+
+<h3 class="wp-block-heading">Thou Shalt Not Pass (User Tokens)</h3>
+
+
+
+<p class="wp-block-paragraph">One of the worst anti-patterns? <a href="https://modelcontextprotocol.io/specification/draft/basic/security_best_practices#token-passthrough">Token passthrough</a>. Imagine a client hands an MCP server a raw cloud token, and the server just forwards it like “sure, bro, I trust you.” Now the logs are broken, the audit trail is gone, and you’ve bypassed all downstream rate limits.</p>
+
+
+
+<p class="wp-block-paragraph">The spec makes it clear—token passthrough is a no-go. Your server should either fetch its own tokens or thoroughly validate anything a client sends over. Every token needs to be tied to your server and used strictly for what it was meant for.</p>
+
+
+
+<h3 class="wp-block-heading">Validate Everything (And Then Validate It Again)</h3>
+
+
+
+<p class="wp-block-paragraph">MCP servers often wrap local system tools. That’s great — until someone passes <code>image.jpg; rm -rf /</code>. Suddenly, your “image converter” is also a “file deleter.”</p>
+
+
+
+<p class="wp-block-paragraph">Validate all input. Do not interpolate strings directly into shell commands. Use <code>subprocess.run([...], shell=False)</code> or similar safe calls. Normalize paths. Whitelist formats. Assume the AI is trying to trick you—even if it isn’t. That’s just healthy paranoia.</p>
+
+
+
+<p class="wp-block-paragraph">This also applies to prompt injection. Sanitize incoming content. Wrap it. Audit it. MCP doesn’t magically make your LLM immune to prompt attacks. If anything, it makes them more dangerous by giving those prompts real-world power.</p>
+
+
+
+<h3 class="wp-block-heading">Run It Like It’s Malware (Because It Might Be)</h3>
+
+
+
+<p class="wp-block-paragraph">MCP servers should run with the fewest permissions humanly possible. Don’t give them root. Don’t give them access to your entire file system. Don’t let them talk to the internet unless they absolutely need to.</p>
+
+
+
+<p class="wp-block-paragraph">Containerize them. Use AppArmor. Use a sandbox. Restrict APIs. Block egress. Just assume that one day, something will go wrong—and when it does, you want the blast radius to be a spark, not a crater.</p>
+
+
+
+<p class="wp-block-paragraph">A compromised MCP server with write access to your database isn’t just bad—it’s <em>“regulatory breach with an apology blog post and 2FA codes getting reset”-bad</em>.</p>
+
+
+
+<h3 class="wp-block-heading">Sessions Are Not Security</h3>
+
+
+
+<p class="wp-block-paragraph">Sessions are for keeping track of context, not authenticating clients. Never treat session IDs as proof of identity. Never expose them in URLs. Always tie them to user identity and store them server-side.</p>
+
+
+
+<p class="wp-block-paragraph">MCP’s statefulness makes this a little tricky, especially across nodes. So yes, you’ll need to get creative: shard sessions by user, validate identity on each request, and don’t let a valid session on node A mean anything on node B without re-authentication.</p>
+
+
+
+<p class="wp-block-paragraph">Otherwise, welcome to session hijacking hell.</p>
+
+
+
+<h3 class="wp-block-heading">Verify Tools Like They’re Explosives</h3>
+
+
+
+<p class="wp-block-paragraph">Just because someone published an “email-sender” MCP server doesn’t mean it only sends emails. It could log them. Or rewrite them. Or forward them to your boss with a helpful “I QUIT” note.</p>
+
+
+
+<p class="wp-block-paragraph">Read the code. Use trusted registries. Don’t auto-update from GitHub without checking diffs. For critical use cases, fork the tool and control the lifecycle yourself. Until the MCP ecosystem has signing, metadata, and reputation baked in, the burden is on you.</p>
+
+
+
+<p class="wp-block-paragraph">Basically: if you wouldn’t install a random binary from Reddit, don’t plug in a random tool from GitHub.</p>
+
+
+
+<h3 class="wp-block-heading">Log Like a Forensic Investigator</h3>
+
+
+
+<p class="wp-block-paragraph">MCP isn’t like calling an API. Agents chain tool calls. They reason. They retry. You’ll want to know <em>exactly</em> what happened when things go sideways.</p>
+
+
+
+<p class="wp-block-paragraph">Log all tool calls, inputs, outputs, timestamps, and user approvals. Monitor outbound traffic. Watch for spikes. If your AI suddenly wants to call <code>send_email</code> 100 times at 3AM, maybe don’t sleep on that alert.</p>
+
+
+
+<p class="wp-block-paragraph">No logs = no visibility = no clue what the agent just did = good luck in the postmortem.</p>
+
+
+
+<h3 class="wp-block-heading">Humans Must Approve the Scary Stuff</h3>
+
+
+
+<p class="wp-block-paragraph">This one’s obvious but often overlooked: AI should not delete files, send emails, or spend money without someone saying “yes, I want this.”</p>
+
+
+
+<p class="wp-block-paragraph">That doesn’t mean you need a 20-step approval flow. Just have a button. A prompt. Something. Even Claude Desktop requires you to approve tools one-by-one (unless you override that, which you shouldn’t).</p>
+
+
+
+<p class="wp-block-paragraph">Avoid consent fatigue. Batch low-risk approvals. Flag anything new or sensitive. Don’t let the AI train you to click “Allow” reflexively like a caffeine-deprived cookie pop-up zombie.</p>
+
+
+
+<hr class="wp-block-separator has-alpha-channel-opacity is-style-dotted"/>
+
+
+
+<p class="wp-block-paragraph">These best practices aren’t just nice ideas—they’re seatbelts. You don’t skip the seatbelt because the car’s fast. You wear it <em>because</em> the car’s fast. And MCP is very fast.</p>
+
+
+
+<p class="wp-block-paragraph">Now let’s look at some case studies of what happens when those seatbelts are missing…</p>
+
+
+
+<h2 class="wp-block-heading" id="id3">Case Studies: Learning from Real MCP Security Breaches</h2>
+
+
+
+<p class="wp-block-paragraph">To illustrate why these best practices matter, let’s examine a few real-world incidents and vulnerabilities that have emerged in the early days of MCP’s ecosystem. Each case highlights how failing to follow security guidelines can lead to serious consequences – and conversely, how applying the above best practices can prevent or contain the damage.</p>
+
+
+
+<h3 class="wp-block-heading" id="id3.1">Case 1: Remote Code Execution via Exposed MCP Inspector (<a href="https://thehackernews.com/2025/07/critical-vulnerability-in-anthropics.html">CVE-2025-49596</a>)</h3>
+
+
+
+<p class="wp-block-paragraph">Sometimes, security lessons arrive in the form of massive forehead slaps. One of the earliest—and most avoidable—MCP-related vulnerabilities was discovered July 2025, courtesy of the Oligo Security team. The target? Anthropic’s own <strong><a href="https://modelcontextprotocol.io/legacy/tools/inspector">MCP Inspector</a></strong>: a developer tool meant to make testing local MCP servers easier.</p>
+
+
+
+<p class="wp-block-paragraph">Instead, it made remote code execution easier.</p>
+
+
+
+<p class="wp-block-paragraph">The vulnerability—<strong>CVE-2025-49596</strong>—turned a local utility into an accidental attack surface. And all it took was a bad network config, no authentication, and a browser quirk with a catchy name: <strong><a href="https://thehackernews.com/2024/08/0000-day-18-year-old-browser.html">“0.0.0.0 Day.”</a></strong></p>
+
+
+
+<h4 class="wp-block-heading">What Went Wrong (Spoiler: Basically Everything)</h4>
+
+
+
+<p class="wp-block-paragraph">MCP Inspector runs two components: a local UI client (your browser) and a local proxy server (handling MCP calls). But here’s the problem:</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">The proxy server was listening on <strong><code>0.0.0.0</code></strong>—which means <em>every</em> network interface, not just localhost.</li>
+
+
+
+<li class="wp-block-list-item">It had <strong>no authentication</strong>.</li>
+
+
+
+<li class="wp-block-list-item">It also lacked <strong>any kind of origin or <a href="https://owasp.org/www-community/attacks/csrf">cross-site request forgery (CSRF)</a> protection.</strong></li>
+</ul>
+
+
+
+<p class="wp-block-paragraph">Combine that with “0.0.0.0 Day”—a bug where some browsers treated <code>0.0.0.0</code> as localhost—and you’ve got a cocktail for remote code execution.</p>
+
+
+
+<p class="wp-block-paragraph">Oligo <a href="https://blogger.googleusercontent.com/img/b/R29vZ2xl/AVvXsEjCAweB0rh6f9P9_QzSXPwdFa-N-PvsEBKsCSlJx_kB8W9VPrDiIRm0d92_MQdITqJJNatRJNTKQWvncuBiNOmwQcfdBDdZnYGSSuk69ttO13C3iC7OMnO0pdW3sEt3q3OQzpmlXwBZM3i9plQ7GvHYRowQmUcxOcY7xWfjqg3BaXFhyyNigrilsKQzZDCn/s728-rw-e365/poc.gif">demonstrated</a> that a malicious website could silently send commands to MCP Inspector using a <strong>cross-site request forgery (CSRF)</strong> attack. All the user had to do was… open a page. That’s it. No clicks. No warnings. Just vibes and root access.</p>
+
+
+
+<p class="wp-block-paragraph">Once exploited, the attacker could run shell commands, exfiltrate data, or burrow deeper into the system. All from the tool you installed to <em>debug your AI agent</em>.</p>
+
+
+
+<h4 class="wp-block-heading">The Fix (a.k.a. What Should’ve Been There in the First Place)</h4>
+
+
+
+<p class="wp-block-paragraph">The patch—<strong>MCP Inspector v0.14.1</strong>—was a direct implementation of the same best practices you’ve read about 14 times in this post:</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item"><strong>Authentication token</strong> required for every request</li>
+
+
+
+<li class="wp-block-list-item"><strong>Origin and Host header validation</strong> to block CSRF</li>
+
+
+
+<li class="wp-block-list-item"><strong>Session token verification</strong> before executing any action</li>
+
+
+
+<li class="wp-block-list-item"><strong>Localhost-only binding</strong> — no more listening on the whole internet by default</li>
+</ul>
+
+
+
+<p class="wp-block-paragraph">With these guardrails in place, those “just visit this site to get pwned” exploits stopped working. Because the server finally checked who was talking to it—and stopped trusting every request like an overenthusiastic intern.</p>
+
+
+
+<h4 class="wp-block-heading">What We Learned (The Hard Way)</h4>
+
+
+
+<p class="wp-block-paragraph">This breach was a greatest-hits album of rookie mistakes:</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">Trusting that “local” means “safe”</li>
+
+
+
+<li class="wp-block-list-item">Exposing tools on open interfaces</li>
+
+
+
+<li class="wp-block-list-item">Forgetting that browsers don’t care what you intended—only what’s possible</li>
+</ul>
+
+
+
+<p class="wp-block-paragraph">If the MCP Inspector had followed even a basic web app threat model, none of this would’ve happened. But because it was “just a local tool,” those precautions were skipped.</p>
+
+
+
+<p class="wp-block-paragraph">As Oligo Security put it:</p>
+
+
+
+<blockquote class="wp-block-quote is-layout-flow wp-block-quote-is-layout-flow">
+<p class="wp-block-paragraph"><em>“Developers unknowingly opened a backdoor to their machine by trusting a debug tool with no security.”</em></p>
+</blockquote>
+
+
+
+<p class="wp-block-paragraph">The takeaway? <strong>Every MCP interface—no matter how local, internal, or “just for testing”—needs real security controls</strong>. That means:</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">Require authentication</li>
+
+
+
+<li class="wp-block-list-item">Validate request origins</li>
+
+
+
+<li class="wp-block-list-item">Default to localhost</li>
+
+
+
+<li class="wp-block-list-item">Don’t leave debug ports listening on the public internet</li>
+</ul>
+
+
+
+<p class="wp-block-paragraph">Because in 2025, even your dev tools can be attack vectors—and your browser may not have your back.</p>
+
+
+
+<h3 class="wp-block-heading" id="id3.2">Case 2: Prompt Injection via SQLite MCP Server Exploit</h3>
+
+
+
+<p class="wp-block-paragraph">Let’s rewind to late June 2025, when Trend Micro turned on the spotlight: one of Anthropic’s reference SQLite MCP server implementations—not production-grade—harbored a classic SQL injection flaw that morphed into a prompt injection nightmare. The blog headline says it all: <a href="https://www.trendmicro.com/en_ca/research/25/f/why-a-classic-mcp-server-vulnerability-can-undermine-your-entire-ai-agent.html"><em>“Why a Classic MCP Server Vulnerability Can Undermine Your Entire AI Agent”</em>.</a></p>
+
+
+
+<h4 class="wp-block-heading">What Exactly Happened?</h4>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">The repo had already been <strong>archived by May 29, 2025</strong>, but had been <strong>forked over 5,000 times</strong> before then.</li>
+
+
+
+<li class="wp-block-list-item">The vulnerable engine built SQL queries by <strong>concatenating unsanitized user input</strong> with Python’s <code>sqlite3</code> driver—no parameterization, no checks, just trust.</li>
+
+
+
+<li class="wp-block-list-item">Enter <strong>prompt injection</strong>: the AI later reads database output and treats it as instructions. Cue malicious data disguised as a support ticket. The AI agent executes it—sending emails or deleting records—because it trusted “internal” data more than logic.</li>
+</ul>
+
+
+
+<p class="wp-block-paragraph">Sean Park from Trend Micro summed it up:</p>
+
+
+
+<blockquote class="wp-block-quote is-layout-flow wp-block-quote-is-layout-flow">
+<p class="wp-block-paragraph"><em>“AI agents tend to treat internal data as safe… so if an attacker embeds a prompt at that point, the agent may execute it unaware.”</em></p>
+</blockquote>
+
+
+
+<p class="wp-block-paragraph">In short: SQL injection isn’t just a data layer flaw anymore—it’s a command prompt waiting to spring.</p>
+
+
+
+<h4 class="wp-block-heading">Why It Was Especially Dangerous</h4>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">The vulnerable server was openly available and meant as a reference, yet many reused it in real environments.</li>
+
+
+
+<li class="wp-block-list-item">It carried a <strong>supply chain risk</strong>: code widely copied and never patched.</li>
+
+
+
+<li class="wp-block-list-item">Anthropic explicitly said <strong><a href="https://github.com/modelcontextprotocol/servers/issues/1348">no fix will be issued</a></strong>—it was archived and marked “out of scope”.</li>
+</ul>
+
+
+
+<p class="wp-block-paragraph">That patch never happened, meaning vulnerabilities persist in the wider MCP world.</p>
+
+
+
+<h4 class="wp-block-heading">What Should’ve Been Done (And Still Can Be)</h4>
+
+
+
+<p class="wp-block-paragraph">This attack chain—<strong>SQL injection → stored prompt injection → compromised agent workflows</strong>—demands layered defenses:</p>
+
+
+
+<ol class="wp-block-list">
+<li class="wp-block-list-item"><strong>Fix the server code</strong>: Use parameterized queries (never string-concat SQL) to sanitize inputs. It’s 2025, but OWASP basics still apply.</li>
+
+
+
+<li class="wp-block-list-item"><strong>Treat all stored content as untrusted</strong>: When your agent pulls content from a local DB, validate it like it came from a stranger. Check the data types, escape special characters, and use safe wrappers or delimiters before including it in prompts or tool calls. Just because you wrote it doesn’t mean it’s safe now.</li>
+
+
+
+<li class="wp-block-list-item"><strong>Require human approval</strong> for dangerous operations. Even after the AI processes internal data, any destructive command (e.g. deleting records or elevating privileges) should be gated behind a prompt or admin confirmation.</li>
+</ol>
+
+
+
+<p class="wp-block-paragraph">Trend Micro’s summary: <em>if yesterday’s web-app mistakes slip into AI systems, an attacker gains a shortcut from SQL bug to full agent compromise.</em></p>
+
+
+
+<h3 class="wp-block-heading" id="id3.3">Case 3: When Enterprise Integration Met the Real World</h3>
+
+
+
+<p class="wp-block-paragraph">It’s one thing to prototype with MCP in a local dev loop. It’s another thing entirely when a billion-dollar company hooks it up to real user data. In 2025, several early enterprise adopters of MCP learned this the hard way—on live infrastructure, with real customers watching.</p>
+
+
+
+<h4 class="wp-block-heading">Asana: The “Oops, That Wasn’t Your Data” Moment</h4>
+
+
+
+<p class="wp-block-paragraph">In June 2025, Asana quietly rolled out a new MCP integration: the goal was to connect AI agents to their product suite to power automation and smart assistant features. But shortly after launch, things took a wrong turn.</p>
+
+
+
+<p class="wp-block-paragraph">A bug in the system allowed one customer to <strong>access another customer’s data</strong>—a textbook <strong><a href="https://www.upguard.com/blog/asana-discloses-data-exposure-bug-in-mcp-server">multi-tenant access control failure</a></strong>. When Asana discovered the issue, they acted fast: integration shut down, fix deployed, affected customers notified. Full credit for transparency.</p>
+
+
+
+<p class="wp-block-paragraph">Still, the root cause was a classic: shared infrastructure without properly isolated auth tokens or data partitions. In an MCP world, where agents and tools can span tenants, these controls aren’t optional—they’re survival gear.</p>
+
+
+
+<p class="wp-block-paragraph">Lesson: If your MCP server serves multiple orgs, <strong>segregate everything</strong>.<br/>That means:</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">Auth tokens scoped per tenant</li>
+
+
+
+<li class="wp-block-list-item">Namespacing on tool invocations</li>
+
+
+
+<li class="wp-block-list-item">Context boundaries the AI can’t cross</li>
+
+
+
+<li class="wp-block-list-item">And no shared memory unless you <em>really</em> know what you’re doing</li>
+</ul>
+
+
+
+<h4 class="wp-block-heading">Atlassian: Living Off AI, Literally</h4>
+
+
+
+<p class="wp-block-paragraph">Over at Atlassian, the team integrated MCP into Jira Service Management, aiming to bring AI into ticket handling and workflow orchestration. It worked—maybe a little <em>too</em> well.</p>
+
+
+
+<p class="wp-block-paragraph">Security researchers at Cato Networks’ Threat Labs took a closer look and discovered what they called a <a href="https://www.catonetworks.com/blog/cato-ctrl-poc-attack-targeting-atlassians-mcp/#:~:text=,connected%20AI%20action"><strong>“Living Off AI” attack</strong></a>. The idea? Use prompt injection not just to hijack the AI’s response, but to abuse its access to backend tools—think scripting unauthorized actions by smuggling them into ticket comments or user fields.</p>
+
+
+
+<p class="wp-block-paragraph">Because the AI had elevated privileges and direct access to Jira APIs, a single poisoned prompt could trigger real, privileged behavior—without tripping the usual alarms. In a real incident, this could escalate quickly from “weird ticket reply” to “suddenly deactivated accounts and modified permissions.”</p>
+
+
+
+<p class="wp-block-paragraph">To Atlassian’s credit, the design had audit logs and bounded actions, so this was caught before it caused damage. But the report underscored something everyone needs to hear:</p>
+
+
+
+<blockquote class="wp-block-quote is-layout-flow wp-block-quote-is-layout-flow">
+<p class="wp-block-paragraph">AI privilege != user privilege<br/>Just because the AI <em>can</em> call a tool doesn’t mean it <em>should</em> do so unsupervised.</p>
+</blockquote>
+
+
+
+<h3 class="wp-block-heading">What These Incidents Really Tell Us</h3>
+
+
+
+<p class="wp-block-paragraph">Enterprise adoption of MCP isn’t just about scaling—it’s about <strong>operationalizing security and trust</strong>. These real-world cases revealed that:</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item"><strong>Multi-tenant MCP servers must enforce strict data and token isolation</strong></li>
+
+
+
+<li class="wp-block-list-item"><strong>Prompt injection isn’t theoretical</strong> when agents are hooked into real workflows</li>
+
+
+
+<li class="wp-block-list-item"><strong>Privileged agents need bounded permissions and human-in-the-loop approvals</strong></li>
+</ul>
+
+
+
+<p class="wp-block-paragraph">The good news? Both companies shared their experiences early—before things got worse. Their disclosures are a reminder that <strong>early transparency can be just as valuable as early adoption</strong>.</p>
+
+
+
+<hr class="wp-block-separator has-alpha-channel-opacity is-style-dotted"/>
+
+
+
+<p class="wp-block-paragraph">These cases above are just the tip of the iceberg. Trend Micro’s survey uncovered <strong><a href="https://www.trendmicro.com/vinfo/us/security/news/cybercrime-and-digital-threats/mcp-security-network-exposed-servers-are-backdoors-to-your-private-data">492 MCP servers publicly exposed</a></strong>—none with client authentication or encryption—offering unfettered access to internal APIs, proprietary data, and backend systems, many hosted in public cloud environments like AWS and GCP.</p>
+
+
+
+<p class="wp-block-paragraph">Their research warns: these are not theoretical vulnerabilities. Exposed servers often act as direct backdoors into confidential systems, sometimes enabling attackers to <strong>list, modify, or delete cloud infrastructure</strong> using hardcoded credentials or wide-open tokens.</p>
+
+
+
+<h2 class="wp-block-heading" id="id4">General Critiques—It’s Not Just MCP</h2>
+
+
+
+<p class="wp-block-paragraph">A lot of what’s going wrong with MCP security isn’t new—it’s the same old web risk in a flashier package. Think of MCP servers like third-party desktop plugins or browser extensions: easy to install, easy to trust… until they’re not.</p>
+
+
+
+<p class="wp-block-paragraph">The danger? <em>“MCP is standardized, so it must be safe” </em>thinking—when in reality, defaults were wide open. Thought leaders in AI security emphasize that <a href="https://protectai.com/blog/mcp-security-101#:~:text=While%20AI%20is%20a%20new,in%20these%20discussions%20and%20articles"><strong>traditional security principles still apply</strong>:</a></p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">Don’t install what you don’t explicitly trust</li>
+
+
+
+<li class="wp-block-list-item">Always apply the <strong><a href="https://en.wikipedia.org/wiki/Principle_of_least_privilege">principle of least privilege</a></strong></li>
+
+
+
+<li class="wp-block-list-item">Use <strong><a href="https://www.trendmicro.com/vinfo/us/security/news/cybercrime-and-digital-threats/mcp-security-network-exposed-servers-are-backdoors-to-your-private-data?utm_source=chatgpt.com">defense-in-depth</a></strong>, even if the stack feels new and shiny</li>
+</ul>
+
+
+
+<p class="wp-block-paragraph">Moreover, the design of MCP made trade-offs—favoring usability over strict security. That made life easy for developers <em>until</em> attackers started treating MCP servers like entry points. Now, developers are tightening default security settings, making token pass‑through forbidden by default, and hardening recommendations in the specification itself .</p>
+
+
+
+<h2 class="wp-block-heading" id="id5">Future Outlook: Evolving Security in MCP and Agentic Protocols</h2>
+
+
+
+<p class="wp-block-paragraph">Right now, MCP and its cousins (similar agentic protocols such as Agent2Agent, ANP, Agora, etc.) are like teenagers with superpowers—capable of amazing things, but still figuring out boundaries, safety rules, and how not to blow up the house. But things are maturing fast. The next generation of agent protocols will be less “duct tape and hope” and more “zero trust by design.”</p>
+
+
+
+<p class="wp-block-paragraph">Here are some ways we can expect things to evolve:</p>
+
+
+
+<figure class="wp-block-image size-large"><img decoding="async" src="../Images/9f681ebf7f4b7b8825bf459e3d00c952.png" alt="" class="wp-image-613972" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/08/future-outlook-1-680x1024.jpg"/><figcaption class="wp-element-caption">Image by author</figcaption></figure>
+
+
+
+<h3 class="wp-block-heading">Stronger Identity and Trust Models</h3>
+
+
+
+<p class="wp-block-paragraph">Currently, if you show up with a working token, the MCP server shrugs and says, “Good enough.” That’s fine for now—but long term, we’re heading toward a <strong>zero-trust model</strong>, where identity is verified not just once at login, but on <strong><a href="https://protectai.com/blog/mcp-security-101#:~:text=2,MCP%20server%20and%20scan%20accordingly">every single tool call</a></strong>.</p>
+
+
+
+<p class="wp-block-paragraph">We may see concepts like <em><strong>agent identity tokens</strong></em> that cryptographically identify not just the human user but the specific agent or chain-of-tools involved, allowing finer access control. Other agent protocols (e.g. inter-agent communication standards like A2A or ANP) are being designed with <a href="https://www.anup.io/p/the-agentic-protocols-that-will-define"><strong>structured handshakes for every interaction</strong></a>. This means when Agent A wants to talk to Agent B, they perform a capability negotiation and auth exchange each time, ensuring neither blindly trusts the other without verification. Such patterns could inform a future MCP 2.0 where every tool execution request carries a proof of the caller’s authenticity and perhaps intent. Also, as industry consortia get involved, we might see standard schemas for agent identity (similar to how <a href="https://www.microsoft.com/en-us/security/business/security-101/what-is-openid-connect-oidc">OIDC</a> standardizes user identity claims).</p>
+
+
+
+<h3 class="wp-block-heading">Granular Permissions and Automatic Sandboxing</h3>
+
+
+
+<p class="wp-block-paragraph">Future versions of MCP are likely to include first-class support for <strong><em>permission scopes</em>.</strong> Imagine an MCP schema declaring: “This server provides a <code>delete_file</code> action—it requires admin privileges.” An AI client could then enforce that only certain roles or approved agents can call that action. Granular permissioning was noted on the <a href="https://modelcontextprotocol.io/development/roadmap">MCP roadmap as an area of exploration</a> (e.g., “granular permissioning for human-in-the-loop workflows”). Moreover, we can expect <strong>automated sandboxing </strong>to become standard. Think of it like browser extension permissions—but for tools like <code>send_email</code> or <code>modify_infrastructure</code>. Some proposals suggest that MCP servers could declare a <strong>“safety profile”</strong> – e.g., whether they perform file writes, network calls, etc. – and AI runtimes could then automatically run more dangerous servers in isolated sandboxes or VMs. This way, even if an MCP server is compromised, the harm is contained. The concept is analogous to web browser extensions that run in isolated contexts with only specific allowed API calls.</p>
+
+
+
+<h3 class="wp-block-heading">Integrated Audit and Traceability</h3>
+
+
+
+<p class="wp-block-paragraph">If we want to trust agents with real work, we need to know what they did, when, and why. In the future, agent protocols like MCP may include <strong>built-in tracing, telemetry, and audit hooks</strong>—so when your AI assistant deletes 4,000 rows from the CRM, there’s a paper trail.</p>
+
+
+
+<p class="wp-block-paragraph">For example, an MCP request could carry a <strong>session fingerprint</strong> or <strong>trace token</strong> that all components must log, making it simpler to correlate events. Efforts could align with initiatives like <a href="https://opentelemetry.io/">OpenTelemetry</a>—envision standardized telemetry for AI agent action. Security frameworks might also coalesce around a common event format for AI agent activity (much like <a href="https://ocsf.io/">Open Cybersecurity Schema Framework (OCSF)</a> created a common format for security logs). The result? You can finally debug your agents without needing a prompt archaeologist.</p>
+
+
+
+<h3 class="wp-block-heading">Policy and Governance Layers</h3>
+
+
+
+<p class="wp-block-paragraph">Just like we have firewalls and access control lists for networks, we’re going to need <strong>AI governance policies</strong> for agents. Think:</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">“Agent may not access financial APIs between 10pm–6am.”</li>
+
+
+
+<li class="wp-block-list-item">“Never output more than 100 rows from a database unless redacted.”</li>
+
+
+
+<li class="wp-block-list-item">“No, you can’t delete the production environment on a Friday.”</li>
+</ul>
+
+
+
+<p class="wp-block-paragraph">These rules won’t live <em>inside</em> the agent—they’ll sit above it, enforced by <strong>governance services or agent policy gateways</strong> (some of which already exist, like <a href="https://zenity.io/blog/current-events/model-context-protocol">Zenity</a>‘s policy-layer observability tooling).</p>
+
+
+
+<p class="wp-block-paragraph">In tandem, expect <strong>education and culture</strong> to evolve: organizations will craft <strong>AI acceptable usage policies</strong>. Just like we have HR policies for employee behavior, orgs will start publishing AI behavior guidelines—and protocols like MCP will need enforcement points to match.</p>
+
+
+
+<h3 class="wp-block-heading">Cross-Protocol Security Consistency</h3>
+
+
+
+<p class="wp-block-paragraph">As MCP evolves, it won’t live alone. Agent protocols like <strong>A2A</strong> (for multi-agent collaboration), <strong><a href="https://agoraprotocol.org/">Agora</a></strong> (for open marketplaces), or even <strong><a href="https://thinkrobotics.com/blogs/learn/robot-communication-protocols-a-comprehensive-guide?srsltid=AfmBOop3oxaGivEv2Qhxu3pTuHfDH36qSB2mJeBf_2daW9W_NDaS8dKQ">robot communication protocols</a></strong> are emerging—and they all need to play well together.</p>
+
+
+
+<p class="wp-block-paragraph">That means:</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">Shared security context across protocols</li>
+
+
+
+<li class="wp-block-list-item">User identity and permission propagation between agent layers</li>
+
+
+
+<li class="wp-block-list-item">Avoiding “loophole attacks” where an agent switches protocols to bypass policy</li>
+</ul>
+
+
+
+<p class="wp-block-paragraph">We’ll probably see <strong>security brokers</strong> that mediate between protocols—ensuring core security principles (auth, audit, allowlists, etc.) apply no matter where the agent operates. And yes, standards bodies like <strong>IETF or IEEE</strong> might eventually step in with the “Agent Security Best Practices RFC 9001.”</p>
+
+
+
+<p class="wp-block-paragraph">Until then, we’re stitching it together ourselves.</p>
+
+
+
+<h3 class="wp-block-heading">Continuous Community Involvement</h3>
+
+
+
+<p class="wp-block-paragraph">Finally, the future of MCP security will be heavily influenced by community involvement. The current trajectory—with open <a href="https://en.wikipedia.org/wiki/Request_for_Comments">RFCs</a>, public debates, and rapid responses to discovered issues—is encouraging. We can expect more <strong>SEP (Standard Enhancement Proposal) submissions</strong> focusing on security (for instance, an SEP for a standardized permission schema, or an SEP for encrypted invocation contexts, etc.). </p>
+
+
+
+<p class="wp-block-paragraph">Security researchers, industry leaders, and devs are already shaping the protocol’s direction through:</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">Publicly disclosed flaws and postmortems that <strong>actually help others</strong></li>
+
+
+
+<li class="wp-block-list-item">Open-source audits and patches</li>
+
+
+
+<li class="wp-block-list-item">Contributions from teams like <strong><a href="https://blog.trailofbits.com/categories/mcp/">Trail of Bits</a></strong>, and <strong><a href="https://protectai.com/blog/mcp-security-101">Protect AI</a></strong></li>
+
+
+
+<li class="wp-block-list-item">Blog posts and community debates (see: <a href="https://community.cisco.com/t5/security-blogs/ai-model-context-protocol-mcp-and-security/ba-p/5274394">Omar Santos, Cisco</a>)</li>
+</ul>
+
+
+
+<p class="wp-block-paragraph">Eventually, we may even get <strong>certified secure MCP server implementations</strong>—complete with an audit badge and a comforting checklist.</p>
+
+
+
+<p class="wp-block-paragraph">Until then, security in MCP isn’t a solved problem—it’s a live one. But at least we’re not pretending anymore.</p>
+
+
+
+<hr class="wp-block-separator has-alpha-channel-opacity is-style-dotted"/>
+
+
+
+<p class="wp-block-paragraph">MCP and its fellow agentic protocols are ushering in a new era of AI capabilities—one where AI agents don’t just think and speak, but <em>act</em> on our digital behalf. With that comes a blending of application security, API security, and AI safety concerns unlike anything before. The best practices we’ve outlined here boil down to a simple ethos: treat your AI agents as you would a new junior employee with root access – give them only the access they need, watch what they’re doing, and double-check when they try something risky. The community’s experiences so far show that when we do that, we can reap the benefits of MCP’s flexibility <em>without</em> opening the door to chaos. By building in security from the ground up—and continuously iterating on it as threats evolve—we can enable the future of agentic AI with confidence and control.</p>
+
+
+
+<h2 class="wp-block-heading" id="id6">References</h2>
+
+
+
+<ol class="wp-block-list">
+<li class="wp-block-list-item">Anthropic. (2024). <em>Model Context Protocol (MCP) Security Best Practices</em>. <a class="" href="https://modelcontextprotocol.io/specification/draft/basic/security_best_practices">https://modelcontextprotocol.io/specification/draft/basic/security_best_practices</a></li>
+
+
+
+<li class="wp-block-list-item">Anthropic. (2024). <em>MCP Specification – Draft</em>. <a class="" href="https://modelcontextprotocol.io/specification/">https://modelcontextprotocol.io/specification/</a></li>
+
+
+
+<li class="wp-block-list-item">CyberNews. (2025). <em>GitHub MCP vulnerability has far-reaching consequences</em>. <a class="" href="https://cybernews.com/security/github-mcp-vulnerability-has-far-reaching-consequences/">https://cybernews.com/security/github-mcp-vulnerability-has-far-reaching-consequences/</a></li>
+
+
+
+<li class="wp-block-list-item">The Hacker News. (2025). <em>Critical MCP remote vulnerability allows unauthenticated RCE</em>. <a class="" href="https://thehackernews.com/2025/07/critical-mcp-remote-vulnerability.html">https://thehackernews.com/2025/07/critical-mcp-remote-vulnerability.html</a></li>
+
+
+
+<li class="wp-block-list-item">GBHackers. (2025). <em>Anthropic MCP Inspector vulnerability exposes developer machines</em>. <a class="" href="https://gbhackers.com/anthropic-mcp-inspector-vulnerability/">https://gbhackers.com/anthropic-mcp-inspector-vulnerability/</a></li>
+
+
+
+<li class="wp-block-list-item">The Hacker News. (2025). <em>Experts uncover critical flaws in MCP and A2A protocols</em>. <a class="" href="https://thehackernews.com/2025/04/experts-uncover-critical-mcp-and-a2a.html">https://thehackernews.com/2025/04/experts-uncover-critical-mcp-and-a2a.html</a></li>
+
+
+
+<li class="wp-block-list-item">Trend Micro. (2025). <em>MCP security: Network-exposed servers are backdoors to your private data</em>. <a class="" href="https://www.trendmicro.com/vinfo/us/security/news/cybercrime-and-digital-threats/mcp-security-network-exposed-servers-are-backdoors-to-your-private-data">https://www.trendmicro.com/vinfo/us/security/news/cybercrime-and-digital-threats/mcp-security-network-exposed-servers-are-backdoors-to-your-private-data</a></li>
+
+
+
+<li class="wp-block-list-item">Trend Micro. (2025). <em>Why a classic MCP server vulnerability can undermine your entire AI agent</em>. <a class="" href="https://www.trendmicro.com/en_ca/research/25/f/why-a-classic-mcp-server-vulnerability-can-undermine-your-entire-ai-agent.html">https://www.trendmicro.com/en_ca/research/25/f/why-a-classic-mcp-server-vulnerability-can-undermine-your-entire-ai-agent.html</a></li>
+
+
+
+<li class="wp-block-list-item">Cato Networks. (2025). <em>CTRL+PoC: Attack targeting Atlassian’s MCP shows risks of connected AI action</em>. <a class="" href="https://www.catonetworks.com/blog/cato-ctrl-poc-attack-targeting-atlassians-mcp/">https://www.catonetworks.com/blog/cato-ctrl-poc-attack-targeting-atlassians-mcp/</a></li>
+
+
+
+<li class="wp-block-list-item">CyberArk. (2025). <em>Session hijacking in distributed AI agent systems</em>. <a>https://www.cyberark.com/resources/threat-research-blog/session-hijacking-ai-agents</a></li>
+
+
+
+<li class="wp-block-list-item">Strobes Security. (2025). <em>Command injection flaws in 2025-era MCP agent tools</em>. <a>https://www.strobes.co/blog/mcp-agent-rce-analysis</a></li>
+
+
+
+<li class="wp-block-list-item">Trail of Bits. (2025). <em>MCP security insights and audits</em>. <a class="" href="https://blog.trailofbits.com/categories/mcp/">https://blog.trailofbits.com/categories/mcp/</a></li>
+
+
+
+<li class="wp-block-list-item">Protect AI. (2025). <em>Security frameworks and telemetry standards for agent systems</em>. <a>https://protectai.com/research</a></li>
+
+
+
+<li class="wp-block-list-item">Wiz.io. (2025). <em>Secure LLM deployment patterns</em>. <a class="" href="https://github.com/wiz-sec">https://github.com/wiz-sec</a></li>
+
+
+
+<li class="wp-block-list-item">Zenity. (2025). <em>AI governance with policy-driven agent enforcement</em>. <a class="" href="https://zenity.io">https://zenity.io</a></li>
+
+
+
+<li class="wp-block-list-item">Anup.io. (2025). <em>The agentic protocols that will define AI infrastructure</em>. <a class="" href="https://www.anup.io/p/the-agentic-protocols-that-will-define">https://www.anup.io/p/the-agentic-protocols-that-will-define</a></li>
+
+
+
+<li class="wp-block-list-item">RFC Editor. (2020). <em>RFC 8707 – Resource Indicators for OAuth 2.0</em>. <a>https://datatracker.ietf.org/doc/html/rfc8707</a></li>
+
+
+
+<li class="wp-block-list-item">OpenTelemetry. (2024). <em>OpenTelemetry observability framework</em>. <a>https://opentelemetry.io</a></li>
+
+
+
+<li class="wp-block-list-item">OpenID Foundation. (2014). <em>OpenID Connect Core 1.0</em>. <a>https://openid.net/specs/openid-connect-core-1_0.html</a></li>
+
+
+
+<li class="wp-block-list-item">OCSF Project. (2024). <em>Open Cybersecurity Schema Framework</em>. <a>https://www.ocsf.io/</a></li>
+
+
+
+<li class="wp-block-list-item">GitHub. (2025). <em>mcp-stack: Secure MCP implementation examples</em>. <a class="" href="https://github.com/mcprotocol/mcp-stack">https://github.com/mcprotocol/mcp-stack</a></li>
+
+
+
+<li class="wp-block-list-item">GitHub. (2025). <em>LangGraph: Workflow orchestration for agents</em>. <a class="" href="https://github.com/langchain-ai/langgraph">https://github.com/langchain-ai/langgraph</a></li>
+
+
+
+<li class="wp-block-list-item">Hacker News. (2025). <em>Community discussions on MCP agent security</em>. <a>https://news.ycombinator.com/</a></li>
+
+
+
+<li class="wp-block-list-item">Think Robotics. (2023). <em>Robot communication protocols: A comprehensive guide</em>. <a class="" href="https://thinkrobotics.com/blogs/learn/robot-communication-protocols-a-comprehensive-guide">https://thinkrobotics.com/blogs/learn/robot-communication-protocols-a-comprehensive-guide</a></li>
+
+
+
+<li class="wp-block-list-item">Noqta. (2025). <em>Agent security architectures – Cisco community blog by Omar Santos</em>. <a>https://www.noqta.tn/blog/secure-agent-interaction-architecture</a></li>
+</ol>
+
+
+
+<hr class="wp-block-separator has-alpha-channel-opacity"/>
+
+
+
+<p class="wp-block-paragraph"><em><sub><strong>Copyright Notice</strong><br/>© 2025 Hailey Quach. All rights reserved.<br/>This article and its contents are protected under copyright law. You are welcome to reference or quote portions of this work with clear attribution and a link back to the original source. However, no part of this publication may be reproduced, republished, or redistributed in full—whether in print, digital, or derivative form—without prior written permission from the author. Unauthorized use may result in legal action.</sub></em></p>
+
+
+
+<p class="wp-block-paragraph"/>
+    
+</body>
+</html>

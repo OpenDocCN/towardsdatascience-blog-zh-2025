@@ -1,0 +1,502 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.1//EN"
+  "http://www.w3.org/TR/xhtml11/DTD/xhtml11.dtd">
+
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+<title>Using Optimization to Solve Adversarial Problems</title>
+<link href="../Styles/Style.css" type="text/css" rel="stylesheet"/>
+</head>
+<body>
+<h1>Using Optimization to Solve Adversarial Problems</h1>
+<blockquote>原文：<a href="https://towardsdatascience.com/using-optimization-to-solve-adversarial-problems-99943614dde8/">https://towardsdatascience.com/using-optimization-to-solve-adversarial-problems-99943614dde8/</a></blockquote><p class="wp-block-paragraph">In the previous article on optimization, I looked at finding an optimal strategy for the <a href="https://medium.com/towards-data-science/solving-the-classic-betting-on-the-world-series-problem-using-hill-climbing-5e9766e1565d">Betting on the World Series problem</a>. In this article, I look at a more difficult problem, developing a policy for two adversarial players in a board game.</p>
+<p class="wp-block-paragraph">I look specifically at the cat and mouse game, where we have two players, the cat and mouse, placed on an n x m grid, similar to a chess board, but where it is possible to have any number of rows and any number of columns. Either the cat or mouse may move first, and they then take turns until there is a winner. At each step, they must move either left, right, up, or down; they cannot remain in the same cell, and cannot move diagonally. So, they generally have four possible moves, though if at an edge will have only three, and if in a corner, only two.</p>
+<p class="wp-block-paragraph">The cat wins if it’s able to capture the mouse, which is achieved by moving to the same cell the mouse is on. The mouse wins by evading capture for sufficiently long. We’ll look at a couple of ways to define that.</p>
+<p class="wp-block-paragraph">Each starts in opposite corners, with the cat in the bottom-left, and the mouse in the top-right, so at the beginning (if we have 8 rows and 7 columns), the board looks like:</p>
+<figure class="wp-block-image size-large"><img data-dominant-color="f6f8f9" data-has-transparency="true" style="--dominant-color: #f6f8f9;" decoding="async" width="352" height="251" class="wp-image-596354 has-transparency" src="../Images/62ced31bca68d0ac74ceee0ae3bbf1d9.png" alt="Starting position for the cat and mouse game with an 8 x 7 board." srcset="https://towardsdatascience.com/wp-content/uploads/2025/01/1Sc_S0-EFDzKsqfrNzmGow.png 352w, https://towardsdatascience.com/wp-content/uploads/2025/01/1Sc_S0-EFDzKsqfrNzmGow-300x214.png 300w" sizes="(max-width: 352px) 100vw, 352px" data-original-src="https://towardsdatascience.com/wp-content/uploads/2025/01/1Sc_S0-EFDzKsqfrNzmGow.png"/><figcaption class="wp-element-caption">Starting position for the cat and mouse game with an 8 x 7 board.</figcaption></figure>
+<p class="wp-block-paragraph">There are a number of approaches to training the cat and the mouse to play well at this game. At a high level, we can group these into two main types of approach: 1) where the players each determine their moves as they play; and 2) where the players each determine, prior to play, a complete policy related to how they’ll move in each situation.</p>
+<p class="wp-block-paragraph">The first type of approach is what’s more generally used with games and is usually more scalable and robust, at least with more complex games. For this problem, though, as it’s relatively straightforward, I’ll look at methods to learn a complete, deterministic policy for each player, which they can simply execute during play.</p>
+<h2 class="wp-block-heading">Determining each move during play</h2>
+<p class="wp-block-paragraph">So, while determining a complete policy ahead of time is feasible for the cat and mouse game, this is not the case more more complex games. With an application trained to play, for example, chess, it cannot feasibly develop a policy ahead of time that could indicate how to handle every situation it may encounter during a game; chess is far too complex to allow this.</p>
+<p class="wp-block-paragraph">In future articles, I’ll look at techniques to allow players to assess their current situation each step, and move based on their evaluations during play. For here, though, I’ll just provide a very quick overview of techniques to determine the moves to make during play.</p>
+<p class="wp-block-paragraph">There are different ways to develop, for example, a chess-playing application, but the traditional method is to construct what’s called a <em>game tree</em>. As well, reinforcement learning is often used to develop game-playing applications, and a combination can also be used.</p>
+<p class="wp-block-paragraph">A game tree describes each possible sequence of moves each player can make, starting at the current board. For example, in chess, it may be black’s turn and black may have, say, 8 legal moves. The root node of the game tree will represent the current board. The boards that result from black’s current possible moves are the next level of the tree, so the 2nd level of the tree will have 8 possible boards. For each of these, white has some set of legal moves. If the 8 boards in the 2nd layer each have, say, 10 legal responses from white, then there are 80 boards at the 3rd level. The 4th level is then the boards the result from all the possible moves black could make given the boards in the 3rd level, and so on. In this way, each layer of the tree is many times larger than the previous layer.</p>
+<p class="wp-block-paragraph">For simple games like tic-tac-toe or Connect 4, it’s possible to create the full game tree and determine definitively the best move at each step. For more complex games such as checkers, chess, go, and so on, this isn’t possible. Instead, though, we may build the game trees out for only a finite number of steps, and estimate the quality of the board for the current player at each leaf node.</p>
+<p class="wp-block-paragraph">So, if the tree extends, say, five levels deep, we will have set of boards on the fifth level of the tree, but few of these will be a win for either player. We must, though, assess if the board is better for one player or the other. For checkers or chess and similar games, this can be done by simply counting the pieces. A more effective, but slower, method is to also look at the board position. For example, with chess we can evaluate how advanced each piece is, how exposed, and so on.</p>
+<p class="wp-block-paragraph">It’s also possible to use what’s called _Monte Carlo Tree Search. H_ere the tree leaves are expanded by playing each board out to completion, but through a set of some number of random games (where both player play entirely randomly). This is a means of evaluating each board, but without analyzing the board itself. So, it a tree is built out to 5 layers, there may be 1000 boards at that level. To evaluate each of these, we can perform some fixed number of random games starting from each of these boards and count how often each player wins, which gives a decent estimate of how strong the board is for both players.</p>
+<h2 class="wp-block-heading">Policy-based solutions for the cat and mouse game</h2>
+<p class="wp-block-paragraph">The cat and mouse game is fairly straight-forward, and developing a single fully-defined policy for the cat, and another for the mouse, (allowing both to simply follow this in a deterministic manner during play) is actually feasible. This is particularly true with the first case we look at, where we assume the board is a known, fixed size, and where this is relatively small. We look at the more difficult case, where the board size is very large, later.</p>
+<figure class="wp-block-image size-large"><img data-dominant-color="f6f4f4" data-has-transparency="true" style="--dominant-color: #f6f4f4;" decoding="async" width="352" height="257" class="wp-image-596355 has-transparency" src="../Images/85fa2df626f59ba66ddb613996e7824d.png" alt="The cat and mouse game on a 3x3 board" srcset="https://towardsdatascience.com/wp-content/uploads/2025/01/1YBQi6F2Bk8x1jgOHwHR9Ng.png 352w, https://towardsdatascience.com/wp-content/uploads/2025/01/1YBQi6F2Bk8x1jgOHwHR9Ng-300x219.png 300w" sizes="(max-width: 352px) 100vw, 352px" data-original-src="https://towardsdatascience.com/wp-content/uploads/2025/01/1YBQi6F2Bk8x1jgOHwHR9Ng.png"/><figcaption class="wp-element-caption">The cat and mouse game on a 3×3 board</figcaption></figure>
+<p class="wp-block-paragraph">In the image here, there’s a very small, 3×3 board. It’s fairly easy to see in this case that the cat could develop a fully-defined policy, specifying what it would do when it is in any one of the 9 squares and the mouse is in any one of the 9 squares. Taking every combination of where the cat may be and the mouse may be, there are only 81 combinations, and it’s possible to train a policy to play optimally in each of these 81 scenarios. That is, in the case of the cat’s policy, in each of the 81 cases, we have a direction (either left, right, up, or down) that the cat will move, and similarly for the mouse’s policy.</p>
+<h2 class="wp-block-heading">Optimal play in the cat and mouse game</h2>
+<p class="wp-block-paragraph">Depending on the size and shape of the board and which player goes first, with perfect play (where neither player makes a mistake), there is actually a known winner for the cat and mouse game.</p>
+<p class="wp-block-paragraph">To picture this, consider the case of a 3×3 board. Similar to tic-tac-toe, it’s possible for the cat (and similarly for the mouse) to create a game tree covering every move it can make, every response the mouse can make, every next move for the cat, and so on for as many moves as it takes until the game is over (either the cat captures the mouse, or the mouse evades capture for sufficiently long). Doing this, given that a game has a finite and relatively small length, it’s possible to consider every possible sequence of moves, and determine the ideal move in each possible scenario.</p>
+<p class="wp-block-paragraph">However, we also want to support much larger boards, for example 8 x 8 boards, where considering every possible sequence of moves may be infeasible. Here, the game trees may grow to enormous sizes. So, as indicated above, developing partial games trees and then assessing the boards in the leaf nodes would be quite possible. But, developing a complete game trees is not feasible.</p>
+<p class="wp-block-paragraph">In these case, though, it’s still possible to develop a full policy for both players using a Hill-Climbing optimization technique. In an example below, we do this for a 8×7 board. Here there are 56 square on the board, so 56 places the cat may be and 56 places the mouse may be (actually 55 given that if they’re on the same square, the game is over and the cat has already won, but we’ll simplify this by assuming each player may be on any square).</p>
+<p class="wp-block-paragraph">There are then 3,136 possible combinations of their locations, and so developing a policy for play for each player (at least when using the first, and simplest, method I’ll describe here – where each player has a defined move, either left, right, up, or down, for each combination of cat and mouse position) requires developing a policy of size 3,136.</p>
+<p class="wp-block-paragraph">This will not scale up to much larger boards (we’ll cover a similar method, that does cover arbitrarily large boards later), but does cover moderate sized boards well, and is a good place to begin.</p>
+<h2 class="wp-block-heading">When does the cat win?</h2>
+<p class="wp-block-paragraph">Before we look at an algorithmic solution to this problem, the cat and mouse game is an interesting problem in itself, and may be good to stop here for a bit and think about: when is the game winnable for the cat, and when is it not (so that the mouse is able to win)? I’ll give you a little time to think about that before going over the answer.</p>
+<p class="wp-block-paragraph">. . .</p>
+<p class="wp-block-paragraph">Thinking…</p>
+<p class="wp-block-paragraph">. . .</p>
+<p class="wp-block-paragraph">Thinking some more…</p>
+<p class="wp-block-paragraph">. . .</p>
+<p class="wp-block-paragraph">Don’t look until you’re ready to see the answer…</p>
+<p class="wp-block-paragraph">. . .</p>
+<p class="wp-block-paragraph">Okay, I’ll go over at least one way to look at this. Like a lot of similar problems, this can be viewed in terms of the colours on a chess board. The squares alternate between black and white. Each move, the mouse moves from one colour to the other and the mouse does as well.</p>
+<p class="wp-block-paragraph">Both players start on a certain colour of square. Let’s say the cat (in the bottom-left) is on a black square. If there are an even number of rows and an even number of columns (as with an 8 x 8 chess board), the square where the mouse starts (in the top-right) will also be black.</p>
+<p class="wp-block-paragraph">If the cat plays first, it moves from a black square to a white. The mouse will then as well. So after each time the cat and the mouse move, they will both be on the same colour (both on black, or both on white). Which means, when the cat moves, it is moving to a square of the opposite colour as what the mouse is currently on. The cat can never catch the mouse.</p>
+<p class="wp-block-paragraph">In this case, there’s actually no winnable policy for the mouse per se: it can just move randomly, so long as it does not move into the cat (essentially, a suicidal move). But, the cat does require a good policy (or it will not be able to capture the mouse before an allowed number of moves), and moving randomly will not likely result in a win (though interestingly can quite often with a sufficiently small board).</p>
+<p class="wp-block-paragraph">For the mouse, though there is no winnable strategy in this case, there is still a sense of optimal play – that it avoids capture for at least as long as is possible.</p>
+<p class="wp-block-paragraph">If the number of rows or columns is odd, or if the mouse moves first, on the other hand, the cat can capture the mouse. To do this, it just needs to approach the mouse so that it is diagonally next to the mouse, which will force the mouse away from the cat, in one of two possible directions, depending specifically how they are situated. The cat can then follow the mouse, remaining diagonally next to the mouse until it is eventually forced into a corner and captured.</p>
+<p class="wp-block-paragraph">In this case, the mouse cannot win when the cat is playing optimally, but can still win where the cat is not, as it just has to avoid capture for some defined number of moves.</p>
+<p class="wp-block-paragraph">The next image has an example where the cat has moved diagonally next to the mouse, forcing the mouse towards one of the corners (in this case, the top-right corner).</p>
+<figure class="wp-block-image size-large"><img data-dominant-color="f5f7f9" data-has-transparency="true" style="--dominant-color: #f5f7f9;" loading="lazy" decoding="async" width="352" height="251" class="wp-image-596353 has-transparency" src="../Images/4b2c78877f4ddf6265032264db0d85c0.png" alt="The cat is diagonally next to the mouse, leaving the mouse only two legal moves (up and right) that aren't to cells next to the cat, both taking it closer to the corner. If the mouse were, instead to move left or down, placing itself next to the cat, the cat would simply capture it the next move." srcset="https://towardsdatascience.com/wp-content/uploads/2025/01/1dwpfxFRaReVLz8uV_i732Q.png 352w, https://towardsdatascience.com/wp-content/uploads/2025/01/1dwpfxFRaReVLz8uV_i732Q-300x214.png 300w" sizes="auto, (max-width: 352px) 100vw, 352px" data-original-src="https://towardsdatascience.com/wp-content/uploads/2025/01/1dwpfxFRaReVLz8uV_i732Q.png"/><figcaption class="wp-element-caption">The cat is diagonally next to the mouse, leaving the mouse only two legal moves (up and right) that aren’t to cells next to the cat, both taking it closer to the corner. If the mouse were, instead to move left or down, placing itself next to the cat, the cat would simply capture it the next move.</figcaption></figure>
+<p class="wp-block-paragraph">Once the mouse is in a corner (as shown below), if the cat is diagonally next to the mouse, the mouse will lose the next move. It will have only two legal moves, both to squares adjacent to the cat, where the cat can move onto the mouse its next move.</p>
+<figure class="wp-block-image size-large"><img data-dominant-color="f6f7f9" data-has-transparency="true" style="--dominant-color: #f6f7f9;" loading="lazy" decoding="async" width="352" height="251" class="wp-image-596356 has-transparency" src="../Images/867f0dbddad100c3384792c1c1aa17af.png" alt="The mouse is now cornered and can move only left or down. Both moves allow the cat to capture it the following move." srcset="https://towardsdatascience.com/wp-content/uploads/2025/01/1ryS3oMXUvRuiPkVuInSCtQ.png 352w, https://towardsdatascience.com/wp-content/uploads/2025/01/1ryS3oMXUvRuiPkVuInSCtQ-300x214.png 300w" sizes="auto, (max-width: 352px) 100vw, 352px" data-original-src="https://towardsdatascience.com/wp-content/uploads/2025/01/1ryS3oMXUvRuiPkVuInSCtQ.png"/><figcaption class="wp-element-caption">The mouse is now cornered and can move only left or down. Both moves allow the cat to capture it the following move.</figcaption></figure>
+<h2 class="wp-block-heading">Training two separate strategies</h2>
+<p class="wp-block-paragraph">The question, then, is how to train the two players, starting from no knowledge, to play a perfect game, meaning both players play optimally and neither makes a mistake.</p>
+<p class="wp-block-paragraph">We can consider two cases:</p>
+<ol class="wp-block-list">
+<li>Where the game is winnable for the cat. In this case, we want to ensure we can train a cat to reliably win, regardless of how the mouse plays. This means learning to move close to the mouse, and to corner it. And, we wish to ensure the mouse evades capture for as long as possible.</li>
+<li>Where the game is unwinnable for the cat. In this case, we want to ensure that we’ve trained the mouse well enough to evade capture for long enough be declared the winner. And, we want to ensure the cat is trained well enough that it can capture the mouse if the mouse does make a mistake.</li>
+</ol>
+<p class="wp-block-paragraph">Clearly the cat and mouse game is far simpler than games like chess, checker, Go, or Othello, but it does have one difficulty, which is that the game is asymmetric, and the two players must each develop separate strategies.</p>
+<p class="wp-block-paragraph">With games where there is only one strategy required, it’s possible to let two players play against each other, and develop progressively better strategies over time. This is the approach we’re going to take here as well, but, similar to what’s often done when training a Generative Adversarial Network, the code actually alternates between training the cat, and training the mouse. That is, it trains the cat until it is able to win, then the mouse until it’s able to win, then the cat, and so on.</p>
+<h2 class="wp-block-heading">Approaches to Determining an optimal policy</h2>
+<p class="wp-block-paragraph">As the goal is to develop an optimal policy, it’s fairly natural to use an optimization technique, which we do here. Some choices for this include hill climbing, simulated annealing, genetic algorithms, and swarm intelligence algorithms.</p>
+<p class="wp-block-paragraph">Each have their merits, but for this article, as with the <a href="https://medium.com/towards-data-science/solving-the-classic-betting-on-the-world-series-problem-using-hill-climbing-5e9766e1565d">Betting on the World Series</a> article, we’ll look at hill-climbing approaches to develop a policy for both players. Hill climbing is likely the simplest of the optimization techniques just listed, but is sufficient to handle this problem. In future articles I’ll cover more difficult problems and more involved solutions to these.</p>
+<p class="wp-block-paragraph">Hill climbing, for either player in a game such as this, starts with some policy (often created randomly, or initialized to something somewhat reasonable), and then gradually improves, through a process of repeatedly trying small variations, selecting the best of these, trying small variations to that, and so on until eventually what looks like an optimal solution is reached.</p>
+<h2 class="wp-block-heading">Using a small, fixed board size</h2>
+<p class="wp-block-paragraph">As indicated, in the first approach we look at, we develop a policy in likely the simplest manner we can: the cat’s policy specifies the specific move to make given each combination of the cat’s location and the mouse’s location. Similarly for the mouse’s policy.</p>
+<p class="wp-block-paragraph">For an 8×7 board, this requires a policy of size 3,136 for each player. Initially, the policy will be set to be very poor: in this example, we specify for both players to simply always move up, unless on the top row, in which case, they move down. But, over time, the hill climbing process moves towards increasingly strong policies for both players.</p>
+<p class="wp-block-paragraph">The code related to this article is hosted on github, in the <a href="https://github.com/Brett-Kennedy/CatAndMouseGame/tree/main">CatAndMouseGame</a> repository. What we’re considering now is in the version_1 notebook.</p>
+<p class="wp-block-paragraph">The first cell contains some options, which you can adjust to see how the training proceeds with different values.</p>
+<pre class="wp-block-prismatic-blocks"><code class="language-ini">NUM_ROWS = 8
+NUM_COLS = 7
+
+FIRST_MOVE = "cat"           # Set to "cat" or "mouse"
+INITIAL_CAT_POLICY = "WEAK"  # Set to "WEAK" or "STRONG"
+ANIMATION_TIME_PER_MOVE = 0.5</code></pre>
+<p class="wp-block-paragraph">For brevity, I won’t cover the INITIAL_CAT_POLICY for this, and will assume it’s set to ‘weak’, but if set to ‘strong’, the cat will be initialized to always move towards the mouse (if set to ‘weak’, it must learn this).</p>
+<p class="wp-block-paragraph">The code starts with initializing the board, so that the two players are in opposite corners. It also initializes the policies for both players (as described above – so both player always move up unless on the top row, in which case they move down).</p>
+<p class="wp-block-paragraph">It then plays one game. As the games are deterministic, it requires only one game to determine the winner for a given cat policy and given mouse policy. The results of this first game are the baseline the cat then tries to repeatedly improve on until it’s able to beat the mouse. We then repeatedly improve the mouse until it’s able to be the cat, and so on.</p>
+<p class="wp-block-paragraph">This is set to execute for 100,000 iterations, which executes in a few minutes, and is enough to establish quite good play for both players.</p>
+<h2 class="wp-block-heading">Evaluating each game</h2>
+<p class="wp-block-paragraph">As the cat learns, it has, at any point in time, the current policy: the best policy discovered so far. It then creates a number of variations on this, each with a small number of modifications to this current-best policy (changing the direction moved by the cat in a small number of the 3,126 cells of the policy). It then evaluates each of these by playing against the current-best policy for the mouse. The cat then takes the best-performing of these candidate new policies (unless none improve over the current best policy for the cat, in which case it continues generating random variations until at least one is discovered that improves over this.)</p>
+<p class="wp-block-paragraph">For Hill climbing to work well, it needs to be able to detect even small improvements from one policy to the next. So, it would be difficult to implement this if the player knew only, after each game, if they won or not.</p>
+<p class="wp-block-paragraph">Instead, after each game, we report the number of moves until there was a winner, and the distance the two players were apart at the end of the game. When the cat wins, this will be zero. Where the mouse wins, though, the cat wants to minimize this: it wants to end at least close to the mouse. And the mouse wants to maximize this: it wants to end far from the cat.</p>
+<p class="wp-block-paragraph">In general, for the cat, an improvement is found if the previous-best resulted in a win for the mouse and a new policy results in a win for the cat. But, also, if the mouse won in the previous best, and the mouse still wins, but the cat ends in a position closer to the mouse. Or, if the cat won in the previous best and still wins, but does so in fewer moves.</p>
+<p class="wp-block-paragraph">Interestingly, it’s also useful here to reward longer games for the cat, at least to an extent. This encourages the cat to move around more, and to not stay in the same area. We do have to be careful though, as we do not wish to encourage the cat to proceed slower than necessary when it is able to capture the mouse.</p>
+<p class="wp-block-paragraph">For the mouse, an improvement is found if the previous-best resulted in a win for the cat and a new policy results in a win for the mouse. As well, there is an improvement if the cat won with the previous best and the cat still wins, but the game is longer. And there is an improvement if the mouse won in the previous best and the mouse still does, but ends further from the cat.</p>
+<h2 class="wp-block-heading">Code for Version 1</h2>
+<p class="wp-block-paragraph">The full code is provided here, as well as on github.</p>
+<p class="wp-block-paragraph">In each iteration, either the cat is learning or the mouse is learning, where learning here means trying new policies and selecting the best of these.</p>
+<pre class="wp-block-prismatic-blocks"><code class="language-python">def init_board():
+    # The cat starts in the bottom-left corner; the mouse in the upper-right.
+    # The y values start with 0 at the bottom, with the top row being NUM_ROWS-1
+    board = {'cat_x': 0, 
+             'cat_y': 0, 
+             'mouse_x': NUM_COLS-1, 
+             'mouse_y': NUM_ROWS-1}
+    return board
+
+def draw_board(board, round_idx):
+    clear_output(wait=True)
+    s = sns.scatterplot(x=[], y=[])
+    for i in range(NUM_ROWS):
+        s.axhline(i, linewidth=0.5)
+    for i in range(NUM_COLS):
+        s.axvline(i, linewidth=0.5)    
+    s.set_xlim(0, NUM_COLS)
+    s.set_ylim(0, NUM_ROWS)
+    offset = 0.1 
+    size = 250 / max(NUM_ROWS, NUM_COLS)
+    plt.text(board['cat_x'] + offset, board['cat_y'] + offset, '🐱 ', size=size, color='brown') 
+    plt.text(board['mouse_x'] + offset, board['mouse_y'] + offset, '🐭 ', size=size, color='darkgray')
+    s.set_xticks([])
+    s.set_yticks([])
+    plt.title(f"Round: {round_idx}")
+    plt.show()
+    time.sleep(ANIMATION_TIME_PER_MOVE)
+
+def set_initial_cat_policy():
+    # Initially, the cat is set to simply move towards the mouse
+    policy = np.zeros([NUM_COLS, NUM_ROWS, NUM_COLS, NUM_ROWS]).tolist()
+    for cat_x in range(NUM_COLS):
+        for cat_y in range(NUM_ROWS):
+            for mouse_x in range(NUM_COLS):
+                for mouse_y in range(NUM_ROWS):
+
+                    if INITIAL_CAT_POLICY == 'WEAK':
+                        if cat_y == NUM_ROWS-1:
+                            policy[cat_x][cat_y][mouse_x][mouse_y] = 'D'
+                        else:
+                            policy[cat_x][cat_y][mouse_x][mouse_y] = 'U'                            
+
+                    else: # STRONG
+                        dist_x = abs(cat_x - mouse_x)
+                        dist_y = abs(cat_y - mouse_y)
+                        if dist_x &gt; dist_y:
+                            if mouse_x &gt; cat_x:
+                                policy[cat_x][cat_y][mouse_x][mouse_y] = 'R'
+                            else:
+                                policy[cat_x][cat_y][mouse_x][mouse_y] = 'L'
+                        else:
+                            if mouse_y &gt; cat_y:
+                                policy[cat_x][cat_y][mouse_x][mouse_y] = 'U'
+                            else:
+                                policy[cat_x][cat_y][mouse_x][mouse_y] = 'D'                        
+    return policy
+
+def set_initial_mouse_policy():  
+    # Intially, the mouse is set to simply move up, unless it is in the top row,
+    # in which case it moves down. This will initially cause it to oscillate between
+    # the top-right corner and the cell immediately below this.
+    policy = np.zeros([NUM_COLS, NUM_ROWS, NUM_COLS, NUM_ROWS]).tolist()
+    for cat_x in range(NUM_COLS):
+        for cat_y in range(NUM_ROWS):
+            for mouse_x in range(NUM_COLS):
+                for mouse_y in range(NUM_ROWS):
+                    if mouse_y == NUM_ROWS-1:
+                        policy[cat_x][cat_y][mouse_x][mouse_y] = 'D'
+                    else:
+                        policy[cat_x][cat_y][mouse_x][mouse_y] = 'U'
+    return policy
+
+def convert_board_to_tuple(board):
+    """
+    Used to create a dictionary key, which tracks which board positions have
+    been seen before. 
+    """
+    return tuple((board['cat_x'], board['cat_y'], 
+                  board['mouse_x'], board['mouse_y']))
+
+def execute(cat_policy, mouse_policy, draw_execution=False, round_idx=None):
+    """
+    Execute a game given a cat policy and a mouse policy. Return the winner
+    as well as stats regarding the number of moves and their distance apart
+    at the end of the game. 
+    """
+
+    def check_winner(board):
+        """
+        Determine if either player has won.
+        """
+        if convert_board_to_tuple(board) in board_history:
+            return 'mouse'
+        if (board['cat_x'] == board['mouse_x']) and (board['cat_y'] == board['mouse_y']):
+            return 'cat'
+        return None
+
+    def move_cat(board, cat_policy): 
+        """
+        Move the cat from one position on the board to another, given the 
+        current cat position and mouse position and the cat's policy.
+        """
+        move = cat_policy[board['cat_x']] 
+                         [board['cat_y']] 
+                         [board['mouse_x']] 
+                         [board['mouse_y']]
+        if move == 'R':
+            board['cat_x'] += 1
+        elif move == 'L':
+            board['cat_x'] -= 1
+        elif move == 'U':
+            board['cat_y'] += 1
+        elif move == 'D':
+            board['cat_y'] -= 1
+        else:
+            assert "Invalid move type"                        
+        return board
+
+    def move_mouse(board, mouse_policy):
+        """
+        Move the mouse from one position on the board to another, given the 
+        current cat position and mouse position and the mouse's policy.
+        """        
+        move = mouse_policy[board['cat_x']] 
+                           [board['cat_y']] 
+                           [board['mouse_x']] 
+                           [board['mouse_y']]
+        if move == 'R':
+            board['mouse_x'] += 1
+        elif move == 'L':
+            board['mouse_x'] -= 1
+        elif move == 'U':
+            board['mouse_y'] += 1
+        elif move == 'D':
+            board['mouse_y'] -= 1
+        else:
+            assert "Invalid move type"
+        return board
+
+    def get_distance(board):
+        """
+        Return the distance between the cat and mouse.
+        """
+        return abs(board['cat_x'] - board['mouse_x']) + abs(board['cat_y'] - board['mouse_y'])
+
+    board = init_board()
+    board_history = {convert_board_to_tuple(board): True}  
+
+    if FIRST_MOVE == 'cat':
+        board = move_cat(board, cat_policy)
+
+    # Execute for at most the possible number of unique board positions. 
+    # After this, there must be a cycle if there is no capture.
+    for move_number in range(NUM_ROWS * NUM_COLS * NUM_ROWS * NUM_COLS + 1):
+        # Move the mouse
+        board = move_mouse(board, mouse_policy)
+        if draw_execution: 
+            draw_board(board, round_idx)
+        winner = check_winner(board)
+        if winner:
+            return winner, move_number, get_distance(board)
+        board_history[convert_board_to_tuple(board)] = True
+
+        # Move the cat
+        board = move_cat(board, cat_policy)
+        if draw_execution: 
+            draw_board(board, round_idx)
+        winner = check_winner(board)
+        if winner:
+            return winner, move_number, get_distance(board)
+        board_history[convert_board_to_tuple(board)] = True
+
+    # If the mouse evades capture for the full execution, it is the winner
+    assert False, "Executed maximum moves without a capture or repeated board"
+    return 'mouse', move_number, get_distance(board)
+
+def get_variations(policy, curr_player):
+    """
+    For a given policy, return a set of similar, random policies.
+    """
+    num_changes = np.random.randint(1, 11)
+    new_policies = []
+
+    for _ in range(num_changes):
+        cat_x = np.random.randint(NUM_COLS)
+        cat_y = np.random.randint(NUM_ROWS)
+        mouse_x = np.random.randint(NUM_COLS)
+        mouse_y = np.random.randint(NUM_ROWS)
+        direction = np.random.choice(['R', 'L', 'U', 'D'])
+
+        # Skip this variation if the move is illegal (going outside the grid)
+        if (curr_player == 'cat') and (cat_x == (NUM_COLS-1)) and (direction == 'R'):
+            continue
+        if (curr_player == 'cat') and (cat_x == 0) and (direction == 'L'):
+            continue
+        if (curr_player == 'cat') and (cat_y == (NUM_ROWS-1)) and (direction == 'U'):
+            continue
+        if (curr_player == 'cat') and (cat_y == 0) and (direction == 'D'):
+            continue
+
+        if (curr_player == 'mouse') and (mouse_x == (NUM_COLS-1)) and (direction == 'R'):
+            continue
+        if (curr_player == 'mouse') and (mouse_x == 0) and (direction == 'L'):
+            continue
+        if (curr_player == 'mouse') and (mouse_y == (NUM_ROWS-1)) and (direction == 'U'):
+            continue
+        if (curr_player == 'mouse') and (mouse_y == 0) and (direction == 'D'):
+            continue            
+
+        p = copy.deepcopy(policy)
+        p[cat_x][cat_y][mouse_x][mouse_y] = direction
+        new_policies.append(p)
+    return new_policies
+
+np.random.seed(0)
+cat_policy = set_initial_cat_policy()
+mouse_policy = set_initial_mouse_policy()
+winner, num_moves, distance = execute(cat_policy, mouse_policy, draw_execution=True, round_idx="Initial Policies")
+prev_winner, prev_num_moves, prev_distance = winner, num_moves, distance
+
+game_stats_winner = []
+game_stats_num_moves = []
+game_stats_distance = []
+
+# Execute 100,000 iterations. Each iteration we attempt to improve either
+# the cat's or the mouse's policy, depending which is weaker at that time.
+for round_idx in range(100_000):
+
+    # Display progress as the two players learn
+    if (((round_idx % 1000) == 0) and (round_idx &gt; 0)) or 
+        (prev_winner != winner) or (prev_num_moves != num_moves) or (prev_distance != distance):
+        print(f"Iteration: {round_idx:&gt;6,}, Current winner: {winner:&lt;5}, number of moves until a win: {num_moves:&gt;2}, distance: {distance}")
+        prev_winner, prev_num_moves, prev_distance = winner, num_moves, distance
+
+    if winner == 'cat':
+        # Improve the mouse
+        best_p = copy.deepcopy(mouse_policy)
+        best_num_moves = num_moves
+        best_distance = distance
+        policy_variations = get_variations(mouse_policy, curr_player='mouse')        
+        for p in policy_variations:
+            p_winner, p_num_moves, p_distance = execute(cat_policy, p)
+
+            # The mouse's policy improves if it starts winning, the execution takes longer, or the execution takes
+            # the same number of time, but the mouse ends farther from the cat
+            if ((winner == 'cat') and (p_winner == 'mouse')) or 
+               ((winner == 'mouse') and (p_winner == 'mouse') and (p_num_moves &gt; best_num_moves)) or 
+               ((winner == 'cat') and (p_winner == 'cat') and (p_num_moves &gt; best_num_moves)) or 
+               ((winner == 'cat') and (p_winner == 'cat') and (p_num_moves == best_num_moves) and (p_distance &gt; best_distance)):
+                winner = p_winner
+                best_p = copy.deepcopy(p)
+                best_num_moves = p_num_moves
+                best_distance = p_distance
+
+        mouse_policy = copy.deepcopy(best_p)
+        num_moves = best_num_moves
+        distance = best_distance
+
+    else:
+        # Improve the cat
+        best_p = copy.deepcopy(cat_policy)
+        best_num_moves = num_moves
+        best_distance = distance
+        policy_variations = get_variations(cat_policy, curr_player='cat')
+        for p in policy_variations:
+            p_winner, p_num_moves, p_distance = execute(p, mouse_policy)
+
+            # The cat's policy improves if it starts winning, or it wins in fewer moves, or it still loses, but 
+            # after more moves, or if it still loses in the same number of moves, but it's closer to the mouse
+            if ((winner == 'mouse') and (p_winner == 'cat')) or 
+               ((winner == 'mouse') and (p_winner == 'mouse') and (p_distance &lt; best_distance)) or 
+               ((winner == 'mouse') and (p_winner == 'mouse') and (p_distance == best_distance) and (p_num_moves &gt; best_num_moves)) or 
+               ((winner == 'cat') and (p_winner == 'cat') and (p_num_moves &lt; best_num_moves)):
+                winner = p_winner
+                best_p = copy.deepcopy(p)
+                best_num_moves = p_num_moves
+                best_distance = p_distance
+
+        cat_policy = copy.deepcopy(best_p)
+        num_moves = best_num_moves
+        distance = best_distance
+
+    game_stats_winner.append(winner)
+    game_stats_num_moves.append(num_moves)
+    game_stats_distance.append(distance)
+
+    draw_execution = (round_idx % 10_000 == 0) and (round_idx &gt; 0)
+    if draw_execution:
+        execute(cat_policy, mouse_policy, draw_execution=True, round_idx=round_idx)
+
+winner, num_moves, distance = execute(cat_policy, mouse_policy, draw_execution=True, round_idx="Final Policies")            
+print(f"The {winner} wins in {num_moves} moves.")</code></pre>
+<h2 class="wp-block-heading">Animating the moves</h2>
+<p class="wp-block-paragraph">As the notebook executes, every 10,000 iterations, it plays out a game given the policies (at that time) of the cat and of the mouse. Over the course of time, we see both players playing progressively more sensible games. To do this, it calls, clear_output() (provided in IPython.display), as it draws each move, so clears the notebook’s output cell and redraws the current board positions of the two players, which creates the effect of animation.</p>
+<p class="wp-block-paragraph">There are also print statements describing the progress of both players learning better play.</p>
+<h2 class="wp-block-heading">Limitations of the Version 1 code</h2>
+<p class="wp-block-paragraph">The Version 1 notebook demonstrates the basic idea of developing a full policy for a player in a game, but does not handle all the issues we would wish for in a production-quality system. This is okay, since this is merely a simple example of the idea, but I’ll list here a few places this could be improved (though making the code somewhat more complicated) in another environment.</p>
+<p class="wp-block-paragraph">First, for this version, as a simplification, we declare the mouse the winner if the players repeat a board position. This isn’t ideal, but makes some sense in this case, since the policies for both players are deterministic – if they enter the same position twice, we know the pattern will continue to repeat, and the cat will not capture the mouse.</p>
+<p class="wp-block-paragraph">The code can also be improved to detect when neither player has improved for some time, to allow either early stopping, or to allow something like simulated annealing (to allow moving to policies that appear to be weaker, to break out of a local optima), or to allow testing new policies that are not only small modifications to the current best, but larger modifications.</p>
+<p class="wp-block-paragraph">It is also possible, once one player is unable to beat the other, to nevertheless allow the other to continue learning, to develop and ever-stronger policy.</p>
+<p class="wp-block-paragraph">Another simplification taken here is that the players each try to simply beat the current policy of the other player. This works reasonable well (as the other player is also continuously improving), but to create more robust players, it is preferred to evaluate each policy based not just on how it performs against the other player’s current policy, but against any arbitrary policy, or at least against a large number of policies known to be reasonably strong. This, however, is a slower process, so skipped for this notebook.</p>
+<p class="wp-block-paragraph">Some of these are addressed in the second solution to this problem (which focusses on handling larger, unknown board sizes, but does provide some other improvements as well), covered below.</p>
+<h2 class="wp-block-heading">Observations on the Version 1 process</h2>
+<p class="wp-block-paragraph">This type of learning can be referred to as co-evolution, where two agents learn together. As one becomes stronger, it helps the other learn to be stronger as well. In this case, both players end up winning about half the games over the training process. Printing the number of total wins for each at the end of the notebook, we have:</p>
+<pre class="wp-block-prismatic-blocks"><code class="language-">mouse    54760
+cat      45240</code></pre>
+<p class="wp-block-paragraph">As they train, there can be some unexpected moves made by both. These are unlikely to be anything like Move 78 in Alpha Go’s game against Lee Sedol (a very strong, but new and unexpected move). These are generally just combinations (the cat’s position and the mouse’s position) for which the policy does not yet have a reasonable move defined. As training continues, these decrease in number.</p>
+<h2 class="wp-block-heading">Using more general policies, allowing players to play on any board size</h2>
+<p class="wp-block-paragraph">The approach used above can work satisfactorily where the board is relatively small, but if the board is much larger, say, 20 x 20, or 30 x 35, this is not practical. With 30 x 35, for example, we’d have policies of size 30 x 35 x 30 x 35, which is over a million parameters to tune.</p>
+<p class="wp-block-paragraph">And it’s quite unnecessary, since how the cat moves when the mouse is relatively far away is likely the same regardless of specifically where they are on the board; and how the cat moves when the mouse is very close and not near any edge, is likewise likely the same, regardless of the exact location, and so on for other such scenarios.</p>
+<p class="wp-block-paragraph">It’s possible to define a policy that describes how to play in more general terms, without reference to the specific cells of the board.</p>
+<p class="wp-block-paragraph">A policy can be defined for the cat (the mouse’s would be similar), in terms of properties of their positions that are fairly general, but describe their locations with enough detail that good policies can be developed.</p>
+<p class="wp-block-paragraph">This can include, for example:</p>
+<ul class="wp-block-list">
+<li>Is the mouse above, below, or in the same row as the cat</li>
+<li>Is the mouse to the left, to the right, or in the same column as the cat</li>
+<li>Is the mouse closer to the cat vertically or horizontally</li>
+<li>Is the mouse in a corner</li>
+<li>Is the mouse on an edge</li>
+<li>Is the mouse not quite on, but near, the top / bottom / left / right edge</li>
+</ul>
+<p class="wp-block-paragraph">We can also consider if the mouse is an odd or even number of spaces away from the edge in each dimension, and if it’s and odd or even number of spaces from each edge – as the cat is trying to avoid the mouse getting into a circle with it.</p>
+<p class="wp-block-paragraph">Another way we can address this is to develop, not a single policy, but a set of small sub-policies, each similar to those developed in the first approach. There, if we had a 5 x 6 board, we’d develop a 5 x 6 x 5 x 6 policy. But it’s also possible to define, for example, a series of 3 x 3 policies for each player to determine how they would move in the various scenarios they can be in where the two players are close to each other (they would also have one or more sub-policies to describe how the players would move when far apart).</p>
+<p class="wp-block-paragraph">For example, we can define a 3 x 3 policy for how the cat should move when both players are in the 3 x 3 region in the top-left corner of the board, another for when they’re in the 3 x 3 region in the top-right of the board, for when they’re on the top edge (but not in a corner), and so on.</p>
+<p class="wp-block-paragraph">To simplify this, we can actually just define one policy for the corners (rotating it depending which corner the players are in). Similarly for the four edges, where only one policy (and not four) is strictly needed, and so on.</p>
+<p class="wp-block-paragraph">The following image shows where the cat and mouse are close to each other and are both in the top-right corner area, and may use a sub-policy related to this situation, just considering the 3 x 3 area outlined here.</p>
+<figure class="wp-block-image size-large"><img data-dominant-color="f4f7fa" data-has-transparency="true" style="--dominant-color: #f4f7fa;" loading="lazy" decoding="async" width="352" height="235" class="wp-image-596357 has-transparency" src="../Images/dac15737f0efc206cf5b069a7f065e94.png" alt="Here the cat and mouse are both in the 3 x 3 region in the top-right corner" srcset="https://towardsdatascience.com/wp-content/uploads/2025/01/10GyuVZvQG0lx4FmoIjDUDA.png 352w, https://towardsdatascience.com/wp-content/uploads/2025/01/10GyuVZvQG0lx4FmoIjDUDA-300x200.png 300w" sizes="auto, (max-width: 352px) 100vw, 352px" data-original-src="https://towardsdatascience.com/wp-content/uploads/2025/01/10GyuVZvQG0lx4FmoIjDUDA.png"/><figcaption class="wp-element-caption">Here the cat and mouse are both in the 3 x 3 region in the top-right corner</figcaption></figure>
+<p class="wp-block-paragraph">The next image shows just this 3 x 3 region. The sub-policy for this region can be optimized and made part of the full policy for the player. Optimizing for this region of the board is a smaller, manageable problem that can be separated from the other concerns in the rest of the board.</p>
+<figure class="wp-block-image size-large"><img data-dominant-color="f6f3f4" data-has-transparency="true" style="--dominant-color: #f6f3f4;" loading="lazy" decoding="async" width="352" height="235" class="wp-image-596358 has-transparency" src="../Images/60530cf7e4ef150b286926eefeacce19.png" alt="A 3 x 3 region, in this case specifically representing the 3 x 3 region in the top-right corner of the full board. A sub-policy may be optimized specifically for this region." srcset="https://towardsdatascience.com/wp-content/uploads/2025/01/1pBXCqSkvnwT6TAutJn0EjA.png 352w, https://towardsdatascience.com/wp-content/uploads/2025/01/1pBXCqSkvnwT6TAutJn0EjA-300x200.png 300w" sizes="auto, (max-width: 352px) 100vw, 352px" data-original-src="https://towardsdatascience.com/wp-content/uploads/2025/01/1pBXCqSkvnwT6TAutJn0EjA.png"/><figcaption class="wp-element-caption">A 3 x 3 region, in this case specifically representing the 3 x 3 region in the top-right corner of the full board. A sub-policy may be optimized specifically for this region.</figcaption></figure>
+<p class="wp-block-paragraph">As indicated, only one such 3 x 3 policy needs to be optimized to handle the four corners, as a single policy can be used in all four cases, by rotating it to match the full board.</p>
+<h2 class="wp-block-heading">Version 2 Notebook</h2>
+<p class="wp-block-paragraph">In Version 2 of this (coded in a second notebook called <a href="https://github.com/Brett-Kennedy/CatAndMouseGame/blob/main/version_2.ipynb">version_2</a>), we take a generic approach to training a policy, in the sense that we do not assume any specific size of board. This is actually a bit different than some of the approaches for a generic solution just described, but along the same lines, showing another possible approach.</p>
+<p class="wp-block-paragraph">This is again based on defining a policy for when the cat and mouse are close to each other, which is again defined to mean within some common 3 x 3 space. In this case, instead of rotating the 3 x 3 spaces, we keep the same orientation as the full board, but add other dimensions to the policy indicating if we are on one or more of the board’s edges.</p>
+<p class="wp-block-paragraph">So, this uses a 3 x 3 x 3 x 3 x 3 x 3 (size 729) policy. The first 4 elements represent the x and y positions of the cat and of the mouse. The next element has dimension three, specifying how the mouse is positioned relative to the left and right edges of the board. This can be one of:</p>
+<ul class="wp-block-list">
+<li>There is no edge on either side</li>
+<li>The edge on the left side board is on the left side of the of the 3×3 region</li>
+<li>The edge on the right side board is on the right side of the of the 3×3 region.</li>
+</ul>
+<p class="wp-block-paragraph">Similarly for the last dimension, but this is related to the top and bottom edges of the full board.</p>
+<p class="wp-block-paragraph">That is, we have a specific policy for each combination of:</p>
+<ul class="wp-block-list">
+<li>The cat’s x position within this 3 x 3 region</li>
+<li>The cat’s y position within this 3 x 3 region</li>
+<li>The mouse’s x position within this 3 x 3 region</li>
+<li>The mouse’s y position within this 3 x 3 region</li>
+<li>If the left side of this 3 x 3 region is at the left-most edge of the full space, if the right side of this 3 x 3 region is at the right-most edge of the full space, or if neither is the case.</li>
+<li>If the bottom side of this 3 x 3 region is at the bottom of the full space, if the top side of this 3 x 3 region is at the top of the full space, or if neither is the case.</li>
+</ul>
+<p class="wp-block-paragraph">As an example, when the cat and mouse are with a 3 x 3 grid anywhere on the board, we can enact the policy for this, which also considers if the 3 x 3 region borders the edges of the full board (shown in this image a thick lines)</p>
+<figure class="wp-block-image size-large"><img data-dominant-color="f3f6fa" data-has-transparency="true" style="--dominant-color: #f3f6fa;" loading="lazy" decoding="async" width="352" height="235" class="wp-image-596359 has-transparency" src="../Images/821b0570a6573787c503a14a4c4f3ebd.png" alt="When the cat and mouse are within a 3 x 3 space relative to each other, we can enact a sub-policy related to this situation" srcset="https://towardsdatascience.com/wp-content/uploads/2025/01/1ER65BkjXwtNF7TBTHaapDA.png 352w, https://towardsdatascience.com/wp-content/uploads/2025/01/1ER65BkjXwtNF7TBTHaapDA-300x200.png 300w" sizes="auto, (max-width: 352px) 100vw, 352px" data-original-src="https://towardsdatascience.com/wp-content/uploads/2025/01/1ER65BkjXwtNF7TBTHaapDA.png"/><figcaption class="wp-element-caption">When the cat and mouse are within a 3 x 3 space relative to each other, we can enact a sub-policy related to this situation</figcaption></figure>
+<p class="wp-block-paragraph">The following shows the 3 x 3 space they may be viewed in. Developing a sub-policy for this simple case allows us to ignore other parts of the board and just focus on their relative locations and if there are edges nearby.</p>
+<figure class="wp-block-image size-large"><img data-dominant-color="f3f0f4" data-has-transparency="true" style="--dominant-color: #f3f0f4;" loading="lazy" decoding="async" width="352" height="235" class="wp-image-596360 has-transparency" src="../Images/5df76358c62eaef9b3ddc85ae7734bec.png" alt="The 3 x 3 space the cat and mouse may be projected onto." srcset="https://towardsdatascience.com/wp-content/uploads/2025/01/1x6O7MXJCn_Z6DHYWuD1agA.png 352w, https://towardsdatascience.com/wp-content/uploads/2025/01/1x6O7MXJCn_Z6DHYWuD1agA-300x200.png 300w" sizes="auto, (max-width: 352px) 100vw, 352px" data-original-src="https://towardsdatascience.com/wp-content/uploads/2025/01/1x6O7MXJCn_Z6DHYWuD1agA.png"/><figcaption class="wp-element-caption">The 3 x 3 space the cat and mouse may be projected onto.</figcaption></figure>
+<p class="wp-block-paragraph">So, these sub-policies are only used when the two players are close to each other.</p>
+<p class="wp-block-paragraph">As a simplification for this notebook, if the cat and mouse are not close enough to be projected onto a 3 x 3 sub-region, then the cat simply moves so as to reduce the Euclidean distance to the mouse. This can be learned as easily as well, but to keep this example simple, it covers only learning the policy for when they are close.</p>
+<p class="wp-block-paragraph">As an other simplification, this notebook trains only the cat. The mouse moves randomly, which allows the cat to develop a more robust policy, as it can be trained until it consistently beats the mouse in 100% of any given number of games, regardless of how the mouse moves.</p>
+<p class="wp-block-paragraph">The mouse can be trained as well simply enough, using the process shown in the previous notebook. But, for this example, I wanted to focus primarily on expanding the example above to define policies that can handle any board size.</p>
+<p class="wp-block-paragraph">As this notebook focuses on training the cat, we demonstrate with a case where the game is winnable for the cat.</p>
+<h2 class="wp-block-heading">Training process for Version 2</h2>
+<p class="wp-block-paragraph">The cat is trained by keeping, as in Version 1, a current best policy. Each iteration it generates 10 random, small variations on this and determines if any beat the previous version (and if so, taking the best of these as its new current best policy).</p>
+<p class="wp-block-paragraph">To evaluate each candidate policy, we play, using that candidate, 1000 games against the mouse. The policies are compared primarily based on the number of games out of 1,000 they beat a randomly moving mouse. It also looks at (so that the process can select slightly better policies for the cat, even if both result in the same number of wins out of 1000), the average number of moves until a win (lower is better), and the average distance (over all moves in all games) from the mouse (here as well, lower is better).</p>
+<p class="wp-block-paragraph">The code is actually divided into two steps. In the first, the cat plays against a mouse moving purely randomly, and does so until it is able to beat this consistently. It then plays against a slightly-smarter mouse, in that the mouse will not, unless there is no other legal choice, move to a square next to the cat.</p>
+<p class="wp-block-paragraph">Dividing training into two steps like this isn’t strictly necessary. In a larger version of this (not available on github at present, but may be added soon – it has some further small improvements, including training both players), this was simplified to just have one training loop, with little impact on the time required for training the cat.</p>
+<p class="wp-block-paragraph">But it does present an important idea with Hill Climbing: it’s important to create a situation where small improvements in the policy can be detected, in this case, allowing the cat more wins out of 1000 games (as it initially played in a situation where wins were quite possible).</p>
+<p class="wp-block-paragraph">Running the Version 2 notebook, the cat requires 30 iterations until it’s able to beat the mouse all 1000 games. It then begins playing the smarter mouse. Initially it can win only 821 out of 1000 games, but after 17 additional iterations, is able to consistently beat it all 1000 games. At that point, it attempts to reduce the number of moves necessary until a win.</p>
+<p class="wp-block-paragraph">The following shows the output from the first 16 iterations after switching to a smarter mouse:</p>
+<pre class="wp-block-prismatic-blocks"><code class="language-yaml">Iteration:      1, Number of wins: 821, avg. number of moves until a win: 8.309, avg_distance: 2.241806490961094
+Iteration:      2, Number of wins: 880, avg. number of moves until a win: 8.075, avg_distance: 2.2239653936929944
+Iteration:      3, Number of wins: 902, avg. number of moves until a win: 9.143, avg_distance: 2.2353713664032475
+Iteration:      4, Number of wins: 950, avg. number of moves until a win: 7.371, avg_distance: 2.1287877056217774
+Iteration:      5, Number of wins: 957, avg. number of moves until a win: 7.447, avg_distance: 2.1256372455916117
+Iteration:      7, Number of wins: 968, avg. number of moves until a win: 7.433, avg_distance: 2.129003455466747
+Iteration:      8, Number of wins: 979, avg. number of moves until a win: 7.850, avg_distance: 2.167468227927774
+Iteration:      9, Number of wins: 992, avg. number of moves until a win: 7.294, avg_distance: 2.1520372286793874
+Iteration:     10, Number of wins: 993, avg. number of moves until a win: 7.306, avg_distance: 2.15156512341623
+Iteration:     11, Number of wins: 994, avg. number of moves until a win: 7.263, avg_distance: 2.1409090350777533
+Iteration:     13, Number of wins: 997, avg. number of moves until a win: 7.174, avg_distance: 2.137799442343003
+Iteration:     15, Number of wins: 998, avg. number of moves until a win: 7.125, avg_distance: 2.128880373673454
+Iteration:     16, Number of wins: 999, avg. number of moves until a win: 7.076, avg_distance: 2.1214920528568437</code></pre>
+<p class="wp-block-paragraph">Using 1000 games is large enough to evaluate the cat reasonably well, and also to detect even relatively small improvements in the cat’s policy, for example, when it moves from winning, say, 678 to 679 out of the 1000 games. Even though this is only a modest improvement, it is an improvement.</p>
+<p class="wp-block-paragraph">In all, only about 200 iterations are necessary to train a strong policy for the cat.</p>
+<p class="wp-block-paragraph">In the notebook, training is done with a 5 x 5 board, as this allows fast execution of the games, and allows developing separate policies for each of the four corners, and the edges between the corners. The last cell of the notebook executes the policy on a 15 x 15 board, which demonstrates that the policies discovered can be applied to any board size.</p>
+<p class="wp-block-paragraph">For Version 2, we defined the mouse wining as evading capture for at least a specified number of moves, where this is: (NUM_ROWS + NUM_COLS) * 2. That’s a number of moves in which the cat should, if performing well, be able to capture the mouse (it’s actually slightly longer than is necessary, giving the cat some flexibility). This is a preferable way to define the mouse as having won, and is possible here since the mouse moves in a non-deterministic way.</p>
+<p class="wp-block-paragraph">Compared to Version 1, this also updates the fitness function for the cat, as as to look at the average distance from the mouse at each step, as opposed to the distance at the end of the game. This also allows for a steady, gradual improvement in play, once the cat is able to win all 1000 games reliably.</p>
+<h2 class="wp-block-heading">Training a policy for when the players are farther apart</h2>
+<p class="wp-block-paragraph">This example covered only developing a sub-policy to handle where the players are close, but a full solution would also require a sub-policy to handle where they are farther apart. This can be hard-coded, as in this notebook, but it’s generally preferable to allow the optimization process (or game tree, Monte Carlo Game Tree, or some other such method) to discover this.</p>
+<p class="wp-block-paragraph">To model the choices when the players are farther apart, we want to capture the relevant properties of the their positions, but not additional properties (as this will require more effort to optimize). But, choosing the parameters can be a case of begging the question – that is, determining ahead of time what the optimal strategy is, and then simply defining the parameters necessary to capture that.</p>
+<p class="wp-block-paragraph">For example, we may assume that the best policy for the cat when the players are far apart is to minimize the travel distance to the mouse (which is the Manhattan distance). So, we may represent their board positions simply as a single variable with four possible values, indicating if the mouse is closest to the left, right, up or down. But using the Euclidean distance can actually work better for the cat and mouse game than the Manhattan. As well, it may be useful to capture information about the edges of the board, so that the cat can push the mouse towards the closest corner.</p>
+<p class="wp-block-paragraph">That is, starting with an assumption of the best policy and capturing only properties of the board necessary to execute that policy can preclude us from finding a truly-optimal solution.</p>
+<p class="wp-block-paragraph">We may want to include some extra parameters to capture factors that are only potentially relevant, even where we suspect they are not. A potential set is, as before:</p>
+<ul class="wp-block-list">
+<li>Is the mouse above, below, or in the same row as the cat</li>
+<li>Is the mouse to the left, to the right, or in the same column as the cat</li>
+<li>Is the mouse closer to the cat vertically or horizontally</li>
+<li>Is the mouse in a corner</li>
+<li>Is the mouse on an edge</li>
+<li>Is the mouse not quite on, but near, the top / bottom / left / right edge</li>
+</ul>
+<p class="wp-block-paragraph">As with any case of modeling, it’s a balancing act between capturing too much detail (and being slow to train, and harder to interpret) and too little (resulting in sub-optimal play).</p>
+<h2 class="wp-block-heading">Conclusions</h2>
+<p class="wp-block-paragraph">The two examples shown here are viable options to solve this problem, and are useful examples of this approach: defining a complete policy for game play based on an optimization algorithm (in this case, hill climbing).</p>
+<p class="wp-block-paragraph">The ideas here are fairly simple, and do directly not extend to substantially more sophisticated games, but can handle well problems of similar, and even somewhat greater, complexity. For example, they can handle a reasonable number of complications that can be added to the cat and mouse game as it was presented here, for example, the placement of obstacles on the board, the ability of one player to travel at different speed, the presence of multiple cats, or multiple mice, and so on.</p>
+<p class="wp-block-paragraph">As well, the idea of well-defined sub-policies that take effect in specific conditions is a useful idea that can be incorporated into even solutions for much more complicated problems, defining these either through game trees, or through optimization techniques such as were shown here.</p>
+<p class="wp-block-paragraph">I’ll cover more advanced methods in future articles, but this can be a useful method where applicable.</p>
+<p class="wp-block-paragraph">All images by the author.</p>    
+</body>
+</html>

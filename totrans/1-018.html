@@ -1,0 +1,777 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.1//EN"
+  "http://www.w3.org/TR/xhtml11/DTD/xhtml11.dtd">
+
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+<title>On the Challenge of Converting TensorFlow Models to PyTorch</title>
+<link href="../Styles/Style.css" type="text/css" rel="stylesheet"/>
+</head>
+<body>
+<h1>On the Challenge of Converting TensorFlow Models to PyTorch</h1>
+<blockquote>原文：<a href="https://towardsdatascience.com/on-the-challenge-of-converting-tensorflow-models-to-pytorch/">https://towardsdatascience.com/on-the-challenge-of-converting-tensorflow-models-to-pytorch/</a></blockquote>
+<h2 class="wp-block-heading" id="e9f0"><mdspan datatext="el1764721965620" class="mdspan-comment">Prologue</mdspan></h2>
+
+
+
+<p class="wp-block-paragraph" id="7396">In the interest of managing reader expectations and preventing disappointment, we would like to begin by stating that this post does <strong>not </strong>provide a fully satisfactory solution to the problem described in the title. We will propose and assess two possible schemes for auto-conversion of TensorFlow models to PyTorch — the first based on the <a href="https://onnx.ai/" rel="noreferrer noopener" target="_blank">Open Neural Network Exchange</a> (ONNX) format and libraries and the second using the <a href="https://keras.io/" rel="noreferrer noopener" target="_blank">Keras3</a> API. However, as we will see, each comes with its own set of challenges and limitations. To the best of the authors’ knowledge, at the time of this writing, there are no publicly available foolproof solutions to this problem.</p>
+
+
+
+<p class="wp-block-paragraph" id="d81b">Many thanks to <a href="https://www.linkedin.com/in/rom-maltser" rel="noreferrer noopener" target="_blank">Rom Maltser</a> for his contributions to this post.</p>
+
+
+
+<h2 class="wp-block-heading" id="e825">The Decline of TensorFlow</h2>
+
+
+
+<p class="wp-block-paragraph" id="0909">Over the years, the field of computer science has known its fair share of “religious wars” — heated, sometimes hostile, debates among programmers and engineers over the “best” tools, languages, and methodologies. Up until a few years ago, the religious war between PyTorch and TensorFlow, two prominent open-source deep learning frameworks, loomed large. Proponents of TensorFlow would highlight its fast graph-execution mode, while those in the PyTorch camp would emphasize its “Pythonic” nature and ease of use.</p>
+
+
+
+<p class="wp-block-paragraph" id="0909">However, these days, the amount of activity in PyTorch far overshadows that of TensorFlow. This is evidenced by the number of big-tech companies that have embraced PyTorch over TensorFlow, by the number of models per framework in <a href="https://huggingface.co/models" target="_blank" rel="noreferrer noopener">HuggingFace’s models</a> repository, and by the amount of innovation and optimization in each framework. Simply put, TensorFlow is a shell of its former self. The war is over, with PyTorch the definitive winner. For a brief history of the Pytorch-TensorFlow wars and the reasons for TensorFlow’s downfall, see <a href="https://medium.com/@sampan090611">Pan Xinghan’s</a> post: <a href="https://medium.com/@sampan090611/tensorflow-is-dead-pytorch-won-2d0bc6e9b1a4">TensorFlow Is Dead. PyTorch Won</a>.</p>
+
+
+
+<h2 class="wp-block-heading" id="73fe">Problem: What do we do with all of our legacy TensorFlow models?!!</h2>
+
+
+
+<p class="wp-block-paragraph" id="71d3">In light of this new reality, many organizations that once used TensorFlow have moved all of their new AI/ML model development to PyTorch. But they are faced with a difficult challenge when it comes to their legacy code: What should they do with all of the models that have already been built and deployed in TensorFlow?</p>
+
+
+
+<h3 class="wp-block-heading" id="7a5b">Option 1: Do Nothing.</h3>
+
+
+
+<p class="wp-block-paragraph" id="fd34">You might be wondering why this is even a problem — the TensorFlow models work — let’s not touch them. While this is a valid approach, there are a number of disadvantages that should be taken into consideration:</p>
+
+
+
+<ol class="wp-block-list">
+<li class="wp-block-list-item"><strong>Reduced maintenance</strong>: As TensorFlow continues to decline so will its maintenance. Inevitably, things will start to break. For example, there may be issues of compatibility with newer Python packages or system libraries.</li>
+
+
+
+<li class="wp-block-list-item"><strong>Limited Ecosystem</strong>: AI/ML solutions typically involve multiple supporting software libraries and services that interface with our framework of choice, be it PyTorch or TensorFlow. Over time, we can expect to see many of these discontinue their support for TensorFlow. Case in point: HuggingFace recently <a href="https://www.linkedin.com/posts/lysandredebut_i-have-bittersweet-news-to-share-yesterday-activity-7338966863403528192-om5p?" target="_blank" rel="noreferrer noopener">announced the deprecation of its support for TensorFlow</a>.</li>
+
+
+
+<li class="wp-block-list-item"><strong>Limited Community</strong>: The AI/ML industry owes its fast pace of development, in large part, to its community. The number of open source projects, the number of online tutorials, and the amount of activity in dedicated support channels in the AI/ML space, is unparalleled. As TensorFlow declines, so will its community and you may experience increasing difficulty getting the help you need. Needless to say, the PyTorch community is flourishing.</li>
+
+
+
+<li class="wp-block-list-item"><strong>Opportunity Cost</strong>: The PyTorch ecosystem is thriving with constant innovations and optimizations. Recent years have seen the development of flash-attention kernels, support for the eight-bit floating-point data type, graph compilation, and many other advancements that have demonstrated significant boosts to runtime performance and significant reductions in AI/ML costs. During the same time period the feature offering in TensorFlow has remained mostly static. Sticking with TensorFlow means forgoing many opportunities for AI/ML cost optimization.</li>
+</ol>
+
+
+
+<h3 class="wp-block-heading" id="34b7">Option 2: Manually Convert TensorFlow Models to PyTorch</h3>
+
+
+
+<p class="wp-block-paragraph" id="0509">The second option is to rewrite legacy TensorFlow models in PyTorch. This is probably the best option in terms of its result, but for companies that have built up technical debt over many years, converting even a single model could be a daunting task. Given the effort required, you may choose to do this only for models that are still under active development (e.g., in the model training phase). Doing this for all of the models that are already deployed may prove prohibitive.</p>
+
+
+
+<h3 class="wp-block-heading" id="3b62">Option 3: Automate TensorFlow to PyTorch Conversion</h3>
+
+
+
+<p class="wp-block-paragraph" id="bf61">The third option, and the approach we explore in this post, is to automate the conversion of legacy TensorFlow models to PyTorch. In this manner, we hope to accomplish the benefit of model execution in PyTorch, but without the enormous effort of manually converting each one.</p>
+
+
+
+<p class="wp-block-paragraph" id="a8ed">To facilitate our discussion we will define a toy TensorFlow model and assess two proposals for converting it to PyTorch. As our runtime environment, we will use an <a href="https://aws.amazon.com/ec2/instance-types/g6e/" rel="noreferrer noopener" target="_blank">Amazon EC2 g6e.xlarge</a> with an <a href="https://www.nvidia.com/en-eu/data-center/l40s/" rel="noreferrer noopener" target="_blank">NVIDIA L40S</a> GPU, an <a href="https://docs.aws.amazon.com/dlami/latest/devguide/aws-deep-learning-x86-gpu-tensorflow-2.18-ubuntu-22-04.html" rel="noreferrer noopener" target="_blank">AWS Deep Learning Ubuntu (22.04) AMI</a>, and a Python environment that includes the <a href="https://www.tensorflow.org/install" rel="noreferrer noopener" target="_blank">TensorFlow</a> (2.20), <a href="https://pytorch.org/get-started/locally/" rel="noreferrer noopener" target="_blank">PyTorch</a> (2.9), <a href="https://pypi.org/project/torchvision/" rel="noreferrer noopener" target="_blank">torchvision</a> (0.24.0), and <a href="https://huggingface.co/docs/transformers/en/index" rel="noreferrer noopener" target="_blank">transformers</a> (4.55.4) libraries. Please note that the code blocks we will share are intended for demonstrative purposes. Please do not interpret our use of any code, library, or platform as an endorsement of its use.</p>
+
+
+
+<h2 class="wp-block-heading" id="8604">Model Conversion — Why is it Hard?</h2>
+
+
+
+<p class="wp-block-paragraph" id="cc0e">An AI model definition is comprised of two components: a model architecture and its trained weights. A model conversion solution must address both components. Conversion of the model weights is pretty straightforward; the weights are typically stored in a format that can be easily parsed into individual tensor arrays and reapplied in the framework of choice. In contrast, conversion of the model architecture presents a much greater challenge.</p>
+
+
+
+<p class="wp-block-paragraph" id="e27b">One approach could be to create a mapping between the building blocks of the model in each of the frameworks. However, there are a number of factors that make this approach, for all intents and purposes, virtually intractable:</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item"><strong>API Overlap and Proliferation</strong>: When you take into account the sheer number of, often overlapping, TensorFlow APIs for building model components and then add the vast number of API controls and arguments for each layer, you can see how creating a comprehensive, one-to-one mapping can quickly get ugly.</li>
+
+
+
+<li class="wp-block-list-item"><strong>Differing Implementation Approaches</strong>: At the implementation level, TensorFlow and PyTorch have fundamentally different approaches. Although usually hidden behind the top-level APIs, some assumptions require special user attention. For example, while TensorFlow defaults to the “channels-last” (NHWC) format, PyTorch prefers “channels-first” (NCHW). This difference in how tensors are indexed and stored complicates the conversion of model operations, as every layer must be checked/altered for correct dimension ordering.</li>
+</ul>
+
+
+
+<p class="wp-block-paragraph" id="ea0f">Rather than attempt conversion at the API level, an alternative approach could be to capture and convert an internal TensorFlow graph representation. However, as anyone who has ever looked under the hood of TensorFlow will tell you, this too could get pretty nasty very quickly. TensorFlow’s internal graph representation is incredibly complex, often including a multitude of low-level operations, control flow, and auxiliary nodes that do not have a direct equivalent in PyTorch (especially if you’re dealing with older versions of TensorFlow). Just its comprehension seems beyond normal human ability, let alone its conversion to PyTorch.</p>
+
+
+
+<p class="wp-block-paragraph" id="3816">Note that the same challenges would make it difficult for a generative AI model to perform the conversion in a manner that is fully reliable.</p>
+
+
+
+<h3 class="wp-block-heading" id="62e8">Proposed Conversion Schemes</h3>
+
+
+
+<p class="wp-block-paragraph" id="700e">In light of these difficulties, we abandon our attempt at implementing our own model converter and instead look to see what tools the AI/ML community has to offer. More specifically, we consider two different strategies for overcoming the challenges we described:</p>
+
+
+
+<ol class="wp-block-list">
+<li class="wp-block-list-item"><strong>Conversion Via a Unified Graph Representation</strong>: This solution assumes a common standard for representing an AI/ML model definition and utilities for converting models to and from this standard. The solution we will explore uses the popular ONNX format.</li>
+
+
+
+<li class="wp-block-list-item"><strong>Conversion Based on a Standardized High-level API</strong>: In this solution we simplify the conversion task by limiting our model to a defined set of high level abstract APIs with supported implementations in each of the AI/ML frameworks of interest. For this approach, we will use the Keras3 library.</li>
+</ol>
+
+
+
+<p class="wp-block-paragraph" id="e0b0">In the next sections we will assess these strategies on a toy TensorFlow model.</p>
+
+
+
+<h2 class="wp-block-heading" id="75d2">A Toy TensorFlow Model</h2>
+
+
+
+<p class="wp-block-paragraph" id="13c9">In the code block below we initialize and run a TensorFlow Vision Transformer (ViT) model from <a href="https://huggingface.co/" rel="noreferrer noopener" target="_blank">HuggingFace’s</a> popular <a href="https://pypi.org/project/transformers/" rel="noreferrer noopener" target="_blank">transformers</a> library (version 4.55.4), <a href="https://huggingface.co/docs/transformers/v4.55.4/en/model_doc/vit#transformers.TFViTForImageClassification" rel="noreferrer noopener" target="_blank">TFViTForImageClassification</a>. Note that in keeping with <a href="https://huggingface.co/" rel="noreferrer noopener" target="_blank">HuggingFace’s</a> decision to deprecate support for TensorFlow, this class was removed from recent releases of the library. The HuggingFace TensorFlow model is dependent on Keras 2 which we dutifully install via the <a href="https://pypi.org/project/tf-keras/" rel="noreferrer noopener" target="_blank">tf-keras</a> (2.20.1) package. We set the <a href="https://huggingface.co/docs/transformers/v4.55.4/en/model_doc/vit#transformers.ViTConfig.hidden_act" rel="noreferrer noopener" target="_blank">ViTConfig.hidden_act</a> field to “gelu_new” for ONNX compatibility:</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">import tensorflow as tf
+gpu = tf.config.list_physical_devices('GPU')[0]
+tf.config.experimental.set_memory_growth(gpu, True)
+
+from transformers import ViTConfig, TFViTForImageClassification
+vit_config = ViTConfig(hidden_act="gelu_new", return_dict=False)
+tf_model = TFViTForImageClassification(vit_config)</code></pre>
+
+
+
+<h2 class="wp-block-heading" id="ad05">Model Conversion Using ONNX</h2>
+
+
+
+<p class="wp-block-paragraph" id="384d">The first method we assess relies on <a href="https://onnx.ai/" rel="noreferrer noopener" target="_blank">Open Neural Network Exchange</a> (ONNX), a community project that aims to define an open format for building AI/ML models to increase interoperability between AI/ML frameworks and reduce the dependence on any single one. Included in the ONNX API offering are utilities for converting models from common frameworks, including <a href="https://github.com/onnx/tensorflow-onnx" rel="noreferrer noopener" target="_blank">TensorFlow</a>, to the ONNX format. There are also several public libraries for converting ONNX models to PyTorch. In this post we use the <a href="https://github.com/ENOT-AutoDL/onnx2torch" rel="noreferrer noopener" target="_blank">onnx2torch</a> utility. Thus, model conversion from TensorFlow to PyTorch can be achieved by successively applying TensorFlow-to-ONNX conversion followed by ONNX-to-PyTorch conversion.</p>
+
+
+
+<p class="wp-block-paragraph">To assess this solution we install the <a href="https://pypi.org/project/onnx/" target="_blank" rel="noreferrer noopener">onnx</a> (1.19.1), <a href="https://pypi.org/project/tf2onnx/" target="_blank" rel="noreferrer noopener">tf2onnx</a> (1.16.1), and <a href="https://pypi.org/project/onnx2torch/" target="_blank" rel="noreferrer noopener">onnx2torch</a> (1.5.15 ) libraries. We apply the <em>no-deps</em> flag to prevent an undesired downgrade of the protobuf library:</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-bash">pip install --no-deps onnx tf2onnx onnx2torch</code></pre>
+
+
+
+<p class="wp-block-paragraph">The conversion scheme appears in the code block below:</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">import tensorflow as tf
+import torch
+import tf2onnx, onnx2torch
+
+BATCH_SIZE = 32
+DEVICE = "cuda"
+
+spec = (tf.TensorSpec((BATCH_SIZE, 3, 224, 224), tf.float32, name="input"),)
+onnx_model, _ = tf2onnx.convert.from_keras(tf_model, input_signature=spec)
+converted_model = onnx2torch.convert(onnx_model)</code></pre>
+
+
+
+<p class="wp-block-paragraph">To make sure that the resultant model is indeed a PyTorch module, we run the following assertion:</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">assert isinstance(converted_model, torch.nn.Module)</code></pre>
+
+
+
+<p class="wp-block-paragraph" id="2bf4">Let us now assess the quality and makeup of the resultant PyTorch model.</p>
+
+
+
+<h3 class="wp-block-heading" id="c272">Numerical Precision</h3>
+
+
+
+<p class="wp-block-paragraph" id="aa7b">To verify the validity of the converted model, we execute both the TensorFlow model and the converted model on the same input and compare the results:</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">import numpy as np
+
+batch_input = np.random.randn(BATCH_SIZE, 3, 224, 224).astype(np.float32)
+
+# execute tf model
+tf_input = tf.convert_to_tensor(batch_input)
+tf_output = tf_model(tf_input, training=False)
+tf_output = tf_output[0].numpy()
+
+# execute converted model
+converted_model = converted_model.to(DEVICE)
+converted_model = converted_model.eval()
+torch_input = torch.from_numpy(batch_input).to(DEVICE)
+torch_output = converted_model(torch_input)
+torch_output = torch_output.detach().cpu().numpy()
+
+# compare results
+print("Max diff:", np.max(np.abs(tf_output - torch_output)))
+
+# sample output:
+# Max diff: 9.3877316e-07</code></pre>
+
+
+
+<p class="wp-block-paragraph" id="e1f1">The outputs are certainly close enough to validate the converted model.</p>
+
+
+
+<h3 class="wp-block-heading" id="e276">Model Structure</h3>
+
+
+
+<p class="wp-block-paragraph" id="5bc3">To get a feel for the structure of the converted model, we calculate the number of trainable comparisons and compare it that of the original model:</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">num_tf_params = sum([np.prod(v.shape) for v in tf_model.trainable_weights])
+num_pyt_params = sum([p.numel()
+                      for p in converted_model.parameters()
+                      if p.requires_grad])
+print(f"TensorFlow trainable parameters: {num_tf_params}")
+print(f"PyTorch Trainable Parameters: {num_pyt_params:,}")</code></pre>
+
+
+
+<p class="wp-block-paragraph" id="5dd8">The difference in the number of trainable parameters is profound, just 589,824 in the converted model compared to over 85 million in the original model. Traversing the layers of the converted model leads to that same conclusion: The ONNX-based conversion has completely altered the model structure, rendering it essentially unrecognizable. There are a number of ramifications to this finding, including:</p>
+
+
+
+<ol class="wp-block-list">
+<li class="wp-block-list-item"><strong>Training/fine-tuning the converted model</strong>: Although we have shown that the converted model can be used for inference, the change in structure — particularly the fact that some of the model parameters have been baked in, means that we cannot use the converted model for training or fine-tuning.</li>
+
+
+
+<li class="wp-block-list-item"><strong>Applying pinpoint PyTorch optimizations to the model</strong>: The converted model is composed of a very large number of layers each representing a relatively low-level operation. This greatly limits our ability to replace inefficient operations with optimized PyTorch equivalents, such as <a href="https://docs.pytorch.org/docs/stable/generated/torch.nn.functional.scaled_dot_product_attention.html" target="_blank" rel="noreferrer noopener">torch.nn.functional.scaled_dot_product_attention</a> (SPDA).</li>
+</ol>
+
+
+
+<h3 class="wp-block-heading" id="0a01">Model Optimization</h3>
+
+
+
+<p class="wp-block-paragraph" id="c76b">We have already seen that our ability to access and modify model operations is limited, but there are a number of optimizations that we can apply that do not require such access. In the code block below, we apply <a href="https://docs.pytorch.org/tutorials/intermediate/torch_compile_tutorial.html" rel="noreferrer noopener" target="_blank">PyTorch compilation</a> and <a href="https://docs.pytorch.org/tutorials/recipes/recipes/amp_recipe.html" rel="noreferrer noopener" target="_blank">automatic mixed precision</a> (AMP) and compare the resultant throughput to that of the TensorFlow model. For further context, we also test the runtime of the PyTorch version of the <a href="https://huggingface.co/docs/transformers/v4.55.4/en/model_doc/vit#transformers.ViTForImageClassification" rel="noreferrer noopener" target="_blank">ViTForImageClassification</a> model:</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python"># Set tf mixed precision policy to bfloat16
+tf.keras.mixed_precision.set_global_policy('mixed_bfloat16')
+
+# Set torch matmul precision to high
+torch.set_float32_matmul_precision('high')
+
+@tf.function
+def tf_infer_fn(batch):
+    return tf_model(batch, training=False)
+
+def get_torch_infer_fn(model):
+    def infer_fn(batch):
+        with torch.inference_mode(), torch.amp.autocast(
+                DEVICE,
+                dtype=torch.bfloat16,
+                enabled=DEVICE=='cuda'
+        ):
+            output = model(batch)
+        return output
+    return infer_fn
+
+def benchmark(infer_fn, batch):
+    # warm-up
+    for _ in range(20):
+        _ = infer_fn(batch)
+    start = torch.cuda.Event(enable_timing=True)
+    end = torch.cuda.Event(enable_timing=True)
+    torch.cuda.synchronize()
+    start.record()
+
+    iters = 100
+
+    for _ in range(iters):
+        _ = infer_fn(batch)
+    end.record()
+    torch.cuda.synchronize()
+    return start.elapsed_time(end) / iters
+
+# assess throughput of TF model
+avg_time = benchmark(tf_infer_fn, tf_input)
+print(f"\nTensorFlow average step time: {(avg_time):.4f}")
+
+# assess throughput of converted model
+torch_infer_fn = get_torch_infer_fn(converted_model) 
+avg_time = benchmark(torch_infer_fn, torch_input)
+print(f"\nConverted model average step time: {(avg_time):.4f}")
+
+# assess throughput of compiled model
+torch_infer_fn = get_torch_infer_fn(torch.compile(converted_model)) 
+avg_time = benchmark(torch_infer_fn, torch_input)
+print(f"\nCompiled model average step time: {(avg_time):.4f}")
+
+# assess throughput of torch ViT
+from transformers import ViTForImageClassification
+torch_model = ViTForImageClassification(vit_config).to(DEVICE)
+torch_infer_fn = get_torch_infer_fn(torch_model) 
+avg_time = benchmark(torch_infer_fn, torch_input)
+print(f"\nPyTorch ViT model average step time: {(avg_time):.4f}")
+
+# assess throughput of compiled torch ViT
+torch_infer_fn = get_torch_infer_fn(torch.compile(torch_model)) 
+avg_time = benchmark(torch_infer_fn, torch_input)
+print(f"\nCompiled ViT model average step time: {(avg_time):.4f}")</code></pre>
+
+
+
+<p class="wp-block-paragraph">Note that initially PyTorch compilation fails on the converted model due to the use of <a href="https://github.com/ENOT-AutoDL/onnx2torch/blob/v1.5.15/onnx2torch/node_converters/reshape.py#L23" target="_blank" rel="noreferrer noopener">torch.Size</a> operator in the <a href="https://github.com/ENOT-AutoDL/onnx2torch/blob/v1.5.15/onnx2torch/node_converters/reshape.py#L17C7-L17C18" target="_blank" rel="noreferrer noopener">OnnxReshape</a> layer. While this is easily fixable (e.g., <code>tuple([int(i) for i in shape])</code>), it points to a deeper obstacle to optimization of the model: The reshape layer, which appears dozens of times in the model, treats shapes as PyTorch tensors residing on the GPU. This means that each call requires detaching the shape tensor from the graph and copying it to the CPU. The conclusion is that although the converted model is functionally accurate, its resultant definition is not optimized for runtime performance. This can be seen from the step time results of the different model configurations:</p>
+
+
+
+<figure class="wp-block-image size-full"><img decoding="async" src="../Images/cbf02db99da45ddf7be03dce296e72ed.png" alt="" class="wp-image-633961" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/11/2.webp"/><figcaption class="wp-element-caption">ONNX-Based Conversion Step Time Results (by Author)</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph" id="e272">The converted model is slower than the original TensorFlow flow and significantly slower than PyTorch version of the ViT model.</p>
+
+
+
+<h3 class="wp-block-heading" id="bf14">Limitations</h3>
+
+
+
+<p class="wp-block-paragraph" id="1415">Although (in the case of our toy model) the ONNX-based conversion scheme works, it has a number of significant limitations:</p>
+
+
+
+<ol class="wp-block-list">
+<li class="wp-block-list-item">During the conversion many parameters were baked into the model, limiting its use to inference workloads only.</li>
+
+
+
+<li class="wp-block-list-item">The ONNX conversion breaks the computation graph into low level operators in a manner that makes it difficult to apply and/or reap the benefit of some PyTorch optimizations.</li>
+
+
+
+<li class="wp-block-list-item">The reliance on ONNX implies that our conversion scheme will only work on ONNX-friendly models. It will not work on models that cannot be mapped to the standard ONNX operator set (e.g., models with dynamic control flow).</li>
+
+
+
+<li class="wp-block-list-item">The conversion scheme relies on the health and maintenance of a third-party library that is not part of the official ONNX offering.</li>
+</ol>
+
+
+
+<p class="wp-block-paragraph" id="945f">Although the scheme works — at least for inference workloads — you may find the limitations to be too restrictive for use on your own TensorFlow models. One possible option is to abandon the ONNX-to-PyTorch conversion and perform inference using the <a href="https://onnxruntime.ai/" rel="noreferrer noopener" target="_blank">ONNX Runtime</a> library.</p>
+
+
+
+<h2 class="wp-block-heading" id="16f2">Model Conversion Via Keras3</h2>
+
+
+
+<p class="wp-block-paragraph" id="9057"><a href="https://keras.io/" target="_blank" rel="noreferrer noopener">Keras3</a> is a high-level deep learning API focused on maximizing the readability, maintainability, and ease of use of AI/ML applications. In a <a href="https://towardsdatascience.com/multi-framework-ai-ml-development-with-keras-3-cf7be29eb23d/">previous post</a>, we evaluated Keras3 and highlighted its support for multiple backends. In this post we revisit its multi-framework support and assess whether this can be utilized for model conversion. The scheme we propose is to 1) <a href="https://keras.io/guides/migrating_to_keras_3/" target="_blank" rel="noreferrer noopener">migrate the existing TensorFlow model to Keras3</a> and then 2) run the model with the Keras3 PyTorch backend.</p>
+
+
+
+<h2 class="wp-block-heading" id="f2d7">Upgrading TensorFlow to Keras3</h2>
+
+
+
+<p class="wp-block-paragraph" id="8719">Contrary to the ONNX-based conversion scheme, our current solution may require some code changes to the TensorFlow model to migrate it to Keras3. While the <a href="https://keras.io/guides/migrating_to_keras_3/" target="_blank" rel="noreferrer noopener">documentation</a> makes it sound simple, in practice the difficulty of the migration will depend greatly on the details of the model implementation. In the case of our toy model, HuggingFace explicitly enforces the use of the legacy <a href="https://pypi.org/project/tf-keras/" target="_blank" rel="noreferrer noopener">tf-keras</a>, preventing the use of Keras3. To implement our scheme, we need to 1) redefine the model without this restriction, and 2) replace native TensorFlow operators with Keras3 equivalents. The code block below contains a stripped-down version of the model, along with the required adjustments. To get a full grasp of the changes that were required, perform a side-by-side code comparison with the <a href="https://github.com/huggingface/transformers/blob/v4.55.4/src/transformers/models/vit/modeling_tf_vit.py" target="_blank" rel="noreferrer noopener">original model definition</a>.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">import math
+import keras
+
+HIDDEN_SIZE = 768
+IMG_SIZE = 224
+PATCH_SIZE = 16
+ATTN_HEADS = 12
+NUM_LAYERS = 12
+INTER_SZ = 4*HIDDEN_SIZE
+N_LABELS = 2
+
+
+class TFViTEmbeddings(keras.layers.Layer):
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.patch_embeddings = TFViTPatchEmbeddings()
+        num_patches = self.patch_embeddings.num_patches
+        self.cls_token = self.add_weight((1, 1, HIDDEN_SIZE))
+        self.position_embeddings = self.add_weight((1, num_patches+1,
+                                                    HIDDEN_SIZE))
+
+    def call(self, pixel_values, training=False):
+        bs, num_channels, height, width = pixel_values.shape
+        embeddings = self.patch_embeddings(pixel_values, training=training)
+        cls_tokens = keras.ops.repeat(self.cls_token, repeats=bs, axis=0)
+        embeddings = keras.ops.concatenate((cls_tokens, embeddings), axis=1)
+        embeddings = embeddings + self.position_embeddings
+        return embeddings
+
+class TFViTPatchEmbeddings(keras.layers.Layer):
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        patch_size = (PATCH_SIZE, PATCH_SIZE)
+        image_size = (IMG_SIZE, IMG_SIZE)
+        num_patches = (image_size[1]//patch_size[1]) * \
+                      (image_size[0]//patch_size[0])
+        self.patch_size = patch_size
+        self.num_patches = num_patches
+        self.projection = keras.layers.Conv2D(
+            filters=HIDDEN_SIZE,
+            kernel_size=patch_size,
+            strides=patch_size,
+            padding="valid",
+            data_format="channels_last"
+        )
+
+    def call(self, pixel_values, training=False):
+        bs, num_channels, height, width = pixel_values.shape
+        pixel_values = keras.ops.transpose(pixel_values, (0, 2, 3, 1))
+        projection = self.projection(pixel_values)
+        num_patches = (width // self.patch_size[1]) * \
+                      (height // self.patch_size[0])
+        embeddings = keras.ops.reshape(projection, (bs, num_patches, -1))
+        return embeddings
+
+class TFViTSelfAttention(keras.layers.Layer):
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.num_attention_heads = ATTN_HEADS
+        self.attention_head_size = int(HIDDEN_SIZE / ATTN_HEADS)
+        self.all_head_size = ATTN_HEADS * self.attention_head_size
+        self.sqrt_att_head_size = math.sqrt(self.attention_head_size)
+        self.query = keras.layers.Dense(self.all_head_size,  name="query")
+        self.key = keras.layers.Dense(self.all_head_size, name="key")
+        self.value = keras.layers.Dense(self.all_head_size, name="value")
+
+    def transpose_for_scores(self, tensor, batch_size: int):
+        tensor = keras.ops.reshape(tensor, (batch_size, -1, ATTN_HEADS,
+                                            self.attention_head_size))
+        return keras.ops.transpose(tensor, [0, 2, 1, 3])
+
+    def call(self, hidden_states, training=False):
+        bs = hidden_states.shape[0]
+        mixed_query_layer = self.query(inputs=hidden_states)
+        mixed_key_layer = self.key(inputs=hidden_states)
+        mixed_value_layer = self.value(inputs=hidden_states)
+        query_layer = self.transpose_for_scores(mixed_query_layer, bs)
+        key_layer = self.transpose_for_scores(mixed_key_layer, bs)
+        value_layer = self.transpose_for_scores(mixed_value_layer, bs)
+        key_layer_T = keras.ops.transpose(key_layer, [0,1,3,2])
+        attention_scores = keras.ops.matmul(query_layer, key_layer_T)
+        dk = keras.ops.cast(self.sqrt_att_head_size,
+                            dtype=attention_scores.dtype)
+        attention_scores = keras.ops.divide(attention_scores, dk)
+        attention_probs = keras.ops.softmax(attention_scores+1e-9, axis=-1)
+        attention_output = keras.ops.matmul(attention_probs, value_layer)
+        attention_output = keras.ops.transpose(attention_output,[0,2,1,3])
+        attention_output = keras.ops.reshape(attention_output,
+                                             (bs, -1, self.all_head_size))
+        return (attention_output,)
+
+class TFViTSelfOutput(keras.layers.Layer):
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.dense = keras.layers.Dense(HIDDEN_SIZE)
+
+    def call(self, hidden_states, input_tensor, training = False):
+        return self.dense(inputs=hidden_states)
+
+class TFViTAttention(keras.layers.Layer):
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.self_attention = TFViTSelfAttention()
+        self.dense_output = TFViTSelfOutput()
+
+    def call(self, input_tensor, training = False):
+        self_outputs = self.self_attention(
+            hidden_states=input_tensor, training=training
+        )
+        attention_output = self.dense_output(
+            hidden_states=self_outputs[0],
+            input_tensor=input_tensor,
+            training=training
+        )
+        return (attention_output,)
+
+class TFViTIntermediate(keras.layers.Layer):
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.dense = keras.layers.Dense(INTER_SZ)
+        self.intermediate_act_fn = keras.activations.gelu
+
+    def call(self, hidden_states):
+        hidden_states = self.dense(hidden_states)
+        hidden_states = self.intermediate_act_fn(hidden_states)
+        return hidden_states
+
+class TFViTOutput(keras.layers.Layer):
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.dense = keras.layers.Dense(HIDDEN_SIZE)
+
+    def call(self, hidden_states, input_tensor, training: bool = False):
+        hidden_states = self.dense(inputs=hidden_states)
+        hidden_states = hidden_states + input_tensor
+        return hidden_states
+
+class TFViTLayer(keras.layers.Layer):
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.attention = TFViTAttention()
+        self.intermediate = TFViTIntermediate()
+        self.vit_output = TFViTOutput()
+        self.layernorm_before = keras.layers.LayerNormalization(
+            epsilon=1e-12
+        )
+        self.layernorm_after = keras.layers.LayerNormalization(
+            epsilon=1e-12
+        )
+
+    def call(self, hidden_states, training=False):
+        attention_outputs = self.attention(
+            input_tensor=self.layernorm_before(inputs=hidden_states),
+            training=training,
+        )
+        attention_output = attention_outputs[0]
+        hidden_states = attention_output + hidden_states
+        layer_output = self.layernorm_after(hidden_states)
+        intermediate_output = self.intermediate(layer_output)
+        layer_output = self.vit_output(
+            hidden_states=intermediate_output,
+            input_tensor=hidden_states,
+            training=training
+        )
+        outputs = (layer_output,)
+        return outputs
+
+class TFViTEncoder(keras.layers.Layer):
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.layer = [TFViTLayer(name=f"layer_{i}")
+                      for i in range(NUM_LAYERS)]
+
+    def call(self, hidden_states, training=False):
+        for i, layer_module in enumerate(self.layer):
+            layer_outputs = layer_module(
+                hidden_states=hidden_states,
+                training=training,
+            )
+            hidden_states = layer_outputs[0]
+        return tuple([hidden_states])
+
+class TFViTMainLayer(keras.layers.Layer):
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.embeddings = TFViTEmbeddings()
+        self.encoder = TFViTEncoder()
+        self.layernorm = keras.layers.LayerNormalization(epsilon=1e-12)
+
+    def call(self, pixel_values, training=False):
+        embedding_output = self.embeddings(
+            pixel_values=pixel_values,
+            training=training,
+        )
+        encoder_outputs = self.encoder(
+            hidden_states=embedding_output,
+            training=training,
+        )
+        sequence_output = encoder_outputs[0]
+        sequence_output = self.layernorm(inputs=sequence_output)
+        return (sequence_output,)
+
+class TFViTForImageClassification(keras.Model):
+    def __init__(self, *inputs, **kwargs):
+        super().__init__(*inputs, **kwargs)
+        self.vit = TFViTMainLayer()
+        self.classifier = keras.layers.Dense(N_LABELS)
+
+    def call(self, pixel_values, training=False):
+        outputs = self.vit(pixel_values, training=training)
+        sequence_output = outputs[0]
+        logits = self.classifier(inputs=sequence_output[:, 0, :])
+        return (logits,)</code></pre>
+
+
+
+<h3 class="wp-block-heading" id="7806">TensorFlow to PyTorch Conversion</h3>
+
+
+
+<p class="wp-block-paragraph" id="83a4">The conversion sequence appears in the code block below. As before, we validate the output of the resultant model as well as the number of trainable parameters.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python"># save weights of TensorFlow model
+tf_model.save_weights("model_weights.h5")
+
+import keras
+keras.config.set_backend("torch")
+
+from keras3_vit import TFViTForImageClassification as Keras3ViT
+keras3_model = Keras3ViT()
+
+# call model to initializate all layers
+keras3_model(torch_input, training=False)
+
+# load the weights from the TensorFlow model
+keras3_model.load_weights("model_weights.h5")
+
+# validate converted model
+assert isinstance(keras3_model, torch.nn.Module)
+
+keras3_model = keras3_model.to(DEVICE)
+keras3_model = keras3_model.eval()
+torch_output = keras3_model(torch_input, training=False)
+torch_output = torch_output[0].detach().cpu().numpy()
+print("Max diff:", np.max(np.abs(tf_output - torch_output)))
+
+num_pyt_params = sum([p.numel()
+                      for p in keras3_model.parameters()
+                      if p.requires_grad])
+print(f"Keras3 Trainable Parameters: {num_pyt_params:,}")</code></pre>
+
+
+
+<h3 class="wp-block-heading" id="e176">Training/Fine-tuning the Model</h3>
+
+
+
+<p class="wp-block-paragraph" id="9192">Contrary to the ONNX-converted model, the Keras3 model maintains the same structure and trainable parameters. This allows for resuming training and/or finetuning on the converted model. This can either be done within the <a href="https://keras.io/api/models/model_training_apis/" rel="noreferrer noopener" target="_blank">Keras3 training</a> framework or using a <a href="https://keras.io/guides/writing_a_custom_training_loop_in_torch/" rel="noreferrer noopener" target="_blank">standard PyTorch training loop</a>.</p>
+
+
+
+<h3 class="wp-block-heading" id="5519">Optimizing Model Layers</h3>
+
+
+
+<p class="wp-block-paragraph" id="a8f4">Contrary to the ONNX-converted model, the coherence of the Keras3 model definition allows for easily modifying and optimizing the layer implementations. In the code block below, we replace the existing attention mechanism with PyTorch’s highly efficient <a href="https://docs.pytorch.org/docs/stable/generated/torch.nn.functional.scaled_dot_product_attention.html" rel="noreferrer noopener" target="_blank">SDPA</a> operator.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">from torch.nn.functional import scaled_dot_product_attention as sdpa
+
+class TFViTSelfAttention(keras.layers.Layer):
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.num_attention_heads = ATTN_HEADS
+        self.attention_head_size = int(HIDDEN_SIZE / ATTN_HEADS)
+        self.all_head_size = ATTN_HEADS * self.attention_head_size
+        self.sqrt_att_head_size = math.sqrt(self.attention_head_size)
+        self.query = keras.layers.Dense(self.all_head_size,  name="query")
+        self.key = keras.layers.Dense(self.all_head_size, name="key")
+        self.value = keras.layers.Dense(self.all_head_size, name="value")
+
+    def transpose_for_scores(self, tensor, batch_size: int):
+        tensor = keras.ops.reshape(tensor, (batch_size, -1, ATTN_HEADS,
+                                            self.attention_head_size))
+        return keras.ops.transpose(tensor, [0, 2, 1, 3])
+
+    def call(self, hidden_states, training=False):
+        bs = hidden_states.shape[0]
+        mixed_query_layer = self.query(inputs=hidden_states)
+        mixed_key_layer = self.key(inputs=hidden_states)
+        mixed_value_layer = self.value(inputs=hidden_states)
+        query_layer = self.transpose_for_scores(mixed_query_layer, bs)
+        key_layer = self.transpose_for_scores(mixed_key_layer, bs)
+        value_layer = self.transpose_for_scores(mixed_value_layer, bs)
+        sdpa_output = sdpa(query_layer, key_layer, value_layer)
+        attention_output = keras.ops.transpose(sdpa_output,[0,2,1,3])
+        attention_output = keras.ops.reshape(attention_output,
+                                             (bs, -1, self.all_head_size))
+        return (attention_output,)</code></pre>
+
+
+
+<p class="wp-block-paragraph">We using the same benchmarking function from above to assess the impact of this optimization on the model’s runtime performance:</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">torch_infer_fn = get_torch_infer_fn(keras3_model)
+avg_time = benchmark(torch_infer_fn, torch_input)
+print(f"\Keras3 converted model average step time: {(avg_time):.4f}")</code></pre>
+
+
+
+<p class="wp-block-paragraph" id="6407">The results are captured in the table below:</p>
+
+
+
+<figure class="wp-block-image size-full"><img decoding="async" src="../Images/4aa1e3089d971e0e0c536a1a1bb84f88.png" alt="" class="wp-image-633965" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/11/3.webp"/><figcaption class="wp-element-caption">Keras3 Conversion Step Time Results (by Author)</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph" id="832b">Using the Keras3-based model conversion scheme, and applying the SDPA optimization, we are able to accelerate the model inference throughput by 22% compared to the original TensorFlow model.</p>
+
+
+
+<h3 class="wp-block-heading" id="d24a">Model Compilation</h3>
+
+
+
+<p class="wp-block-paragraph" id="721a">Another optimization we would like to apply is <a href="https://docs.pytorch.org/tutorials/intermediate/torch_compile_tutorial.html" rel="noreferrer noopener" target="_blank">PyTorch compilation</a>. Unfortunately (as of the time of this writing), PyTorch compilation in Keras3 is limited. In the case of our toy model, both our attempt to apply torch.compile directly to the model, as well as setting the <em>jit_compile</em> field of the Keras3 <a href="https://keras.io/api/models/model_training_apis/" rel="noreferrer noopener" target="_blank">Model.compile</a> function, failed. In both cases, the failure resulted from multiple recompilations that were triggered by the Keras3 internal machinery. While Keras3 grants access to the PyTorch ecosystem, its high-level abstraction might impose some limitations.</p>
+
+
+
+<h3 class="wp-block-heading" id="3331">Limitations</h3>
+
+
+
+<p class="wp-block-paragraph" id="9e90">Once again, we have a conversion scheme that works but has several limitations:</p>
+
+
+
+<ol class="wp-block-list">
+<li class="wp-block-list-item">The TensorFlow models must be Keras3-compatible. The amount of work this will require will depend on the details of your model implementation. It may require some <a href="https://keras.io/guides/making_new_layers_and_models_via_subclassing/" target="_blank" rel="noreferrer noopener">Keras layer customization</a>.</li>
+
+
+
+<li class="wp-block-list-item">While the resultant model is a torch.nn.Module, it is not a “pure” PyTorch model in the sense that it is comprised of Keras3 layers and includes a lot of additional Keras3 code. This may require some adaptations to our PyTorch tooling and could impose some restrictions, as we saw when we tried to apply PyTorch compilation.</li>
+
+
+
+<li class="wp-block-list-item">The solution relies on the health and maintenance of Keras3 and its support for the TensorFlow and PyTorch backends.</li>
+</ol>
+
+
+
+<h2 class="wp-block-heading" id="8da6">Summary</h2>
+
+
+
+<p class="wp-block-paragraph" id="644e">In this post we have proposed and assessed two methods for auto-conversion of legacy TensorFlow models to PyTorch. We summarize our findings in the following table.</p>
+
+
+
+<figure class="wp-block-image size-full"><img decoding="async" src="../Images/1dec92db7a806026b7116f65b68b41cc.png" alt="" class="wp-image-633967" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/11/4.webp"/><figcaption class="wp-element-caption">Comparison of Conversion Schemes (by Author)</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">Ultimately, the best approach, whether it be one of the methods discussed here, manual conversion, a solution based on generative AI, or the decision not to perform conversion at all, will greatly depend on the details of the model and the situation.</p>
+    
+</body>
+</html>

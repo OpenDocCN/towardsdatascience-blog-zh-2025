@@ -1,0 +1,597 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.1//EN"
+  "http://www.w3.org/TR/xhtml11/DTD/xhtml11.dtd">
+
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+<title>Why CrewAI’s Manager-Worker Architecture Fails — and How to Fix It</title>
+<link href="../Styles/Style.css" type="text/css" rel="stylesheet"/>
+</head>
+<body>
+<h1>Why CrewAI’s Manager-Worker Architecture Fails — and How to Fix It</h1>
+<blockquote>原文：<a href="https://towardsdatascience.com/why-crewais-manager-worker-architecture-fails-and-how-to-fix-it/">https://towardsdatascience.com/why-crewais-manager-worker-architecture-fails-and-how-to-fix-it/</a></blockquote>
+<p class="wp-block-paragraph"><mdspan datatext="el1764096085630" class="mdspan-comment">Multi-agent orchestration</mdspan> is one of the most promising applications of LLMs, and CrewAI has quickly become a popular framework for building agent teams. But one of its most important features—the hierarchical <em>manager-worker</em> process—simply does not function as <a href="https://docs.crewai.com/en/learn/hierarchical-process">documented</a>. In real workflows, the manager does not effectively coordinate agents; instead, CrewAI executes tasks sequentially, leading to incorrect reasoning, unnecessary tool calls, and extremely high latency. This issue has been highlighted in several online forums with no clear resolution.</p>
+
+
+
+<p class="wp-block-paragraph">In this article, I demonstrate <em>why</em> CrewAI’s hierarchical process fails, show the evidence from actual Langfuse traces, and provide a reproducible pathway to make the manager-worker pattern work reliably using custom prompting.</p>
+
+
+
+<h2 class="wp-block-heading">Multi-agent Orchestration</h2>
+
+
+
+<p class="wp-block-paragraph">Before we get into the details, let us understand what orchestration means in an agentic context. In simple terms, orchestration is managing and coordinating multiple inter-dependent tasks in a workflow. But have’nt workflow management tools (eg; RPA) been available forever to do just that? So what changed with LLMs?</p>
+
+
+
+<p class="wp-block-paragraph">The answer is the ability of LLMs to understand meaning and intent from natural language instructions, just as people in a team would. While earlier workflow tools were rule-based and rigid, with LLMs functioning as agents, the expectation is that they will be able to understand the intent of the user’s query, use reasoning to create a multi-step plan, infer the tools to be used, derive their inputs in the correct formats, and synthesize all the different intermediate results in a precise response to the user’s query. And the orchestration frameworks are meant to guide the LLM with appropriate prompts for planning, tool-calling, generating response etc.</p>
+
+
+
+<p class="wp-block-paragraph">Among the orchestration frameworks, CrewAI, with its natural language based definition of tasks, agents and crews depends the most on the LLM’s ability to understand language and manage workflows. While not as deterministic as LangGraph (since LLM outputs cannot be fully deterministic), it abstracts away most of the complexity of routing, error handling etc into simple, user-friendly constructs with parameters, which the user can tune for appropriate behavior. So it is a good framework for creating prototypes by product teams and even non-developers.</p>
+
+
+
+<p class="wp-block-paragraph"><em>Except that the manager-worker pattern does not work as intended…</em></p>
+
+
+
+<p class="wp-block-paragraph">To illustrate, let’s take a use-case to work with. And also evaluate the response based on the following criteria:</p>
+
+
+
+<ol style="list-style-type:lower-alpha" class="wp-block-list">
+<li class="wp-block-list-item">Quality of orchestration</li>
+
+
+
+<li class="wp-block-list-item">Quality of final response</li>
+
+
+
+<li class="wp-block-list-item">Explainability</li>
+
+
+
+<li class="wp-block-list-item">Latency and usage cost</li>
+</ol>
+
+
+
+<h2 class="wp-block-heading">Use Case</h2>
+
+
+
+<p class="wp-block-paragraph">Take the case where a team of customer support agents resolve technical or billing tickets. When a ticket comes, a triage agent categorizes the ticket, then assigns to the technical or billing support specialist for resolution. There is a Customer Support Manager who coordinates the team, delegates tasks and validates quality of response.</p>
+
+
+
+<p class="wp-block-paragraph">Together they will be solving queries such as:</p>
+
+
+
+<ol style="list-style-type:lower-alpha" class="wp-block-list">
+<li class="wp-block-list-item">Why is my laptop overheating?</li>
+
+
+
+<li class="wp-block-list-item">Why was I charged twice last month?</li>
+
+
+
+<li class="wp-block-list-item">My laptop is overheating and also, I was charged twice last month?</li>
+
+
+
+<li class="wp-block-list-item">My invoice amount is incorrect after system glitch?</li>
+</ol>
+
+
+
+<p class="wp-block-paragraph">The first query is purely technical, so only the technical support agent should be invoked by the manager, the second one is Billing only and the third and fourth ones require answers from both technical and billing agents.</p>
+
+
+
+<p class="wp-block-paragraph">Let’s build this team of CrewAI agents and see how well it works.</p>
+
+
+
+<figure class="wp-block-image aligncenter size-full"><img decoding="async" src="../Images/fdd0fa319183cd4c0b8608503c810668.png" alt="" class="wp-image-632193" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/11/Crew.png"/><figcaption class="wp-element-caption">Crew of Customer Support Agents</figcaption></figure>
+
+
+
+<h2 class="wp-block-heading">Hierarchical Process</h2>
+
+
+
+<p class="wp-block-paragraph">According to CrewAI documentation ,“<em>adopting a hierarchical approach allows for a clear hierarchy in task management, where a ‘manager’ agent coordinates the workflow, delegates tasks, and validates outcomes for streamlined and effective execution</em>. “ Also, the manager agent can be created in two ways, automatically by CrewAI or explicitly set by the user. In the latter case, you have more control over instructions to the manager agent. We will try both ways for our use case.</p>
+
+
+
+<h2 class="wp-block-heading">CrewAI Code</h2>
+
+
+
+<details class="wp-block-details is-layout-flow wp-block-details-is-layout-flow"><summary>Following is the code for the use case. I have used gpt-4o as the LLM and Langfuse for observability.</summary>
+<pre class="wp-block-prismatic-blocks"><code class="language-python">from crewai import Agent, Crew, Process, Task, LLM
+from dotenv import load_dotenv
+import os
+from observe import * # Langfuse trace
+
+load_dotenv()
+verbose = False
+max_iter = 4
+
+API_VERSION = os.getenv(API_VERSION')
+# Create your LLM
+llm_a = LLM(
+    model="gpt-4o",
+    api_version=API_VERSION,
+    temperature = 0.2,
+    max_tokens = 8000,
+)
+
+# Define the manager agent
+manager = Agent(
+    role="Customer Support Manager",
+    goal="Oversee the support team to ensure timely and effective resolution of customer inquiries. Use the tool to categorize the user query first, then decide the next steps.Syntesize responses from different agents if needed to provide a comprehensive answer to the customer.",
+    backstory=( """
+        You do not try to find an answer to the user ticket {ticket} yourself. 
+        You delegate tasks to coworkers based on the following logic:
+        Note the category of the ticket first by using the triage agent.
+        If the ticket is categorized as 'Both', always assign it first to the Technical Support Specialist, then to the Billing Support Specialist, then print the final combined response. Ensure that the final response answers both technical and billing issues raised in the ticket based on the responses from both Technical and Billing Support Specialists.
+        ELSE
+        If the ticket is categorized as 'Technical', assign it to the Technical Support Specialist, else skip this step.
+        Before proceeding further, analyse the ticket category. If it is 'Technical', print the final response. Terminate further actions.
+        ELSE
+        If the ticket is categorized as 'Billing', assign it to the Billing Support Specialist.
+        Finally, compile and present the final response to the customer based on the outputs from the assigned agents.
+        """
+    ),
+    llm = llm_a,
+    allow_delegation=True,
+    verbose=verbose,
+)
+
+# Define the triage agent
+triage_agent = Agent(
+    role="Query Triage Specialist",
+    goal="Categorize the user query into technical or billing related issues. If a query requires both aspects, reply with 'Both'.",
+    backstory=(
+        "You are a seasoned expert in analysing intent of user query. You answer precisely with one word: 'Technical', 'Billing' or 'Both'."
+    ),
+    llm = llm_a,
+    allow_delegation=False,
+    verbose=verbose,
+)
+
+# Define the technical support agent
+technical_support_agent = Agent(
+    role="Technical Support Specialist",
+    goal="Resolve technical issues reported by customers promptly and effectively",
+    backstory=(
+        "You are a highly skilled technical support specialist with a strong background in troubleshooting software and hardware issues. "
+        "Your primary responsibility is to assist customers in resolving technical problems, ensuring their satisfaction and the smooth operation of their products."
+    ),
+    llm = llm_a,
+    allow_delegation=False,
+    verbose=verbose,
+)
+
+# Define the billing support agent
+billing_support_agent = Agent(
+    role="Billing Support Specialist",
+    goal="Address customer inquiries related to billing, payments, and account management",
+    backstory=(
+        "You are an experienced billing support specialist with expertise in handling customer billing inquiries. "
+        "Your main objective is to provide clear and accurate information regarding billing processes, resolve payment issues, and assist with account management to ensure customer satisfaction."
+    ),
+    llm = llm_a,
+    allow_delegation=False,
+    verbose=verbose,
+)
+
+# Define tasks
+categorize_tickets = Task(
+    description="Categorize the incoming customer support ticket: '{ticket} based on its content to determine if it is technical or billing-related. If a query requires both aspects, reply with 'Both'.",
+    expected_output="A categorized ticket labeled as 'Technical' or 'Billing' or 'Both'. Do not be verbose, just reply with one word.",
+    agent=triage_agent,
+)
+
+resolve_technical_issues = Task(
+    description="Resolve technical issues described in the ticket: '{ticket}'",
+    expected_output="Detailed solutions provided to each technical issue.",
+    agent=technical_support_agent,
+)
+
+resolve_billing_issues = Task(
+    description="Resolve billing issues described in the ticket: '{ticket}'",
+    expected_output="Comprehensive responses to each billing-related inquiry.",
+    agent=billing_support_agent,
+)
+
+# Instantiate your crew with a custom manager and hierarchical process
+crew_q = Crew(
+    agents=[triage_agent, technical_support_agent, billing_support_agent],
+    tasks=[categorize_tickets, resolve_technical_issues, resolve_billing_issues],
+    # manager_llm = llm_a, # Uncomment for auto-created manager
+    manager_agent=manager, # Comment for auto-created manager
+    process=Process.hierarchical,
+    verbose=verbose,
+)</code></pre>
+</details>
+
+
+
+<p class="wp-block-paragraph">As is evident, the program reflects the team of human agents. Not only is there a manger, triage agent, technical and billing support agent, but the CrewAI objects such as Agent, Task and Crew are self-evident in their meaning and easy to visualise. Another observation is that there is very little python code and most of the reasoning, planning and behavior is natural language based which depends upon the ability of the LLM to derive meaning and intent from language, then reason and plan for the goal.</p>
+
+
+
+<p class="wp-block-paragraph">A CrewAI code therefore, scores high on ease of development. It is a low-code way of creating a flow quickly with most of the heavy-lifting of the workflow being done by the orchestration framework rather than the developer.</p>
+
+
+
+<h2 class="wp-block-heading">How well does it work?</h2>
+
+
+
+<p class="wp-block-paragraph">As we are testing the hierarchical process, the process parameter is set to <em>Process.hierarchical </em>in the Crew definition. We shall try different features of CrewAI as follows and measure performance:</p>
+
+
+
+<ol class="wp-block-list">
+<li class="wp-block-list-item">Manager agent auto-created by CrewAI</li>
+
+
+
+<li class="wp-block-list-item">Using our custom manager agent</li>
+</ol>
+
+
+
+<h3 class="wp-block-heading">1. Auto-created manager agent</h3>
+
+
+
+<p class="wp-block-paragraph"><em>Input query: Why is my laptop overheating?</em></p>
+
+
+
+<p class="wp-block-paragraph">Here is the Langfuse trace:</p>
+
+
+
+<figure class="wp-block-image size-full"><img decoding="async" src="../Images/72047a6be8032046b3db08d31e6f4756.png" alt="" class="wp-image-632204" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/11/Langfuse-1.png"/><figcaption class="wp-element-caption">Why is my laptop overheating?</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">The key observations are as follows:</p>
+
+
+
+<ol style="list-style-type:lower-alpha" class="wp-block-list">
+<li class="wp-block-list-item">First the output is <em>“Based on the provided context, it seems there is a misalignment between the nature of the issue (laptop overheating) and its categorization as a billing concern. To clarify the connection, it would be important to determine if the customer is requesting a refund for the laptop due to the overheating issue, disputing a charge related to the purchase or repair of the laptop, or seeking compensation for repair costs incurred due to the overheating…”</em> <strong>For a query that was obviously a technical issue, this is a poor response.</strong></li>
+
+
+
+<li class="wp-block-list-item">Why does it happen? The left panel shows that the execution first went to triage specialist, then to technical support and then strangely, to billing support specialist as well. The following graphic depicts this as well:</li>
+</ol>
+
+
+
+<figure class="wp-block-image aligncenter size-full"><img decoding="async" src="../Images/e2850ecb0fb741c67c0f4d13eb98e047.png" alt="" class="wp-image-632205" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/11/gr-1.png"/><figcaption class="wp-element-caption">Langfuse trace graph</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">Looking closely, we find that the triage specialist correctly identified the ticket as “Technical” and the technical support agent gave a great reply as follows:</p>
+
+
+
+<figure class="wp-block-image size-full"><img decoding="async" src="../Images/9eef9067e0d2974abe40d083b1112dd6.png" alt="" class="wp-image-632207" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/11/Langfuse-2.png"/><figcaption class="wp-element-caption">Technical support agent response</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">But then, instead of stopping and replying with the above as the response, the Crew Manager went to the Billing support specialist and tried to <em>find a non-existent billing issue in the purely technical user query.</em></p>
+
+
+
+<figure class="wp-block-image size-full"><img decoding="async" src="../Images/5b9345547ceb9318bd84505939cb879c.png" alt="" class="wp-image-632209" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/11/lf-3.png"/><figcaption class="wp-element-caption">Billing support agent response</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">This resulted in the Billing agent’s response overwriting the Technical agent’s response, with the Crew Manager doing a sub-optimal job of validating the quality of the final response against the user’s query.</p>
+
+
+
+<p class="wp-block-paragraph">Why did it happen?</p>
+
+
+
+<p class="wp-block-paragraph"><em>Because in the Crew task definition, I specified the tasks as categorize_tickets, resolve_technical_issues, resolve_billing_issues and although the process is supposed to be hierarchical, the Crew Manager does not perform any orchestration, instead simply executing all the tasks sequentially.</em></p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">crew_q = Crew(
+    agents=[triage_agent, technical_support_agent, billing_support_agent],
+    tasks=[categorize_tickets, resolve_technical_issues, resolve_billing_issues],
+    manager_llm = llm_a,
+    process=Process.hierarchical,
+    verbose=verbose,
+)</code></pre>
+
+
+
+<p class="wp-block-paragraph">If you now ask a billing-related query, it will appear to give a correct answer simply because the <em>resolve_billing_issues </em>is the last task in the sequence.</p>
+
+
+
+<p class="wp-block-paragraph">What about a query that requires both technical and billing support, such as <em>“My laptop is overheating and also I was charged twice last month</em>?” In this case also, the triage agent correctly categorizes the ticket type as “Both”, and the technical and billing agents give correct answers to their individual queries, but the manager is unable to combine all the responses into a coherent reply to user’s query. Instead, the final response only considers the billing response since that is the last task to be called in sequence.</p>
+
+
+
+<figure class="wp-block-image size-full"><img decoding="async" src="../Images/5dd544309f2ad08adddc9258e29d9b8e.png" alt="" class="wp-image-632430" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/11/lf9.png"/><figcaption class="wp-element-caption">Response to a combined query</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph"><strong>Latency and Usage</strong>: As can be seen from the above image, the Crew execution took almost 38 secs and spent 15759 tokens. The final output is only about 200 tokens. The rest of the tokens were spent in all the thinking, agent calling, generating intermediate responses etc – all to generate an unsatisfactory response at the end. The performance can be categorised as “<strong>Poor</strong>”.</p>
+
+
+
+<h4 class="wp-block-heading">Evaluation of this approach</h4>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">Quality of orchestration: <em>Poor</em></li>
+
+
+
+<li class="wp-block-list-item">Quality of final output: <em>Poor</em></li>
+
+
+
+<li class="wp-block-list-item">Explainability: <em>Poor</em></li>
+
+
+
+<li class="wp-block-list-item">Latency and Usage: <em>Poor</em></li>
+</ul>
+
+
+
+<p class="wp-block-paragraph">But perhaps, the above result is due to the fact that we relied on CrewAI’s built-in manager, which did not have our custom instructions. Therefore, in our next approach we replace the CrewAI automated manager with our custom Manager agent, which has detailed instructions on what to do in case of Technical, Billing or Both tickets.</p>
+
+
+
+<h3 class="wp-block-heading">2. Using Custom Manager Agent</h3>
+
+
+
+<p class="wp-block-paragraph">Our Customer Support Manager is defined with the following <em>very specific</em> instructions. Note that this requires some experimentation to get it working, and a generic manager prompt such as that mentioned in the CrewAI documentation will give the same erroneous results as the built-in manager agent above.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">    role="Customer Support Manager",
+    goal="Oversee the support team to ensure timely and effective resolution of customer inquiries. Use the tool to categorize the user query first, then decide the next steps.Syntesize responses from different agents if needed to provide a comprehensive answer to the customer.",
+    backstory=( """
+        You do not try to find an answer to the user ticket {ticket} yourself. 
+        You delegate tasks to coworkers based on the following logic:
+        Note the category of the ticket first by using the triage agent.
+        If the ticket is categorized as 'Both', always assign it first to the Technical Support Specialist, then to the Billing Support Specialist, then print the final combined response. Ensure that the final response answers both technical and billing issues raised in the ticket based on the responses from both Technical and Billing Support Specialists.
+        ELSE
+        If the ticket is categorized as 'Technical', assign it to the Technical Support Specialist, else skip this step.
+        Before proceeding further, analyse the ticket category. If it is 'Technical', print the final response. Terminate further actions.
+        ELSE
+        If the ticket is categorized as 'Billing', assign it to the Billing Support Specialist.
+        Finally, compile and present the final response to the customer based on the outputs from the assigned agents.
+        """</code></pre>
+
+
+
+<p class="wp-block-paragraph">And in the Crew definition, we use the custom manager instead of the built-in one:</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">crew_q = Crew(
+    agents=[triage_agent, technical_support_agent, billing_support_agent],
+    tasks=[categorize_tickets, resolve_technical_issues, resolve_billing_issues],
+    # manager_llm = llm_a,
+    manager_agent=manager,
+    process=Process.hierarchical,
+    verbose=verbose,
+)</code></pre>
+
+
+
+<h4 class="wp-block-heading">Let’s repeat the test cases</h4>
+
+
+
+<p class="wp-block-paragraph"><em>Input query: Why is my laptop overheating?</em></p>
+
+
+
+<p class="wp-block-paragraph">The trace is the following:</p>
+
+
+
+<figure class="wp-block-image size-full"><img decoding="async" src="../Images/587a92dcd1f26204f037810f4fa7e23a.png" alt="" class="wp-image-632215" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/11/lf-5.png"/><figcaption class="wp-element-caption">Why is my laptop overheating?</figcaption></figure>
+
+
+
+<figure class="wp-block-image aligncenter size-full is-resized"><img decoding="async" src="../Images/6c2444b6077a1559bfa4ee5eff177fcd.png" alt="" class="wp-image-632452" style="width:498px;height:auto" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/11/gr2.jpg"/><figcaption class="wp-element-caption">Graph of Why is my laptop overheating?</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">The most important observation is that now for this technical query, the flow did not go to the Billing support specialist agent. The manager correctly followed instructions, classified the query as technical and stopped execution once the Technical Support Specialist had generated its response. From the response preview displayed, it is evident that it is a good response for the user query. Also, the latency is 24 secs and token usage is 10k.</p>
+
+
+
+<p class="wp-block-paragraph"><em>Input query: Why was I charged twice last month?</em></p>
+
+
+
+<p class="wp-block-paragraph">The trace is as follows:</p>
+
+
+
+<figure class="wp-block-image size-full"><img decoding="async" src="../Images/e2d48dfa5063a0d03d8c1911faef6186.png" alt="" class="wp-image-632216" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/11/lf-6.png"/><figcaption class="wp-element-caption">Response to ‘Why was I charged twice last month?’</figcaption></figure>
+
+
+
+<figure class="wp-block-image aligncenter size-full is-resized"><img decoding="async" src="../Images/6507a29fd821b12d38e6f525e4dbdd84.png" alt="" class="wp-image-632455" style="width:462px;height:auto" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/11/gr3.jpg"/><figcaption class="wp-element-caption">Graph of Why was I charged twice last month?</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">As can be seen, the manager correctly skipped executing the Technical Support Specialist, although that was before the Billing agent in the Crew definition. Instead the response generated is of good quality from the Billing Support Specialist only. Latency is 16 secs and token usage <em>7,700 only</em></p>
+
+
+
+<p class="wp-block-paragraph"><em>Input query: My laptop is overheating and also, I was charged twice last month?</em></p>
+
+
+
+<p class="wp-block-paragraph">The trace shows the Manager executed both Technical and Billing support agents and provided a combined response.</p>
+
+
+
+<figure class="wp-block-image size-full"><img decoding="async" src="../Images/bc53f745915f0526b313274c91f4ccd0.png" alt="" class="wp-image-632217" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/11/lf-7.png"/><figcaption class="wp-element-caption">Response to multi-agent query</figcaption></figure>
+
+
+
+<details class="wp-block-details is-layout-flow wp-block-details-is-layout-flow"><summary>The response preview in the figure above does not show the full response, which is as follows, and combines responses from both support agents. Latency is 38 secs and token usage is 20k, which is commensurate with the multiple agents orchestration and the detailed response generated.</summary>
+<pre class="wp-block-prismatic-blocks"><code class="language-markdown">Dear Customer,
+
+Thank you for reaching out to us regarding the issues you are experiencing. We sincerely apologize for any inconvenience caused. Below are the detailed solutions to address your concerns:
+
+**1. Laptop Overheating Issue:**
+   - **Check for Proper Ventilation**: Ensure your laptop is placed on a hard, flat surface to allow proper airflow. Avoid using it on soft surfaces like beds or couches that can block the vents. Consider using a laptop cooling pad or stand with built-in fans to improve airflow.
+   - **Clean the Laptop's Vents and Fans**: Dust and debris can accumulate in the vents and fans, restricting airflow. Power off the laptop, unplug it, and use a can of compressed air to gently blow out dust from the vents. If you are comfortable, you can clean the internal fans and components more thoroughly, or take the laptop to a professional technician for internal cleaning.
+   - **Monitor Running Applications and Processes**: Open the Task Manager (Windows: Ctrl + Shift + Esc, macOS: Activity Monitor) and check for processes consuming high CPU or GPU usage. Close unnecessary applications or processes to reduce the load on the system.
+   - **Update Drivers and Software**: Update your operating system, drivers (especially graphics drivers), and any other critical software to the latest versions.
+   - **Check for Malware or Viruses**: Run a full system scan using a reputable antivirus program to detect and remove any malware.
+   - **Adjust Power Settings**: Adjust your power settings to "Balanced" or "Power Saver" mode (Windows: Control Panel &gt; Power Options, macOS: System Preferences &gt; Energy Saver).
+   - **Inspect the Laptop's Hardware**: If the laptop is still overheating, there may be an issue with the hardware, such as a failing fan or thermal paste that needs replacement. Consult a professional technician to inspect and replace the thermal paste or faulty hardware components if necessary.
+   - **Environmental Factors**: Operate the laptop in a cool, well-ventilated environment. Avoid using the laptop in direct sunlight or near heat sources.
+   - **Consider Upgrading Components**: If the laptop is older, consider upgrading components such as RAM or switching to an SSD to reduce the strain on the system and help with heat management.
+   - **Monitor Temperature Levels**: Install a temperature monitoring tool (e.g., HWMonitor, Core Temp, or Macs Fan Control) to keep track of the CPU and GPU temperatures. This can help identify if the laptop is consistently running at high temperatures and provide insights into when the overheating occurs.
+
+If the problem persists after trying all the above solutions, please contact the laptop manufacturer’s support team or a certified repair technician for further assistance.
+
+**2. Duplicate Billing Issue:**
+   - **Verification of Account Details**: I reviewed your account information to ensure accuracy and confirmed that the account is active and matches the reported issue.  
+   - **Billing Records Check**: Upon examining the billing records for last month, I identified two identical charges processed on the same day. This confirms the duplicate billing issue.  
+   - **Payment Method Details**: I verified the payment method used for the transactions and confirmed that both charges were processed using the same payment method.  
+   - **Resolution**:  
+       - Since the duplicate charge was confirmed, I have initiated a refund for the second transaction. The refund will be processed back to the original payment method within 5-7 business days.  
+       - Additionally, I have applied a credit to your account as a gesture of goodwill for the inconvenience caused.  
+   - **Customer Communication**: You will receive an email or phone call from us to inform you of the resolution, including the refund timeline and the applied credit.  
+
+We sincerely apologize for the inconvenience caused by these issues. Please let us know if you need further assistance or have any additional questions. We are here to help
+</code></pre>
+</details>
+
+
+
+<p class="wp-block-paragraph">And our final, more nuanced query is as follows:</p>
+
+
+
+<p class="wp-block-paragraph"><em>Input query: My invoice amount is incorrect after system glitch</em>?</p>
+
+
+
+<p class="wp-block-paragraph">The trace shows that the query was correctly categorised as ‘Both’, requiring responses from Technical and Billing agents and a combined response was provided. Latency is 24 secs and tokens used are 12k.</p>
+
+
+
+<figure class="wp-block-image size-full"><img decoding="async" src="../Images/9e15ede422d796f2bef4b79e323181ec.png" alt="" class="wp-image-632220" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/11/lf8.png"/><figcaption class="wp-element-caption">Response to multi-agent query</figcaption></figure>
+
+
+
+<details class="wp-block-details is-layout-flow wp-block-details-is-layout-flow"><summary>The full response is included here:</summary>
+<pre class="wp-block-prismatic-blocks"><code class="language-markdown">Thank you for bringing this issue to our attention. Based on the technical investigation, here are the steps we are taking to resolve the system glitch that caused the incorrect invoice amount:
+
+1. We have verified the details of the incorrect invoice amount and identified the issue in the system.
+2. Our technical team has analyzed the system logs and reviewed the invoice calculation logic to pinpoint the root cause of the error.
+3. The necessary fixes have been implemented to address the glitch, and the system has been thoroughly tested to ensure the issue is resolved.
+4. A corrected invoice has been generated, and we have verified its accuracy.
+
+Additionally, here’s the complete resolution for the billing issue related to the incorrect invoice amount caused by the system glitch:
+
+1. **Corrected Invoice Verification**: The technical team has resolved the system glitch and generated a corrected invoice. The corrected invoice has been personally verified to ensure its accuracy, including cross-checking the amounts, dates, and any applicable charges or credits.
+
+2. **Customer Communication**: We will promptly notify you about the resolution of the issue. This communication includes:
+   - An apology for the inconvenience caused by the incorrect invoice.
+   - Confirmation that the system glitch has been resolved.
+   - Assurance that the corrected invoice has been thoroughly reviewed for accuracy.
+   - A copy of the corrected invoice for your records.
+
+3. **Additional Steps Taken**: To prevent similar issues in the future, the technical team has implemented measures to ensure system stability and accuracy in invoice generation.
+
+4. **Account Adjustment (if applicable)**: If the incorrect invoice resulted in any overpayment or underpayment, the necessary adjustments will be made to your account. This includes issuing a refund for any overpayment or providing clear instructions for settling any outstanding balance.
+
+5. **Follow-Up**: We are here to assist you with any further questions or concerns regarding your account or billing. Please do not hesitate to reach out to us, and we will be happy to help. For your convenience, we have provided direct contact information for further communication.
+
+We sincerely apologize for any inconvenience this may have caused and assure you that we are taking steps to prevent similar issues in the future. Thank you for your understanding and patience.
+</code></pre>
+</details>
+
+
+
+<h4 class="wp-block-heading">Evaluation of this approach</h4>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">Quality of orchestration: <strong>Good</strong></li>
+
+
+
+<li class="wp-block-list-item">Quality of final output: <strong>Good</strong></li>
+
+
+
+<li class="wp-block-list-item">Explainability: <strong>Good </strong>(we understand why it did what it did)</li>
+
+
+
+<li class="wp-block-list-item">Latency and Usage: <strong>Fair </strong>(commensurate with the complexity of the output)</li>
+</ul>
+
+
+
+<h2 class="wp-block-heading">Takeaway</h2>
+
+
+
+<p class="wp-block-paragraph">In summary, the hierarchical Manager–Worker pattern in CrewAI does not function as documented. The core orchestration logic is weak; instead of allowing the manager to selectively delegate tasks, CrewAI executes all tasks sequentially, causing incorrect agent invocation, overwritten outputs, and inflated latency/token usage. Why it failed comes down to the framework’s internal routing—hierarchical mode does not enforce conditional branching or true delegation, so the final response is effectively determined by whichever task happens to run last. The fix is introducing a custom manager agent with explicit, step-wise instructions: it uses the triage result, conditionally calls only the required agents, synthesizes their outputs, and terminates execution at the right point—restoring correct routing, improving output quality, and significantly optimising token costs.</p>
+
+
+
+<h2 class="wp-block-heading">Conclusion</h2>
+
+
+
+<p class="wp-block-paragraph">CrewAI,  in the spirit of keeping the LLM at the center of orchestration, depends upon it for most of the heavy-lifting of orchestration, utilising user prompts combined with detailed scaffolding prompts embedded in the framework. Unlike LangGraph and AutoGen, this approach sacrifices determinism for developer-friendliness. And sometimes results in unexpected behavior for critical features such as the manager-worker pattern, crucial for many real-life use cases. This article attempts to demonstrate a pathway for achieving the desired orchestration for this pattern using careful prompting. In future articles, I intend to explore more features for CrewAI, LangGraph and others for their applicability in practical use cases.</p>
+
+
+
+<p class="wp-block-paragraph">You can use CrewAI to design an interactive conversational assistant on a document store and further make the responses truly multimodal. Refer my articles on <strong><a href="https://towardsdatascience.com/do-you-really-need-graphrag-a-practitioners-guide-beyond-the-hype/">GraphRAG Design</a> and <a href="https://towardsdatascience.com/building-a-multimodal-rag-with-text-images-tables-from-sources-in-response/">Multimodal RAG</a>.</strong></p>
+
+
+
+<p class="wp-block-paragraph"><em>Connect with me and share your comments at <a href="http://www.linkedin.com/in/partha-sarkar-lets-talk-AI" target="_blank" rel="noreferrer noopener">www.linkedin.com/in/partha-sarkar-lets-talk-AI</a></em></p>
+
+
+
+<p class="wp-block-paragraph"><sub>All images in this article drawn by me or generated using Copilot or Langfuse. Code shared is written by me.</sub></p>
+
+
+
+<p class="wp-block-paragraph"/>
+    
+</body>
+</html>

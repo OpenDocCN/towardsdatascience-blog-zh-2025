@@ -1,0 +1,415 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.1//EN"
+  "http://www.w3.org/TR/xhtml11/DTD/xhtml11.dtd">
+
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+<title>How to Select the 5 Most Relevant Documents for AI Search</title>
+<link href="../Styles/Style.css" type="text/css" rel="stylesheet"/>
+</head>
+<body>
+<h1>How to Select the 5 Most Relevant Documents for AI Search</h1>
+<blockquote>原文：<a href="https://towardsdatascience.com/how-to-select-the-5-most-relevant-documents-for-ai-search/">https://towardsdatascience.com/how-to-select-the-5-most-relevant-documents-for-ai-search/</a></blockquote>
+<p class="wp-block-paragraph"><mdspan datatext="el1758219366192" class="mdspan-comment">In this article</mdspan>, I discuss a specific step of the RAG pipeline: The document retrieval step. This step is critical for any RAG system’s performance, considering that without fetching the most relevant documents, it’s challenging for an LLM to correctly answer the user’s questions. I’ll discuss the traditional approach to fetching the most relevant documents, some techniques to improve it, and the benefits you’ll see from better document retrieval in your RAG pipeline.</p>
+
+
+
+<p class="wp-block-paragraph">As per my last article on <a href="https://towardsdatascience.com/how-to-enrich-llm-context-to-significantly-enhance-capabilities/">Enriching LLM Context with Metadata</a>, I’ll write my main goal for this article:</p>
+
+
+
+<blockquote class="wp-block-quote is-layout-flow wp-block-quote-is-layout-flow">
+<p class="wp-block-paragraph"><strong>My goal </strong>for this article is to to highlight how you can fetch and filter the most relevant documents for your AI search.</p>
+</blockquote>
+
+
+
+<figure class="wp-block-image size-large"><img decoding="async" src="../Images/143ac54515e2c37160d1921d4ad7f67f.png" alt="" class="wp-image-621393" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/09/image-212-1024x458.png"/><figcaption class="wp-element-caption">This figure showcases a traditional RAG pipeline. You start with the user query, which you encode using an embedding model. You then compare this embedding to the precomputed embedding of the entire document corpus. Usually, the documents are split into chunks, with some overlap between them, though some systems also just work with entire documents. After the embedding similarity is calculated, you only keep the top K most relevant documents, where K is a number you choose yourself, usually a number between 10 and 20. The step of fetching the most relevant documents given the semantic similarity is the topic of today’s article. After fetching the most relevant documents, you feed them into an LLM along with the user query, and the LLM finally returns a response. Image by the author.</figcaption></figure>
+
+
+
+<h2 class="wp-block-heading">Table of contents</h2>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item"><a href="#Why-is-optimal-document-retrieval-important?">Why is optimal document retrieval important?</a></li>
+
+
+
+<li class="wp-block-list-item"><a href="#Traditional-approaches">Traditional approaches</a>
+<ul class="wp-block-list">
+<li class="wp-block-list-item"><a href="#Embedding-similarity">Embedding similarity</a></li>
+
+
+
+<li class="wp-block-list-item"><a href="#Keyword-search">Keyword search</a></li>
+</ul>
+</li>
+
+
+
+<li class="wp-block-list-item"><a href="#Techniques-to-fetch-more-relevant-documents">Techniques to fetch more relevant documents</a>
+<ul class="wp-block-list">
+<li class="wp-block-list-item"><a href="#Recall:-Fetch-more-of-the-relevant-documents">Recall: Fetch more of the relevant documents</a>
+<ul class="wp-block-list">
+<li class="wp-block-list-item"><a href="#Contextual-retrieval">Contextual retrieval</a></li>
+
+
+
+<li class="wp-block-list-item"><a href="#Fetching-more-chunks">Fetching more chunks</a></li>
+
+
+
+<li class="wp-block-list-item"><a href="#Reranking-for-recall">Reranking for recall</a></li>
+</ul>
+</li>
+
+
+
+<li class="wp-block-list-item"><a href="#Precision:-Filter-away-irrelevant-documents">Precision: Filter away irrelevant documents</a>
+<ul class="wp-block-list">
+<li class="wp-block-list-item"><a href="#Reranking-for-precision">Reranking for precision</a></li>
+
+
+
+<li class="wp-block-list-item"><a href="#LLM-verification">LLM verification</a></li>
+</ul>
+</li>
+</ul>
+</li>
+
+
+
+<li class="wp-block-list-item"><a href="#Benefits-of-improving-document-retrieval">Benefits of improving document retrieval</a></li>
+
+
+
+<li class="wp-block-list-item"><a href="#Summary">Summary</a></li>
+</ul>
+
+
+
+<h2 class="wp-block-heading" id="Why-is-optimal-document-retrieval-important?">Why is optimal document retrieval important?</h2>
+
+
+
+<p class="wp-block-paragraph">It’s important to truly understand why the document fetching step is so critical to any RAG pipeline. To understand this, you must also have a general outline of the flow in a RAG pipeline:</p>
+
+
+
+<ol class="wp-block-list">
+<li class="wp-block-list-item">The user enters their query</li>
+
+
+
+<li class="wp-block-list-item">The query is embedded, and you calculate embedding similarity between the query and each individual document (or chunk of document)</li>
+
+
+
+<li class="wp-block-list-item">We fetch the most relevant documents based on embedding similarity</li>
+
+
+
+<li class="wp-block-list-item">The most relevant documents (or chunks) are fed into an LLM, and it’s prompted to answer the user question given the provided chunks</li>
+</ol>
+
+
+
+<figure class="wp-block-image size-large"><img decoding="async" src="../Images/b0fbac7b43d8d2bed9fae4df9f46243b.png" alt="" class="wp-image-621406" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/09/image-213-1024x445.png"/><figcaption class="wp-element-caption">This figure highlights the concept of embedding similarity. On the left side, you have the user query, with “Summarize the lease agreement”. This query is embedded into the vector you see below the text. Furthermore, in the top middle, you have the available document corpus, which in this instance is four documents, all of which have precomputed embeddings. We then calculate the similarity between the query embedding and each of the documents, and come out with a similarity. In this example, K=2, so we feed the two most relevant documents to our LLM for question answering. Image by the author.</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">Now there are several aspects of the pipeline which is important. Elements such as:</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">Which embedding model do you utilize</li>
+
+
+
+<li class="wp-block-list-item">Which LLM model do you use</li>
+
+
+
+<li class="wp-block-list-item">How many documents (or chunks) do you fetch</li>
+</ul>
+
+
+
+<p class="wp-block-paragraph">However, I would argue that there is likely no aspect more important than the selection of documents. This is because without the correct documents, it doesn’t matter how good you’re LLM is, or how many chunks you fetch, the answer is most likely to be incorrect.</p>
+
+
+
+<p class="wp-block-paragraph">The model will probably work with a slightly worse embedding model or a slightly older LLM. However, if you don’t fetch the correct documents, you’re RAG pipeline will fail. </p>
+
+
+
+<h2 class="wp-block-heading" id="Traditional-approaches">Traditional approaches</h2>
+
+
+
+<p class="wp-block-paragraph">I’ll first understand some traditional approaches that are used today, mainly using embedding similarity or keyword search.</p>
+
+
+
+<h3 class="wp-block-heading" id="Embedding-similarity">Embedding similarity</h3>
+
+
+
+<p class="wp-block-paragraph">Using embedding similarity to fetch the most relevant documents is the go-to approach today. This is a solid approach that is decent in most use cases. RAG with embedding similarity document retrieval is exactly as I described above.</p>
+
+
+
+<h3 class="wp-block-heading" id="Keyword-search">Keyword search</h3>
+
+
+
+<p class="wp-block-paragraph">Keyword search is also commonly used to fetch relevant documents. Traditional approaches, such as TF-IDF or BM25, are still used today with success. However, keyword search also has its weaknesses. For example, it only fetches documents based on an exact match, which introduces issues when an exact match is not possible.</p>
+
+
+
+<p class="wp-block-paragraph">Thus, I want to discuss some other techniques you can use to improve your document retrieval step.</p>
+
+
+
+<h2 class="wp-block-heading" id="Techniques-to-fetch-more-relevant-documents">Techniques to fetch more relevant documents</h2>
+
+
+
+<p class="wp-block-paragraph">In this section, I will discuss some more advanced techniques to fetch the most relevant documents. I’ll divide the section into two. The first section will cover optimizing document retrieval for recall, referring to fetching as many of the relevant documents as possible from the corpus of available documents. The other subsection discusses how to optimize for precision. This means ensuring that the documents you fetch are actually correct and relevant for the user query.</p>
+
+
+
+<h3 class="wp-block-heading" id="Recall:-Fetch-more-of-the-relevant-documents">Recall: Fetch more of the relevant documents</h3>
+
+
+
+<p class="wp-block-paragraph">I’ll discuss the following techniques:</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">Contextual retrieval</li>
+
+
+
+<li class="wp-block-list-item">Fetching more chunks</li>
+
+
+
+<li class="wp-block-list-item">Reranking</li>
+</ul>
+
+
+
+<p class="wp-block-paragraph" id="Contextual-retrieval"><strong>Contextual retrieval</strong></p>
+
+
+
+<figure class="wp-block-image size-full"><img decoding="async" src="../Images/403564bca0d39ab0987c6eb9f0f7cfd7.png" alt="" class="wp-image-621344" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/09/image-210.png"/><figcaption class="wp-element-caption">This figure highlights the pipeline for contextual retrieval. The pipeline contains similar elements to a traditional RAG pipeline with the user prompt, the vector database (DB), and prompting the LLM with the top K most relevant chunks. However, contextual retrieval further introduces a few new elements. First is the BM25 index, where all documents (or chunks) are indexed for BM25 search. Whenever a search is performed, we can then quickly index the query and fetch the most relevant documents according to BM25. We then keep the top K most relevant documents from both BM25 and semantic similarity (vector DB), and combine these embeddings. Finally, we, as usual, feed the most relevant documents into the LLM along with the user query, and receive a response. Image by the author.</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph"><a href="https://www.anthropic.com/engineering/contextual-retrieval">Contextual retrieval</a> is a technique introduced by Anthropic in September 2024. Their article covers two topics: Adding context to document chunks and combining keyword search (BM25) with semantic search to fetch relevant documents.</p>
+
+
+
+<p class="wp-block-paragraph">To add context to documents, they take each document chunk and prompt an LLM, given the chunk and the entire document, to rewrite the chunk to include both information from the given chunk and relevant context from the entire document.</p>
+
+
+
+<p class="wp-block-paragraph">For example, if you have a document divided into two chunks. Where chunk one includes important metadata such as an address, date, location, and time, and the other chunk contains information about a lease agreement. The LLM might rewrite the second chunk to include both the lease agreement and the most relevant part of the first chunk, which in this case is the address, location, and date. </p>
+
+
+
+<p class="wp-block-paragraph">Anthropic also discusses combining semantic search and keyword search in their article, essentially fetching documents with both techniques, and using a prioritized approach to combine the documents retrieved from each technique.</p>
+
+
+
+<p class="wp-block-paragraph" id="Fetching-more-chunks"><strong>Fetching more chunks</strong></p>
+
+
+
+<p class="wp-block-paragraph">A simpler approach to fetch more of the relevant documents is to simply fetch more chunks. The more chunks you fetch, the higher your likelihood of fetching the relevant chunks is. However, this has two main downsides:</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">You’ll likely get more irrelevant chunks as well (impacting recall)</li>
+
+
+
+<li class="wp-block-list-item">You’ll increase the amount of tokens you feed to your LLM, which may negatively impact the LLM’s output quality</li>
+</ul>
+
+
+
+<p class="wp-block-paragraph" id="Reranking-for-recall"><strong>Reranking for recall</strong></p>
+
+
+
+<p class="wp-block-paragraph">Rereanking is also a powerful technique, which can be used to increase precision and recall when fetching relevant documents to a user query. When fetching documents based on semantic similarity, you’ll assign a similarity score to all chunks, and typically only keep the top K most similar chunks (K is usually a number between 10 and 20, but it varies for different applications). This means that a reranker should attempt to put the relevant documents within the K most relevant documents, while keeping irrelevant documents out of the same list. I think Qwen Reranker is a good model; however, there are also many other rerankers out there.</p>
+
+
+
+<h3 class="wp-block-heading" id="Precision:-Filter-away-irrelevant-documents">Precision: Filter away irrelevant documents</h3>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">Reranking</li>
+
+
+
+<li class="wp-block-list-item">LLM verification</li>
+</ul>
+
+
+
+<p class="wp-block-paragraph" id="Reranking-for-precision"><strong>Reranking for precision</strong></p>
+
+
+
+<p class="wp-block-paragraph">As discussed in the last section on recall, rerankers can also be used to improve precision. Rerankers will increase recall by adding relevant documents into the top K list of most relevant documents. On the other side, rerankers will improve precision, by ensuring that the irrelevant documents stay out of the top K most relevant documents list. </p>
+
+
+
+<p class="wp-block-paragraph" id="LLM-verification"><strong>LLM verification</strong></p>
+
+
+
+<p class="wp-block-paragraph">Utilizing LLM to judge chunk (or document) relevance is also a powerful technique to filter away irrelevant chunks. You can simply create a function like below:</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">def is_relevant_chunk(chunk_text: str, user_query: str) -&gt; bool:
+    """
+    Verify if the chunk text is relevant to the user query
+    """
+
+    prompt = f"""
+    Given the provided user query, and chunk text, determine whether the chunk text is relevant to answer the user query.
+    Return a json response with {
+        "relevant": bool
+    }
+    &lt;user_query&gt;{user_query}&lt;/user_query&gt;
+    &lt;chunk_text&gt;{chunk_text}&lt;/chunk_text&gt;
+    """
+    return llm_client.generate(prompt)</code></pre>
+
+
+
+<p class="wp-block-paragraph">You then feed each chunk (or document) through this function, and only keep the chunks or documents that are judged as relevant by the LLM.</p>
+
+
+
+<p class="wp-block-paragraph">This technique has two main downsides:</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">LLM cost</li>
+
+
+
+<li class="wp-block-list-item">LLM response time</li>
+</ul>
+
+
+
+<p class="wp-block-paragraph">You’ll be sending a lot of LLM API calls, which will inevitably incur a significant cost. Furthermore, sending so many queries will take time, which adds delay to your RAG pipeline. You should balance this with the need for rapid responses to the users.</p>
+
+
+
+<h2 class="wp-block-heading" id="Benefits-of-improving-document-retrieval">Benefits of improving document retrieval</h2>
+
+
+
+<p class="wp-block-paragraph">There are numerous benefits to improving the document retrieval step in your RAG pipeline. Some examples are:</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">Better LLM question answering performance </li>
+
+
+
+<li class="wp-block-list-item">Less hallucinations</li>
+
+
+
+<li class="wp-block-list-item">More often able to correctly answer users’ queries</li>
+
+
+
+<li class="wp-block-list-item">Essentially, it makes the LLMs’ job easier</li>
+</ul>
+
+
+
+<p class="wp-block-paragraph">Overall, the ability of your question answering model will increase in terms of the number of successfully answered user queries. This is the metric I recommend scoring your RAG system after, and you can read more about LLM system evaluations in my article on <a href="https://eivindkjosbakken.com/2025/09/14/how-to-evaluate-5-million-documents-with-automatic-llm-evaluations/">Evaluating 5 Million Documents with Automatic Evals</a>.</p>
+
+
+
+<p class="wp-block-paragraph">Fewer hallucinations are also an incredibly important factor. Hallucinations are one of the most significant issues we are facing with LLMs. They are so detrimental because they lower the users’ trust in the question-answer system, which makes them less likely to continue using your application. However, ensuring the LLM both receives the relevant documents (precision), and minimizes the amount of irrelevant documents (recall), is valuable to minimize the amount of hallucinations the RAG system produces. </p>
+
+
+
+<p class="wp-block-paragraph">Less irrelevant documents (precision), also avoids the problems of <a href="https://eval.16x.engineer/blog/llm-context-management-guide">context bloat</a> (too much noise in the context), or even <a href="https://www.dbreunig.com/2025/06/22/how-contexts-fail-and-how-to-fix-them.html">context poisoning</a> (incorrect information provided in the documents).</p>
+
+
+
+<h2 class="wp-block-heading" id="Summary">Summary</h2>
+
+
+
+<p class="wp-block-paragraph">In this article, I’ve discussed how you can improve the document retrieval step of your RAG pipeline. I started off discussing how I believe the document retrieval step is the most significant part of the RAG pipeline, and you should spend time optimizing this step. Furthermore, I discussed how traditional RAG pipelines fetch relevant documents through semantic search and keyword search. Continuing, I discussed techniques you can utilize to improve both the precision and recall of retrieved documents, with techniques such as contextual retrieval and LLM chunk verification.</p>
+
+
+
+<p class="wp-block-paragraph"/>
+
+
+
+<p class="wp-block-paragraph"><strong>👉 My free eBook and Webinar:</strong></p>
+
+
+
+<p class="wp-block-paragraph">📚 <a href="https://eivindkjosbakken.com/ebook">Get my free Vision Language Models ebook</a></p>
+
+
+
+<p class="wp-block-paragraph">💻 <a href="https://www.eivindkjosbakken.com/webinar">My webinar on Vision Language Models</a></p>
+
+
+
+<p class="wp-block-paragraph"/>
+
+
+
+<p class="wp-block-paragraph"><strong>👉 Find me on socials:</strong></p>
+
+
+
+<p class="wp-block-paragraph">📩 <a href="https://eivindkjosbakken.com/newsletter">Subscribe to my newsletter</a></p>
+
+
+
+<p class="wp-block-paragraph">🧑‍💻 <a href="https://eivindkjosbakken.com/">Get in touch</a></p>
+
+
+
+<p class="wp-block-paragraph">🔗 <a href="https://www.linkedin.com/in/eivind-kjosbakken/">LinkedIn</a></p>
+
+
+
+<p class="wp-block-paragraph">🐦 <a href="https://x.com/EivindKjos">X / Twitter</a></p>
+
+
+
+<p class="wp-block-paragraph">✍️ <a href="https://oieivind.medium.com/">Medium</a></p>
+    
+</body>
+</html>

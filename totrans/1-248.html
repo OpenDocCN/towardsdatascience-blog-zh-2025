@@ -1,0 +1,893 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.1//EN"
+  "http://www.w3.org/TR/xhtml11/DTD/xhtml11.dtd">
+
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+<title>Building Video Game Recommender Systems with FastAPI, PostgreSQL, and Render: Part 1</title>
+<link href="../Styles/Style.css" type="text/css" rel="stylesheet"/>
+</head>
+<body>
+<h1>Building Video Game Recommender Systems with FastAPI, PostgreSQL, and Render: Part 1</h1>
+<blockquote>原文：<a href="https://towardsdatascience.com/building-video-game-recommender-systems-with-fastapi-postgresql-and-render-part-1/">https://towardsdatascience.com/building-video-game-recommender-systems-with-fastapi-postgresql-and-render-part-1/</a></blockquote>
+<h2 class="wp-block-heading">Introduction</h2>
+
+
+
+<p class="wp-block-paragraph" id="882d"><mdspan datatext="el1758671252006" class="mdspan-comment">Recommender systems</mdspan> enable an application to generate intelligent suggestions for a user, effectively sorting relevant content out from the rest. In this article, we build and deploy a dynamic video game recommender system leveraging PostgreSQL, FastAPI, and Render to recommend new games for a user based on those they’ve interacted with. The intent is to provide a clear example of how a standalone recommender system can be constructed, which could then be tied into a front-end system or other application.</p>
+
+
+
+<p class="wp-block-paragraph" id="882d">For this project, we use video game data accessible from Steams API but this could easily be replaced by whatever product data you’re interested in, the key steps will be the same. We’ll cover how to store this data in a Database, vectorize the game Tags, generate similarity scores based on the games a user has interacted with, and return a series of relevant recommendations. At the end of this article, we’ll have this recommender system deployed as a Web Application with FastAPI such that whenever a user interacts with a new Game, we can dynamically generate and store a new set of recommendations for that user.</p>
+
+
+
+<p class="wp-block-paragraph" id="c084">The following tools will be used:</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">PostgreSQL</li>
+
+
+
+<li class="wp-block-list-item">FastAPI</li>
+
+
+
+<li class="wp-block-list-item">Docker</li>
+
+
+
+<li class="wp-block-list-item">Render</li>
+</ul>
+
+
+
+<p class="wp-block-paragraph" id="fc4c">Those just interested in the GitHub repository can find it <a href="https://github.com/pinstripezebra/recommender_system" rel="noreferrer noopener" target="_blank">here</a>.</p>
+
+
+
+<h2 class="wp-block-heading">Table of Contents</h2>
+
+
+
+<p class="wp-block-paragraph" id="35a4">Due to the length of this project, it’s divided into two articles. The first portion covers the setup and theory behind this project (steps 1–5 shown below), and the second part covers deploying it. If you’re looking for the second part it’s located <a href="https://towardsdatascience.com/building-a-video-game-recommender-system-with-fastapi-postgresql-and-render-part-2">here</a>.</p>
+
+
+
+<h2 class="wp-block-heading">Part 1</h2>
+
+
+
+<ol class="wp-block-list">
+<li class="wp-block-list-item"><a href="#test" data-type="internal" data-id="#test">Dataset Overview</a></li>
+
+
+
+<li class="wp-block-list-item"><a href="#architecture">Overall System Architecture</a></li>
+
+
+
+<li class="wp-block-list-item"><a href="#database" data-type="internal" data-id="#database">Database Setup</a></li>
+
+
+
+<li class="wp-block-list-item"><a href="#fastapi" data-type="internal" data-id="#fastapi">FastAPI Setup</a><br/>– Models<br/>– Routes</li>
+
+
+
+<li class="wp-block-list-item"><a href="#similarity-pipeline" data-type="internal" data-id="#similarity">Building Similarity Pipeline</a></li>
+</ol>
+
+
+
+<h2 class="wp-block-heading"><a href="https://towardsdatascience.com/building-a-video-game-recommender-system-with-fastapi-postgresql-and-render-part-2">Part 2</a>:</h2>
+
+
+
+<ol class="wp-block-list">
+<li class="wp-block-list-item">Deploying a PostgreSQL database on Render</li>
+
+
+
+<li class="wp-block-list-item">Deploying a FastAPI app as a Render Web Application<br/>– Dockerizing our application<br/>– Pushing Docker Image to DockerHub<br/>– Pulling from DockerHub to Render</li>
+</ol>
+
+
+
+<h2 class="wp-block-heading" id="test">Dataset Overview</h2>
+
+
+
+<p class="wp-block-paragraph" id="ecd3">The dataset for this project contains data for the top ~2000 games from the <a href="https://partner.steamgames.com/doc/home">steamworks API</a>. This data is free and licensed for personal and commercial use, subject to the terms of service, there is a 200 requests/5 minute rate limit that resulted in us working with only a subset of the data. The terms of service can be found <a href="https://steamcommunity.com/dev/apiterms" data-type="link" data-id="https://steamcommunity.com/dev/apiterms">here</a>.</p>
+
+
+
+<p class="wp-block-paragraph" id="98c6">An overview of the games dataset is shown below. Most of the fields are relatively self-descriptive; the key thing to note is that the unique product identifier is appid. In addition to this dataset, we also have several additional tables that we’ll detail below; the most important one for our recommender system is a game tags table, which contains the appid values mapped to each tag associated with the game (strategy, RPG, card game, etc.). These were drawn from the categories field shown in the Data Overview and then pivoted to create the game_tags table so that there’s a unique row for each appip:category combination.</p>
+
+
+
+<figure class="wp-block-image size-full"><img decoding="async" src="../Images/0e466cf076118de9764388a31e059369.png" alt="" class="wp-image-610491" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/07/image-219.png"/><figcaption class="wp-element-caption">Figure 2: Dataset Overview</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">For a more detailed overview of the structure of our project, see the diagram below. </p>
+
+
+
+<figure class="wp-block-image aligncenter size-full"><img decoding="async" src="../Images/e1131084870ccc014d7266c856a23ebd.png" alt="" class="wp-image-609069" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/07/image-129.png"/><figcaption class="wp-element-caption">Figure 3: Project File Structure</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">Now we’ll provide a quick overview of the architecture of this project and then dive into how to populate our database.<a href="https://medium.com/new-story?source=post_page---top_nav_layout_nav-----------------------------------------"/></p>
+
+
+
+<h2 class="wp-block-heading" id="architecture">Architecture</h2>
+
+
+
+<p class="wp-block-paragraph" id="8748">For our recommender system system, we’ll use a PostgreSQL database with a FastAPI data access + processing layer that will allow us to add or remove games from a user’s game list. Users making changes to their game library, via a FastAPI POST request, will also kick off a recommendation pipeline leveraging FastAPI’s Background Tasks function that will query their liked games from the database, calculate a similarity score with non-liked games, and update a user_recommendation table with their new top-N recommended games. Finally, both the PostgreSQL database and FastAPI service will be deployed on Render so they can be accessed beyond our local environment. For this deployment step, any cloud service could have been used, but we chose Render in this case for its simplicity.</p>
+
+
+
+<p class="wp-block-paragraph" id="bb22">To recap, our overall workflow from the user’s perspective will look like this:</p>
+
+
+
+<ol class="wp-block-list">
+<li class="wp-block-list-item">The user adds a game to their library by making a POST request from FastAPI to our database.
+<ul class="wp-block-list">
+<li class="wp-block-list-item">If we wanted to attach our recommender system to a front-end application, we could easily tie this Post API into a user interface.</li>
+</ul>
+</li>
+
+
+
+<li class="wp-block-list-item">This post request kicks off a FastAPI background task that runs our recommender pipeline.</li>
+
+
+
+<li class="wp-block-list-item">The recommender pipeline queries our database for the user’s game list and the global games list.</li>
+
+
+
+<li class="wp-block-list-item">A similarity score is then calculated between the user’s games and all games using our game tags.</li>
+
+
+
+<li class="wp-block-list-item">Finally, our recommender pipeline makes a post request to the database to update the recommended games table for that user.</li>
+</ol>
+
+
+
+<figure class="wp-block-image size-full"><img decoding="async" src="../Images/74a49d184445cb12575f9c4fe0c8ca4f.png" alt="" class="wp-image-610695" title="Figure 4" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/07/image-231.png"/><figcaption class="wp-element-caption">Figure 4: Recommender System Diagram</figcaption></figure>
+
+
+
+<h2 class="wp-block-heading" id="database">Setting Up the Database</h2>
+
+
+
+<p class="wp-block-paragraph" id="cd71">Before we build our recommender system, the first step is to set up our database. Our basic database diagram is shown in Figure 5. We previously discussed our game table above; this is the base dataset that the rest of our data is generally derived from. A full list of our tables is here:</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item"><code>Game</code> Table: Contains base game data for each unique game in our database</li>
+
+
+
+<li class="wp-block-list-item"><code>User</code> Table: A Dummy user table containing example information populated for example.</li>
+
+
+
+<li class="wp-block-list-item"><code>User_Game</code> Table: Contains the mappings between all games that a user has ‘liked’; this table is one of the base tables used to generate recommendations by capturing what games a user is interested in.</li>
+
+
+
+<li class="wp-block-list-item"><code>Game_Tags</code> Table: This contains an appid:game_tag mapping, where game tag could be something like ‘strategy’, ‘rpg’, ‘comedy’, a descriptive tag that captures part of the essence of a game. There are multiple tags mapped to each appid.</li>
+
+
+
+<li class="wp-block-list-item"><code>User_Recommendation</code> Table: This is our target table that will be updated by our pipeline. Every time a user interacts with a new game, our recommendation pipeline will run and generate a new series of recommendations for that user that will be stored here.</li>
+</ul>
+
+
+
+<figure class="wp-block-image size-full"><img decoding="async" src="../Images/c57bb6ae5151793677d158a7ae8250b2.png" alt="" class="wp-image-610690" title="Figure 5" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/07/database_diagram.png"/><figcaption class="wp-element-caption">Figure 5: Database Diagram</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">To set up these tables, we can simply run our <code>src/load_database.py</code> file. This file creates and populates our tables in a couple of steps that are outlined below. Note, right now we’re going to focus on understanding how to write this data to a generic database, so all you have to know now is that the <code>External_Database_Url</code> below is the URL to whatever database you want to use. In the second half of this article, we’ll walk through how to set up a database on Render and copy the URL into your .env file.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker, Session
+from sqlalchemy.ext.declarative import declarative_base
+import os
+from dotenv import load_dotenv
+from utils.db_handler import DatabaseHandler
+import pandas as pd
+import uuid
+import sys
+from sqlalchemy.exc import OperationalError
+import psycopg2
+
+# Loading environmental variables
+load_dotenv(override=True)
+
+# Construct PostgreSQL connection URL for Render
+URL_database = os.environ.get("External_Database_Url")
+
+# Initialize DatabaseHandler with our URL
+engine = DatabaseHandler(URL_database)
+
+# loading initial user data
+users_df = pd.read_csv("Data/users.csv")
+games_df = pd.read_csv("Data/games.csv")
+user_games_df = pd.read_csv("Data/user_games.csv")
+user_recommendations_df = pd.read_csv("Data/user_recommendations.csv")
+game_tags_df = pd.read_csv("Data/game_tags.csv")</code></pre>
+
+
+
+<p class="wp-block-paragraph" id="349e">First, we load five CSV files into dataframes from our Data folder; we have one file for each of the tables shown in our database diagram. We also establish a connection to our data by declaring an engine variable; this engine variable uses a custom <code>DataBaseHandler</code> class with the initialization method shown below. This class takes a connection string to our database on Render(or your preferred cloud service), passed in from our .env file, and contains all of our database connect, update, delete, and test functionalities.</p>
+
+
+
+<p class="wp-block-paragraph" id="97c5">After loading our data and instantiating our <code>DatabaseHandler</code> class, we then have to define a query to create each of the five tables and execute these queries using the <code>DatabaseHandler.create_table </code>function. This is a very simple function that connects to our database, executes the query, and closes the connection, leaving us with the five tables shown in our database diagram; however, they are currently empty.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python"># Defining queries to create tables
+user_table_creation_query = """CREATE TABLE IF NOT EXISTS users (
+    id UUID PRIMARY KEY,
+    username VARCHAR(255) UNIQUE NOT NULL,
+    password VARCHAR(255) NOT NULL,
+    email VARCHAR(255) NOT NULL,
+    role VARCHAR(50) NOT NULL
+    )
+    """
+game_table_creation_query = """CREATE TABLE IF NOT EXISTS games (
+    id UUID PRIMARY KEY,
+    appid VARCHAR(255) UNIQUE NOT NULL,
+    name VARCHAR(255) NOT NULL,
+    type VARCHAR(255),
+    is_free BOOLEAN DEFAULT FALSE,
+    short_description TEXT,
+    detailed_description TEXT,
+    developers VARCHAR(255),
+    publishers VARCHAR(255),
+    price VARCHAR(255),
+    genres VARCHAR(255),
+    categories VARCHAR(255),
+    release_date VARCHAR(255),
+    platforms TEXT,
+    metacritic_score FLOAT,
+    recommendations INTEGER
+    )
+    """
+
+user_games_query = """CREATE TABLE IF NOT EXISTS user_games (
+    id UUID PRIMARY KEY,
+    username VARCHAR(255) NOT NULL,
+    appid VARCHAR(255) NOT NULL,
+    shelf VARCHAR(50) DEFAULT 'Wish_List',
+    rating FLOAT DEFAULT 0.0,
+    review TEXT
+    )
+    """
+recommendation_table_creation_query = """CREATE TABLE IF NOT EXISTS user_recommendations (
+    id UUID PRIMARY KEY,
+    username VARCHAR(255),
+    appid VARCHAR(255),
+    similarity FLOAT
+    )
+    """
+
+game_tags_creation_query = """CREATE TABLE IF NOT EXISTS game_tags (
+    id UUID PRIMARY KEY,
+    appid VARCHAR(255) NOT NULL,
+    category VARCHAR(255) NOT NULL
+    )
+    """
+
+
+
+# Running queries to create tables
+engine.delete_table('user_recommendations')
+engine.delete_table('user_games')
+engine.delete_table('game_tags')
+engine.delete_table('games')
+engine.delete_table('users')
+
+# Create tables
+engine.create_table(user_table_creation_query)
+engine.create_table(game_table_creation_query)
+engine.create_table(user_games_query)
+engine.create_table(recommendation_table_creation_query)
+engine.create_table(game_tags_creation_query)
+</code></pre>
+
+
+
+<p class="wp-block-paragraph">Following the initial table setup, we then run a quality check to ensure each of our datasets has the required ID column, populate the data from the dataframes into the appropriate table, and then test to ensure that the tables were populated correctly. The test_table function returns a dictionary that will be of the form <code>{‘table_exists’: True, ‘table_has_data’: True}</code> if the setup worked correctly.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python"># Ensuring each row of each dataframe has a unique ID
+if 'id' not in users_df.columns:
+    users_df['id'] = [str(uuid.uuid4()) for _ in range(len(users_df))]
+if 'id' not in games_df.columns:
+    games_df['id'] = [str(uuid.uuid4()) for _ in range(len(games_df))]
+if 'id' not in user_games_df.columns:
+    user_games_df['id'] = [str(uuid.uuid4()) for _ in range(len(user_games_df))]
+if 'id' not in user_recommendations_df.columns:
+    user_recommendations_df['id'] = [str(uuid.uuid4()) for _ in range(len(user_recommendations_df))]
+if 'id' not in game_tags_df.columns:
+    game_tags_df['id'] = [str(uuid.uuid4()) for _ in range(len(game_tags_df))]
+
+# Populates the 4 tables with data from the dataframes
+engine.populate_table_dynamic(users_df, 'users')
+engine.populate_table_dynamic(games_df, 'games')
+engine.populate_table_dynamic(user_games_df, 'user_games')
+engine.populate_table_dynamic(user_recommendations_df, 'user_recommendations')
+engine.populate_table_dynamic(game_tags_df, 'game_tags')
+
+# Testing if the tables were created and populated correctly
+print(engine.test_table('users'))
+print(engine.test_table('games'))
+print(engine.test_table('user_games'))
+print(engine.test_table('user_recommendations'))
+print(engine.test_table('game_tags'))</code></pre>
+
+
+
+<h2 class="wp-block-heading" id="fastapi">Getting Started with FastAPI</h2>
+
+
+
+<p class="wp-block-paragraph" id="a787">Now that we have our database set up and populated, we need to build the methods to access, update, and delete data, using FastAPI. FastAPI enables us to easily build standardized(and fast) API’s to enable interaction with our database. The FastAPI docs offer a great step-by-step tutorial that can be found <a href="https://fastapi.tiangolo.com/tutorial/first-steps/" target="_blank" rel="noreferrer noopener">here</a>. As a high-level summary, there are several great features that make FastAPI ideal for serving as the interaction layer between a database and a front-end application.</p>
+
+
+
+<ol class="wp-block-list">
+<li class="wp-block-list-item">Standardization: FastAPI allows us to define routes to interact with our tables in a standardized way using <code>GET, POST, DELETE, UPDATE</code>, etc. methods. This standardization enables us to build a data access layer in pure Python that can then be interact with a wide variety of front-end application. We simply call the API methods we want in the front end, regardless of what language its constructed in.</li>
+
+
+
+<li class="wp-block-list-item">Data Validation: As we’ll show below, we need to define a Pydantic data model for each object we interact with(think our games and user tables). The main advantage of this is that it ensures all our variables have defined data types, for example, if we define our Game object such that the rating field is of type float and a user tries to make a post request to add a new entry with a rating of “great” it wont work. This built-in data validation will help us prevent all sorts of data quality issues from as our system scales.</li>
+
+
+
+<li class="wp-block-list-item">Asynchronous: FastAPI functions can run asynchronously, meaning one of them isn’t dependent on the other finishing. This can significantly improve the performance because we won’t have a slow Fast task waiting on a slow one to complete.</li>
+
+
+
+<li class="wp-block-list-item">Swagger Docs Built In: FastAPI has a built-in UI that we can navigate to on localhost, enabling us to easily test and interact with our routes.</li>
+</ol>
+
+
+
+<h2 class="wp-block-heading">FastAPI Models</h2>
+
+
+
+<p class="wp-block-paragraph" id="b23b">The FastAPI portion of our project relies on two main files: models.py, which defines the data models that we’ll be interacting with (games, users, etc.), and main.py, which defines our actual FastAPI App and contains our routes. In the context of FastAPI, Routes define the different paths for processing requests. For example, we might have a <code>/games</code> route to request games from our database.</p>
+
+
+
+<p class="wp-block-paragraph" id="91e3">First, let’s discuss our <code>models.py</code> file. In this file, we define all of our models. While we have different models for different objects the general approach will be the same so we’ll only discuss the games model, shown below, in detail. The first thing you’ll notice below is that we have two actual classes defined for our Game object: a <code>GameModel</code> class that inherits from the Pydantic base model, and a <code>Game</code> class that inherits from the <code>sqlalchemy declarative_base</code>. The natural question then is, why do we have two classes for one data structure(our game’s data structure)?</p>
+
+
+
+<p class="wp-block-paragraph" id="5747">If we weren’t using an SQL database for this project and instead read each of our CSV files into a dataframe every time main.py was run, then we wouldn’t need the <code>Game</code> class, only the <code>GameModel</code> class. In this scenario, we would read in our games.csv dataframe, and FastAPI would use the <code>GameModel</code> class to ensure datatypes were correctly adhered to.</p>
+
+
+
+<p class="wp-block-paragraph" id="bce0">However, because we are using an SQL database, it makes more sense to have separate classes for our API and our database, as the two classes have slightly different jobs. Our API class handles data validation, serialization, and optional fields, and our database class handles database-specific concerns like defining primary/foreign keys, defining which table the object maps to, and protecting secure data. To reiterate the last point, we might have sensitive fields in our database that are for internal consumption only, and we don’t want to expose them to a user through an API( password for example). We can address this concern by having a separate user-facing Pydantic class and an Internal SQL Alchemy one.</p>
+
+
+
+<p class="wp-block-paragraph" id="8746">Below is an example of how this can be implemented for our <code>Games</code> object; we have separate classes defined for our other tables, which can be found <a href="https://github.com/pinstripezebra/recommender_system/blob/main/src/models.py" data-type="link" data-id="https://github.com/pinstripezebra/recommender_system/blob/main/src/models.py">here</a>; however, the general structure is the same.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">from pydantic import BaseModel
+from uuid import UUID,uuid4
+from typing import Optional
+from enum import Enum
+from sqlalchemy import Column, String, Float, Integer
+import sqlalchemy.dialects.postgresql as pg
+from sqlalchemy.dialects.postgresql import UUID as SA_UUID
+from sqlalchemy.ext.declarative import declarative_base
+import uuid
+from uuid import UUID
+
+# loading sql model
+from sqlmodel import Field, Session, SQLModel, create_engine, select
+
+# Initialize the base class for SQLAlchemy models
+Base = declarative_base()
+
+# This is the Game model for the database
+class Game(Base):
+    __tablename__ = "optigame_products"  # Table name in the PostgreSQL database
+
+    id = Column(pg.UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, unique=True, nullable=False)
+    appid = Column(String, unique=True, nullable=False)  
+    name = Column(String, nullable=False)  
+    type = Column(String, nullable=True)  
+    is_free = Column(pg.BOOLEAN, nullable=True, default=False)  #
+    short_description = Column(String, nullable=True)  
+    detailed_description = Column(String, nullable=True)  
+    developers = Column(String, nullable=True)  
+    publishers = Column(String, nullable=True)  
+    price = Column(String, nullable=True)  
+    genres = Column(String, nullable=True)  
+    categories = Column(String, nullable=True)  
+    release_date = Column(String, nullable=True)  
+    platforms = Column(String, nullable=True)  
+    metacritic_score = Column(Float, nullable=True)  
+    recommendations = Column(Integer, nullable=True)  
+
+class GameModel(BaseModel):
+    id: Optional[UUID] = None
+    appid: str
+    name: str
+    type: Optional[str] = None
+    is_free: Optional[bool] = False
+    short_description: Optional[str] = None
+    detailed_description: Optional[str] = None
+    developers: Optional[str] = None
+    publishers: Optional[str] = None
+    price: Optional[str] = None
+    genres: Optional[str] = None
+    categories: Optional[str] = None
+    release_date: Optional[str] = None
+    platforms: Optional[str] = None
+    metacritic_score: Optional[float] = None
+    recommendations: Optional[int] = None
+
+    class Config:
+        orm_mode = True  # Enable ORM mode to work with SQLAlchemy objects
+        from_attributes = True # Enable attribute access for SQLAlchemy objects</code></pre>
+
+
+
+<h2 class="wp-block-heading">Setting Up FastAPI Routes</h2>
+
+
+
+<p class="wp-block-paragraph" id="2656">After we have our Models defined, we can then create methods to interact with these models and request data from the database(GET), add data to the Database(POST), or remove data from the database(DELETE). Below is an example of how we can define a GET request for our games model. We have some initial setup at the beginning of our main.py function to fetch the database URL and connect to it. Then we initialize our app and add middleware to define which URLs we’ll accept requests from. Because we’ll be deploying the FastAPI project on Render and sending requests to it from our local machine, the only origin we’re allowing is localhost port 8000. We then define our app.get method called fetch_products, which takes an appid input, queries our database for Game objects where appid is equal to our filtered appid, and returns these products.</p>
+
+
+
+<p class="wp-block-paragraph" id="d352">Note the below snipped contains just the setup and first get method, the rest are fairly similar and available on the Repo, so we won’t give an in-depth explanation for each one here.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">from fastapi import FastAPI, Depends, HTTPException, BackgroundTasks
+from uuid import uuid4, UUID
+from sqlalchemy import create_engine
+from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.orm import sessionmaker, Session
+from dotenv import load_dotenv
+import os
+
+# Load environment variables
+load_dotenv()
+
+# security imports
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.security import OAuth2PasswordBearer
+
+# custom imports
+from src.models import User, Game, GameModel, UserModel,  UserGameModel, UserGame, GameSimilarity,GameSimilarityModel, UserRecommendation, UserRecommendationModel
+from src.similarity_pipeline import UserRecommendationService
+
+# Load the database connection string from environment variable or .env file
+DATABASE_URL = os.environ.get("Internal_Database_Url")
+
+# creating connection to the database
+engine = create_engine(DATABASE_URL)
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+Base = declarative_base()
+
+# Create the database tables (if they don't already exist)
+Base.metadata.create_all(bind=engine)
+
+# Dependency to get the database session
+def get_db():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
+
+# Initialize the FastAPI app
+app = FastAPI(title="Game Store API", version="1.0.0")
+
+# Add CORS middleware to allow requests 
+origins = ["http://localhost:8000"]
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=origins,  
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
+
+#-------------------------------------------------#
+# ----------PART 1: GET METHODS-------------------#
+#-------------------------------------------------#
+@app.get("/")
+async def root():
+    return {"message": "Hello World"}
+
+
+@app.get("/api/v1/games/")
+async def fetch_products(appid: str = None, db: Session = Depends(get_db)):
+    # Query the database using the SQLAlchemy Game model
+    if appid:
+        products = db.query(Game).filter(Game.appid == appid).all()
+    else:
+        products = db.query(Game).all()
+    return [GameModel.from_orm(product) for product in products]</code></pre>
+
+
+
+<p class="wp-block-paragraph">Once we have our main.py defined, we can finally run it from our base project directory using the command below.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-bash">uvicorn src.main:app --reload</code></pre>
+
+
+
+<p class="wp-block-paragraph">Once this is done, we can navigate to <a href="http://127.0.0.1:8000/docs">http://127.0.0.1:8000/docs</a> and see the below interactive FastAPI environment. From this page, we can test any of our methods defined in our <code>main.py </code>file. In the case of our <code>fetch_products</code> function, we can pass it an appid and return any matching games from our database.</p>
+
+
+
+<figure class="wp-block-image size-full"><img decoding="async" src="../Images/ebd795bdeb0f2253cbdfe032313f77e4.png" alt="" class="wp-image-609073" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/07/image-132.png"/><figcaption class="wp-element-caption">Figure 6: FastAPI Swagger Docs</figcaption></figure>
+
+
+
+<h2 class="wp-block-heading" id="similarity-pipeline">Building our Similarity Pipeline</h2>
+
+
+
+<p class="wp-block-paragraph" id="c811">We have our database set up and can access and update data via FastAPI; it’s now time to turn to the central feature of this project: a recommender pipeline. Recommender systems are a well-researched field, and we’re not adding any innovation here; however, this will offer a clear example of how to implement a basic recommender system using FastAPI.</p>
+
+
+
+<h2 class="wp-block-heading">Getting Started — How to Recommend Products?</h2>
+
+
+
+<p class="wp-block-paragraph" id="f4ac">If we think about the question “How would I recommend new products that a user will like?”, there are two approaches that make intuitive sense.</p>
+
+
+
+<ol class="wp-block-list">
+<li class="wp-block-list-item">Collaborative Recommendation Systems: If I have a series of users and a series of products, I could identify users with similar interests by looking at their overall basket of products and then identify products ‘missing’ from a given user’s basket. For example, if I have users 1–3 and products A-C, users 1–2 like all three products, but user 3 has thus far only liked products A + B, then I might recommend them product C. This logically makes sense; all three users have a high degree of overlap in products that they’ve liked, but product C is missing from user 3’s basket, there’s a high likelihood that they would like it as well. This process of generating recommendations by comparing like users is called collaborative filtering.</li>
+
+
+
+<li class="wp-block-list-item">Content-Based Recommendation System: If I have a series of products, I could identify products that are similar to products that a user has liked and recommend those products. For example, if I have a series of tags for each game, I could convert each game’s series of tags into a vector of 1s and 0s and then use a similarity measure (in this case, a <a href="https://en.wikipedia.org/wiki/Cosine_similarity">cosine similarity measure</a>) to measure the similarity between games based on their vectors. Once I have done this, I can then return the top N most similar games to those liked by a user based on their similarity score.</li>
+</ol>
+
+
+
+<p class="wp-block-paragraph" id="dc6e">More on Recommender Systems can be found <a href="https://en.wikipedia.org/wiki/Recommender_system" rel="noreferrer noopener" target="_blank">here</a>.</p>
+
+
+
+<p class="wp-block-paragraph" id="0189">Because our initial dataset doesn’t have a large volume of users, we don’t have the necessary data to suggest items based on user similarity, which is known as a <a href="https://en.wikipedia.org/wiki/Cold_start_(recommender_systems" rel="noreferrer noopener" target="_blank">cold start problem</a>. As a result, we will instead develop a content-based recommender system as we have a significant amount of game data to work with.</p>
+
+
+
+<p class="wp-block-paragraph" id="65f5">To build our pipeline, we have to address two challenges: (1) How do we go about calculating similarity scores for a user, and (2) how do we automate this to run whenever a user makes an update to their games?</p>
+
+
+
+<p class="wp-block-paragraph" id="6105">We’ll go over how a similarity pipeline can be triggered each time a user makes a POST request by ‘liking’ a game, and then cover how to build the pipeline itself.</p>
+
+
+
+<h2 class="wp-block-heading">Tying Recommender Pipeline to FastAPI</h2>
+
+
+
+<p class="wp-block-paragraph" id="c082">For now, imagine we have a Recommendation Service that will update our <code>user_recommendation</code> table. We want to ensure that this service is called whenever a user updates their preferences. We can implement this in a couple of steps as shown below; first, we define a <code>generate_recommendations_background</code> function, this function is responsible for connecting to our database, running the similarity pipeline, and then closing the connection. Next, we need to ensure this is called when a user makes a post request(i.e., likes a new game); to do this, we simply add the function call at the end of our <code>create_user_game </code>post request function.</p>
+
+
+
+<p class="wp-block-paragraph" id="c8c3">The result of this workflow is that whenever a user makes a post request to our <code>user_game table</code>, they call the <code>create_user_game</code> function, add a new <code>user_game</code> object to the database, and then run the similarity pipeline as a background function.</p>
+
+
+
+<p class="wp-block-paragraph" id="f2d9">Note: The Below post method and helper function are stored in main.py with the rest of our FastAPI methods.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python"># importing similarity pipeline
+from src.similarity_pipeline import UserRecommendationService
+
+# Background task function
+def generate_recommendations_background(username: str, database_url: str):
+    """Background task to generate recommendations for a user"""
+    # Create a new database session for the background task
+    background_engine = create_engine(database_url)
+    BackgroundSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=background_engine)
+    
+    db = BackgroundSessionLocal()
+    try:
+        recommendation_service = UserRecommendationService(db, database_url)
+        recommendation_service.generate_recommendations_for_user(username)
+    finally:
+        db.close()
+
+# Post method which calls background task function
+@app.post("/api/v1/user_game/")
+async def create_user_game(user_game: UserGameModel, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
+    # Check if the entry already exists
+    existing = db.query(UserGame).filter_by(username=user_game.username, appid=user_game.appid).first()
+    if existing:
+        raise HTTPException(status_code=400, detail="User already has this game.")
+
+    # Prepare data with defaults
+    user_game_data = {
+        "username": user_game.username,
+        "appid": user_game.appid,
+        "shelf": user_game.shelf if user_game.shelf is not None else "Wish_List",
+        "rating": user_game.rating if user_game.rating is not None else 0.0,
+        "review": user_game.review if user_game.review is not None else ""
+    }
+    if user_game.id is not None:
+        user_game_data["id"] = UUID(str(user_game.id))
+
+    # Save the user game to database
+    db_user_game = UserGame(**user_game_data)
+    db.add(db_user_game)
+    db.commit()
+    db.refresh(db_user_game)
+    
+    # Trigger background task to generate recommendations for this user
+    background_tasks.add_task(generate_recommendations_background, user_game.username, DATABASE_URL)
+    
+    return db_user_game</code></pre>
+
+
+
+<h2 class="wp-block-heading">Building Recommender Pipeline</h2>
+
+
+
+<p class="wp-block-paragraph" id="fc61">Now that we understand how our similarity pipeline can be triggered when a user updates their liked games, it’s time to dive into the mechanics of how the recommendation pipeline works. Our recommendation pipeline is stored in <code>similarity_pipeline.py</code> and contains our <code>UserRecommendationService</code> class that we showed how to import and instantiate above. This class contains a series of helper functions that are ultimately all called in the <code>generate_recommendations_for_user</code> method. There are 7 basic steps called in order that we’ll walk through one by one.</p>
+
+
+
+<ol class="wp-block-list">
+<li class="wp-block-list-item">Fetching a user’s Games: To generate similar game recommendations, we need to retrieve the games that a user has already added to their game basket. This is done by calling our <code>fetch_user_games</code> helper function. This function queries our <code>user_games</code> table using the user’s ID, which is making the post request as an input, and returning all games in their basket.</li>
+
+
+
+<li class="wp-block-list-item">Fetching game tags: To compare games, we need a dimension to compare them on, and that dimension is the tags associated with each game(strategy, board game, etc.). To retrieve the game:tag mapping, we call our <code>fetch_all_game_tags</code> function, which returns the tags for all the games in our database</li>
+
+
+
+<li class="wp-block-list-item">Vectorizing game tags: To compare the similarity between games A and B, we first need to vectorize the game tags using our <code>create_game_vectors</code> function. This function takes a series of all tags in alphabetical order and checks if each of the tags is associated with a given game. For example, if our total set of tags was [boardgame, deckbuilding, resource-management] and game 1 just had the boardgame tag associated with it, then its vector would be [1, 0, 0].</li>
+
+
+
+<li class="wp-block-list-item">Creating our users vector: once we have a vector representing each game, we then need an aggregate user vector to compare it to. To achieve this, we use our <code>create_user_vector</code> function, which generates an aggregate vector of the same length as our game vectors that we can then use to generate a similarity score between our user and every other game.</li>
+
+
+
+<li class="wp-block-list-item">Calculate Similarity: We use the vectors created in steps 3 and 4 in our calculate_user_recommendations, which calculates a cosine similarity score ranging from 0–1 and measuring the similarity between each game and our user aggregate games</li>
+
+
+
+<li class="wp-block-list-item">Deleting old Recommendations: Before we populate our <code>user_recommendations</code> table with new recommendations for a user, we first have to delete the old ones with <code>delete_existing_recommendations</code>. This deletes just the recommendations for the user who made the post request; the others remain the same.</li>
+
+
+
+<li class="wp-block-list-item">Populate new Recommendations: After deleting the old recommendations, we then populate the new ones with <code>save_recommendations</code>.</li>
+</ol>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">
+
+from sqlalchemy.orm import Session
+from sqlalchemy import create_engine, text
+from src.models import UserGame, UserRecommendation
+from sklearn.metrics.pairwise import cosine_similarity
+import pandas as pd
+import uuid
+from typing import List
+import logging
+
+# Set up logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+class UserRecommendationService:
+    def __init__(self, db_session: Session, database_url: str):
+        self.db = db_session
+        self.database_url = database_url
+        self.engine = create_engine(database_url)
+
+    def fetch_user_games(self, username: str) -&gt; pd.DataFrame:
+        """Fetch all games for a specific user"""
+        query = text("SELECT username, appid FROM user_games WHERE username = :username")
+        with self.engine.connect() as conn:
+            result = conn.execute(query, {"username": username})
+            data = result.fetchall()
+            return pd.DataFrame(data, columns=['username', 'appid'])
+
+    def fetch_all_category(self) -&gt; pd.DataFrame:
+        """Fetch all game tags"""
+        query = text("SELECT appid, category FROM category")
+        with self.engine.connect() as conn:
+            result = conn.execute(query)
+            data = result.fetchall()
+            return pd.DataFrame(data, columns=['appid', 'category'])
+
+    def create_game_vectors(self, tag_df: pd.DataFrame) -&gt; tuple[pd.DataFrame, List[str], List[str]]:
+        """Create game vectors from tags"""
+        unique_tags = tag_df['category'].drop_duplicates().sort_values().tolist()
+        unique_games = tag_df['appid'].drop_duplicates().sort_values().tolist()
+        
+        game_vectors = []
+        for game in unique_games:
+            tags = tag_df[tag_df['appid'] == game]['category'].tolist()
+            vector = [1 if tag in tags else 0 for tag in unique_tags]
+            game_vectors.append(vector)
+        
+        return pd.DataFrame(game_vectors, columns=unique_tags, index=unique_games), unique_tags, unique_games
+
+    def create_user_vector(self, user_games_df: pd.DataFrame, game_vectors: pd.DataFrame, unique_tags: List[str]) -&gt; pd.DataFrame:
+        """Create user vector from their played games"""
+        if user_games_df.empty:
+            return pd.DataFrame([[0] * len(unique_tags)], columns=unique_tags, index=['unknown_user'])
+        
+        username = user_games_df.iloc[0]['username']
+        user_games = user_games_df['appid'].tolist()
+        
+        # Only keep games that exist in game_vectors
+        user_games = [g for g in user_games if g in game_vectors.index]
+        
+        if not user_games:
+            user_vector = [0] * len(unique_tags)
+        else:
+            played_game_vectors = game_vectors.loc[user_games]
+            user_vector = played_game_vectors.mean(axis=0).tolist()
+        
+        return pd.DataFrame([user_vector], columns=unique_tags, index=[username])
+
+    def calculate_user_recommendations(self, user_vector: pd.DataFrame, game_vectors: pd.DataFrame, top_n: int = 20) -&gt; pd.DataFrame:
+        """Calculate similarity between user vector and all game vectors"""
+        username = user_vector.index[0]
+        user_vector_data = user_vector.iloc[0].values.reshape(1, -1)
+        
+        # Calculate similarities
+        similarities = cosine_similarity(user_vector_data, game_vectors)
+        similarity_df = pd.DataFrame(similarities.T, index=game_vectors.index, columns=[username])
+        
+        # Get top N recommendations
+        top_games = similarity_df[username].nlargest(top_n)
+        
+        recommendations = []
+        for appid, similarity in top_games.items():
+            recommendations.append({
+                "username": username,
+                "appid": appid,
+                "similarity": float(similarity)
+            })
+        
+        return pd.DataFrame(recommendations)
+
+    def delete_existing_recommendations(self, username: str):
+        """Delete existing recommendations for a user"""
+        self.db.query(UserRecommendation).filter(UserRecommendation.username == username).delete()
+        self.db.commit()
+
+    def save_recommendations(self, recommendations_df: pd.DataFrame):
+        """Save new recommendations to database"""
+        for _, row in recommendations_df.iterrows():
+            recommendation = UserRecommendation(
+                id=uuid.uuid4(),
+                username=row['username'],
+                appid=row['appid'],
+                similarity=row['similarity']
+            )
+            self.db.add(recommendation)
+        self.db.commit()
+
+    def generate_recommendations_for_user(self, username: str, top_n: int = 20):
+        """Main method to generate recommendations for a specific user"""
+        try:
+            logger.info(f"Starting recommendation generation for user: {username}")
+            
+            # 1. Fetch user's games
+            user_games_df = self.fetch_user_games(username)
+            if user_games_df.empty:
+                logger.warning(f"No games found for user: {username}")
+                return
+            
+            # 2. Fetch all game tags
+            tag_df = self.fetch_all_category()
+            if tag_df.empty:
+                logger.error("No game tags found in database")
+                return
+            
+            # 3. Create game vectors
+            game_vectors, unique_tags, unique_games = self.create_game_vectors(tag_df)
+            
+            # 4. Create user vector
+            user_vector = self.create_user_vector(user_games_df, game_vectors, unique_tags)
+            
+            # 5. Calculate recommendations
+            recommendations_df = self.calculate_user_recommendations(user_vector, game_vectors, top_n)
+            
+            # 6. Delete existing recommendations
+            self.delete_existing_recommendations(username)
+            
+            # 7. Save new recommendations
+            self.save_recommendations(recommendations_df)
+            
+            logger.info(f"Successfully generated {len(recommendations_df)} recommendations for user: {username}")
+            
+        except Exception as e:
+            logger.error(f"Error generating recommendations for user {username}: {str(e)}")
+            self.db.rollback()
+            raise</code></pre>
+
+
+
+<h2 class="wp-block-heading">Wrapping Up</h2>
+
+
+
+<p class="wp-block-paragraph" id="b5b7">In this article, we covered how to set up a PostgreSQL database and FastAPI application to run a game recommender system. However, we haven’t yet gone over how to deploy this system to a cloud service to allow others to interact with it. For part two covering exactly this, read on in <a href="https://towardsdatascience.com/building-a-video-game-recommender-system-with-fastapi-postgresql-and-render-part-2">Part 2</a>.</p>
+
+
+
+<p class="wp-block-paragraph"><strong>Figures</strong>: All images, unless otherwise noted, are by the author.</p>
+
+
+
+<p class="wp-block-paragraph" id="1997"><strong>Links</strong></p>
+
+
+
+<ol class="wp-block-list">
+<li class="wp-block-list-item">Github Repository for Project: <a href="https://github.com/pinstripezebra/recommender_system" target="_blank" rel="noreferrer noopener">https://github.com/pinstripezebra/recommender_system</a></li>
+
+
+
+<li class="wp-block-list-item">FastAPI Docs: <a href="https://fastapi.tiangolo.com/tutorial/" target="_blank" rel="noreferrer noopener">https://fastapi.tiangolo.com/tutorial/</a></li>
+
+
+
+<li class="wp-block-list-item">Recommender Systems: <a href="https://en.wikipedia.org/wiki/Recommender_system">https://en.wikipedia.org/wiki/Recommender_system</a></li>
+
+
+
+<li class="wp-block-list-item">Cosine Similarity: <a href="https://en.wikipedia.org/wiki/Cosine_similarity)">https://en.wikipedia.org/wiki/Cosine_similarity)</a></li>
+</ol>
+
+
+
+<p class="wp-block-paragraph"/>
+    
+</body>
+</html>

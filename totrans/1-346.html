@@ -1,0 +1,306 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.1//EN"
+  "http://www.w3.org/TR/xhtml11/DTD/xhtml11.dtd">
+
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+<title>Marginal Effect of Hyperparameter Tuning with XGBoost</title>
+<link href="../Styles/Style.css" type="text/css" rel="stylesheet"/>
+</head>
+<body>
+<h1>Marginal Effect of Hyperparameter Tuning with XGBoost</h1>
+<blockquote>原文：<a href="https://towardsdatascience.com/marginal-effect-of-hyperparameter-tuning-with-xgboost/">https://towardsdatascience.com/marginal-effect-of-hyperparameter-tuning-with-xgboost/</a></blockquote>
+<p class="wp-block-paragraph"><mdspan datatext="el1756427374805" class="mdspan-comment">In many predictive</mdspan> modeling contexts, the XGBoost algorithm reigns supreme. It provides performance and efficiency gains over other tree-based methods and other boosting implementations. The XGBoost algorithm includes a laundry list of hyperparameters, although usually only a subset is selected during the hyperparameter tuning process. In my experience, I’ve always used a grid search method using k-fold cross-validation to identify the optimal combination of hyperparameters, although there are alternative methods for hyperparameter tuning with the hyperopt library that can search the hyperparameter space more systematically.</p>
+
+
+
+<p class="wp-block-paragraph" id="e8e1">Through my work building XGBoost models across different projects, I came across the great resource <a href="https://store.metasnake.com/xgboost" rel="noreferrer noopener" target="_blank"><em>Effective XGBoost </em>by Matt Harrison</a>, a textbook covering XGBoost, including how to tune hyperparameters. Chapter 12 of the book is dedicated to tuning hyperparameters using the hyperopt library; however, there were some natural questions that arose upon reading the section. The introduction to the chapter provides a high-level overview of how using hyperopt and Bayesian optimization provides a more guided approach for tuning hyperparameters compared to grid search. However, I was curious, what is going on here under the hood?</p>
+
+
+
+<p class="wp-block-paragraph" id="984d">In addition, as is the case with many tutorials about tuning XGBoost hyperparameters, the ranges for the hyperparameters seemed somewhat arbitrary. Harrison explains that he pulled the list of hyperparameters to be tuned from a talk that data scientist Bradley Boehmke gave (<a href="https://bradleyboehmke.github.io/xgboost_databricks_tuning/index.html#slide20" rel="noreferrer noopener" target="_blank">here</a>). Both Harrison and Boehmke provide tutorials for using hyperopt with the same set of hyperparameters, although they use slightly different search spaces for finding an optimal combination. In Boehmke’s case, his search space is much larger; for example, he recommends that the maximum depth for each tree (max_depth) be allowed to vary between 1 and 100. Harrison had narrowed the ranges he presents in his book somewhat, but these two cases led to the question: What is the marginal gain compared to the marginal increase in time from increasing the hyperparameter search space when tuning XGBoost models?</p>
+
+
+
+<p class="wp-block-paragraph" id="7060">The purpose of this article is centered on these two questions. First, we will explore how hyperopt works when tuning hyperparameters at a slightly deeper level to help gain some intuition for what is going on under the hood. Second, we will explore the tradeoff between large search spaces and narrower search spaces in a rigorous way. I hope to answer these questions so that this can be used as a resource for understanding hyperparameter tuning in the future.</p>
+
+
+
+<p class="wp-block-paragraph" id="d06e">All code for the project can be found on my GitHub page here: <a href="https://github.com/noahswan19/XGBoost-Hyperparameter-Analysis" rel="noreferrer noopener" target="_blank">https://github.com/noahswan19/XGBoost-Hyperparameter-Analysis</a></p>
+
+
+
+<h2 class="wp-block-heading" id="5f9c">hyperopt with Tree-Structured Parzen Estimators for Hyperparameter Tuning</h2>
+
+
+
+<p class="wp-block-paragraph" id="6b13">In the chapter of his textbook covering hyperopt, Harrison describes the process of using hyperopt for hyperparameter tuning as using “Bayesian optimization” to identify sequential hyperparameter combinations to try during the tuning process.</p>
+
+
+
+<p class="wp-block-paragraph" id="669e">The high-level description makes it clear why using hyperopt is a superior method to the grid search method, but I was curious how this is implemented. What is actually going on when we run the fmin function using the Tree-Structured Parzen (TPE) estimator algorithm?</p>
+
+
+
+<h3 class="wp-block-heading" id="0dfb">Sequential Model-Based Optimization</h3>
+
+
+
+<p class="wp-block-paragraph" id="d1e1">To start with, the TPE algorithm originates from a paper written in 2011 by James Bergstra, Rémi Bardenet, Yoshua Bengio, and Balázs Kégl, the authors of the hyperopt package called <a href="https://papers.nips.cc/paper_files/paper/2011/hash/86e8f7ab32cfd12577bc2619bc635690-Abstract.html" rel="noreferrer noopener" target="_blank">“Algorithms for Hyper-Parameter Optimization”</a>. The paper begins by introducing Sequential Model-Based Optimization (SMBO) algorithms, where the TPE algorithm is one version of a broader SMBO method. SMBOs provide a systematic way to choose the next hyperparameters to evaluate, avoiding the brute-force nature of grid search and the inefficiency of random search. It involves developing a “surrogate” model for the underlying model we’re optimizing for (i.e. XGBoost in our case), which we can use direct the search for optimal hyperparameters in a way that is computationally cheaper than evaluating the underlying model. The algorithm for an SMBO is described in the following image:</p>
+
+
+
+<figure class="wp-block-image"><img decoding="async" src="../Images/d3100965fa02fae4819c4de173fcafe4.png" alt="" class="wp-image-617987" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/08/1MVvngzZYdFZmqOTdkfTszw.png"/><figcaption class="wp-element-caption">Image by author from Figure 1 from <a href="https://papers.nips.cc/paper_files/paper/2011/hash/86e8f7ab32cfd12577bc2619bc635690-Abstract.html">“Algorithms for Hyper-Parameter Optimization” (Bergstra et al.)</a></figcaption></figure>
+
+
+
+<p class="wp-block-paragraph" id="e5d7">There’s a lot of symbols here, so let’s break down each one:</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">x* and x: x* represents the hyperparameter combination that is being tested in a given trial, and x represents a general hyperparameter combination.</li>
+
+
+
+<li class="wp-block-list-item">f: This is the “fitness function” which is the underlying model that we’re optimizing. Within this algorithm, f(x*) is mapping a hyperparameter combination x* to performance of this combination on a validation data set.</li>
+
+
+
+<li class="wp-block-list-item">M_0: The M terms in the algorithm correspond to the “surrogate” model we are using to approximate f. Since f is usually expensive to run, we can use a cheaper estimation, M, to help identify which hyperparameter combinations will likely improve performance.</li>
+
+
+
+<li class="wp-block-list-item">H: The curly H corresponds to the history of hyperparameters searched so far. It is updated upon every iteration. It is also used to develop an updated surrogate model after each iteration.</li>
+
+
+
+<li class="wp-block-list-item">T: This corresponds to the number of trials we use for hyperparameter tuning. This is pretty self-explanatory, but this corresponds to the max_evals argument in the fmin function from hyperopt.</li>
+
+
+
+<li class="wp-block-list-item">S: The S corresponds to the criterion used to pick a set of hyperparameter combinations to check given a surrogate model. In the hyperopt implementation of the TPE algorithm, S corresponds to the Expected Improvement (EI) criterion, described in the following image.</li>
+</ul>
+
+
+
+<figure class="wp-block-image"><img decoding="async" src="../Images/8737ebb048085f557096a6b62477b182.png" alt="" class="wp-image-617985" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/08/1dnYZhorRF6UuVTCxtIAmXA.png"/><figcaption class="wp-element-caption">Image by author from Equation 1 of <a href="https://papers.nips.cc/paper_files/paper/2011/hash/86e8f7ab32cfd12577bc2619bc635690-Abstract.html">“Algorithms for Hyper-Parameter Optimization” (Bergstra et al.)</a></figcaption></figure>
+
+
+
+<p class="wp-block-paragraph" id="128d">Each iteration, some number of possible hyperparameter combinations are drawn (in the python hyperopt package, this is set to 24 by default). We will discuss in a bit how TPE indicates how these 24 are drawn. These 24 hyperparameter combinations are evaluated using the EI criterion and surrogate model (which is inexpensive) to identify the one combination that is most likely to have the highest performance. This is where we see the benefits of the surrogate model: instead of training and evaluating 24 XGBoost models to evaluate the one best hyperparameter combination, we can approximate this with a computationally inexpensive surrogate model. As the name would suggest, the formula above corresponds to the expected performance improvement of a hyperparameter combination x:</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">max(y*-y,0): This represents the actual improvement in performance for a hyperparameter combination x. y* corresponds to the best validation loss we’ve attained thus far; we are aiming to minimize the validation loss, so we are looking for values of y that are less than y*. This means we are looking to maximize EI in our algorithm.</li>
+
+
+
+<li class="wp-block-list-item">p_M(x|y): This is the piece of the criterion that will be approximated using the surrogate model and the piece where TPE will fit in. This is the probability density for possible values for y given a hyperparameter combination x.</li>
+</ul>
+
+
+
+<p class="wp-block-paragraph" id="3365">So each round, we take a set of 24 hyperparameter combinations, then proceed with the one that maximizes the EI criterion, which uses our surrogate model M.</p>
+
+
+
+<h3 class="wp-block-heading" id="3d43">Where does the TPE algorithm fit in</h3>
+
+
+
+<p class="wp-block-paragraph" id="251b">The key piece of the SMBO algorithm that can vary across implementations is the surrogate model or how we approximate the success of hyperparameter functions. Using the EI criterion, the surrogate model is required to estimate the density function p(y|x). The paper mentioned above introduces one method called the Gaussian Process Approach which models p(y|x) directly, but the TPE approach (which is more often used for XGBoost hyperparameter optimization) instead approximates p(x|y) and p(y). This approach follows from Bayes theorem:</p>
+
+
+
+<figure class="wp-block-image"><img decoding="async" src="../Images/76c97b3fa803e4ab15273a88f40ec8ac.png" alt="" class="wp-image-617986" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/08/1Yrp1qbS-ETWNWFzVbMr7lQ.png"/><figcaption class="wp-element-caption">Image by author</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph" id="be59">The TPE algorithm splits p(x|y) into a piecewise combination of two distributions:</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">l(x) if y &lt; y*</li>
+
+
+
+<li class="wp-block-list-item">g(x) if y ≥ y*</li>
+</ul>
+
+
+
+<p class="wp-block-paragraph" id="4693">These two distributions have an intuitive understanding: l(x) refers to the distribution of hyperparameters associated with models that have a lower loss (better) than the best model so far while g(x) refers to the distribution of hyperparameters associated with models that have a higher loss (worse) than the best model so far. This expression for p(y|x) is substituted into the equation for EI in the paper, and a mathematical derivation (that would be too verbose to break down entirely here) arrives at the fact that maximizing EI is equivalent to picking points that are more likely under l(x) and less likely under g(x).</p>
+
+
+
+<p class="wp-block-paragraph" id="2d43">So how does this work in practice? When using hyperopt, we use the fmin function and supply the tpe.suggest algorithm to specify we want to use the TPE algorithm. We supply a space of hyperparameters where each parameter is associated with a uniform or log-uniform distribution. These initial distributions are used to initialize l(x) and g(x) and provide a prior distribution for l(x) and g(x) while working with a small number of initial trials. By default (parameter n_startup_jobs in tpe.suggest), hyperopt runs 20 trials by randomly sampling hyperparameter combinations from the distributions provided for the space parameter of fmin. For each of the 20 trials, an XGBoost model is run and a validation loss obtained.</p>
+
+
+
+<p class="wp-block-paragraph" id="9ea9">The 20 observations are then split so that two subsets are used to build non-parametric densities for l(x) and g(x). Subsequent observations are used to update these distributions. The densities are estimated using a non-parametric method (which I’m not qualified to describe fully) involving the prior distributions for each hyperparameter (that we specified) and individual distributions for each observation from the trial history. Observations are split into subsets using a method that changes with the number of total trials run; the “n” observations with the lowest loss are used for l(x) with the remaining observations used for g(x). The “n” is determined by multiplying a parameter gamma (default for tpe.suggest is 0.25) by the square root of the number of trials and rounding up; however, a maximum for “n” is set at 25 so l(x) will be parameterized with at most 25 values. If we use the default setting for tpe.suggest, then the best two observations (0.25 * sqrt(20) = 1.12 rounds to 2) from the initial trials are used to parameterize l(x) with the remaining 18 used for g(x). The 0.25 value refers to the gamma parameter in tpe.suggest which can be modified if desired. Looking back to the pseudocode for the SMBO algorithm and the formula for EI, if n observations are used to parameterize l(x), then the (n+1)th observation is the threshold value y*.</p>
+
+
+
+<p class="wp-block-paragraph" id="73cd">Once l(x) and g(x) are instantiated using the beginning trials, we can move forward with each evaluation of our objective function for the number of max_evals that we specify for fmin. For each iteration, a set of candidate hyperparameter combinations (24 by default in tpe.suggest but can be specified with n_EI_candidates) is generated by taking random draws from l(x). Each of these combinations is evaluated using the ratio l(x)/g(x); the combination that maximizes this ratio is chosen as the combination to be used for the iteration. The ratio increases for hyperparameters combinations that are either (1) likely to be associated with low losses or (2) unlikely to be associated with high losses (which drives exploration). This process of choosing the best candidate corresponds to using the surrogate model with the EI as discussed when looking at the pseudocode for an SMBO.</p>
+
+
+
+<p class="wp-block-paragraph" id="ff90">An XGBoost model is then trained with the top candidate for the iteration; a loss value is obtained, and the data point (x*, f(x*)) is used to update the surrogate model (l(x) and g(x)) to continue optimization.</p>
+
+
+
+<h2 class="wp-block-heading" id="8c09">Marginal Effect of Hyperparameter Tuning</h2>
+
+
+
+<p class="wp-block-paragraph" id="893e">So now, with a background on how the hyperopt library can be used in the hyperparameter tuning process, we move to the question of how using wider distributions impacts model performance. When attempting to compare the performance of models trained on large search spaces against those trained on narrower search spaces, the immediate question is how to create the narrower search space. For example, the presentation from Boehmke advises using a uniform distribution from 1 to 100 for the max_depth hyperparameter. XGBoost models tend to generalize better when combining a large number of weak learners, but does that mean we narrow the distribution to a minimum of 1 and a maximum of 50? We may have some sort of general understanding from work others have done to intuitively narrow the space, but can we find a way to analytically narrow the search space?</p>
+
+
+
+<p class="wp-block-paragraph" id="5c90">The solution proposed in this article involves running a set of shorter hyperparameter tuning trials to narrow the search space based on shallow searches of a wider hyperparameter space. The wider search space we use comes from slide 20 of Boehmke’s aforementioned presentation (<a href="https://bradleyboehmke.github.io/xgboost_databricks_tuning/index.html#slide20" rel="noreferrer noopener" target="_blank">here</a>). Instead of running hyperparameter tuning on a wide search space for 1,000 rounds of hyperparameter testing, we’ll run 20 independent trials with 25 rounds of hyperparameter testing each. We will narrow the search space using percentile values for each hyperparameter using the trial results. With the percentiles, we will run a final search for 200 rounds using the narrower hyperparameter search space, where the distribution we provide for each hyperparameter is given a maximum and minimum from the percentile values we see in the trials.</p>
+
+
+
+<p class="wp-block-paragraph" id="056f">For example, say we run our 20 trials and get 20 optimal values for max_depth using the shallow search. We choose to narrow the search space for max_depth from the uniform distribution from 1 to 100 to the uniform distribution from the 10th percentile value for max_depth from our trials to the 90th percentile value for max_depth. We will run a couple of different models changing up the percentiles we use to compare aggressive narrowing strategies.</p>
+
+
+
+<p class="wp-block-paragraph" id="3f7d">Models produced using the trial-based method require 700 evaluations of hyperparameter combinations (500 from the trials and 200 from the final evaluation). We will compare the performance of these models against one tuned for 1,000 hyperparameter evaluations on the wider space and one tuned for 700 hyperparameter evaluations on the wider space. We are curious as to whether this method of narrowing the hyperparameter search space will lead to faster convergence toward the optimal hyperparameter combination or if this narrowing negatively impacts results.</p>
+
+
+
+<p class="wp-block-paragraph" id="d16e">We test this method on a task from a prior project involving simulated tennis match results (more information in the article I wrote <a href="https://medium.com/me/stats/post/6e4c0ca1370e">here</a>). Part of the project involved building post-match win probability models using high-level information about each match and statistics for a given player in the match that followed a truncated normal distribution; this is the task used to test the hyperparameter tuning method here. More information about the specific task can be found in the article and in the code linked at the start of the article. At a high level, we are trying to take information about what happened in the match to predict a binary win/loss for the match; one could use a post-match win probability model to identify any players that may be overperforming their statistical performance, who might be candidates for regression. To train each XGBoost model, we use log loss/cross-entropy loss as the loss function. The data for the task comes from Jeff Sackmann’s GitHub page here: <a href="https://github.com/JeffSackmann/tennis_atp" rel="noreferrer noopener" target="_blank">https://github.com/JeffSackmann/tennis_atp</a>. Anyone interested in tennis or tennis data should check out his GitHub and excellent website, <a href="http://tennisabstract.com/" rel="noreferrer noopener" target="_blank">tennisabstract.com</a>.</p>
+
+
+
+<p class="wp-block-paragraph" id="7cbf">For this task and our method, we have six models, two trained on the full search space and four trained on a narrower space. Those are titled as follows in the charts:</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">“Full Search”: This is the model trained for 1000 hyperparameter evaluations across the full hyperparameter search space.</li>
+
+
+
+<li class="wp-block-list-item">“XX-XX Percentile”: These models are those trained on a narrower search space for 200 evaluations after the 500 rounds of trial evaluations on the full hyperparameter search space. The “10–90 Percentile” model for example trains on a hyperparameter search space where the distribution for each hyperparameter is determined by the 10th percentile and 90th percentile values from the 20 trials.</li>
+
+
+
+<li class="wp-block-list-item">“Shorter Search”: This is the model trained for 700 hyperparameter evaluations across the full hyperparameter search space. We use this to compare the performance of the trial method against the wider search space when allotting the same number of hyperparameter evaluations to both methods.</li>
+</ul>
+
+
+
+<p class="wp-block-paragraph" id="1ef5">A log of training the models is included <a href="https://github.com/noahswan19/XGBoost-Hyperparameter-Analysis/tree/main/logs" rel="noreferrer noopener" target="_blank">on the GitHub page</a> linked at the top of the article which includes the hyperparameters found at each step of the process given the random seeds used along with the time it took to run each model on my laptop. It also provides the results of the 20 trials run so to understand how each narrowed search space would be parameterized. Those times are listed below:</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">Full Search: ~6000 seconds</li>
+
+
+
+<li class="wp-block-list-item">10–90 Percentile: ~4300 seconds (~3000 seconds for trials, ~1300 for narrower search)</li>
+
+
+
+<li class="wp-block-list-item">20–80 Percentile: ~3800 seconds (~3000 seconds for trials, ~800 for narrower search)</li>
+
+
+
+<li class="wp-block-list-item">30–70 Percentile: ~3650 seconds (~3000 seconds for trials, ~650 for narrower search)</li>
+
+
+
+<li class="wp-block-list-item">40–60 Percentile: ~3600 seconds (~3000 seconds for trials, ~600 for narrower search)</li>
+
+
+
+<li class="wp-block-list-item">Shorter Search: ~4600 seconds</li>
+</ul>
+
+
+
+<p class="wp-block-paragraph" id="0f2b">The timing does not scale 1:1 with the number of total evaluations use; the trial method models tend to take less time to train given the same number of evaluations, with narrower searches taking even less time. The next question is whether this time-saving impacts model performance at all. We’ll begin by looking at validation log loss across the models.</p>
+
+
+
+<figure class="wp-block-image"><img decoding="async" src="../Images/f308dd98d5608ad032c5b199279fb5ad.png" alt="" class="wp-image-617990" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/08/14G3UvJ4ztDbiv7oyxkxFaA.png"/><figcaption class="wp-element-caption">Image by author</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph" id="f48a">Very little distinguishes the log losses across the models, but we’ll zoom in a little bit to get a visual look at the differences. We present the full range y-axis first to contextualize the minor differences in the log losses.</p>
+
+
+
+<figure class="wp-block-image"><img decoding="async" src="../Images/1d47e9eaa1139cd32b21439ee7a9744b.png" alt="" class="wp-image-617992" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/08/1DpNNw6YU18S1JSQPwMGWhg.png"/><figcaption class="wp-element-caption">Image by author</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph" id="3597">Ok so doing better, but we’ll zoom in one more time to see the trend most clearly.</p>
+
+
+
+<figure class="wp-block-image"><img decoding="async" src="../Images/181c466e5f15e74dc44cebee37a7f215.png" alt="" class="wp-image-617989" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/08/14Rx9v31cVCakXU94UyqCLg.png"/><figcaption class="wp-element-caption">Image by author</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph" id="23dc">We find that the 20–80 Percentile model attains the best validation log loss, slightly better than the Full Search and Shorter Search methods. The other percentile models all perform slightly worse than the wider search models, but the differences are minor across the board. We will look now at the differences in accuracy between the models.</p>
+
+
+
+<figure class="wp-block-image"><img decoding="async" src="../Images/a3bf657c936830e7f169cdb61c8743f5.png" alt="" class="wp-image-617988" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/08/1_c-SJ06OTOPKejBnAf5tEQ.png"/><figcaption class="wp-element-caption">Image by author</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph" id="6c88">As with the log losses, we see very minor differences and choose to zoom in to see a more definitive trend.</p>
+
+
+
+<figure class="wp-block-image"><img decoding="async" src="../Images/c836ae90384decd1c3de3ff36715cc29.png" alt="" class="wp-image-617991" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/08/1oHLDwW29hz00lk5tcQ8_QA.png"/><figcaption class="wp-element-caption">Image by author</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph" id="6cd1">The Full Search model attains the best accuracy of any model, but the 10–90 Percentile and 20–80 Percentile both beat out the Shorter Search model over the same number of evaluations. This is the kind of tradeoff I was hoping to identify with the caveat that this is task-specific and on a very small scale.</p>
+
+
+
+<p class="wp-block-paragraph" id="0191">The results using log loss and accuracy suggest the possibility of a possible efficiency-performance trade off when choosing how wide to make the XGBoost hyperparameter search space. We found that models trained on a narrower search space can outperform or compare to models trained on wider search spaces while taking less time to train overall.</p>
+
+
+
+<h2 class="wp-block-heading" id="ee84">Further Work</h2>
+
+
+
+<p class="wp-block-paragraph">The code provided in the prior section should provide modularity to run this test against different tasks without difficulty; the results for this classification task could vary from those of others. Altering the number of evaluations run when exploring the hyperparameter search space or the number of trials run to get percentile ranges could provide alternative conclusions from those found here. This work also assumed the set of hyperparameters to tune; another question I’d be interested in exploring would be the marginal effect of including additional hyperparameters to tune (i.e., colsample_bylevel) on the performance of an XGBoost model.<a href="https://medium.com/@noahswan19?source=post_page---byline--8903c365d1c7---------------------------------------"/></p>
+
+
+
+<h2 class="wp-block-heading">References</h2>
+
+
+
+<p class="wp-block-paragraph"><mdspan datatext="el1756398766258" class="mdspan-comment">[1] J. Sackmann, “<a href="https://github.com/JeffSackmann/tennis_atp">ATP Tennis Rankings, Results, and Stats</a>” (2024), GitHub</mdspan> (used with permission)</p>
+
+
+
+<p class="wp-block-paragraph">[2] M. Harrison, <em><a href="https://store.metasnake.com/xgboost">Effective XGBoost</a></em> (2023), MetaSnake</p>
+
+
+
+<p class="wp-block-paragraph">[3] B. Boehmke, “<a href="https://bradleyboehmke.github.io/xgboost_databricks_tuning/index.html#slide1">Advanced XGBoost Hyperparameter Tuning on Databricks</a>” (2021), GitHub</p>
+
+
+
+<p class="wp-block-paragraph">[4] J. Bergstra, R. Bardenet, Y. Bengio, B. Kégl, “<a href="https://papers.nips.cc/paper_files/paper/2011/hash/86e8f7ab32cfd12577bc2619bc635690-Abstract.html">Algorithms for Hyper-Parameter Optimization</a>” (2011), NeurIPS 2011</p>
+
+
+
+<p class="wp-block-paragraph"/>
+    
+</body>
+</html>

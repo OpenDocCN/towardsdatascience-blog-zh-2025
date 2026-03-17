@@ -1,0 +1,366 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.1//EN"
+  "http://www.w3.org/TR/xhtml11/DTD/xhtml11.dtd">
+
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+<title>Change-Aware Data Validation with Column-Level Lineage</title>
+<link href="../Styles/Style.css" type="text/css" rel="stylesheet"/>
+</head>
+<body>
+<h1>Change-Aware Data Validation with Column-Level Lineage</h1>
+<blockquote>原文：<a href="https://towardsdatascience.com/change-aware-data-validation-with-column-level-lineage/">https://towardsdatascience.com/change-aware-data-validation-with-column-level-lineage/</a></blockquote>
+<p class="wp-block-paragraph"><mdspan datatext="el1751565216662" class="mdspan-comment">Data transformation</mdspan> tools like dbt make constructing SQL data pipelines easy and systematic. But even with the added structure and clearly defined data models, pipelines can still become complex, which makes debugging issues and validating changes to data models difficult.</p>
+
+
+
+<p class="wp-block-paragraph">The increasing complexity of data transformation logic gives rise to the following issues:</p>
+
+
+
+<ol class="wp-block-list">
+<li class="wp-block-list-item"><strong>Traditional code review processes</strong> only look at <em>code</em> changes and exclude the data impact of those changes.</li>
+
+
+
+<li class="wp-block-list-item"><strong>Data impact resulting from code changes is hard to trace</strong>. In sprawling DAGs with nested dependencies, discovering how and where data impact occurs is extremely time-consuming, or near impossible.</li>
+</ol>
+
+
+
+<p class="wp-block-paragraph">Gitlab’s<a href="https://dbt.gitlabdata.com/#!/overview?g_v=1"> dbt DAG</a> (shown in the featured image above) is the perfect example of a data project that’s already a house-of-cards. Imagine trying to follow a simple SQL logic change to a column through this entire lineage DAG. Reviewing a data model update would be a daunting task.</p>
+
+
+
+<p class="wp-block-paragraph">How would you approach this type of review?</p>
+
+
+
+<h2 class="wp-block-heading">What is data validation?</h2>
+
+
+
+<p class="wp-block-paragraph">Data validation refers to the process used to determine that the data is correct in terms of real-world requirements. This means ensuring that the<strong> </strong>SQL logic in a data model behaves as intended by verifying that the data is correct. Validation is usually performed after modifying a data model, such as accommodating new requirements, or as part of a refactor.</p>
+
+
+
+<h3 class="wp-block-heading">A unique review challenge</h3>
+
+
+
+<p class="wp-block-paragraph">Data has states and is directly affected by the transformation used to generate it. This is why reviewing data model changes is a unique challenge, because both the code <em>and</em> the data needs to be reviewed.</p>
+
+
+
+<p class="wp-block-paragraph">Due to this, data model updates should be reviewed not only for completeness, but also context. In other words, that the data is correct and existing data and metrics were not unintentionally altered.</p>
+
+
+
+<h3 class="wp-block-heading">Two extremes of data validation</h3>
+
+
+
+<p class="wp-block-paragraph">In most data teams, the person making the change relies on institutional knowledge, intuition, or past experience to assess the impact and validate the change.</p>
+
+
+
+<blockquote class="wp-block-quote is-layout-flow wp-block-quote-is-layout-flow">
+<p class="wp-block-paragraph"><em>“I’ve made a change to X, I think I know what the impact should be. I’ll check it by running Y”</em></p>
+</blockquote>
+
+
+
+<p class="wp-block-paragraph">The validation method usually falls into one of two extremes, neither of which is ideal:</p>
+
+
+
+<ol class="wp-block-list">
+<li class="wp-block-list-item"><strong>Spot-checking</strong> with queries and some high-level checks like row count and schema. It’s fast but risks missing actual impact. Critical and silent errors can go unnoticed.</li>
+
+
+
+<li class="wp-block-list-item"><strong>Exhaustive checking</strong> of every single downstream model. It’s slow and resource intensive, and can be costly as the pipeline grows.</li>
+</ol>
+
+
+
+<p class="wp-block-paragraph">This results in a data review process that is unstructured, hard to repeat, and often introduces silent errors. A new method is required that helps the engineer to perform precise and targeted data validation.</p>
+
+
+
+<h2 class="wp-block-heading">A better approach through understanding data model dependencies</h2>
+
+
+
+<p class="wp-block-paragraph">To validate a change to a data project, it’s important to understand the relationship between models and how data flows through the project. These dependencies between models inform us how data is passed and transformed from one model to another.</p>
+
+
+
+<h3 class="wp-block-heading">Analyze the relationship between models</h3>
+
+
+
+<p class="wp-block-paragraph">As we’ve seen, data project DAGs can be huge, but a data model change only affects a subset of models. By isolating this subset and then analyzing the relationship between the models, you can peel back the layers of complexity and focus just on the models that actually need validating, given a specific SQL logic change.</p>
+
+
+
+<p class="wp-block-paragraph">The types of dependencies in a data project are:</p>
+
+
+
+<p class="wp-block-paragraph"><strong>Model-to model</strong></p>
+
+
+
+<p class="wp-block-paragraph">A structural dependency in which columns are selected from an upstream model.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-sql">--- downstream_model
+select
+  a,
+  b
+from {{ ref("upstream_model") }}</code></pre>
+
+
+
+<p class="wp-block-paragraph"><strong>Column-to-column</strong></p>
+
+
+
+<p class="wp-block-paragraph">A projection dependency that selects, renames, or transforms an upstream column.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-sql">--- downstream_model
+select
+  a,
+  b as b2
+from {{ ref("upstream_model") }}</code></pre>
+
+
+
+<p class="wp-block-paragraph"><strong>Model-to-column</strong></p>
+
+
+
+<p class="wp-block-paragraph">A filter dependency in which a downstream model uses an upstream model in a where, join, or other conditional clause.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-sql">-- downstream_model
+select
+  a
+from {{ ref("upstream_model") }}
+where b &gt; 0</code></pre>
+
+
+
+<p class="wp-block-paragraph">Understanding the dependencies between models helps us to define the impact radius of a data model logic change.</p>
+
+
+
+<h2 class="wp-block-heading">Identify the impact radius</h2>
+
+
+
+<p class="wp-block-paragraph">When making changes to a data model’s SQL, it’s important to understand which other models might be affected (the models you must check). At the high level, this is done by model-to-model relationships.<strong> </strong>This subset of DAG nodes is known as the impact radius.</p>
+
+
+
+<p class="wp-block-paragraph">In the DAG below, the impact radius includes nodes B (the modified model) and D (the downstream model). In dbt, these models can be identified using the modified+ selector.</p>
+
+
+
+<figure class="wp-block-image size-full"><img decoding="async" src="../Images/47e9eed16561b7a9f4bc488c6997ea42.png" alt="DAG showing modified model B and downstream dependency D. Upstream model A and unrelated model C are not impacted." class="wp-image-607331" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/07/lineage-1.png"/><figcaption class="wp-element-caption">DAG showing modified model B and downstream dependency D. Upstream model A and unrelated model C are not impacted (Image by author)</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">Identifying modified nodes and downstream is a great start, and by isolating changes like this you will reduce the potential data validation area. However, this could still result in a large number of downstream models.</p>
+
+
+
+<p class="wp-block-paragraph">Classifying the <em>types</em> of SQL changes can further help you to prioritize which models actually require validation by understanding the severity of the change, eliminating branches with changes that are known to be safe.</p>
+
+
+
+<h2 class="wp-block-heading">Classify the SQL change</h2>
+
+
+
+<p class="wp-block-paragraph">Not all SQL changes carry the same level of risk to downstream data, and so should be categorized accordingly. By classifying SQL changes this way, you can add a systematic approach to your data review process.</p>
+
+
+
+<p class="wp-block-paragraph">A SQL change to a data model can be classified as one of the following:</p>
+
+
+
+<h3 class="wp-block-heading">Non-breaking change</h3>
+
+
+
+<p class="wp-block-paragraph">Changes that do not impact the data in downstream models such as adding new columns, adjustments to SQL formatting, or adding comments etc.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-sql">-- Non-breaking change: New column added
+select
+  id,
+  category,
+  created_at,
+  -- new column
+  now() as ingestion_time
+from {{ ref('a') }}</code></pre>
+
+
+
+<h3 class="wp-block-heading">Partial-breaking change</h3>
+
+
+
+<p class="wp-block-paragraph">Changes that only impact downstream models that reference certain columns such as removing or renaming a column; or modifying a column definition.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-sql">-- Partial breaking change: `category` column renamed
+select
+  id,
+  created_at,
+  category as event_category
+from {{ ref('a') }}</code></pre>
+
+
+
+<h3 class="wp-block-heading">Breaking change</h3>
+
+
+
+<p class="wp-block-paragraph">Changes that impact all downstream models such as filtering, sorting, or otherwise changing the structure or meaning of the transformed data.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-sql">-- Breaking change: Filtered to exclude data
+select
+  id,
+  category,
+  created_at
+from {{ ref('a') }}
+where category != 'internal'</code></pre>
+
+
+
+<h2 class="wp-block-heading">Apply classification to reduce scope</h2>
+
+
+
+<p class="wp-block-paragraph">After applying these classifications the impact radius, and the number of models that need to be validated, can be significantly reduced.</p>
+
+
+
+<figure class="wp-block-image size-full"><img data-dominant-color="959fa3" data-has-transparency="false" style="--dominant-color: #959fa3;" decoding="async" src="../Images/c14a7ba826a84db0cb926e7b45be495c.png" alt="DAG showing three categories of change: non-breaking, partial-breaking, and breaking" class="wp-image-607332 not-transparent" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/07/lineage-2.png"/><figcaption class="wp-element-caption">DAG showing three categories of change: non-breaking, partial-breaking, and breaking (Image by author)</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">In the above DAG, nodes B, C and F have been modified, resulting in potentially 7 nodes that need to be validated (C to E). However, not each branch contains SQL changes that actually require validation. Let’s take a look at each branch:</p>
+
+
+
+<h3 class="wp-block-heading">Node C: Non-breaking change</h3>
+
+
+
+<p class="wp-block-paragraph">C is classified as a non-breaking change. Therefore both C and H do not need to be checked, they can be eliminated.</p>
+
+
+
+<h3 class="wp-block-heading">Node B: Partial-breaking change</h3>
+
+
+
+<p class="wp-block-paragraph">B is classified as a partial-breaking change due to change to the column B.C1. Therefore, D and E need to be checked <em>only</em> if they reference column B.C1.</p>
+
+
+
+<h3 class="wp-block-heading">Node F: Breaking change</h3>
+
+
+
+<p class="wp-block-paragraph">The modification to model F is classified as a breaking-change. Therefore, all downstream nodes (G and E) need to be checked for impact. For instance, model g might aggregate data from the modified upstream column</p>
+
+
+
+<p class="wp-block-paragraph">The initial 7 nodes have already been reduced to 5 that need to be checked for data impact (B, D, E, F, G). Now, by inspecting the SQL changes at the column level, we can reduce that number even further.</p>
+
+
+
+<h2 class="wp-block-heading">Narrowing the scope further with column-level lineage</h2>
+
+
+
+<p class="wp-block-paragraph">Breaking and non-breaking changes are easy to classify but, when it comes to inspecting partial-breaking changes, the models need to be analyzed at the column level.</p>
+
+
+
+<p class="wp-block-paragraph">Let’s take a closer look at the partial-breaking change in model B, in which the logic of column c1 has been modified. This modification could potentially result in 4 impacted downstream nodes: D, E, K, and J. After tracking column usage downstream, this subset can be further reduced.</p>
+
+
+
+<figure class="wp-block-image size-full"><img decoding="async" src="../Images/78e471f0cbed487a7a0355c808b0f5db.png" alt="DAG showing the column-level lineage used to trace the downstream impact of a change to column B.c1" class="wp-image-607333" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/07/lineage-3.png"/><figcaption class="wp-element-caption"><em>DAG showing the column-level lineage used to trace the downstream impact of a change to column B.c1</em> (Image by author)</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">Following column B.c1 downstream we can see that:</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">B.c1 → D.c1 is a column-to-column (projection) dependency.</li>
+
+
+
+<li class="wp-block-list-item">D.c1 → E is a model-to-column dependency.</li>
+
+
+
+<li class="wp-block-list-item">D → K is a model-to-model dependency. However, as D.c1 is not used in K, this model can be eliminated.</li>
+</ul>
+
+
+
+<p class="wp-block-paragraph">Therefore, the models that need to be validated in this branch are B, D, and E. Together with the breaking change F and downstream G, the total models to be validated in this diagram are F, G, B, D, and E, or just 5 out of a total of 9 potentially impacted models.</p>
+
+
+
+<h2 class="wp-block-heading">Conclusion</h2>
+
+
+
+<p class="wp-block-paragraph">Data validation after a model change is difficult, especially in large and complex DAGs. It’s easy to miss silent errors and performing validation becomes a daunting task, with data models often feeling like black boxes when it comes to downstream impact.</p>
+
+
+
+<h3 class="wp-block-heading">A structured and repeatable process</h3>
+
+
+
+<p class="wp-block-paragraph">By using this change-aware data validation technique, you can bring structure and precision to the review process, making it systematic and repeatable. This reduces the number of models that need to be checked, simplifies the review process, and lowers costs by only validating models that actually require it.</p>
+
+
+
+<h2 class="wp-block-heading">Before you go…</h2>
+
+
+
+<p class="wp-block-paragraph">Dave is a senior technical advocate at <a href="https://reccehq.com">Recce</a>, where we’re building a toolkit to enable advanced data validation workflows. He’s always happy to chat about SQL, data engineering, or helping teams navigate their data validation challenges. Connect with Dave on <a href="https://www.linkedin.com/in/daveflynn81/">LinkedIn</a>.</p>
+
+
+
+<p class="wp-block-paragraph">Research for this article was made possible by my colleague Chen En Lu (<a href="https://github.com/popcornylu" data-type="link" data-id="https://github.com/popcornylu">Popcorny</a>).</p>
+
+
+
+<p class="wp-block-paragraph"/>
+    
+</body>
+</html>

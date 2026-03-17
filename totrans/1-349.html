@@ -1,0 +1,413 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.1//EN"
+  "http://www.w3.org/TR/xhtml11/DTD/xhtml11.dtd">
+
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+<title>How to Import Pre-Annotated Data into Label Studio and Run the Full Stack with Docker</title>
+<link href="../Styles/Style.css" type="text/css" rel="stylesheet"/>
+</head>
+<body>
+<h1>How to Import Pre-Annotated Data into Label Studio and Run the Full Stack with Docker</h1>
+<blockquote>原文：<a href="https://towardsdatascience.com/how-to-import-pre-annotated-data-into-label-studio-and-run-the-full-stack-with-docker/">https://towardsdatascience.com/how-to-import-pre-annotated-data-into-label-studio-and-run-the-full-stack-with-docker/</a></blockquote>
+<h2 class="wp-block-heading"><mdspan datatext="el1756253392400" class="mdspan-comment">Introduction</mdspan></h2>
+
+
+
+<p class="wp-block-paragraph">Dataset preparation for an object detection training workflow can take a long time and often be frustrating. <a href="https://labelstud.io" data-type="link" data-id="https://labelstud.io">Label Studio</a>, an open-source data annotation tool, can lend a hand by providing an easy way to annotate datasets. It supports a wide variety of annotation templates, including computer vision, natural language processing, and audio or speech processing. However, we’ll focus specifically on the object detection workflow.</p>
+
+
+
+<p class="wp-block-paragraph">But what if you want to take advantage of pre-annotated open-source datasets, such as the Pascal VOC dataset? In this article, I’ll show you how to easily import those tasks into Label Studio’s format while setting up the entire stack — including a PostgreSQL database, <a href="https://www.min.io/" data-type="link" data-id="https://www.min.io/">MinIO</a> object storage, an Nginx reverse proxy, and the Label Studio backend. <a href="https://www.min.io/" data-type="link" data-id="https://www.min.io/">MinIO</a> is an S3-compatible object storage service: you might use cloud-native storage in production, but you can also run it locally for development and testing.</p>
+
+
+
+<p class="wp-block-paragraph">In this tutorial, we’ll go through the following steps:</p>
+
+
+
+<ol class="wp-block-list">
+<li class="wp-block-list-item"><strong>Convert Pascal VOC annotations</strong> – transform bounding boxes from XML into Label Studio tasks in JSON format.</li>
+
+
+
+<li class="wp-block-list-item"><strong>Run the full stack</strong> – start Label Studio with PostgreSQL, MinIO, Nginx, and the backend using Docker Compose.</li>
+
+
+
+<li class="wp-block-list-item"><strong>Set up a Label Studio project</strong> – configure a new project inside the Label Studio interface.</li>
+
+
+
+<li class="wp-block-list-item"><strong>Upload images and tasks to MinIO</strong> – store your dataset in an S3-compatible bucket.</li>
+
+
+
+<li class="wp-block-list-item"><strong>Connect MinIO to Label Studio</strong>  – add the cloud storage bucket to your project so Label Studio can fetch images and annotations directly.</li>
+</ol>
+
+
+
+<h3 class="wp-block-heading">Prerequisites</h3>
+
+
+
+<p class="wp-block-paragraph">To follow this tutorial, make sure you have:</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item"><a href="https://docs.docker.com/desktop/setup/install/windows-install"><strong>Docker and Docker Compose</strong> installed and configured</a>.</li>
+
+
+
+<li class="wp-block-list-item"><a href="https://www.kaggle.com/datasets/huanghanchina/pascal-voc-2012">The <strong>Pascal VOC dataset</strong> downloaded from Kaggle</a> (Database Contents License).</li>
+
+
+
+<li class="wp-block-list-item">(Optional) <a href="https://www.python.org/downloads">Python 3.10 or higher</a> installed on your system, which will be used for file conversion.</li>
+
+
+
+<li class="wp-block-list-item">(Optional) the <strong><a href="https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html">AWS CLI</a></strong> installed, if you want to automate object uploads to MinIO.</li>
+</ul>
+
+
+
+<h2 class="wp-block-heading">From VOC to Label Studio: Preparing Annotations</h2>
+
+
+
+<p class="wp-block-paragraph">The Pascal VOC dataset has a folder structure where the train and test datasets are already split. The <em>Annotations</em> folder contains the annotation files for each image. In total, the training set includes 17,125 images, each with a corresponding annotation file.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-bash">.
+└── VOC2012
+    ├── Annotations  # 17125 annotations
+    ├── ImageSets 
+    │   ├── Action
+    │   ├── Layout
+    │   ├── Main
+    │   └── Segmentation
+    ├── JPEGImages  # 17125 images
+    ├── SegmentationClass
+    └── SegmentationObject</code></pre>
+
+
+
+<p class="wp-block-paragraph">The XML snippet below, taken from one of the annotations, defines a bounding box around an object labeled “person”. The box is specified using four pixel coordinates: <code>xmin</code>, <code>ymin</code>, <code>xmax</code>, and <code>ymax</code>.</p>
+
+
+
+<figure class="wp-block-image size-full"><img decoding="async" src="../Images/332bdc38fe5ab76d5cafc17f84537e83.png" alt="" class="wp-image-615916" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/08/image-150.png"/><figcaption class="wp-element-caption">XML snippet from the Pascal VOC dataset (Image by Author)</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">The illustration below shows the inner rectangle as the annotated bounding box, defined by the top-left corner (<code>xmin</code>, <code>ymin</code>) and the bottom-right corner (<code>xmax</code>, <code>ymax</code>), within the outer rectangle representing the image.</p>
+
+
+
+<figure class="wp-block-image size-large is-resized"><img decoding="async" src="../Images/f9305d8f47e16842380111a8bdf124c0.png" alt="" class="wp-image-615922" style="width:517px;height:auto" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/08/xml_boundingbox-1024x674.png"/><figcaption class="wp-element-caption">Pascal VOC bounding box coordinates in pixel format (Image by Author)</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">Label Studio expects each bounding box to be defined by its width, height, and top-left corner, expressed as percentages of the image size. Below is a working example of the converted JSON format for the annotation shown above.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-javascript">{
+  "data": {
+    "image": "s3://&lt;bucket_name&gt;/&lt;prefix&gt;/2007_000027.jpg"
+  },
+  "annotations": [
+    {
+      "result": [
+        {
+          "from_name": "label",
+          "to_name": "image",
+          "type": "rectanglelabels",
+          "value": {
+            "x": 35.802,
+            "y": 20.20,
+            "width": 36.01,
+            "height": 50.0,
+            "rectanglelabels": ["person"]
+          }
+        }
+      ]
+    }
+  ]
+}</code></pre>
+
+
+
+<p class="wp-block-paragraph">As you can see in the JSON format, you also need to specify the location of the image file — for example, a path in MinIO or an S3 bucket if you’re using cloud storage.</p>
+
+
+
+<p class="wp-block-paragraph">While preprocessing the data, I merged the entire dataset, even though it was already divided into training and validation. This simulates a real-world scenario where you typically begin with a single dataset and perform the splitting into training and validation sets yourself before training.</p>
+
+
+
+<h2 class="wp-block-heading">Running the Full Stack with Docker Compose</h2>
+
+
+
+<p class="wp-block-paragraph">I merged the <code>docker-compose.yml</code> and <code>docker-compose.minio.yml</code> files into a simplified single configuration so the entire stack can run on the same network. Both files were taken from the official <a href="https://github.com/HumanSignal/label-studio" data-type="link" data-id="https://github.com/HumanSignal/label-studio">Label Studio GitHub repository</a>.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-yaml">
+
+services:
+  nginx:
+    # Acts as a reverse proxy for Label Studio frontend/backend
+    image: heartexlabs/label-studio:latest
+    restart: unless-stopped
+    ports:
+      - "8080:8085" 
+      - "8081:8086"
+    depends_on:
+      - app
+    environment:
+      - LABEL_STUDIO_HOST=${LABEL_STUDIO_HOST:-}
+    
+    volumes:
+      - ./mydata:/label-studio/data:rw # Stores Label Studio projects, configs, and uploaded files
+    command: nginx
+
+  app:
+    stdin_open: true
+    tty: true
+    image: heartexlabs/label-studio:latest
+    restart: unless-stopped
+    expose:
+      - "8000"
+    depends_on:
+      - db
+    environment:
+      - DJANGO_DB=default
+      - POSTGRE_NAME=postgres
+      - POSTGRE_USER=postgres
+      - POSTGRE_PASSWORD=
+      - POSTGRE_PORT=5432
+      - POSTGRE_HOST=db
+      - LABEL_STUDIO_HOST=${LABEL_STUDIO_HOST:-}
+      - JSON_LOG=1
+    volumes:
+      - ./mydata:/label-studio/data:rw  # Stores Label Studio projects, configs, and uploaded files
+    command: label-studio-uwsgi
+
+  db:
+    image: pgautoupgrade/pgautoupgrade:13-alpine
+    hostname: db
+    restart: unless-stopped
+    environment:
+      - POSTGRES_HOST_AUTH_METHOD=trust
+      - POSTGRES_USER=postgres
+    volumes:
+      - ${POSTGRES_DATA_DIR:-./postgres-data}:/var/lib/postgresql/data  # Persistent storage for PostgreSQL database
+  minio:
+    image: "minio/minio:${MINIO_VERSION:-RELEASE.2025-04-22T22-12-26Z}"
+    command: server /data --console-address ":9009"
+    restart: unless-stopped
+    ports:
+      - "9000:9000"
+      - "9009:9009"
+    volumes:
+      - minio-data:/data   # Stores uploaded dataset objects (like images or JSON tasks)
+    # configure env vars in .env file or your systems environment
+    environment:
+      - MINIO_ROOT_USER=${MINIO_ROOT_USER:-minio_admin_do_not_use_in_production}
+      - MINIO_ROOT_PASSWORD=${MINIO_ROOT_PASSWORD:-minio_admin_do_not_use_in_production}
+      - MINIO_PROMETHEUS_URL=${MINIO_PROMETHEUS_URL:-http://prometheus:9090}
+      - MINIO_PROMETHEUS_AUTH_TYPE=${MINIO_PROMETHEUS_AUTH_TYPE:-public}
+ 
+volumes:
+  minio-data: # Named volume for MinIO object storage</code></pre>
+
+
+
+<p class="wp-block-paragraph">This simplified Docker Compose file defines four core services with their volume mappings:</p>
+
+
+
+<p class="wp-block-paragraph"><strong>App</strong> – runs the Label Studio backend itself.</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">Shares the <strong><code>mydata</code></strong> directory with Nginx, which stores projects, configurations, and uploaded files.</li>
+
+
+
+<li class="wp-block-list-item">Uses a <strong>bind mount</strong>: <code>./mydata:/label-studio/data:rw</code> → maps a folder from your host into the container.</li>
+</ul>
+
+
+
+<p class="wp-block-paragraph"><strong>Nginx</strong> – acts as a reverse proxy for the Label Studio frontend and backend.</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">Shares the <strong><code>mydata</code></strong> directory with the App service.</li>
+</ul>
+
+
+
+<p class="wp-block-paragraph"><strong>PostgreSQL (db)</strong> – manages metadata and project information.</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">Stores persistent database files.</li>
+
+
+
+<li class="wp-block-list-item">Uses a <strong>bind mount</strong>: <code>${POSTGRES_DATA_DIR:-./postgres-data}:/var/lib/postgresql/data</code>.</li>
+</ul>
+
+
+
+<p class="wp-block-paragraph"><strong>MinIO</strong> – an S3-compatible object storage service.</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">Stores dataset objects such as images or JSON annotation tasks.</li>
+
+
+
+<li class="wp-block-list-item">Uses a <strong>named volume</strong>: <code>minio-data:/data</code>.</li>
+</ul>
+
+
+
+<p class="wp-block-paragraph">When you mount host folders such as <code>./mydata</code> and <code>./postgres-data</code>, you need to assign ownership on the host to the same user that runs inside the container. Label Studio does not run as root — it uses a non-root user with <strong>UID 1001</strong>. If the host directories are owned by a different user, the container won’t have write access and you’ll run into <em>permission denied</em> errors.</p>
+
+
+
+<p class="wp-block-paragraph">After creating these folders in your project directory, you can adjust their ownership with:</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-bash">mkdir mydata 
+mkdir postgres-data
+sudo chown -R 1001:1001 ./mydata ./postgres-data</code></pre>
+
+
+
+<p class="wp-block-paragraph">Now that the directories are prepared, we can bring up the stack using Docker Compose. Simply run:</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-bash">docker compose up -d</code></pre>
+
+
+
+<p class="wp-block-paragraph">It may take a few minutes to pull all the required images from Docker Hub and set up Label Studio. Once the setup is complete, open <a href="http://localhost:8080">http://localhost:8080</a> in your browser to access the Label Studio interface. You need to create a new account, and then you can log in with your credentials to access the interface. You can enable a legacy API token by going to <strong>Organization → API Token Settings</strong>. This token lets you communicate with the Label Studio API, which is especially useful for automation tasks. </p>
+
+
+
+<h2 class="wp-block-heading">Set up a Label Studio project</h2>
+
+
+
+<p class="wp-block-paragraph">Now we can create our first data annotation project on Label Studio, specifically for an object detection workflow. But before starting to annotate your images, you need to define the types of classes to choose from. In the Pascal VOC dataset, there are 20 types of pre-annotated objects. </p>
+
+
+
+<figure class="wp-block-image size-full"><img decoding="async" src="../Images/468736d38cc3905335ede2f35d0ed309.png" alt="" class="wp-image-617277" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/08/label_studio_labels-1.png"/><figcaption class="wp-element-caption">XML-style labeling setup (Image by Author)</figcaption></figure>
+
+
+
+<h2 class="wp-block-heading">Upload images and tasks to MinIO</h2>
+
+
+
+<p class="wp-block-paragraph">You can open the MinIO user interface in your browser at <strong>localhost:9000</strong>, and then log in using the credentials you specified under the relevant service in the <code>docker-compose.yml</code> file.</p>
+
+
+
+<p class="wp-block-paragraph">I created a bucket with folders, one of which is used for storing images and another for JSON tasks formatted according to the instructions above.</p>
+
+
+
+<figure class="wp-block-image size-large"><img decoding="async" src="../Images/3ff2fa20054240b2eeeb0d82ab1f7bf0.png" alt="" class="wp-image-617350" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/08/minio-1024x226.png"/><figcaption class="wp-element-caption">Screenshot of an example bucket in MinIO (Image by Author)</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">We set up an S3-like service locally that allows us to simulate S3 cloud storage without incurring any charges. If you want to transfer files to an S3 bucket on AWS, it’s better to do this directly over the internet, considering the data transfer costs. The good news is that you can also interact with your MinIO bucket using the AWS CLI. To do this, you need to add a profile in <code>~/.aws/config</code> and provide the corresponding credentials in <code>~/.aws/credentials</code> under the same profile name.</p>
+
+
+
+<p class="wp-block-paragraph">And then, you can easily sync with your local folder using the following commands:</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-bash">#!/bin/bash
+set -e
+
+PROFILE=&lt;your_profile_name&gt;
+MINIO_ENDPOINT=&lt;your_minio_endpoint&gt;   # e.g. http://localhost:9000
+BUCKET_NAME=&lt;your_bucket_name&gt;
+SOURCE_DIR=&lt;your_local_source_dir&gt;    
+DEST_DIR=&lt;your_bucket_destination_dir&gt; 
+
+aws s3 sync \
+      --endpoint-url "$MINIO_ENDPOINT" \
+      --no-verify-ssl \
+      --profile "$PROFILE" \
+      "$SOURCE_DIR" "s3://$BUCKET_NAME/$DEST_DIR"
+
+ 
+</code></pre>
+
+
+
+<h2 class="wp-block-heading">Connect MinIO to Label Studio</h2>
+
+
+
+<p class="wp-block-paragraph">After all the data, including the images and annotations, has been uploaded, we can move on to adding cloud storage to the project we created in the previous step.</p>
+
+
+
+<p class="wp-block-paragraph">From your project settings, go to <strong>Cloud Storage</strong> and add the required parameters, such as the endpoint (which points to the service name in the Docker stack along with the port number, e.g., <code>minio:9000</code>), the bucket name, and the relevant prefix where the annotation files are stored. Each path inside the JSON files will then point to the corresponding image.</p>
+
+
+
+<figure class="wp-block-image size-full"><img decoding="async" src="../Images/1da8b29892df053c45bf0e2dcf1b72c7.png" alt="" class="wp-image-617368" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/08/cloud_storage_setting.png"/><figcaption class="wp-element-caption">Screenshot of the Cloud Storage settings (Image by Author)</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">After verifying that the connection is working, you can sync your project with the cloud storage. You may need to run the sync command multiple times since the dataset contains 22,263 images. It may appear to fail at first, but when you restart the sync, it continues to make progress. Eventually, all the Pascal VOC data will be successfully imported into Label Studio.</p>
+
+
+
+<figure class="wp-block-image size-large"><img decoding="async" src="../Images/9d029fab824959d3fe385e92f27f52f2.png" alt="" class="wp-image-617373" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/08/label_studio_project_1-1024x645.png"/><figcaption class="wp-element-caption">Screenshot of the task list (Image by Author)</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">You can see the imported tasks with their thumbnail images in the task list. When you click on a task, the image will appear with its pre-annotations.</p>
+
+
+
+<figure class="wp-block-image size-large"><img decoding="async" src="../Images/b351b77fff669d49a5ae9cf2286aa122.png" alt="" class="wp-image-617375" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/08/label_studio_project_2-1024x510.png"/><figcaption class="wp-element-caption">Screenshot of an image with bounding boxes (Image by Author)</figcaption></figure>
+
+
+
+<h2 class="wp-block-heading">Conclusions</h2>
+
+
+
+<p class="wp-block-paragraph">In this tutorial, we demonstrated how to import the Pascal VOC dataset into Label Studio by converting XML annotations into Label Studio’s JSON format, running a full stack with Docker Compose, and connecting MinIO as S3-compatible storage. This setup enables you to work with large-scale, pre-annotated datasets in a reproducible and cost-effective way, all on your local machine.  Testing your project settings and file formats locally first will ensure a smoother transition when moving to cloud environments.</p>
+
+
+
+<p class="wp-block-paragraph">I hope this tutorial helps you kickstart your data annotation project with pre-annotated data that you can easily expand or validate. Once your dataset is ready for training, you can export all the tasks in popular formats such as COCO or YOLO.</p>
+    
+</body>
+</html>

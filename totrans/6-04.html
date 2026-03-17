@@ -1,0 +1,221 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.1//EN"
+  "http://www.w3.org/TR/xhtml11/DTD/xhtml11.dtd">
+
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+<title>Exploring New Hyperparameter Dimensions with Laplace Approximated Bayesian Optimization</title>
+<link href="../Styles/Style.css" type="text/css" rel="stylesheet"/>
+</head>
+<body>
+<h1>Exploring New Hyperparameter Dimensions with Laplace Approximated Bayesian Optimization</h1>
+<blockquote>原文：<a href="https://towardsdatascience.com/exploring-new-hyperparameter-dimensions-with-laplace-approximated-bayesian-optimization-588a0891ca5b/">https://towardsdatascience.com/exploring-new-hyperparameter-dimensions-with-laplace-approximated-bayesian-optimization-588a0891ca5b/</a></blockquote><figure class="wp-block-image size-large"><img data-dominant-color="023454" data-has-transparency="true" style="--dominant-color: #023454;" decoding="async" width="1480" height="817" src="../Images/2b2ce9222086e81445bd46fecf28f655.png" alt="Image by author from canva" class="wp-image-596539 has-transparency" srcset="https://towardsdatascience.com/wp-content/uploads/2025/01/1LnZjq8iJ2Cm2oj1YxeyfUQ.png 1480w, https://towardsdatascience.com/wp-content/uploads/2025/01/1LnZjq8iJ2Cm2oj1YxeyfUQ-300x166.png 300w, https://towardsdatascience.com/wp-content/uploads/2025/01/1LnZjq8iJ2Cm2oj1YxeyfUQ-1024x565.png 1024w, https://towardsdatascience.com/wp-content/uploads/2025/01/1LnZjq8iJ2Cm2oj1YxeyfUQ-768x424.png 768w" sizes="(max-width: 1480px) 100vw, 1480px" data-original-src="https://towardsdatascience.com/wp-content/uploads/2025/01/1LnZjq8iJ2Cm2oj1YxeyfUQ.png"/><figcaption class="wp-element-caption">Image by author from canva</figcaption></figure>
+<p class="wp-block-paragraph"><strong>When I notice my model is overfitting</strong>, I often think, "<strong>It is time to regularize</strong>". But how do I decide which regularization method to use (L1, L2) and what parameters to choose? Typically, I perform hyperparameter optimization by means of a grid search to select the settings. However, what happens if the independent variables have different scales or varying levels of influence? Can I design a hyperparameter grid with different regularization coefficients for each variable? Is this type of optimization feasible in high-dimensional spaces? And are there alternative ways to design regularization? Let’s explore this with a hypothetical example.</p>
+<h2 class="wp-block-heading">Use case</h2>
+<p class="wp-block-paragraph">My fictional example is a binary classification use case with 3 explanatory variables. Each of these variables is categorical and has 7 different categories. My reproducible use case is in this <a href="https://github.com/kapytaine/bayesian_optimisation/blob/master/notebooks/bayesian_optimization_instead_of_hyperoptimization_artificial_dataset.ipynb">notebook</a>. The function that generates the dataset is the following:</p>
+<pre class="wp-block-prismatic-blocks"><code class="language-python">import numpy as np
+import pandas as pd
+
+def get_classification_dataset():
+    n_samples = 200
+    cats = ["a", "b", "c", "d", "e", "f"]
+    X = pd.DataFrame(
+        data={
+            "col1": np.random.choice(cats, size=n_samples),
+            "col2": np.random.choice(cats, size=n_samples),
+            "col3": np.random.choice(cats, size=n_samples),
+        }
+    )
+    X_preprocessed = pd.get_dummies(X)
+
+    theta = np.random.multivariate_normal(
+        np.zeros(len(cats) * X.shape[1]),
+        np.diag(np.array([1e-1] * len(cats) + [1] * len(cats) + [1e1] * len(cats))),
+    )
+
+    y = pd.Series(
+        data=np.random.binomial(1, expit(np.dot(X_preprocessed.to_numpy(), theta))),
+        index=X_preprocessed.index,
+    )
+    return X_preprocessed, y</code></pre>
+<p class="wp-block-paragraph">For information, I deliberately chose 3 different values for the theta covariance matrix to showcase the benefit of the Laplace approximated bayesian optimization method. If the values were somehow similar, the interest would be minor.</p>
+<h2 class="wp-block-heading">Benchmark</h2>
+<p class="wp-block-paragraph">Along with <strong>a simple baseline model that predicts the mean observed value</strong> on the training dataset (used for comparison purposes), I opted to design a slightly more complex model. I decided to one-hot encode the three independent variables and apply <strong>a logistic regression model</strong> on top of this basic preprocessing. For regularization, I chose an L2 design and aimed to find the optimal regularization coefficient using two techniques: <strong>grid search</strong> and <strong>Laplace approximated bayesian optimization</strong>, as you may have anticipated by now. Finally, I evaluated the model on a test dataset using two metrics (arbitrarily selected): log loss and AUC ROC.</p>
+<p class="wp-block-paragraph">Before presenting the results, let’s first take a closer look at the bayesian model and how we optimize it.</p>
+<h2 class="wp-block-heading">Bayesian model</h2>
+<p class="wp-block-paragraph">In the bayesian framework, the parameters are no longer fixed constants, but random variables. Instead of maximizing the likelihood to estimate these unknown parameters, we now optimize the posterior distribution of the random parameters, given the observed data. This requires us to choose, often somewhat arbitrarily, the design and parameters of the prior. However, it is also possible to treat the parameters of the prior as random variables themselves – like in <em>Inception</em>, where the layers of uncertainty keep stacking on top of each other…</p>
+<p class="wp-block-paragraph">In this study, I have chosen the following model:</p>
+<figure class="wp-block-image size-large"><img data-dominant-color="f2f2f2" data-has-transparency="true" style="--dominant-color: #f2f2f2;" decoding="async" width="376" height="95" src="../Images/c914d7e80ee2496407b81738ef204cc4.png" alt="" class="wp-image-596540 has-transparency" srcset="https://towardsdatascience.com/wp-content/uploads/2025/01/1630IptT6oc2D1EElZCuGmw.png 376w, https://towardsdatascience.com/wp-content/uploads/2025/01/1630IptT6oc2D1EElZCuGmw-300x76.png 300w" sizes="(max-width: 376px) 100vw, 376px" data-original-src="https://towardsdatascience.com/wp-content/uploads/2025/01/1630IptT6oc2D1EElZCuGmw.png"/></figure>
+<p class="wp-block-paragraph">I have logically chosen a bernouilli model for Y_i | θ, a normal centered prior corresponding to a L2 regularization for θ | Σ and finally for Σ_i^{-1}, I chose a Gamma model. I chose to model the precision matrix instead of the covariance matrix as it is traditional in the literature, like in scikit learn user guide for the Bayesian linear regression [2].</p>
+<p class="wp-block-paragraph">In addition to this written model, I assumed the Y_i and Y_j are conditionally (on θ) independent as well as Y_i and Σ.</p>
+<h2 class="wp-block-heading">Calibration</h2>
+<h3 class="wp-block-heading">Likelihood</h3>
+<p class="wp-block-paragraph">According to the model, the likelihood can consequently be written:</p>
+<figure class="wp-block-image size-large"><img data-dominant-color="f4f4f4" data-has-transparency="true" style="--dominant-color: #f4f4f4;" loading="lazy" decoding="async" width="801" height="252" src="../Images/c6a96fe2bf86214702a77af8234c2309.png" alt="" class="wp-image-596541 has-transparency" srcset="https://towardsdatascience.com/wp-content/uploads/2025/01/0coVQ4RMmvb8Z3k8a.png 801w, https://towardsdatascience.com/wp-content/uploads/2025/01/0coVQ4RMmvb8Z3k8a-300x94.png 300w, https://towardsdatascience.com/wp-content/uploads/2025/01/0coVQ4RMmvb8Z3k8a-768x242.png 768w" sizes="auto, (max-width: 801px) 100vw, 801px" data-original-src="https://towardsdatascience.com/wp-content/uploads/2025/01/0coVQ4RMmvb8Z3k8a.png"/></figure>
+<p class="wp-block-paragraph">In order to optimize, we need to evaluate nearly all of the terms, with the exception of P(Y=y). The terms in the numerators can be evaluated using the chosen model. However, the remaining term in the denominator cannot. This is where the <strong>Laplace approximation</strong> comes into play.</p>
+<h3 class="wp-block-heading">Laplace approximation</h3>
+<p class="wp-block-paragraph">In order to evaluate the first term of the denominator, we can leverage the Laplace approximation. We approximate the distribution of θ | Y, Σ by:</p>
+<figure class="wp-block-image size-large"><img data-dominant-color="e2e2e2" data-has-transparency="true" style="--dominant-color: #e2e2e2;" loading="lazy" decoding="async" width="358" height="32" src="../Images/74a1eadd4766f3b68eba7b0b8b5747d8.png" alt="" class="wp-image-596542 has-transparency" srcset="https://towardsdatascience.com/wp-content/uploads/2025/01/1w-R9BC7ytnjg5u_8KHs95Q.png 358w, https://towardsdatascience.com/wp-content/uploads/2025/01/1w-R9BC7ytnjg5u_8KHs95Q-300x27.png 300w" sizes="auto, (max-width: 358px) 100vw, 358px" data-original-src="https://towardsdatascience.com/wp-content/uploads/2025/01/1w-R9BC7ytnjg5u_8KHs95Q.png"/></figure>
+<p class="wp-block-paragraph">with θ* being the mode of the mode the density distribution of θ | Y, Σ.</p>
+<p class="wp-block-paragraph">Even though we do not know the density function, we can evaluate the Hessian part thanks to the following decomposition:</p>
+<figure class="wp-block-image size-large"><img data-dominant-color="f5f5f5" data-has-transparency="true" style="--dominant-color: #f5f5f5;" loading="lazy" decoding="async" width="843" height="176" src="../Images/cec81cae1735dea0577dc32dfdcc2483.png" alt="" class="wp-image-596543 has-transparency" srcset="https://towardsdatascience.com/wp-content/uploads/2025/01/1niclhfddKstEWsrEoVgHQw.png 843w, https://towardsdatascience.com/wp-content/uploads/2025/01/1niclhfddKstEWsrEoVgHQw-300x63.png 300w, https://towardsdatascience.com/wp-content/uploads/2025/01/1niclhfddKstEWsrEoVgHQw-768x160.png 768w" sizes="auto, (max-width: 843px) 100vw, 843px" data-original-src="https://towardsdatascience.com/wp-content/uploads/2025/01/1niclhfddKstEWsrEoVgHQw.png"/></figure>
+<p class="wp-block-paragraph">We only need to know the first two terms of the numerator to evaluate the Hessian which we do.</p>
+<p class="wp-block-paragraph">For those interested in further explanation, I advise part 4.4, "The Laplace Approximation", from Pattern Recognition and Machine Learning from Christopher M. Bishop [1]. It helped me a lot to understand the approximation.</p>
+<h3 class="wp-block-heading">Laplace approximated likelihood</h3>
+<p class="wp-block-paragraph">Finally the Laplace approximated likelihood to optimize is:</p>
+<figure class="wp-block-image size-large"><img data-dominant-color="f1f1f1" data-has-transparency="true" style="--dominant-color: #f1f1f1;" loading="lazy" decoding="async" width="875" height="58" src="../Images/21e7d079df454915808fe2f465412fb3.png" alt="" class="wp-image-596544 has-transparency" srcset="https://towardsdatascience.com/wp-content/uploads/2025/01/0XGHFKwRlPqvPAl-T.png 875w, https://towardsdatascience.com/wp-content/uploads/2025/01/0XGHFKwRlPqvPAl-T-300x20.png 300w, https://towardsdatascience.com/wp-content/uploads/2025/01/0XGHFKwRlPqvPAl-T-768x51.png 768w" sizes="auto, (max-width: 875px) 100vw, 875px" data-original-src="https://towardsdatascience.com/wp-content/uploads/2025/01/0XGHFKwRlPqvPAl-T.png"/></figure>
+<p class="wp-block-paragraph">Once we approximate the density function of θ | Y, Σ, we could finally evaluate the likelihood at whatever θ we want if the approximation was accurate everywhere. For the sake of simplicity and because the approximation is accurate only close to the mode, we evaluate approximated likelihood at θ*.</p>
+<p class="wp-block-paragraph">Here after is a function that evaluates this loss for a given (scalar) σ²=1/p (in addition to the given observed, X and y, and design values, α and β).</p>
+<pre class="wp-block-prismatic-blocks"><code class="language-python">import numpy as np
+from scipy.stats import gamma
+
+from module.bayesian_model import BayesianLogisticRegression
+
+def loss(p, X, y, alpha, beta):
+    # computation of the loss for given values:
+    # - 1/sigma² (named p for precision here)
+    # - X: matrix of features
+    # - y: vector of observations
+    # - alpha: prior Gamma distribution alpha parameter over 1/sigma²
+    # - beta: prior Gamma distribution beta parameter over 1/sigma²
+
+    n_feat = X.shape[1]
+    m_vec = np.array([0] * n_feat)
+    p_vec = np.array(p * n_feat)
+
+    # computation of theta*
+    res = minimize(
+        BayesianLogisticRegression()._loss,
+        np.array([0] * n_feat),
+        args=(X, y, m_vec, p_vec),
+        method="BFGS",
+        jac=BayesianLogisticRegression()._jac,
+    )
+    theta_star = res.x
+
+    # computation the Hessian for the Laplace approximation
+    H = BayesianLogisticRegression()._hess(theta_star, X, y, m_vec, p_vec)
+
+    # loss
+    loss = 0
+    ## first two terms: the log loss and the regularization term
+    loss += baysian_model._loss(theta_star, X, y, m_vec, p_vec)
+    ## third term: prior distribution over sigma, written p here
+    out -= gamma.logpdf(p, a = alpha, scale = 1 / beta)
+    ## fourth term: Laplace approximated last term
+    out += 0.5 * np.linalg.slogdet(H)[1] - 0.5 * n_feat * np.log(2 * np.pi)
+
+    return out</code></pre>
+<p class="wp-block-paragraph">In my use case, I have chosen to optimize it by means of <strong>Adam optimizer,</strong> which code has been taken from this <a href="https://gist.github.com/jcmgray/e0ab3458a252114beecb1f4b631e19ab">repo</a>.</p>
+<pre class="wp-block-prismatic-blocks"><code class="language-python">def adam(
+    fun,
+    x0,
+    jac,
+    args=(),
+    learning_rate=0.001,
+    beta1=0.9,
+    beta2=0.999,
+    eps=1e-8,
+    startiter=0,
+    maxiter=1000,
+    callback=None,
+    **kwargs
+):
+    """``scipy.optimize.minimize`` compatible implementation of ADAM -
+    [http://arxiv.org/pdf/1412.6980.pdf].
+    Adapted from ``autograd/misc/optimizers.py``.
+    """
+    x = x0
+    m = np.zeros_like(x)
+    v = np.zeros_like(x)
+
+    for i in range(startiter, startiter + maxiter):
+        g = jac(x, *args)
+
+        if callback and callback(x):
+            break
+
+        m = (1 - beta1) * g + beta1 * m  # first  moment estimate.
+        v = (1 - beta2) * (g**2) + beta2 * v  # second moment estimate.
+        mhat = m / (1 - beta1**(i + 1))  # bias correction.
+        vhat = v / (1 - beta2**(i + 1))
+        x = x - learning_rate * mhat / (np.sqrt(vhat) + eps)
+
+    i += 1
+    return OptimizeResult(x=x, fun=fun(x, *args), jac=g, nit=i, nfev=i, success=True)</code></pre>
+<p class="wp-block-paragraph">For this optimization we need the derivative of the previous loss. We cannot have an analytical form so I decided to use a numerical approximation of the derivative.</p>
+<h2 class="wp-block-heading">Inference</h2>
+<p class="wp-block-paragraph">Once the model is trained on the training dataset, it is necessary to make predictions on the evaluation dataset to assess its performance and compare different models. However, it is not possible to directly calculate the actual distribution of a new point, as the computation is intractable.</p>
+<figure class="wp-block-image size-large"><img data-dominant-color="f7f7f7" data-has-transparency="true" style="--dominant-color: #f7f7f7;" loading="lazy" decoding="async" width="1047" height="256" src="../Images/425a8e991821c11fcce4c034b9f8f912.png" alt="" class="wp-image-596545 has-transparency" srcset="https://towardsdatascience.com/wp-content/uploads/2025/01/1L1m9M2jrVeODvpxBYBLtiw.png 1047w, https://towardsdatascience.com/wp-content/uploads/2025/01/1L1m9M2jrVeODvpxBYBLtiw-300x73.png 300w, https://towardsdatascience.com/wp-content/uploads/2025/01/1L1m9M2jrVeODvpxBYBLtiw-1024x250.png 1024w, https://towardsdatascience.com/wp-content/uploads/2025/01/1L1m9M2jrVeODvpxBYBLtiw-768x188.png 768w" sizes="auto, (max-width: 1047px) 100vw, 1047px" data-original-src="https://towardsdatascience.com/wp-content/uploads/2025/01/1L1m9M2jrVeODvpxBYBLtiw.png"/></figure>
+<p class="wp-block-paragraph">It is possible to approximate the results with:</p>
+<figure class="wp-block-image size-large"><img data-dominant-color="f3f3f3" data-has-transparency="true" style="--dominant-color: #f3f3f3;" loading="lazy" decoding="async" width="875" height="32" src="../Images/d0013d9cd0f39948c49b0cdcc55c4f5e.png" alt="" class="wp-image-596546 has-transparency" srcset="https://towardsdatascience.com/wp-content/uploads/2025/01/0hK4ggNi3sVSzYYbo.png 875w, https://towardsdatascience.com/wp-content/uploads/2025/01/0hK4ggNi3sVSzYYbo-300x11.png 300w, https://towardsdatascience.com/wp-content/uploads/2025/01/0hK4ggNi3sVSzYYbo-768x28.png 768w" sizes="auto, (max-width: 875px) 100vw, 875px" data-original-src="https://towardsdatascience.com/wp-content/uploads/2025/01/0hK4ggNi3sVSzYYbo.png"/></figure>
+<p class="wp-block-paragraph">considering:</p>
+<figure class="wp-block-image size-large"><img data-dominant-color="f6f6f6" data-has-transparency="true" style="--dominant-color: #f6f6f6;" loading="lazy" decoding="async" width="831" height="86" src="../Images/d7c9de549eb9ce62693540f643a0d992.png" alt="" class="wp-image-596547 has-transparency" srcset="https://towardsdatascience.com/wp-content/uploads/2025/01/0P61m4I3Xb4kd-fnb.png 831w, https://towardsdatascience.com/wp-content/uploads/2025/01/0P61m4I3Xb4kd-fnb-300x31.png 300w, https://towardsdatascience.com/wp-content/uploads/2025/01/0P61m4I3Xb4kd-fnb-768x79.png 768w" sizes="auto, (max-width: 831px) 100vw, 831px" data-original-src="https://towardsdatascience.com/wp-content/uploads/2025/01/0P61m4I3Xb4kd-fnb.png"/></figure>
+<h2 class="wp-block-heading">Results</h2>
+<p class="wp-block-paragraph">I chose an uninformative prior over the precision random variable. The naive model performs poorly, with a log loss of 0.60 and an AUC ROC of 0.50. The second model performs better, with a log loss of 0.44 and an AUC ROC of 0.83, both when hyperoptimized using grid search and bayesian optimization. This indicates that the logistic regression model, which incorporates the dependent variables, outperforms the naive model. However, there is no advantage to using bayesian optimization over grid search, so I’ll continue with grid search for now. Thanks for reading.</p>
+<p class="wp-block-paragraph">… But wait, I am thinking. Why are my parameters regularized with the same coefficient? Shouldn’t my prior depend on the underlying dependent variables? Perhaps the parameters for the first dependent variable could take higher values, while those for the second dependent variable, with its smaller influence, should be closer to zero. Let’s explore these new dimensions.</p>
+<h2 class="wp-block-heading">Benchmark 2</h2>
+<p class="wp-block-paragraph">So far we have considered two techniques, the grid search and the bayesian optimization. We can use these same techniques in higher dimensions.</p>
+<p class="wp-block-paragraph">Considering new dimensions could dramatically increase the number of nodes of my grid. This is why the bayesian optimization makes sense in higher dimensions to get the best regularization coefficients. In the considered use case, I have supposed there are 3 regularization parameters, one for each independent variable. After encoding a single variable, I assumed the generated new variables all shared the same regularization parameter. Hence the total regularization parameters of 3, even if there are more than 3 columns as inputs of the logistic regression.</p>
+<p class="wp-block-paragraph">I updated the previous loss function with the following code:</p>
+<pre class="wp-block-prismatic-blocks"><code class="language-python">import numpy as np
+from scipy.stats import gamma
+
+from module.bayesian_model import BayesianLogisticRegression
+
+def loss(p, X, y, alpha, beta, X_columns, col_to_p_id):
+    # computation of the loss for given values:
+    # - 1/sigma² vector (named p for precision here)
+    # - X: matrix of features
+    # - y: vector of observations
+    # - alpha: prior Gamma distribution alpha parameter over 1/sigma²
+    # - beta: prior Gamma distribution beta parameter over 1/sigma²
+    # - X_columns: list of names of X columns
+    # - col_to_p_id: dictionnary mapping a column name to a p index
+    # because many column names can share the same p value
+
+    n_feat = X.shape[1]
+    m_vec = np.array([0] * n_feat)
+    p_list = []
+    for col in X_columns:
+        p_list.append(p[col_to_p_id[col]])
+    p_vec = np.array(p_list)
+
+    # computation of theta*
+    res = minimize(
+        BayesianLogisticRegression()._loss,
+        np.array([0] * n_feat),
+        args=(X, y, m_vec, p_vec),
+        method="BFGS",
+        jac=BayesianLogisticRegression()._jac,
+    )
+    theta_star = res.x
+
+    # computation the Hessian for the Laplace approximation
+    H = BayesianLogisticRegression()._hess(theta_star, X, y, m_vec, p_vec)
+
+    # loss
+    loss = 0
+    ## first two terms: the log loss and the regularization term
+    loss += baysian_model._loss(theta_star, X, y, m_vec, p_vec)
+    ## third term: prior distribution over 1/sigma² written p here
+    ## there is now a sum as p is now a vector
+    out -= np.sum(gamma.logpdf(p, a = alpha, scale = 1 / beta))
+    ## fourth term: Laplace approximated last term
+    out += 0.5 * np.linalg.slogdet(H)[1] - 0.5 * n_feat * np.log(2 * np.pi)
+
+    return out</code></pre>
+<p class="wp-block-paragraph">With this approach, the metrics evaluated on the test dataset are the following: 0.39 and 0.88, which are better than the initial model optimized by means of a grid search and a bayesian approach with only a single prior for all the independent variables.</p>
+<figure class="wp-block-image size-large"><img data-dominant-color="f7f7f7" data-has-transparency="true" style="--dominant-color: #f7f7f7;" loading="lazy" decoding="async" width="803" height="213" src="../Images/89785b037f7133f407bef53c922d1d97.png" alt="Metrics achieved with the different methods on my use case." class="wp-image-596548 has-transparency" srcset="https://towardsdatascience.com/wp-content/uploads/2025/01/0pHlVqBjt-qs1Yetd.png 803w, https://towardsdatascience.com/wp-content/uploads/2025/01/0pHlVqBjt-qs1Yetd-300x80.png 300w, https://towardsdatascience.com/wp-content/uploads/2025/01/0pHlVqBjt-qs1Yetd-768x204.png 768w" sizes="auto, (max-width: 803px) 100vw, 803px" data-original-src="https://towardsdatascience.com/wp-content/uploads/2025/01/0pHlVqBjt-qs1Yetd.png"/><figcaption class="wp-element-caption">Metrics achieved with the different methods on my use case.</figcaption></figure>
+<p class="wp-block-paragraph">The use case can be reproduced with this <a href="https://github.com/kapytaine/bayesian_optimisation/blob/master/notebooks/bayesian_optimization_instead_of_hyperoptimization_artificial_dataset.ipynb">notebook</a>.</p>
+<h2 class="wp-block-heading">Limits</h2>
+<p class="wp-block-paragraph">I have created an example to illustrate the usefulness of the technique. However, I have not been able to find a suitable real-world dataset to fully demonstrate its potential. While I was working with an actual dataset, I could not derive any significant benefits from applying this technique. If you come across one, please let me know – I would be excited to see a real-world application of this regularization method.</p>
+<h2 class="wp-block-heading">Conclusion</h2>
+<p class="wp-block-paragraph">In conclusion, using bayesian optimization (with Laplace approximation if needed) to determine the best regularization parameters may be a good alternative to traditional hyperparameter tuning methods. By leveraging probabilistic models, bayesian optimization not only reduces the computational cost but also enhances the likelihood of finding optimal regularization values, especially in high dimension.</p>
+<h2 class="wp-block-heading">References</h2>
+<ol class="wp-block-list">
+<li>Christopher M. Bishop. (2006). Pattern Recognition and Machine Learning. Springer.</li>
+<li>Bayesian Ridge Regression scikit-learn user guide: <a href="https://scikit-learn.org/1.5/modules/linear_model.html#bayesian-ridge-regression">https://scikit-learn.org/1.5/modules/linear_model.html#bayesian-ridge-regression</a></li>
+</ol>    
+</body>
+</html>

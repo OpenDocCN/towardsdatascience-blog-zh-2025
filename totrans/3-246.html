@@ -1,0 +1,478 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.1//EN"
+  "http://www.w3.org/TR/xhtml11/DTD/xhtml11.dtd">
+
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+<title>Retrieval Augmented Generation in SQLite</title>
+<link href="../Styles/Style.css" type="text/css" rel="stylesheet"/>
+</head>
+<body>
+<h1>Retrieval Augmented Generation in SQLite</h1>
+<blockquote>原文：<a href="https://towardsdatascience.com/retrieval-augmented-generation-in-sqlite/">https://towardsdatascience.com/retrieval-augmented-generation-in-sqlite/</a></blockquote>
+<p class="wp-block-paragraph"><em>This</em><strong><em> </em></strong><em>is the second in a two-part series on using SQLite for machine learning. In my </em><a href="https://towardsdatascience.com/sqlite-in-production-dreams-becoming-reality-94557bec095b/"><em>last article</em></a><em>, I dove into how SQLite is rapidly becoming a production-ready database for web applications. In this article, I will discuss how to perform retrieval-augmented-generation using SQLite.</em></p>
+
+
+
+<p class="wp-block-paragraph"><em>If you’d like a custom web application with generative AI integration, visit </em><a href="https://losangelesaiapps.com/"><em>losangelesaiapps.com</em></a></p>
+
+
+
+<p class="wp-block-paragraph">The code referenced in this article can be found <a href="https://github.com/EdIzaguirre/sqlite_vec_tutorial?tab=readme-ov-file">here</a>.</p>
+
+
+
+<hr class="wp-block-separator has-alpha-channel-opacity is-style-dotted"/>
+
+
+
+<p class="wp-block-paragraph">When I first learned how to perform retrieval-augmented-generation (RAG) as a budding data scientist, I followed the <em>traditional path</em>. This usually looks something like:</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">Google retrieval-augmented-generation and look for tutorials</li>
+
+
+
+<li class="wp-block-list-item">Find the most popular framework, usually LangChain or LlamaIndex</li>
+
+
+
+<li class="wp-block-list-item">Find the most popular cloud vector database, usually Pinecone or Weaviate</li>
+
+
+
+<li class="wp-block-list-item">Read a bunch of docs, put all the pieces together, and success!</li>
+</ul>
+
+
+
+<p class="wp-block-paragraph">In fact I actually <a href="https://towardsdatascience.com/how-to-build-a-rag-system-with-a-self-querying-retriever-in-langchain-16b4fa23e9ad/">wrote an article</a> about my experience building a RAG system in LangChain with Pinecone.</p>
+
+
+
+<p class="wp-block-paragraph">There is nothing terribly wrong with using a RAG framework with a cloud vector database. However, I would argue that for first time learners it overcomplicates the situation. Do we really need an entire framework to learn how to do RAG? Is it necessary to perform API calls to cloud vector databases? These databases act as black boxes, which is never good for learners (or frankly for anyone). </p>
+
+
+
+<p class="wp-block-paragraph">In this article, I will walk you through how to perform RAG on the simplest stack possible. In fact, this ‘stack’ is just SQLite with the sqlite-vec extension and the OpenAI API for use of their embedding and chat models. I recommend you <a href="https://medium.com/towards-data-science/sqlite-in-production-dreams-becoming-reality-94557bec095b">re</a><a href="https://towardsdatascience.com/sqlite-in-production-dreams-becoming-reality-94557bec095b/">ad part</a><a href="https://medium.com/towards-data-science/sqlite-in-production-dreams-becoming-reality-94557bec095b"> 1</a> of this series to get a deep dive on SQLite and how it is rapidly becoming production ready for web applications. For our purposes here, it is enough to understand that SQLite is the simplest kind of database possible: a single file in your repository. </p>
+
+
+
+<p class="wp-block-paragraph">So ditch your cloud vector databases and your bloated frameworks, and let’s do some RAG.</p>
+
+
+
+<hr class="wp-block-separator has-alpha-channel-opacity is-style-dotted"/>
+
+
+
+<h2 class="wp-block-heading"><strong>SQLite-Vec</strong></h2>
+
+
+
+<p class="wp-block-paragraph">One of the powers of the SQLite database is the use of <strong>extensions</strong>. For those of us familiar with Python, extensions are a lot like libraries. They are modular pieces of code written in C to extend the functionality of SQLite, making things that were once impossible possible. One popular example of a SQLite extension is the<a href="https://www.sqlite.org/fts5.html"> Full-Text Search (FTS)</a> extension. This extension allows SQLite to perform efficient searches across large volumes of textual data in SQLite. Because the extension is written purely in C, we can run it anywhere a SQLite database can be run, including Raspberry Pis and browsers.</p>
+
+
+
+<p class="wp-block-paragraph">In this article I will be going over the extension known as<a href="https://github.com/asg017/sqlite-vec"> sqlite-vec</a>. This gives SQLite the power of performing <strong>vector search</strong>. Vector search is similar to full-text search in that it allows for efficient search across textual data. However, rather than search for an exact word or phrase in the text, vector search has a semantic understanding. In other words, searching for “horses” will find matches of “equestrian”, “pony”, “Clydesdale”, etc. Full-text search is incapable of this. </p>
+
+
+
+<p class="wp-block-paragraph">sqlite-vec makes use of <strong>virtual tables</strong>, as do most extensions in SQLite. A virtual table is similar to a regular table, but with additional powers:</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item"><strong>Custom Data Sources:</strong> The data for a standard table in SQLite is housed in a single db file. For a virtual table, the data can be housed in external sources, for example a CSV file or an API call.</li>
+
+
+
+<li class="wp-block-list-item"><strong>Flexible Functionality: </strong>Virtual tables can add specialized indexing or querying capabilities and support complex data types like JSON or XML.</li>
+
+
+
+<li class="wp-block-list-item"><strong>Integration with SQLite Query Engine: </strong>Virtual tables integrate seamlessly with SQLite’s standard query syntax e.g. <code>SELECT</code> , <code>INSERT</code>, <code>UPDATE</code>, and <code>DELETE</code> options. Ultimately it is up to the writers of the extensions to support these operations.</li>
+
+
+
+<li class="wp-block-list-item"><strong>Use of Modules: </strong>The backend logic for how the virtual table will work is implemented by a <strong>module</strong> (written in C or another language).</li>
+</ul>
+
+
+
+<p class="wp-block-paragraph">The typical syntax for creating a virtual table looks like the following:</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-c">CREATE VIRTUAL TABLE my_table USING my_extension_module();</code></pre>
+
+
+
+<p class="wp-block-paragraph">The important part of this statement is <code>my_extension_module()</code>. This specifies the module that will be powering the backend of the <code>my_table</code> virtual table. In sqlite-vec we will use the <code>vec0</code> module.</p>
+
+
+
+<h3 class="wp-block-heading"><strong>Code Walkthrough</strong></h3>
+
+
+
+<p class="wp-block-paragraph">The code for this article can be found <a href="https://github.com/EdIzaguirre/sqlite_vec_tutorial">here</a>. It is a simple directory with the majority of files being .txt files that we will be using as our dummy data. Because I am a physics nerd, the majority of the files pertain to physics, with just a few files relating to other random fields. I will not present the full code in this walkthrough, but instead will highlight the important pieces. Clone my repo and play around with it to investigate the full code. Below is a tree view of the repo. Note that <code>my_docs.db</code> is the single-file database used by SQLite to manage all of our data.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">.
+
+├── data
+
+│   ├── cooking.txt
+
+│   ├── gardening.txt
+
+│   ├── general_relativity.txt
+
+│   ├── newton.txt
+
+│   ├── personal_finance.txt
+
+│   ├── quantum.txt
+
+│   ├── thermodynamics.txt
+
+│   └── travel.txt
+
+├── my_docs.db
+
+├── requirements.txt
+
+└── sqlite_rag_tutorial.py</code></pre>
+
+
+
+<p class="wp-block-paragraph">Step 1 is to install the necessary libraries. Below is our <code>requirements.txt</code> file. As you can see it has only three libraries. I recommend creating a virtual environment with the latest Python version (3.13.1 was used for this article) and then running <code>pip install -r requirements.txt</code> to install the libraries.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python"># requirements.txt
+
+sqlite-vec==0.1.6
+
+openai==1.63.0
+
+python-dotenv==1.0.1</code></pre>
+
+
+
+<p class="wp-block-paragraph">Step 2 is to create an <a href="https://platform.openai.com/docs/overview">OpenAI API key</a> if you don’t already have one. We will be using OpenAI to generate embeddings for the text files so that we can perform our vector search. </p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-"># sqlite_rag_tutorial.py
+
+import sqlite3
+
+from sqlite_vec import serialize_float32
+
+import sqlite_vec
+
+import os
+
+from openai import OpenAI
+
+from dotenv import load_dotenv
+
+# Set up OpenAI client
+
+client = OpenAI(api_key=os.getenv('OPENAI_API_KEY'))</code></pre>
+
+
+
+<p class="wp-block-paragraph">Step 3 is to load the sqlite-vec extension into SQLite. We will be using Python and SQL for our examples in this article. Disabling the ability to load extensions immediately after loading your extension is a good security practice.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python"># Path to the database file
+
+db_path = 'my_docs.db'
+
+# Delete the database file if it exists
+
+db = sqlite3.connect(db_path)
+
+db.enable_load_extension(True)
+
+sqlite_vec.load(db)
+
+db.enable_load_extension(False)
+
+Next we will go ahead and create our virtual table:
+
+db.execute('''
+
+   CREATE VIRTUAL TABLE documents USING vec0(
+
+       embedding float[1536],
+
+       +file_name TEXT,
+
+       +content TEXT
+
+   )
+
+''')</code></pre>
+
+
+
+<p class="wp-block-paragraph"><code>documents</code> is a virtual table with three columns:</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item"><code>sample_embedding</code> : 1536-dimension float that will store the embeddings of our sample documents.</li>
+
+
+
+<li class="wp-block-list-item"><code>file_name</code> : Text that will house the name of each file we store in the database. Note that this column and the following have a + symbol in front of them. This indicates that they are <strong>auxiliary fields. </strong>Previously in sqlite-vec only embedding data could be stored in the virtual table. However, recently<a href="https://github.com/asg017/sqlite-vec/issues/121?utm_source=chatgpt.com"> an update was pushed</a> that allows us to add fields to our table that we don’t really want embedded. In this case we are adding the content and name of the file in the same table as our embeddings. This will allow us to easily see what embeddings correspond to what content easily while sparing us the need for extra tables and JOIN statements.</li>
+
+
+
+<li class="wp-block-list-item"><code>content</code> : Text that will store the content of each file. </li>
+</ul>
+
+
+
+<p class="wp-block-paragraph">Now that we have our virtual table set up in our SQLite database, we can begin converting our text files into embeddings and storing them in our table:</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python"># Function to get embeddings using the OpenAI API
+
+def get_openai_embedding(text):
+
+   response = client.embeddings.create(
+
+       model="text-embedding-3-small",
+
+       input=text
+
+   )
+
+   return response.data[0].embedding
+
+# Iterate over .txt files in the /data directory
+
+for file_name in os.listdir("data"):
+
+   file_path = os.path.join("data", file_name)
+
+   with open(file_path, 'r', encoding='utf-8') as file:
+
+       content = file.read()
+
+       # Generate embedding for the content
+
+       embedding = get_openai_embedding(content)
+
+       if embedding:
+
+           # Insert file content and embedding into the vec0 table
+
+           db.execute(
+
+               'INSERT INTO documents (embedding, file_name, content) VALUES (?, ?, ?)',
+
+               (serialize_float32(embedding), file_name, content)
+
+# Commit changes
+
+db.commit()</code></pre>
+
+
+
+<p class="wp-block-paragraph">We essentially loop through each of our .txt files, embedding the content from each file, and then using an <code>INSERT INTO</code> statement to insert the <code>embedding</code>, <code>file_name</code>, and <code>content</code> into <code>documents</code> virtual table. A commit statement at the end ensures the changes are persisted. Note that we are using <code>serialize_float32</code> here from the sqlite-vec library. SQLite itself does not have a built-in vector type, so it stores vectors as binary large objects (BLOBs) to save space and allow fast operations. Internally, it uses Python’s <code>struct.pack()</code> function, which converts Python data into C-style binary representations.</p>
+
+
+
+<p class="wp-block-paragraph">Finally, to perform RAG, you then use the following code to do a K-Nearest-Neighbors (KNN-style) operation. <strong>This is the heart of vector search. </strong></p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python"># Perform a sample KNN query
+
+query_text = "What is general relativity?"
+
+query_embedding = get_openai_embedding(query_text)
+
+if query_embedding:
+
+   rows = db.execute(
+
+       """
+
+       SELECT
+
+           file_name,
+
+           content,
+
+           distance
+
+       FROM documents
+
+       WHERE embedding MATCH ?
+
+       ORDER BY distance
+
+       LIMIT 3
+
+       """,
+
+       [serialize_float32(query_embedding)]
+
+   ).fetchall()
+
+   print("Top 3 most similar documents:")
+
+   top_contexts = []
+
+   for row in rows:
+
+       print(row)
+
+       top_contexts.append(row[1])  # Append the 'content' column</code></pre>
+
+
+
+<p class="wp-block-paragraph">We begin by taking in a query from the user, in this case <em>“What is general relativity?” </em>and embedding that query using the same embedding model as before. We then perform a SQL operation. Let’s break this down:</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">The <code>SELECT</code> statement means the retrieved data will have three columns: <code>file_name</code>, <code>content</code>, and <code>distance</code>. The first two we have already mentioned. <code>Distance</code> will be calculated during the SQL operation, more on this in a moment.</li>
+
+
+
+<li class="wp-block-list-item">The <code>FROM</code> statement ensures you are pulling data from the <code>documents</code> table.</li>
+
+
+
+<li class="wp-block-list-item">The <code>WHERE embedding MATCH ?</code> statement performs a similarity search between all of the vectors in your database and the query vector. The returned data will include a <code>distance</code> column. This distance is just a floating point number measuring the similarity between the query and database vectors. The higher the number, the closer the vectors are. <a href="https://alexgarcia.xyz/sqlite-vec/api-reference.html#distance">sqlite-vec</a> provides a few options for how to calculate this similarity. </li>
+
+
+
+<li class="wp-block-list-item">The <code>ORDER BY distance</code> makes sure to order the retrieved vectors in descending order of similarity (high -&gt; low).</li>
+
+
+
+<li class="wp-block-list-item"><code>LIMIT 3</code> ensures we only get the top three documents that are nearest to our query embedding vector. You can tweak this number to see how retrieving more or less vectors affects your results.</li>
+</ul>
+
+
+
+<p class="wp-block-paragraph">Given our query of “<em>What is general relativity?”, t</em>he following documents were pulled. It did a pretty good job!</p>
+
+
+
+<p class="wp-block-paragraph">Top 3 most similar documents:</p>
+
+
+
+<blockquote class="wp-block-quote is-layout-flow wp-block-quote-is-layout-flow">
+<p class="wp-block-paragraph">(‘general_relativity.txt’, ‘Einstein’s theory of general relativity redefined our understanding of gravity. Instead of viewing gravity as a force acting at a distance, it interprets it as the curvature of spacetime around massive objects. Light passing near a massive star bends slightly, galaxies deflect beams traveling millions of light-years, and clocks tick at different rates depending on their gravitational potential. This groundbreaking theory led to predictions like gravitational lensing and black holes, phenomena later confirmed by observational evidence, and it continues to guide our understanding of the cosmos.’, 0.8316285610198975)</p>
+</blockquote>
+
+
+
+<blockquote class="wp-block-quote is-layout-flow wp-block-quote-is-layout-flow">
+<p class="wp-block-paragraph">(‘newton.txt’, ‘In classical mechanics, Newton’s laws of motion form the foundation of how we understand the movement of objects. Newton’s first law, often called the law of inertia, states that an object at rest remains at rest and an object in motion continues in motion unless acted upon by an external force. This concept extends into more complex physics problems, where analyzing net forces on objects allows us to predict their future trajectories and behaviors. Over time, applying Newton’s laws has enabled engineers and scientists to design safer vehicles, more efficient machines, and even guide spacecraft through intricate gravitational fields.’, 1.2036118507385254)</p>
+</blockquote>
+
+
+
+<blockquote class="wp-block-quote is-layout-flow wp-block-quote-is-layout-flow">
+<p class="wp-block-paragraph">(‘quantum.txt’, ‘Quantum mechanics revolutionized our understanding of the microscopic world. Unlike classical particles, quantum entities such as electrons can exhibit both wave-like and particle-like behaviors. Phenomena like quantum superposition suggest that particles can exist in multiple states at once, and the act of measurement often “collapses” these states into one observed outcome. This strange and counterintuitive theory underpins modern technologies like semiconductors and lasers, and it provides a conceptual framework for emerging fields like quantum computing and cryptography.’, 1.251380205154419)</p>
+</blockquote>
+
+
+
+<p class="wp-block-paragraph">We can then stuff the context of the model with these three documents and have it attempt to answer our question. </p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python"># Prepare the context for the query
+
+context = "\n\n".join(top_contexts)
+
+system_message = "You are a helpful assistant. Use the following context to answer the query."
+
+# Send query and context to OpenAI
+
+try:
+
+   completion = client.chat.completions.create(
+
+       model="gpt-4o-mini",
+
+       messages=[
+
+           {"role": "system", "content": system_message},
+
+           {"role": "user", "content": f"Context: {context}\n\nQuery: {query_text}"}
+
+       ]
+
+   )
+
+   print("Response:")
+
+   print(completion.choices[0].message.content)
+
+except Exception as e:
+
+   print(f"Error generating response: {e}")</code></pre>
+
+
+
+<p class="wp-block-paragraph">Here is what the model said:</p>
+
+
+
+<blockquote class="wp-block-quote is-layout-flow wp-block-quote-is-layout-flow">
+<p class="wp-block-paragraph">General relativity is a theory developed by Albert Einstein that redefines our understanding of gravity. Instead of viewing gravity as a force acting at a distance, general relativity interprets it as the curvature of spacetime caused by the presence of mass. According to this theory, massive objects like stars and planets create a distortion in the fabric of spacetime, and this curvature affects the motion of other objects, including light, which can bend when it passes near a massive body.</p>
+</blockquote>
+
+
+
+<p class="wp-block-paragraph">This is faithfully sticking to the documents we gave the model. Great job <code>4o-mini</code>!</p>
+
+
+
+<h3 class="wp-block-heading"><strong>Conclusion</strong></h3>
+
+
+
+<p class="wp-block-paragraph"><code>sqlite-vec</code> is a project sponsored by the Mozilla Builders Accelerator program, so it has some significant backing behind it. Have to give a big thanks to <a href="https://alexgarcia.xyz/">Alex Garcia</a>, the creator of <code>sqlite-vec</code> , for helping to push the SQLite ecosystem and making ML possible with this simple database. This is a well maintained library, with updates coming down the pipeline on a regular basis. As of November 20th, they even <a href="https://alexgarcia.xyz/blog/2024/sqlite-vec-metadata-release/index.html">added filtering</a> by metadata! Perhaps I should re-do my aforementioned RAG article using SQLite 🤔.</p>
+
+
+
+<p class="wp-block-paragraph">The extension also offers bindings for several popular programming languages, including Ruby, Go, Rust, and more.</p>
+
+
+
+<p class="wp-block-paragraph">The fact that we are able to radically simplify our RAG pipeline to the bare essentials is remarkable. To recap, there is no need for a database service to be spun up and spun down, like Postgres, MySQL, etc. There is no need for API calls to cloud vendors. If you deploy to a server directly via Digital Ocean or Hetzner, you can even avoid <a href="https://losangelesaiapps.com/ecosystem-of-middlemen/">costly and unnecessary complexity</a> associated with managed cloud services like AWS, Azure, or Vercel. </p>
+
+
+
+<p class="wp-block-paragraph">I believe this simple architecture can work for a variety of applications. It is cheaper to use, easier to maintain, and faster to iterate on. Once you reach a certain scale it will likely make sense to migrate to a more robust database such as Postgres with the pgvector extension for RAG capabilities. For more advanced capabilities such as chunking and document cleaning, a framework may be the right choice. But for startups and smaller players, it’s SQLite to the moon. </p>
+
+
+
+<p class="wp-block-paragraph">Have fun trying out sqlite-vec for yourself!</p>
+
+
+
+<figure class="wp-block-image aligncenter size-large"><img data-dominant-color="f6f7f8" data-has-transparency="true" style="--dominant-color: #f6f7f8;" decoding="async" width="1024" height="976" src="../Images/7a685c13b6429bd3f63b9a11f3d19259.png" alt="" class="wp-image-598052 has-transparency" srcset="https://towardsdatascience.com/wp-content/uploads/2025/02/Screenshot-2025-02-18-at-8.39.51 AM-1024x976.png 1024w, https://towardsdatascience.com/wp-content/uploads/2025/02/Screenshot-2025-02-18-at-8.39.51 AM-300x286.png 300w, https://towardsdatascience.com/wp-content/uploads/2025/02/Screenshot-2025-02-18-at-8.39.51 AM-768x732.png 768w, https://towardsdatascience.com/wp-content/uploads/2025/02/Screenshot-2025-02-18-at-8.39.51 AM.png 1284w" sizes="(max-width: 1024px) 100vw, 1024px" data-original-src="https://towardsdatascience.com/wp-content/uploads/2025/02/Screenshot-2025-02-18-at-8.39.51 AM-1024x976.png"/><figcaption class="wp-element-caption">Simple RAG architecture. Image by author.</figcaption></figure>
+    
+</body>
+</html>

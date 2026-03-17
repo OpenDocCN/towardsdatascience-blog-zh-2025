@@ -1,0 +1,726 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.1//EN"
+  "http://www.w3.org/TR/xhtml11/DTD/xhtml11.dtd">
+
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+<title>Modern GUI Applications for Computer Vision in Python</title>
+<link href="../Styles/Style.css" type="text/css" rel="stylesheet"/>
+</head>
+<body>
+<h1>Modern GUI Applications for Computer Vision in Python</h1>
+<blockquote>原文：<a href="https://towardsdatascience.com/modern-gui-applications-for-computer-vision-in-python/">https://towardsdatascience.com/modern-gui-applications-for-computer-vision-in-python/</a></blockquote>
+<figure class="wp-block-image aligncenter size-full"><img decoding="async" src="../Images/9c536bbe50ae3508d1512bdf639ab03f.png" alt="" class="wp-image-602301" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/04/Screencastfrom04-24-2025113343PM-ezgif.com-video-to-gif-converter.gif"/></figure>
+
+
+
+<h2 class="wp-block-heading"><mdspan datatext="el1746063411947" class="mdspan-comment">Introduction</mdspan></h2>
+
+
+
+<p class="wp-block-paragraph">I’m a huge fan of interactive visualizations. As a computer vision engineer, I deal almost daily with image processing related tasks and more often than not I am iterating on a problem where I need <strong>visual feedback</strong> to make decisions. Let’s think of a very simple image processing pipeline with a single step that has some parameters to transform an image:</p>
+
+
+
+<figure class="wp-block-image size-large"><img decoding="async" src="../Images/a4e3ec0e9d7f97720262c947659f5c30.png" alt="Sample processing pipeline with missing visualization of output" class="wp-image-602295" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/04/image-133-1024x168.png"/></figure>
+
+
+
+<p class="wp-block-paragraph">How do you know which parameters to adjust? Does the pipeline even work as expected? Without visualizing your output, you might miss out on some key insights and make sub optimal choices.</p>
+
+
+
+<p class="wp-block-paragraph">Sometimes simply showing the output image and/or some calculated metrics can be enough to iterate on the parameters. But I’ve found myself in many situations where a tool would be immensely helpful to iterate quickly and interactively on my pipeline. So in this article I will show you how to work with simple built-in interactive elements from <code>OpenCV</code> as well as how to build more modern user interfaces for Computer Vision projects using <code>customtkinter</code>.</p>
+
+
+
+<h2 class="wp-block-heading">Prerequisites</h2>
+
+
+
+<p class="wp-block-paragraph">If you want to follow along, I recommend you to set up your local environment with <a href="https://docs.astral.sh/uv/">uv</a> and install the following packages:</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-bash">uv add numpy opencv-python pillow customtkinter</code></pre>
+
+
+
+<h2 class="wp-block-heading">Goal</h2>
+
+
+
+<p class="wp-block-paragraph">Before we dive into the code of the project, let’s quickly outline what we want to build. The application should use the webcam feed and allow the user to select different types of filters that will be applied to the stream. The processed image should be shown in real-time in the window. A rough sketch of a potential UI would look as follows:</p>
+
+
+
+<figure class="wp-block-image size-large"><img decoding="async" src="../Images/d808a2ba08c10cb9bb76f95473e90765.png" alt="" class="wp-image-602302" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/04/image-135-1024x648.png"/></figure>
+
+
+
+<h2 class="wp-block-heading">OpenCV – GUI</h2>
+
+
+
+<p class="wp-block-paragraph">Let’s start with a simple loop that fetches frames from your webcam and displays them in an OpenCV window.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">import cv2
+
+cap = cv2.VideoCapture(0)
+
+while True:
+    ret, frame = cap.read()
+    if not ret:
+        break
+
+    cv2.imshow("Video Feed", frame)
+    
+    key = cv2.waitKey(1) &amp; 0xFF
+    if key == ord('q'):
+        break
+
+cap.release()
+cv2.destroyAllWindows()</code></pre>
+
+
+
+<h3 class="wp-block-heading">Keyboard Input</h3>
+
+
+
+<p class="wp-block-paragraph">The simplest way to add interactivity here, is by adding keyboard inputs. For example, we can cycle through different filters with the number keys.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">...
+
+filter_type = "normal"
+
+while True:
+    ...
+
+    if filter_type == "grayscale":
+        frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    elif filter_type == "normal":
+        pass
+
+    ...
+
+    if key == ord('1'):
+        filter_type = "normal"
+    if key == ord('2'):
+        filter_type = "grayscale"
+        
+    ...</code></pre>
+
+
+
+<p class="wp-block-paragraph">Now you can switch between the normal image and the grayscale version by pressing the number keys 1 and 2. Let’s also quickly add a caption to the image so we can actually see the name of the filter we’re applying.</p>
+
+
+
+<p class="wp-block-paragraph">Now we need to be careful here: if you take a look at the shape of the frame after the filter, you will notice that the dimensionality of the frame array has changed. Remember that OpenCV image arrays are ordered <strong>HWC</strong> (height, width, color) with color as <strong>BGR</strong> (green, blue, red), so the 640×480 image from my webcam has shape <code>(480, 640, 3)</code>.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">print(filter_type, frame.shape)
+# normal (480, 640, 3)
+# grayscale (480, 640)</code></pre>
+
+
+
+<p class="wp-block-paragraph">Now because the grayscale operation outputs a single channel image, the color dimension is dropped. If we now want to draw on top of this image, we either need to specify a single channel color for the grayscale image or we convert that image back to the original <strong>BGR</strong> format. The second option is a bit cleaner because we can unify the annotation of the image.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">if filter_type == "grayscale":
+    frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+elif filter_type == "normal":
+    pass
+
+if len(frame.shape) == 2: # Convert grayscale to BGR
+    frame = cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR)</code></pre>
+
+
+
+<h3 class="wp-block-heading">Caption</h3>
+
+
+
+<p class="wp-block-paragraph">I want to add a black border at the bottom of the image, on top of which the name of the filter will be shown. We can make use of the <code>copyMakeBorder</code> function to pad the image with a border color at the bottom. Then we can add the text on top of this border.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python"># Add a black border at the bottom of the frame
+border_height = 50
+border_color = (0, 0, 0)
+frame = cv2.copyMakeBorder(frame, 0, border_height, 0, 0, cv2.BORDER_CONSTANT, value=border_color)
+
+# Show the filter name
+cv2.putText(
+    frame,
+    filter_type,
+    (frame.shape[1] // 2 - 50, frame.shape[0] - border_height // 2 + 10),
+    cv2.FONT_HERSHEY_SIMPLEX,
+    1,
+    (255, 255, 255),
+    2,
+    cv2.LINE_AA,
+)</code></pre>
+
+
+
+<p class="wp-block-paragraph">This is how the output should look, and you can switch between the normal and grayscale mode and the frames will be captioned accordingly.</p>
+
+
+
+<figure class="wp-block-image size-large"><img decoding="async" src="../Images/b1950f31fe4058a68c832b758333e4c1.png" alt="" class="wp-image-602309" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/04/image-138-1024x493.png"/></figure>
+
+
+
+<h3 class="wp-block-heading">Sliders</h3>
+
+
+
+<p class="wp-block-paragraph">Now instead of using the keyboard as input method, OpenCV offers a basic trackbar slider UI element. The trackbar needs to be initialized at the beginning of the script. We need to reference the same window as we will be showing our images in later, so I will create a variable for the name of the window. Using this name, we can create the trackbar and let it be a selector for the index in the list of filters.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">filter_types = ["normal", "grayscale"]
+
+win_name = "Webcam Stream"
+cv2.namedWindow(win_name)
+
+tb_filter = "Filter"
+# def createTrackbar(trackbarName: str, windowName: str, value: int, count: int, onChange: _typing.Callable[[int], None]) -&gt; None: ...
+cv2.createTrackbar(
+    tb_filter,
+    win_name,
+    0,
+    len(filter_types) - 1,
+    lambda _: None,
+)</code></pre>
+
+
+
+<p class="wp-block-paragraph">Notice how we use an empty lambda for the <code>onChange</code> callback, we will fetch the value manually in the loop. Everything else will stay the same.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">while True:
+    ...
+
+    # Get the selected filter type
+    filter_id = cv2.getTrackbarPos(tb_filter, win_name)
+    filter_type = filter_types[filter_id]
+
+    ...</code></pre>
+
+
+
+<p class="wp-block-paragraph">And voilà, we have a trackbar to select our filter.</p>
+
+
+
+<figure class="wp-block-image size-large"><img decoding="async" src="../Images/3090c2135efed0f43c3b78735ac72e53.png" alt="" class="wp-image-602311" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/04/image-140-1024x510.png"/></figure>
+
+
+
+<p class="wp-block-paragraph">Now we can also easily add more filters easily by extending our list and implementing each processing step.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">filter_types = [
+    "normal",
+    "grayscale",
+    "blur",
+    "threshold",
+    "canny",
+    "sobel",
+    "laplacian",
+]
+
+...
+
+    if filter_type == "grayscale":
+        frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    elif filter_type == "blur":
+        frame = cv2.GaussianBlur(frame, ksize=(15, 15), sigmaX=0)
+    elif filter_type == "threshold":
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        _, thresholded_frame = cv2.threshold(gray, thresh=127, maxval=255, type=cv2.THRESH_BINARY)
+    elif filter_type == "canny":
+        frame = cv2.Canny(frame, threshold1=100, threshold2=200)
+    elif filter_type == "sobel":
+        frame = cv2.Sobel(frame, ddepth=cv2.CV_64F, dx=1, dy=0, ksize=5)
+    elif filter_type == "laplacian":
+        frame = cv2.Laplacian(frame, ddepth=cv2.CV_64F)
+    elif filter_type == "normal":
+        pass
+
+    if frame.dtype != np.uint8:
+        # Scale the frame to uint8 if necessary
+        cv2.normalize(frame, frame, 0, 255, cv2.NORM_MINMAX)
+        frame = frame.astype(np.uint8)
+</code></pre>
+
+
+
+<figure class="wp-block-image size-full"><img decoding="async" src="../Images/954290716287fddd04047e5f807ed1e1.png" alt="" class="wp-image-602312" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/04/image-141.png"/></figure>
+
+
+
+<h2 class="wp-block-heading">Modern GUI with CustomTkinter</h2>
+
+
+
+<p class="wp-block-paragraph">Now I don’t know about you but the current user interface does not look very <em>modern</em> to me. Don’t get me wrong, there is some beauty in the style of the interface, but I prefer cleaner, more modern designs. Plus we’re already at the limit of what <strong>OpenCV</strong> offers out of the box in terms of UI elements. Yep, no buttons, text fields, dropdowns, checkboxes or radio buttons and no custom layouts. So let’s see how we can transform the look and user experience of this basic application to a fresh and clean one.</p>
+
+
+
+<figure class="wp-block-image alignwide size-large"><img decoding="async" src="../Images/70bf0d3fa1b211301c9f6fb90aa4a7d3.png" alt="" class="wp-image-602286" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/04/image-132-1024x357.png"/></figure>
+
+
+
+<p class="wp-block-paragraph">So to get started, we first need to create a class for our app. We create two frames: the first one contains our filter selection on the left side and the second one wraps the image display. For now, let’s start with a simple placeholder text. Unfortunately there’s no out of the box opencv component from customtkinter directly, so we will need to quickly build our own in the next few steps. But let’s first finish the basic UI layout.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">import customtkinter
+
+
+class App(customtkinter.CTk):
+    def __init__(self) -&gt; None:
+        super().__init__()
+
+        self.title("Webcam Stream")
+        self.geometry("800x600")
+
+        self.filter_var = customtkinter.IntVar(value=0)
+
+        # Frame for filters
+        self.filters_frame = customtkinter.CTkFrame(self)
+        self.filters_frame.pack(side="left", fill="both", expand=False, padx=10, pady=10)
+
+        # Frame for image display
+        self.image_frame = customtkinter.CTkFrame(self)
+        self.image_frame.pack(side="right", fill="both", expand=True, padx=10, pady=10)
+
+        self.image_display = customtkinter.CTkLabel(self.image_frame, text="Loading...")
+        self.image_display.pack(fill="both", expand=True, padx=10, pady=10)
+
+app = App()
+app.mainloop()</code></pre>
+
+
+
+<figure class="wp-block-image size-full"><img decoding="async" src="../Images/4323560b4b47c911c6c1f3828774e463.png" alt="" class="wp-image-602314" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/04/image-142.png"/></figure>
+
+
+
+<h3 class="wp-block-heading">Filter Radio Buttons</h3>
+
+
+
+<p class="wp-block-paragraph">Now that the skeleton is built, we can start filling in our components. For the left side, I will be using the same list of <code>filter_types</code> to populate a group of radio buttons to select the filter.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">        # Create radio buttons for each filter type
+        self.filter_var = customtkinter.IntVar(value=0)
+        for filter_id, filter_type in enumerate(filter_types):
+            rb_filter = customtkinter.CTkRadioButton(
+                self.filters_frame,
+                text=filter_type.capitalize(),
+                variable=self.filter_var,
+                value=filter_id,
+            )
+            rb_filter.pack(padx=10, pady=10)
+
+            if filter_id == 0:
+                rb_filter.select()</code></pre>
+
+
+
+<figure class="wp-block-image size-full"><img decoding="async" src="../Images/917bf59071404fcac670a9bb3e5a5f9c.png" alt="" class="wp-image-602315" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/04/image-143.png"/></figure>
+
+
+
+<h3 class="wp-block-heading">Image Display Component</h3>
+
+
+
+<p class="wp-block-paragraph">Now we can get started on the interesting part, how to get our OpenCV frames to show up in the image component. Because there’s no built-in component, let’s create our own based on the <code>CTKLabel</code>. This allows us to display a loading text while the webcam stream is starting up.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">...
+
+class CTkImageDisplay(customtkinter.CTkLabel):
+    """
+    A reusable ctk widget widget to display opencv images.
+    """
+
+    def __init__(
+        self,
+        master: Any,
+    ) -&gt; None:
+        self._textvariable = customtkinter.StringVar(master, "Loading...")
+        super().__init__(
+            master,
+            textvariable=self._textvariable,
+            image=None,
+        )
+
+...
+
+class App(customtkinter.CTk):
+    def __init__(self) -&gt; None:
+        ...
+
+        self.image_display = CTkImageDisplay(self.image_frame)
+        self.image_display.pack(fill="both", expand=True, padx=10, pady=10) </code></pre>
+
+
+
+<p class="wp-block-paragraph">So far nothing has changed, we simply swapped out the existing label with our custom class implementation.  In our <code>CTKImageDisplay</code> class we can define an function to show an image in the component, let’s call it <code>set_frame</code>.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">import cv2
+import numpy.typing as npt
+from PIL import Image
+
+class CTkImageDisplay(customtkinter.CTkLabel):
+    ...
+
+    def set_frame(self, frame: npt.NDArray) -&gt; None:
+        """
+        Set the frame to be displayed in the widget.
+
+        Args:
+            frame: The new frame to display, in opencv format (BGR).
+        """
+        target_width, target_height = frame.shape[1], frame.shape[0]
+
+        # Convert the frame to PIL Image format
+        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        frame_pil = Image.fromarray(frame_rgb, "RGB")
+
+        ctk_image = customtkinter.CTkImage(
+            light_image=frame_pil,
+            dark_image=frame_pil,
+            size=(target_width, target_height),
+        )
+        self.configure(image=ctk_image, text="")
+        self._textvariable.set("")</code></pre>
+
+
+
+<p class="wp-block-paragraph">Let’s digest this. First we need to know how big our image component will be, we can extract that information from the shape property of our image array. To display the image in <code>tkinter</code>, we need a Pillow <code>Image</code> type, we cannot directly use the OpenCV array. To convert an OpenCV array to Pillow, we first need to convert the color space from <strong>BGR</strong> to <strong>RGB</strong> and then we can use the <code>Image.fromarray </code>function to create the Pillow Image object. Next we can create a CTKImage, where we use the same image no matter the theme and set the size according to our frame.  Finally we can use the configure method to set the image in our frame. At the end, we also reset the text variable to remove the <em>“Loading…”</em> text, even though it would theoretically be hidden behind the image.</p>
+
+
+
+<p class="wp-block-paragraph">To quickly test this, we can set the first image of our webcam in the constructor. (We will see in a second why this is not such a good idea)</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">class App(customtkinter.CTk):
+    def __init__(self) -&gt; None:
+        ...
+        
+        cap = cv2.VideoCapture(0)
+        _, frame0 = cap.read()
+        self.image_display.set_frame(frame0)</code></pre>
+
+
+
+<p class="wp-block-paragraph">If you run this, you will notice that the window takes a bit longer to pop up, but after a short delay you should see a static image from your webcam. </p>
+
+
+
+<blockquote class="wp-block-quote is-layout-flow wp-block-quote-is-layout-flow">
+<p class="wp-block-paragraph"><strong>NOTE:</strong> If you don’t have a webcam ready you can also just use a local video file by passing the file path to the <code>cv2.VideoCapture </code>constructor call.</p>
+</blockquote>
+
+
+
+<figure class="wp-block-image size-full"><img decoding="async" src="../Images/2f2dc5c80dcae2f1ffae0909eef02738.png" alt="" class="wp-image-602351" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/04/image-144.png"/></figure>
+
+
+
+<p class="wp-block-paragraph">Now this is not very exciting, since the frame doesn’t update yet. So let’s see what happens if we try to do this naively.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">class App(customtkinter.CTk):
+    def __init__(self) -&gt; None:
+        ...
+
+        cap = cv2.VideoCapture(0)
+        while True:
+            ret, frame = cap.read()
+            if not ret:
+                break
+
+            self.image_display.set_frame(frame)</code></pre>
+
+
+
+<p class="wp-block-paragraph">Almost the same as before, except now we run the frame loop as we did in the previous chapter with the OpenCV GUI. If you run this, you will see… exactly nothing. The window never shows up, since we’re creating an infinite loop in the constructor of the app! This is also the reason why the program only showed up after a delay in the previous example, the opening of the Webcam stream is a blocking operation, and the event loop for the window cannot run, so it doesn’t show up yet.</p>
+
+
+
+<p class="wp-block-paragraph">So let’s fix this by adding a slightly better implementation that allows the gui event loop to run while we also update the frame every once in a while. We can use the <code>after</code> method of <code>tkinter</code> to schedule a function call while yielding the process during the wait time.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">
+        ...
+
+        self.cap = cv2.VideoCapture(0)
+        self.after(10, self.update_frame)
+
+    def update_frame(self) -&gt; None:
+        """
+        Update the displayed frame.
+        """
+        
+        ret, frame = self.cap.read()
+        if not ret:
+            return
+        
+        self.image_display.set_frame(frame)
+
+        self.after(10, self.update_frame)
+</code></pre>
+
+
+
+<p class="wp-block-paragraph">So now we still set up the webcam stream in the constructor, so we haven’t solved that problem yet. But at least we can see a continuous stream of frames in our image component.</p>
+
+
+
+<figure class="wp-block-image aligncenter size-full"><img decoding="async" src="../Images/d11e9e8db919e2cbdb1fe916246bb411.png" alt="" class="wp-image-602355" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/04/2025-04-25_21-09-44-ezgif.com-video-to-gif-converter.gif"/></figure>
+
+
+
+<h3 class="wp-block-heading">Applying Filters</h3>
+
+
+
+<p class="wp-block-paragraph">Now that the frame loop is running. we can re-implement our filters from the beginning and apply them to our webcam stream. In the update_frame function, we can check the current filter variable and apply the corresponding filter function.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">    def update_frame(self) -&gt; None:
+        ...
+        
+        # Get the selected filter type
+        filter_id = self.filter_var.get()
+        filter_type = filter_types[filter_id]
+
+        if filter_type == "grayscale":
+            frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        elif filter_type == "blur":
+            frame = cv2.GaussianBlur(frame, ksize=(15, 15), sigmaX=0)
+        elif filter_type == "threshold":
+            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            _, frame = cv2.threshold(gray, thresh=127, maxval=255, type=cv2.THRESH_BINARY)
+        elif filter_type == "canny":
+            frame = cv2.Canny(frame, threshold1=100, threshold2=200)
+        elif filter_type == "sobel":
+            frame = cv2.Sobel(frame, ddepth=cv2.CV_64F, dx=1, dy=0, ksize=5)
+        elif filter_type == "laplacian":
+            frame = cv2.Laplacian(frame, ddepth=cv2.CV_64F)
+        elif filter_type == "normal":
+            pass
+
+        if frame.dtype != np.uint8:
+            # Scale the frame to uint8 if necessary
+            cv2.normalize(frame, frame, 0, 255, cv2.NORM_MINMAX)
+            frame = frame.astype(np.uint8)
+        if len(frame.shape) == 2:  # Convert grayscale to BGR
+            frame = cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR)
+        
+        self.image_display.set_frame(frame)
+
+        self.after(10, self.update_frame)</code></pre>
+
+
+
+<p class="wp-block-paragraph">And now we’re back to the full functionality of the application, you can select any filter on the left side and it will be applied in real-time to the webcam feed!</p>
+
+
+
+<figure class="wp-block-image aligncenter size-full"><img decoding="async" src="../Images/ad84825fec7e71c34c2a0fe13943dfd1.png" alt="" class="wp-image-602356" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/04/2025-04-25_21-16-02-ezgif.com-video-to-gif-converter.gif"/></figure>
+
+
+
+<h3 class="wp-block-heading">Multithreading and Synchronization</h3>
+
+
+
+<p class="wp-block-paragraph">Now although the application runs as is, there are some problems with the current way we run our frame loop. Currently everything runs in a single thread, the main GUI thread. This is why in the beginning, we don’t immediately see the window pop up, our webcam initialization blocks the main thread. Now imagine, if we did some heavier image processing, maybe running the images through neural network, you wouldn’t want your user interface to always be blocked while the network is running inference. This will lead to a very unresponsive user experience when clicking the UI elements!</p>
+
+
+
+<figure class="wp-block-image size-large"><img decoding="async" src="../Images/e5463b0e05f5a5ce3152055c59016d23.png" alt="" class="wp-image-602360" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/04/image-145-1024x733.png"/></figure>
+
+
+
+<p class="wp-block-paragraph">A better way to handle this in our application is to <em>separate the image processing from the user interface</em>. Generally this is almost always a good idea to separate your GUI logic from any type of non-trivial processing. So in our case, we will run a separate thread that is responsible for the image loop. It will read the frames from the webcam stream and apply the filters. </p>
+
+
+
+<figure class="wp-block-image aligncenter size-large"><img decoding="async" src="../Images/784eca070b1af15651b36df1ac0b0987.png" alt="" class="wp-image-602361" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/04/image-146-923x1024.png"/></figure>
+
+
+
+<blockquote class="wp-block-quote is-layout-flow wp-block-quote-is-layout-flow">
+<p class="wp-block-paragraph"><strong>NOTE:</strong> Python threads are not <em>“real”</em> threads in a sense that they do not have the capability to run on different logical cpu cores and hence will not <em>really</em> run in parallel. In Python multithreading the context will switch between the threads, but due to the GIL, the global interpreter lock, a single python process can only run one physical thread. If you want <em>“real”</em> parallel processing, you will need to use <strong>multiprocessing</strong>. Since our process here is not CPU bound but actually <strong>I/O bound</strong>, multithreading suffices.</p>
+</blockquote>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">class App(customtkinter.CTk):
+    def __init__(self) -&gt; None:
+        ...
+
+        self.webcam_thread = threading.Thread(target=self.run_webcam_loop, daemon=True)
+        self.webcam_thread.start()
+
+    def run_webcam_loop(self) -&gt; None:
+        """
+        Run the webcam loop in a separate thread.
+        """
+        self.cap = cv2.VideoCapture(0)
+        if not self.cap.isOpened():
+            return
+
+        while True:
+            ret, frame = self.cap.read()
+            if not ret:
+                break
+
+            # Filters
+            ...
+
+            self.image_display.set_frame(frame)</code></pre>
+
+
+
+<p class="wp-block-paragraph">If you run this, you will now see that our window opens up immediately and we even see our loading text while the webcam stream is opening up. However, as soon as the stream starts, the frames start to flicker. Depending on a lot of factors, you might experience different visual artifacts or errors at this stage.</p>
+
+
+
+<details class="wp-block-details is-layout-flow wp-block-details-is-layout-flow"><summary>Warning: flashing image</summary>
+<figure class="wp-block-image size-full"><img decoding="async" src="../Images/3b519f7682d8b1e679059d60e6132de9.png" alt="" class="wp-image-602363" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/04/2025-04-25_21-42-16-ezgif.com-video-to-gif-converter.gif"/></figure>
+
+
+
+<p class="wp-block-paragraph"/>
+</details>
+
+
+
+<p class="wp-block-paragraph">Now why is this happening? The problem is that we’re simultaneously trying to update the new frame while the internal refresh loop of the user interface might be using the information of the array to draw it on the screen. They are both competing for the same frame array.</p>
+
+
+
+<p class="wp-block-paragraph">It is generally not a good idea to directly update the UI elements from a different thread, in some frameworks this might even be prevented and will raise exceptions. In <strong>Tkinter</strong>, we can do it, but we will get weird results. We need some type of <strong><em>synchronization</em></strong> between our threads. That’s where the <code>Queue</code> comes into play.</p>
+
+
+
+<figure class="wp-block-image size-large"><img decoding="async" src="../Images/391bc9c0769b8aae0aefc5fe86d09967.png" alt="" class="wp-image-602366" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/04/image-149-1024x853.png"/></figure>
+
+
+
+<p class="wp-block-paragraph">You’re probably familiar with queues from the grocery store or theme parks. The concept of the queue here is very similar: the first element that goes into the queue also leaves first (<strong>F</strong>irst <strong>I</strong>n <strong>F</strong>irst <strong>O</strong>ut).</p>
+
+
+
+<p class="wp-block-paragraph">In this case, we actually just want a queue with a single element, a single slot queue. The queue implementation in Python is <em>thread-safe</em>, meaning we can <strong>put</strong> and <strong>get</strong> objects from the queue from different threads. Perfect for our use case, the processing thread will put the image arrays to the queue and the GUI thread will try to get an element, but not block if the queue is empty.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">class App(customtkinter.CTk):
+    def __init__(self) -&gt; None:
+        ...
+
+        self.queue = queue.Queue(maxsize=1)
+
+        self.webcam_thread = threading.Thread(target=self.run_webcam_loop, daemon=True)
+        self.webcam_thread.start()
+
+        self.frame_loop_dt_ms = 16  # ~60 FPS
+        self.after(self.frame_loop_dt_ms, self._update_frame)
+    
+    def _update_frame(self) -&gt; None:
+        """
+        Update the frame in the image display widget.
+        """
+        try:
+            frame = self.queue.get_nowait()
+            self.image_display.set_frame(frame)
+        except queue.Empty:
+            pass
+
+        self.after(self.frame_loop_dt_ms, self._update_frame)
+
+    def run_webcam_loop(self) -&gt; None:
+        ...
+
+        while True:
+            ...
+
+            self.queue.put(frame)</code></pre>
+
+
+
+<p class="wp-block-paragraph">Notice how we move the direct call to the <code>set_frame</code> function from the webcam loop which runs in its own thread to the <code>_update_frame</code> function that is running on the main thread, repeatedly scheduled in <strong>16ms</strong> intervals. </p>
+
+
+
+<p class="wp-block-paragraph">Here it’s important to use the <code>get_nowait</code> function in the main thread, otherwise if we would use the get function, we would be blocking there. This call does <em>not block</em>, but raises a <code>queue.Empty </code>exception if there’s no element to fetch so we have to catch this and ignore it. In the webcam loop, we can use the blocking put function because it doesn’t matter that we <em>block</em> the <code>run_webcam_loop</code>, there’s nothing else needing to run there.</p>
+
+
+
+<figure class="wp-block-image aligncenter size-full"><img decoding="async" src="../Images/9c96503f024690c52b4f277448193dc4.png" alt="" class="wp-image-602620" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/04/Screencastfrom04-24-2025113343PM-ezgif.com-video-to-gif-converter-1.gif"/></figure>
+
+
+
+<p class="wp-block-paragraph">And now everything is running as expected, no more flashing frames!</p>
+
+
+
+<h2 class="wp-block-heading">Conclusion</h2>
+
+
+
+<p class="wp-block-paragraph">Combining a UI framework like <strong>Tkinter</strong> with <strong>OpenCV</strong> allows us to build modern looking applications with an interactive graphical user interface. Due to the UI running in the main thread, we run the image processing in a separate thread and synchronize the data between the threads using a single-slot queue. You can find a cleaned up version of this demo in the repository below with a more modular structure. Let me know if you build something interesting with this approach. Take care!</p>
+
+
+
+<hr class="wp-block-separator has-alpha-channel-opacity is-style-dotted"/>
+
+
+
+<hr class="wp-block-separator has-alpha-channel-opacity is-style-ornamental"/>
+
+
+
+<p class="has-text-align-center wp-block-paragraph"><em>Checkout the full source code in the GitHub repo:</em></p>
+
+
+
+<p class="has-text-align-center has-heading-6-font-size wp-block-paragraph"><a href="https://github.com/trflorian/ctk-opencv"><code>https://github.com/trflorian/ctk-opencv</code></a></p>
+
+
+
+<hr class="wp-block-separator has-alpha-channel-opacity is-style-ornamental"/>
+    
+</body>
+</html>

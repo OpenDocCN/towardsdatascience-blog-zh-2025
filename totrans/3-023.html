@@ -1,0 +1,516 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.1//EN"
+  "http://www.w3.org/TR/xhtml11/DTD/xhtml11.dtd">
+
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+<title>Website Feature Engineering at Scale: PySpark, Python & Snowflake</title>
+<link href="../Styles/Style.css" type="text/css" rel="stylesheet"/>
+</head>
+<body>
+<h1>Website Feature Engineering at Scale: PySpark, Python & Snowflake</h1>
+<blockquote>原文：<a href="https://towardsdatascience.com/creative-website-feature-engineering-using-pyspark-python-snowflake/">https://towardsdatascience.com/creative-website-feature-engineering-using-pyspark-python-snowflake/</a></blockquote>
+<h2 class="wp-block-heading"><mdspan datatext="el1746163832240" class="mdspan-comment">Introduction</mdspan> and Problem</h2>
+
+
+
+<p class="wp-block-paragraph">Imagine you’re staring at a database containing thousands of merchants across multiple countries, each with its own website. Your goal? Identify the top candidates to partner with in a new business proposal. Manually browsing each site is impossible at scale, so you need an automated way to gauge “how good” each merchant’s online presence is. Enter the <strong>website quality score</strong>: a numeric feature (0-10) that captures key aspects of a site’s professionalism, content depth, navigability, and visible product listings with prices. By integrating this score into your machine learning pipeline, you gain a powerful signal that helps your model distinguish the highest-quality merchants and dramatically improve selection accuracy.</p>
+
+
+
+<p class="wp-block-paragraph"><strong>Table of Contents</strong></p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">Introduction and Problem</li>
+
+
+
+<li class="wp-block-list-item">Technical Implementation
+<ul class="wp-block-list">
+<li class="wp-block-list-item">Legal &amp; Ethical Considerations</li>
+
+
+
+<li class="wp-block-list-item">Getting Started</li>
+
+
+
+<li class="wp-block-list-item">Fetch HTML Script in Python</li>
+
+
+
+<li class="wp-block-list-item">Assign a Quality Score Script in Pyspark</li>
+</ul>
+</li>
+
+
+
+<li class="wp-block-list-item">Conclusion
+<ul class="wp-block-list">
+<li class="wp-block-list-item">Disclaimer</li>
+</ul>
+</li>
+</ul>
+
+
+
+<h2 class="wp-block-heading">Technical Implementation</h2>
+
+
+
+<h3 class="wp-block-heading">Legal &amp; Ethical Considerations</h3>
+
+
+
+<p class="wp-block-paragraph"><strong>Be a good citizen of the web.</strong></p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">This scraper only counts words, links, images, scripts and simple “contact/about/price” flags, it does <strong>not</strong> extract or store any private or sensitive data.</li>
+
+
+
+<li class="wp-block-list-item"><strong>Throttle responsibly:</strong> use modest concurrency (e.g. CONCURRENT_REQUESTS ≤ 10), insert small pauses between batches, and avoid hammering the same domain.</li>
+
+
+
+<li class="wp-block-list-item"><strong>Retention policy:</strong> once you’ve computed your features or scores, purge raw HTML within a reasonable window (e.g. after 7-14 days).</li>
+
+
+
+<li class="wp-block-list-item">For very large runs, or if you plan to share extracted HTML, consider reaching out to site owners for permission or notifying them of your usage.</li>
+</ul>
+
+
+
+<h3 class="wp-block-heading">Getting Started</h3>
+
+
+
+<p class="wp-block-paragraph">Here’s your folder structure once you clone the repository <a href="https://github.com/lucasbraga461/feat-eng-websites/">https://github.com/lucasbraga461/feat-eng-websites/</a> :</p>
+
+
+
+<p class="wp-block-paragraph"><strong>Code block 1</strong>. GitHub repository folder structure</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-bash">├── src
+│   ├── helpers
+│   │   └── snowflake_data_fetch.py
+│   ├── p1_fetch_html_from_websites.py
+│   └── process_data
+│       ├── s1_gather_initial_table.sql
+│       └── s2_create_table_with_website_feature.sql
+├── notebooks
+│   └── ps_website_quality_score.ipynb
+├── data
+│   └── websites_initial_table.csv
+├── README.md
+├── requirements.txt
+└── venv
+└── .gitignore
+└── .env</code></pre>
+
+
+
+<p class="wp-block-paragraph">Your dataset should be ideally in Snowflake, here’s to give an idea on how you should prepare it, in case it comes from different tables, refer to src/process_data/s1_gather_initial_table.sql, here’s a snippet of it:</p>
+
+
+
+<p class="wp-block-paragraph"><strong>Code block 2</strong>. s1_gather_initial_table.sql</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-sql">CREATE OR REPLACE TABLE DATABASE.SCHEMA.WEBSITES_INITIAL_TABLE AS
+(
+SELECT
+   DISTINCT COUNTRY, WEBSITE_URL
+FROM DATABASE.SCHEMA.COUNTRY_ARG_DATASET
+WHERE WEBSITE_URL IS NOT NULL
+) UNION ALL (
+  
+SELECT
+   DISTINCT COUNTRY, WEBSITE_URL
+FROM DATABASE.SCHEMA.COUNTRY_BRA_DATASET
+WHERE WEBSITE_URL IS NOT NULL
+) UNION ALL (
+[...]
+SELECT
+   DISTINCT COUNTRY, WEBSITE_URL
+FROM DATABASE.SCHEMA.COUNTRY_JAM_DATASET
+WHERE WEBSITE_URL IS NOT NULL
+)
+;</code></pre>
+
+
+
+<p class="wp-block-paragraph">Here’s what this initial table should look like:</p>
+
+
+
+<figure class="wp-block-image aligncenter size-full is-resized"><img decoding="async" src="../Images/04b3039aba632ab62f796406d78d30ee.png" alt="" class="wp-image-602964" style="width:201px;height:auto" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/05/fig2-initial-table.png"/><figcaption class="wp-element-caption"><strong>Figure 1</strong>. Initial table</figcaption></figure>
+
+
+
+<h3 class="wp-block-heading">Fetch HTML Script in Python</h3>
+
+
+
+<p class="wp-block-paragraph">Having the data ready, this is how you call it, let’s say you have your data in Snowflake:</p>
+
+
+
+<p class="wp-block-paragraph"><strong>Code block 3</strong>. p1_fetch_html_from_websites.py using Snowflake dataset</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-bash">cd ~/Document/GitHub/feat-eng-websites
+python3 src/p1_fetch_html_from_websites.py -c BRA --use_snowflake</code></pre>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">The python script is expecting the snowflake table to be in DATABASE.SCHEMA.WEBSITES_INITIAL_TABLE which can be adjusted for your use case on the code itself.</li>
+</ul>
+
+
+
+<p class="wp-block-paragraph">That will open a window on your browser asking you to authenticate to Snowflake. Once you authenticate it, it’ll pull the data from the designated table and proceed with fetching the website content.</p>
+
+
+
+<p class="wp-block-paragraph">If you choose to pull this data from a CSV file then don’t use the flag at the end and call it this way:</p>
+
+
+
+<p class="wp-block-paragraph"><strong>Code block 4</strong>. p1_fetch_html_from_websites.py using CSV dataset</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-bash">cd ~/Document/GitHub/feat-eng-websites
+python3 src/p1_fetch_html_from_websites.py -c BRA</code></pre>
+
+
+
+<p class="wp-block-paragraph"><strong>GIF 1</strong>. Running p1_fetch_html_from_websites.py</p>
+
+
+
+<figure class="wp-block-image size-full"><img decoding="async" src="../Images/9755998c4ab5761a93d1f7f9077fe687.png" alt="" class="wp-image-602961" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/05/Running-p1-fast-GIF.gif"/></figure>
+
+
+
+<p class="wp-block-paragraph">Here’s why this script is powerful at fetching website content comparing to a more basic approach, see Table 1:</p>
+
+
+
+<p class="wp-block-paragraph"><strong>Table 1</strong>. Advantages of this Fetch HTML script comparing with a basic implementation</p>
+
+
+
+<figure class="wp-block-table"><table class="has-fixed-layout"><tbody><tr><td><strong><span style="text-decoration: underline;">Technique</span></strong></td><td><strong><span style="text-decoration: underline;">Basic Approach</span></strong></td><td><strong><span style="text-decoration: underline;">This script </span></strong>p1_fetch_html_from_websites.py</td></tr><tr><td><strong>HTTP fetching</strong></td><td>Blocking requests.get() calls one‐by‐one</td><td>Async I/O with asyncio + aiohttp to issue many requests in parallel and overlap network waits</td></tr><tr><td><strong>User-Agent</strong></td><td>Single default UA header for all requests</td><td>Rotate through a list of real browser UA strings to evade basic bot‐detection and throttling</td></tr><tr><td><strong>Batching</strong></td><td>Load &amp; process the entire URL list in one go</td><td>Split into chunks via BATCH_SIZE so you can checkpoint, limit memory use, and recover mid-run</td></tr><tr><td><strong>Retries &amp; Timeouts</strong></td><td>Rely on library defaults or crash on slow/unresponsive servers</td><td>Explicit MAX_RETRIES and TIMEOUT settings to retry transient failures and bound per-request wait times</td></tr><tr><td><strong>Concurrency limit</strong></td><td>Sequential or unbounded parallel calls (risking overload)</td><td>CONCURRENT_REQUESTS + aiohttp.TCPConnector + asyncio.Semaphore to throttle max in-flight connections</td></tr><tr><td><strong>Event loop</strong></td><td>Single loop reused, can hit “bound to different loop” errors when restarting use</td><td>Create a fresh asyncio event loop per batch to avoid loop/semaphore binding errors and ensure isolation</td></tr></tbody></table></figure>
+
+
+
+<p class="wp-block-paragraph">It’s generally better to store raw HTML in a proper database (Snowflake, BigQuery, Redshift, Postgres, etc.) rather than in CSV files. A single page’s HTML can easily exceed spreadsheet limits (e.g. Google Sheets caps at 50,000 characters per cell), and managing hundreds of pages would bloat and slow down CSVs. While we include a CSV option here for quick demos or minimal setups, large‐scale scraping and feature engineering are far more reliable and performant when run in a scalable data warehouse like Snowflake.</p>
+
+
+
+<p class="wp-block-paragraph">Once you run it for say BRA, ARG and JAM this is how your data folder will look like</p>
+
+
+
+<p class="wp-block-paragraph"><strong>Code block 5</strong>. Folder structure once you ran it for ARG, BRA and JAM</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-bash">├── data
+│   ├── website_scraped_data_ARG.csv
+│   ├── website_scraped_data_BRA.csv
+│   ├── website_scraped_data_JAM.csv
+│   └── websites_initial_table.csv</code></pre>
+
+
+
+<p class="wp-block-paragraph">Refer to Figure 2 to visualize what the output of the first script generates, i.e. visualize the table website_scraped_data_BRA. Note that one of the columns is html_content, which is a very large field since it takes the whole HTML content of the website.</p>
+
+
+
+<figure class="wp-block-image size-large"><img decoding="async" src="../Images/3b0787b9c8d70ff930e6c39477998631.png" alt="" class="wp-image-602965" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/05/fig3-output-table-first-script-1024x708.png"/><figcaption class="wp-element-caption"><strong>Figure </strong>2. Example of table website_scraped_data_BRA generated with first python script</figcaption></figure>
+
+
+
+<h3 class="wp-block-heading">Assign a Quality Score Script in Pyspark</h3>
+
+
+
+<p class="wp-block-paragraph">Because each page’s HTML can be massive, and you’ll have hundreds or thousands of pages, you can’t efficiently process or store all that raw text in flat files. Instead, we hand off to Spark via Snowpark (Snowflake’s PySpark engine) for scalable feature extraction. See notebooks/ps_website_quality_score.ipynb for a ready-to-run example: just select the Python kernel in Snowflake and import the built-in Snowpark libraries to spin up your Spark session (see Code Block 6).</p>
+
+
+
+<p class="wp-block-paragraph"><strong>Code block 6</strong>. Folder structure once you ran it for ARG, BRA and JAM</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">import pandas as pd
+from bs4 import BeautifulSoup
+import re
+from tqdm import tqdm
+
+import snowflake.snowpark as snowpark
+from snowflake.snowpark.functions import col, lit, udf
+from snowflake.snowpark.context import get_active_session
+session = get_active_session()</code></pre>
+
+
+
+<p class="wp-block-paragraph">Each market speaks its own language and follows different conventions, so we bundle all those rules into a simple country-specific config. For each country we define the contact/about keywords and price‐pattern regexes that signal a “good” merchant site, then point the script at the corresponding Snowflake input and output tables. This makes the feature extractor fully data-driven, reusing the same code for every region with just a change of config.</p>
+
+
+
+<p class="wp-block-paragraph"><strong>Code block 7</strong>. Config file</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">country_configs = {
+   "ARG": {
+       "name": "Argentina",
+       "contact_keywords": ["contacto", "contáctenos", "observaciones"],
+       "about_keywords": ["acerca de", "sobre nosotros", "quiénes somos"],
+       "price_patterns": [r'ARS\s?\d+', r'\$\s?\d+', r'\d+\.\d{2}\s?\$'],
+       "input_table": "DATABASE.SCHEMA.WEBSITE_SCRAPED_DATA_ARG",
+       "output_table": "DATABASE.SCHEMA.WEBSITE_QUALITY_SCORES_ARG"
+   },
+   "BRA": {
+       "name": "Brazil",
+       "contact_keywords": ["contato", "fale conosco", "entre em contato"],
+       "about_keywords": ["sobre", "quem somos", "informações"],
+       "price_patterns": [r'R\$\s?\d+', r'\d+\.\d{2}\s?R\$'],
+       "input_table": "DATABASE.SCHEMA.WEBSITE_SCRAPED_DATA_BRA",
+       "output_table": "DATABASE.SCHEMA.WEBSITE_QUALITY_SCORES_BRA"
+   },
+[...]</code></pre>
+
+
+
+<p class="wp-block-paragraph">Before we can register and use our Python scraper logic inside Snowflake, we first create a <strong>stage</strong>, a persistent storage area, by running the DDL in Code Block 8. This creates a named location @STAGE_WEBSITES under your DATABASE.SCHEMA, where we’ll upload the UDF package (including dependencies like BeautifulSoup and lxml). Once the stage exists, we deploy the extract_features_udf there, making it available to any Snowflake session for HTML parsing and feature extraction. Finally, we set the country_code variable to kick off the pipeline for a specific country, before looping through other country codes as needed.</p>
+
+
+
+<p class="wp-block-paragraph"><strong>Code block 8</strong>. Create a stage folder to keep the UDFs created</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">-- CREATE STAGE DATABASE.SCHEMA.STAGE_WEBSITES;
+
+country_code = "BRA"</code></pre>
+
+
+
+<p class="wp-block-paragraph">Now at this part of the code, refer to Code block 9, we’ll define the UDF function ‘extract_features_udf’ that will extract information from the HTML content, here’s what this part of the code does:</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">Defines the Snowpark UDF called ‘extract_features_udf’ that lives in the Snowflake stage folder previously created</li>
+
+
+
+<li class="wp-block-list-item">Parses the raw HTML with BeautifulSoup well known library</li>
+
+
+
+<li class="wp-block-list-item">Extract text features:
+<ul class="wp-block-list">
+<li class="wp-block-list-item">Total word count</li>
+
+
+
+<li class="wp-block-list-item">Page title length</li>
+
+
+
+<li class="wp-block-list-item">Flags for ‘contact’ and ‘about’ pages.</li>
+</ul>
+</li>
+
+
+
+<li class="wp-block-list-item">Extracts structural features:
+<ul class="wp-block-list">
+<li class="wp-block-list-item">Number of &lt;a&gt; links</li>
+
+
+
+<li class="wp-block-list-item">Number of &lt;img&gt; images</li>
+
+
+
+<li class="wp-block-list-item">Number of &lt;script&gt; tags</li>
+</ul>
+</li>
+
+
+
+<li class="wp-block-list-item">Detects product listings by looking for any price pattern in the text</li>
+
+
+
+<li class="wp-block-list-item">Returns a dictionary of all these counts/flags, or zeros if the HTML was empty or any error occurred</li>
+</ul>
+
+
+
+<p class="wp-block-paragraph"><strong>Code block 9</strong>. Function to extract HTML content</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">@udf(name="extract_features_udf",
+    is_permanent=True,
+    replace=True,
+    stage_location="@STAGE_WEBSITES",
+    packages=["beautifulsoup4", "lxml"])
+def extract_features(html_content: str, CONTACT_KEYWORDS: str, ABOUT_KEYWORDS: str, PRICE_PATTERNS: list) -&gt; dict:
+   """Extracts text, structure, and product-related features from HTML."""
+   if not html_content:
+       return {
+           "word_count": 0, "title_length": 0, "has_contact_page": 0,
+           "has_about_page": 0, "num_links": 0, "num_images": 0,
+           "num_scripts": 0, "has_price_listings": 0
+       }
+
+   try:
+       soup = BeautifulSoup(html_content, 'lxml')
+       # soup = BeautifulSoup(html_content[:MAX_HTML_SIZE], 'lxml')
+
+       # Text Features
+       text = soup.get_text(" ", strip=True)
+       word_count = len(text.split())
+
+       title = soup.title.string.strip() if soup.title and soup.title.string else ""
+       has_contact = bool(re.search(CONTACT_KEYWORDS, text, re.I))
+       has_about = bool(re.search(ABOUT_KEYWORDS, text, re.I))
+
+       # Structural Features
+       num_links = len(soup.find_all("a"))
+       num_images = len(soup.find_all("img"))
+       num_scripts = len(soup.find_all("script"))
+
+       # Product Listings Detection
+       # price_patterns = [r'€\s?\d+', r'\d+\.\d{2}\s?€', r'\$\s?\d+', r'\d+\.\d{2}\s?\$']
+       has_price = any(re.search(pattern, text, re.I) for pattern in PRICE_PATTERNS)
+
+       return {
+           "word_count": word_count, "title_length": len(title), "has_contact_page": int(has_contact),
+           "has_about_page": int(has_about), "num_links": num_links, "num_images": num_images,
+           "num_scripts": num_scripts, "has_price_listings": int(has_price)
+       }
+
+   except Exception:
+       return {"word_count": 0, "title_length": 0, "has_contact_page": 0,
+               "has_about_page": 0, "num_links": 0, "num_images": 0,
+               "num_scripts": 0, "has_price_listings": 0}</code></pre>
+
+
+
+<p class="wp-block-paragraph">And the final part of the pyspark notebook Process and generate output table does four main things:<br/>First it applies the UDF extract_features_udf on the raw HTML, producing a single <strong>features</strong> column that holds a small dict of counts/flags for each page, see code block 10.</p>
+
+
+
+<p class="wp-block-paragraph"><strong>Code block 10</strong>. Applies UDF to each row</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">df_processed = df.with_column(
+    "features", 
+    extract_features(col("HTML_CONTENT"))
+)</code></pre>
+
+
+
+<p class="wp-block-paragraph">Secondly, it turns each key in the features dict into its own column in the DataFrame (so you get separate word_count, num_links, etc.), see code block 11.</p>
+
+
+
+<p class="wp-block-paragraph"><strong>Code block 11</strong>. Explode that dictionary into real columns</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">df_final = df_processed.select(
+    col("WEBSITE"),
+    col("features")["word_count"].alias("word_count"),
+    ...,
+    col("features")["has_price_listings"].alias("has_price_listings")
+)</code></pre>
+
+
+
+<p class="wp-block-paragraph">Thirdly, based on business rules defined by me, it builds a 0-10 score by assigning points for each feature (e.g. word-count thresholds, presence of contact/about pages, product listings), see code block 12.</p>
+
+
+
+<p class="wp-block-paragraph"><strong>Code block 12</strong>. Compute a single quality score</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">df_final = df_final.with_column(
+    "quality_score",
+    ( (col("word_count") &gt; 300).cast("int")*2
+      + (col("word_count") &gt; 100).cast("int")
+      + (col("title_length") &gt; 10).cast("int")
+      + col("has_contact_page")
+      + col("has_about_page")
+      + (col("num_links") &gt; 10).cast("int")
+      + (col("num_images") &gt; 5).cast("int")
+      + col("has_price_listings")*3
+    )
+)</code></pre>
+
+
+
+<p class="wp-block-paragraph">And finally it writes the final table back into Snowflake (replacing any existing table) so you can query or join these quality scores later.</p>
+
+
+
+<p class="wp-block-paragraph"><strong>Code block 13</strong>. Write the output table to Snowflake</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">df_final.write.mode("overwrite").save_as_table(OUTPUT_TABLE)</code></pre>
+
+
+
+<figure class="wp-block-image size-large"><img decoding="async" src="../Images/673625749e71130e54e794f03ade425f.png" alt="" class="wp-image-602966" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/05/fig4-final-table-1024x335.png"/><figcaption class="wp-element-caption"><strong>Figure </strong>3. Final table, output of DATABASE.SCHEMA.WEBSITE_QUALITY_SCORES_BRA</figcaption></figure>
+
+
+
+<h2 class="wp-block-heading">Conclusion</h2>
+
+
+
+<p class="wp-block-paragraph">Once computed and stored, the website quality score becomes a straightforward input to virtually any predictive model, whether you’re training a logistic regression, random forest, or deep neural network. As one of your strongest features, it quantifies a merchant’s online maturity and reliability, complementing other data like sales volume or customer reviews. By combining this web-derived signal with your existing metrics, you’ll be able to rank, filter, and recommend partners far more effectively, and ultimately drive better business outcomes.</p>
+
+
+
+<p class="wp-block-paragraph">GitHub repository implementation:</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item"><a href="https://github.com/lucasbraga461/feat-eng-websites/">https://github.com/lucasbraga461/feat-eng-websites/</a></li>
+</ul>
+
+
+
+<h3 class="wp-block-heading">Disclaimer</h3>
+
+
+
+<p class="wp-block-paragraph">The screenshots and figures in this article (e.g. of Snowflake query results) have been created by the author. None of the numbers are drawn from real business data but were manually generated for illustrative purposes. Likewise, all SQL scripts are handcrafted examples; they are <strong>not</strong> extracted from any live environment but are designed to closely resemble what a company using <strong>Snowflake</strong> might encounter.</p>
+    
+</body>
+</html>

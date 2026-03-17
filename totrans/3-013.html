@@ -1,0 +1,560 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.1//EN"
+  "http://www.w3.org/TR/xhtml11/DTD/xhtml11.dtd">
+
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+<title>Retrieval Augmented Classification: Improving Text Classification with External Knowledge</title>
+<link href="../Styles/Style.css" type="text/css" rel="stylesheet"/>
+</head>
+<body>
+<h1>Retrieval Augmented Classification: Improving Text Classification with External Knowledge</h1>
+<blockquote>原文：<a href="https://towardsdatascience.com/retrieval-augmented-classification-improving-text-classification-with-external-knowledge/">https://towardsdatascience.com/retrieval-augmented-classification-improving-text-classification-with-external-knowledge/</a></blockquote>
+<p class="wp-block-paragraph"><mdspan datatext="el1746589026776" class="mdspan-comment">Text</mdspan> classification stands as one of the most basic yet most important applications of natural language processing. It has a vital role in many real-world applications that go from filtering unwanted emails like spam, detecting product categories or classifying user intent in a chat-bot application. The default way of building text classifiers is to gather large amounts of labeled data, meaning input texts and their corresponding labels, and then training a custom Machine Learning model. Things changed a bit as LLMs became more powerful, where you can often get decent performance by using general purpose large language models as zero-shot or few-shot classifiers, significantly reducing the time-to-deployment of text classification services. However, the accuracy can lag behind custom built models and is highly dependent on crafting custom prompts to better define the classification task to the LLM. In this blog, we aim at minimizing the gap between custom ML models for classification and general purpose LLMs while also minimizing the effort needed in adapting the LLM prompt to your task.</p>
+
+
+
+<h2 class="wp-block-heading">LLMs vs Custom ML models for text classification</h2>
+
+
+
+<p class="wp-block-paragraph"><strong>Pros:</strong></p>
+
+
+
+<p class="wp-block-paragraph">Let’s first explore the pro and cons of each of the two approaches to do text classification.</p>
+
+
+
+<p class="wp-block-paragraph"><strong>Large language models as general purpose classifiers:</strong></p>
+
+
+
+<ol class="wp-block-list">
+<li class="wp-block-list-item">High generalization ability given the vast pre-training corpus and reasoning abilities of the LLM.</li>
+
+
+
+<li class="wp-block-list-item">A single general purpose LLM can handle multiple classifications tasks without the need to deploy a model for each.</li>
+
+
+
+<li class="wp-block-list-item">As LLMs continue to improve, you can potentially enhance accuracy with minimal effort simply by adopting newer, more powerful models as they become available.</li>
+
+
+
+<li class="wp-block-list-item">The availability of most LLMs as managed services significantly reduces the deployment knowledge and effort required to get started.</li>
+
+
+
+<li class="wp-block-list-item">LLMs often outperform custom ML models in low-data scenarios where labeled data is limited or costly to obtain.</li>
+
+
+
+<li class="wp-block-list-item">LLMs generalize to multiple languages.</li>
+
+
+
+<li class="wp-block-list-item">LLMs can be cheaper when having low or unpredictable volumes of predictions if you pay per token.</li>
+
+
+
+<li class="wp-block-list-item">Class definitions can be changed dynamically without retraining by simply modifying the prompts.</li>
+</ol>
+
+
+
+<p class="wp-block-paragraph"><strong>Cons:</strong></p>
+
+
+
+<ol class="wp-block-list">
+<li class="wp-block-list-item">LLMs are prone to hallucinations.</li>
+
+
+
+<li class="wp-block-list-item">LLMs can be slow, or at least slower than small custom ML models.</li>
+
+
+
+<li class="wp-block-list-item">They require prompt engineering effort.</li>
+
+
+
+<li class="wp-block-list-item">High-throughput applications using LLMs-as-a-service may quickly encounter quota limitations.</li>
+
+
+
+<li class="wp-block-list-item">This approach becomes less effective with a very large number of potential classes due to context size constraints. Defining all the classes would consume a significant portion of the available and effective input context.</li>
+
+
+
+<li class="wp-block-list-item">LLMs usually have worse accuracy than custom models in the high data regime.</li>
+</ol>
+
+
+
+<p class="wp-block-paragraph"><strong>Custom Machine learning models:</strong></p>
+
+
+
+<p class="wp-block-paragraph"><strong>Pros:</strong></p>
+
+
+
+<ol class="wp-block-list">
+<li class="wp-block-list-item">Efficient and fast.</li>
+
+
+
+<li class="wp-block-list-item">More flexible in architecture choice, training and serving method.</li>
+
+
+
+<li class="wp-block-list-item">Ability to add interpretability and uncertainty estimation aspects to the model.</li>
+
+
+
+<li class="wp-block-list-item">Higher accuracy in the high data regime.</li>
+
+
+
+<li class="wp-block-list-item">You keep control of your model and serving infrastructure.</li>
+</ol>
+
+
+
+<p class="wp-block-paragraph"><strong>Cons:</strong></p>
+
+
+
+<ol class="wp-block-list">
+<li class="wp-block-list-item">Requires frequent re-trainings to adapt to new data or distribution changes.</li>
+
+
+
+<li class="wp-block-list-item">May need significant amounts of labeled data.</li>
+
+
+
+<li class="wp-block-list-item">Limited generalization.</li>
+
+
+
+<li class="wp-block-list-item">Sensitive to out-of-domain vocabulary or formulations.</li>
+
+
+
+<li class="wp-block-list-item">Requires MLOps knowledge for deployment.</li>
+</ol>
+
+
+
+<h2 class="wp-block-heading">Bridging the gap between custom text classifier and LLMs:</h2>
+
+
+
+<p class="wp-block-paragraph">Let’s work on a way to keep the pros of using LLMs for classification while alleviating some of the cons. We will take inspiration from RAG and use a prompting technique called few-shot prompting.</p>
+
+
+
+<p class="wp-block-paragraph">Let’s define both:</p>
+
+
+
+<p class="wp-block-paragraph"><strong>RAG</strong></p>
+
+
+
+<p class="wp-block-paragraph">Retrieval Augmented Generation is a popular method that augments the LLM context with external knowledge before asking a question. This reduces the likelihood of hallucination and improves the quality of the responses.</p>
+
+
+
+<p class="wp-block-paragraph"><strong>Few-shot prompting</strong></p>
+
+
+
+<p class="wp-block-paragraph">In each classification task, we show the LLM examples of inputs and expected outputs as part of the prompt to help it understand the task.</p>
+
+
+
+<p class="wp-block-paragraph">Now, the main idea of this project is mixing both. We dynamically fetch examples that are the most similar to the text query to be classified and inject them as few-shot example prompts. We also limit the scope of possible classes dynamically using those of the K-nearest neighbors. This frees up a significant amount of tokens in the input context when working with a classification problem with a large number of possible classes.</p>
+
+
+
+<p class="wp-block-paragraph">Here is how that would work:</p>
+
+
+
+<p class="wp-block-paragraph"><a href="https://lh7-rt.googleusercontent.com/docsz/AD_4nXegGN0nUJOjBpN431umzXQoCuHGcsDP9bjg1leOK3YmK_bmaL0U-sSs-Z_5yKP_jcnZerVvIYjkLhvVzxzkhnQPK5vxE0tNLXQMp5YzJEZmKWKoiEJNsqKjuUv1pl_R7xBkW1FWcQ?key=7bn2d-D6uELdmrql8Yks9-6l"/><a href="https://lh7-rt.googleusercontent.com/docsz/AD_4nXegGN0nUJOjBpN431umzXQoCuHGcsDP9bjg1leOK3YmK_bmaL0U-sSs-Z_5yKP_jcnZerVvIYjkLhvVzxzkhnQPK5vxE0tNLXQMp5YzJEZmKWKoiEJNsqKjuUv1pl_R7xBkW1FWcQ?key=7bn2d-D6uELdmrql8Yks9-6l"/></p>
+
+
+
+<figure class="wp-block-image size-full"><img decoding="async" src="../Images/3902827ae3fe7d4860d3349ff63541f2.png" alt="" class="wp-image-603317" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/05/mermaid-diagram-2025-05-03-214217.png"/></figure>
+
+
+
+<p class="wp-block-paragraph">Let’s go through the practical steps of getting this approach to run:</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">Building a knowledge base of labeled input text / category pairs. This will be our source of external knowledge for the LLM. We will be using ChromaDB.</li>
+</ul>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-julia">from typing import List
+from uuid import uuid4
+
+from langchain_core.documents import Document
+from chromadb import PersistentClient
+from langchain_chroma import Chroma
+from langchain_community.embeddings import HuggingFaceBgeEmbeddings
+import torch
+from tqdm import tqdm
+from chromadb.config import Settings
+from retrieval_augmented_classification.logger import logger
+
+
+class DatasetVectorStore:
+    """ChromaDB vector store for PublicationModel objects with SentenceTransformers embeddings."""
+
+    def __init__(
+        self,
+        db_name: str = "retrieval_augmented_classification",  # Using db_name as collection name in Chroma
+        collection_name: str = "classification_dataset",
+        persist_directory: str = "chroma_db",  # Directory to persist ChromaDB
+    ):
+        self.db_name = db_name
+        self.collection_name = collection_name
+        self.persist_directory = persist_directory
+
+        # Determine if CUDA is available
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+        logger.info(f"Using device: {device}")
+
+        self.embeddings = HuggingFaceBgeEmbeddings(
+            model_name="BAAI/bge-small-en-v1.5",
+            model_kwargs={"device": device},
+            encode_kwargs={
+                "device": device,
+                "batch_size": 100,
+            },  # Adjust batch_size as needed
+        )
+
+        # Initialize Chroma vector store
+        self.client = PersistentClient(
+            path=self.persist_directory, settings=Settings(anonymized_telemetry=False)
+        )
+        self.vector_store = Chroma(
+            client=self.client,
+            collection_name=self.collection_name,
+            embedding_function=self.embeddings,
+            persist_directory=self.persist_directory,
+        )
+
+    def add_documents(self, documents: List) -&gt; None:
+        """
+        Add multiple documents to the vector store.
+
+        Args:
+            documents: List of dictionaries containing document data.  Each dict needs a "text" key.
+        """
+
+        local_documents = []
+        ids = []
+
+        for doc_data in documents:
+            if not doc_data.get("id"):
+                doc_data["id"] = str(uuid4())
+
+            local_documents.append(
+                Document(
+                    page_content=doc_data["text"],
+                    metadata={k: v for k, v in doc_data.items() if k != "text"},
+                )
+            )
+            ids.append(doc_data["id"])
+
+        batch_size = 100  # Adjust batch size as needed
+        for i in tqdm(range(0, len(documents), batch_size)):
+            batch_docs = local_documents[i : i + batch_size]
+            batch_ids = ids[i : i + batch_size]
+
+            # Chroma's add_documents doesn't directly support pre-defined IDs. Upsert instead.
+            self._upsert_batch(batch_docs, batch_ids)
+
+    def _upsert_batch(self, batch_docs: List[Document], batch_ids: List[str]):
+        """Upsert a batch of documents into Chroma.  If the ID exists, it updates; otherwise, it creates."""
+        texts = [doc.page_content for doc in batch_docs]
+        metadatas = [doc.metadata for doc in batch_docs]
+
+        self.vector_store.add_texts(texts=texts, metadatas=metadatas, ids=batch_ids)</code></pre>
+
+
+
+<p class="wp-block-paragraph">This class handles creating a collection and embedding each document’s before inserting it into the vector index. We use BAAI/bge-small-en-v1.5 but any embedding model would work, even those available as-a-service from Gemini, OpenAI, or Nebius.</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">Finding the K nearest neighbors for an input text</li>
+</ul>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-julia">def search(self, query: str, k: int = 5) -&gt; List[Document]:
+    """Search documents by semantic similarity."""
+    results = self.vector_store.similarity_search(query, k=k)
+    return results</code></pre>
+
+
+
+<p class="wp-block-paragraph">This method returns the documents in the vector database that are most similar to our input.</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">Building the Retrieval Augmented Classifier</li>
+</ul>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-julia">from typing import Optional
+from pydantic import BaseModel, Field
+from collections import Counter
+
+from retrieval_augmented_classification.vector_store import DatasetVectorStore
+from tenacity import retry, stop_after_attempt, wait_exponential
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+
+
+class PredictedCategories(BaseModel):
+    """
+    Pydantic model for the predicted categories from the LLM.
+    """
+
+    reasoning: str = Field(description="Explain your reasoning")
+    predicted_category: str = Field(description="Category")
+
+
+class RAC:
+    """
+    A hybrid classifier combining K-Nearest Neighbors retrieval with an LLM for multi-class prediction.
+    Finds top K neighbors, uses top few-shot for context, and uses all neighbor categories
+    as potential prediction candidates for the LLM.
+    """
+
+    def __init__(
+        self,
+        vector_store: DatasetVectorStore,
+        llm_client,
+        knn_k_search: int = 30,
+        knn_k_few_shot: int = 5,
+    ):
+        """
+        Initializes the classifier.
+
+        Args:
+            vector_store: An instance of DatasetVectorStore with a search method.
+            llm_client: An instance of the LLM client capable of structured output.
+            knn_k_search: The number of nearest neighbors to retrieve from the vector store.
+            knn_k_few_shot: The number of top neighbors to use as few-shot examples for the LLM.
+                           Must be less than or equal to knn_k_search.
+        """
+
+        self.vector_store = vector_store
+        self.llm_client = llm_client
+        self.knn_k_search = knn_k_search
+        self.knn_k_few_shot = knn_k_few_shot
+
+    @retry(
+        stop=stop_after_attempt(3),  # Retry LLM call a few times
+        wait=wait_exponential(multiplier=1, min=2, max=5),  # Shorter waits for demo
+    )
+    def predict(self, document_text: str) -&gt; Optional[str]:
+        """
+        Predicts the relevant categories for a given document text using KNN retrieval and an LLM.
+
+        Args:
+            document_text: The text content of the document to classify.
+
+        Returns:
+            The predicted category
+        """
+        neighbors = self.vector_store.search(document_text, k=self.knn_k_search)
+
+        all_neighbor_categories = set()
+        valid_neighbors = []  # Store neighbors that have metadata and categories
+        for neighbor in neighbors:
+            if (
+                hasattr(neighbor, "metadata")
+                and isinstance(neighbor.metadata, dict)
+                and "category" in neighbor.metadata
+            ):
+                all_neighbor_categories.add(neighbor.metadata["category"])
+                valid_neighbors.append(neighbor)
+            else:
+                pass  # Suppress warnings for cleaner demo output
+
+        if not valid_neighbors:
+            return None
+
+        category_counts = Counter(all_neighbor_categories)
+        ranked_categories = [
+            category for category, count in category_counts.most_common()
+        ]
+
+        if not ranked_categories:
+            return None
+
+        few_shot_neighbors = valid_neighbors[: self.knn_k_few_shot]
+
+        messages = []
+
+        system_prompt = f"""You are an expert multi-class classifier. Your task is to analyze the provided document text and assign the most relevant category from the list of allowed categories.
+You MUST only return categories that are present in the following list: {ranked_categories}.
+If none of the allowed categories are relevant, return an empty list.
+Return the categories by likelihood (more confident to least confident).
+Output your prediction as a JSON object matching the Pydantic schema: {PredictedCategories.model_json_schema()}.
+"""
+        messages.append(SystemMessage(content=system_prompt))
+
+        for i, neighbor in enumerate(few_shot_neighbors):
+            messages.append(
+                HumanMessage(content=f"Document: {neighbor.page_content}")
+            )
+            expected_output_json = PredictedCategories(
+                reasoning="Your reasoning here",
+                predicted_category=neighbor.metadata["category"]
+            ).model_dump_json()
+            # Simulate the structure often used with tool calling/structured output
+
+            ai_message_with_tool = AIMessage(
+                content=expected_output_json,
+            )
+
+            messages.append(ai_message_with_tool)
+
+        # Final user message: The document text to classify
+        messages.append(HumanMessage(content=f"Document: {document_text}"))
+
+        # Configure the client for structured output with the Pydantic schema
+        structured_client = self.llm_client.with_structured_output(PredictedCategories)
+        llm_response: PredictedCategories = structured_client.invoke(messages)
+
+        predicted_category = llm_response.predicted_category
+
+        return predicted_category if predicted_category in ranked_categories else None</code></pre>
+
+
+
+<p class="wp-block-paragraph">The first part of the code defines the structure of the output we expect from the LLM. The Pydantic class has two fields, the reasoning, used for chain-of-though prompting (<a href="https://www.promptingguide.ai/techniques/cot">https://www.promptingguide.ai/techniques/cot</a>) and the predicted category.</p>
+
+
+
+<p class="wp-block-paragraph">The predict method first finds the K nearest neighbors and uses them as few-shot prompts by creating a synthetic message history as if the LLM gave the correct categories for each of the KNN, then we inject the query text as the last human message.</p>
+
+
+
+<p class="wp-block-paragraph">We filter the value to check if it is valid and if so, return it.</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">Example prediction:</li>
+</ul>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-julia">_rac = RAC(
+    vector_store=store,
+    llm_client=llm_client,
+    knn_k_search=50,
+    knn_k_few_shot=10,
+)
+print(
+    f"Initialized rac with knn_k_search={_rac.knn_k_search}, knn_k_few_shot={_rac.knn_k_few_shot}."
+)
+
+text = """Ivanoe Bonomi [iˈvaːnoe boˈnɔːmi] (18 October 1873 – 20 April 1951) was an Italian politician and statesman before and after World War II. Bonomi was born in Mantua. He was elected to the Italian Chamber of Deputies in ...
+"""
+category = _rac.predict(text)
+
+print(text)
+print(category)
+
+text = """Michel Rocard, né le 23 août 1930 à Courbevoie et mort le 2 juillet 2016 à Paris, est un haut fonctionnaire et ... 
+"""
+category = _rac.predict(text)
+
+print(text)
+print(category)</code></pre>
+
+
+
+<p class="wp-block-paragraph">Both inputs return the prediction “PrimeMinister” even though the second example is in french while the training dataset is fully in English. This illustrates the generalization abilities of this approach even across similar languages.</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">Evaluation:</li>
+</ul>
+
+
+
+<p class="wp-block-paragraph">We use the <strong>DBPedia Classes</strong> dataset’s l3 categories (<a href="https://www.kaggle.com/datasets/danofer/dbpedia-classes">https://www.kaggle.com/datasets/danofer/dbpedia-classes</a> ,License <a href="https://en.wikipedia.org/wiki/Wikipedia:Text_of_Creative_Commons_Attribution-ShareAlike_3.0_Unported_License">CC BY-SA 3.0</a>.) for our evaluation. This dataset has more than 200 categories and 240000 training samples.</p>
+
+
+
+<p class="wp-block-paragraph">We benchmark the Retrieval Augmented Classification approach against a simple KNN classifier with majority vote and obtain the following results the DBpedia dataset’s <strong>l3 categories</strong>:</p>
+
+
+
+<figure class="wp-block-table"><table class="has-fixed-layout"><tbody><tr><td/><td>Accuracy</td><td>Average Latency</td><td>Throughput (multi-threaded)</td></tr><tr><td>KNN classifier</td><td>87%</td><td><strong>24ms</strong></td><td><strong>108</strong> predictions / s</td></tr><tr><td>LLM only classifier</td><td>88%</td><td>~600ms</td><td>47 predictions / s</td></tr><tr><td>RAC</td><td><strong>96%</strong></td><td>~1s</td><td>27 predictions / s</td></tr></tbody></table></figure>
+
+
+
+<p class="wp-block-paragraph">By reference, the best accuracy I found on Kaggle notebooks for this dataset’s l3 level was around <em>94%</em> using custom ML models.</p>
+
+
+
+<p class="wp-block-paragraph">We note that combining a KNN search with the reasoning abilities of an LLM allows us to gain +9% accuracy points but comes at a cost of a lower throughput and higher latency.</p>
+
+
+
+<h2 class="wp-block-heading">Conclusion</h2>
+
+
+
+<p class="wp-block-paragraph">In this project we built a text classifier that leverages “retrieval” to boost the ability of an LLM to find the correct category of the input content. This approach offers several advantages over traditional ML text classifiers. These include the ability to dynamically change the training dataset without retraining, a higher generalization ability due to the reasoning and general knowledge of LLMs, easy deployment when using managed LLM services compared to custom ML models, and the capability to handle multiple classification tasks with a single base LLM model. This comes at a cost of higher latency and lower throughput and a risk of LLM vendor lock-in.</p>
+
+
+
+<p class="wp-block-paragraph">This method should not be your first go-to when working on a classification task but would still be useful as part of your toolbox when your application can benefit from the flexibility of not having to re-train a classifier every time the data changes or when working with a small amount of labeled data. It can also allow you to get a target of having a classification service up and running very quickly when a deadline is looming 😃.</p>
+
+
+
+<p class="wp-block-paragraph">Sources:</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item"><a href="https://aclanthology.org/2023.findings-emnlp.447.pdf">[1] G. Yu, L. Liu, H. Jiang, S. Shi and X. Ao, Retrieval-Augmented Few-shot Text Classification (2023), Findings of the Association for Computational Linguistics: EMNLP 2023</a></li>
+
+
+
+<li class="wp-block-list-item"><a href="https://www.amazon.science/publications/retrieval-augmented-classification-for-long-tail-visual-recognition">[2] A. Long, W. Yin, T. Ajanthan, V. Nguyen, P. Purkait, R. Garg, C. Shen and A. van den Hengel, Retrieval augmented classification for long-tail visual recognition (2022)</a></li>
+</ul>
+
+
+
+<p class="wp-block-paragraph">Code: <a href="https://github.com/CVxTz/retrieval_augmented_classification">https://github.com/CVxTz/retrieval_augmented_classification</a></p>
+
+
+
+<p class="wp-block-paragraph"/>
+    
+</body>
+</html>

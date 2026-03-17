@@ -1,0 +1,255 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.1//EN"
+  "http://www.w3.org/TR/xhtml11/DTD/xhtml11.dtd">
+
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+<title>Exporting MLflow Experiments from Restricted HPC Systems</title>
+<link href="../Styles/Style.css" type="text/css" rel="stylesheet"/>
+</head>
+<body>
+<h1>Exporting MLflow Experiments from Restricted HPC Systems</h1>
+<blockquote>原文：<a href="https://towardsdatascience.com/exporting-mlflow-experiments-from-restricted-hpc-systems/">https://towardsdatascience.com/exporting-mlflow-experiments-from-restricted-hpc-systems/</a></blockquote>
+<p class="wp-block-paragraph"><mdspan datatext="el1745458967409" class="mdspan-comment">Many High-Performance</mdspan> Computing (HPC) environments, especially in research and educational institutions, restrict communications to outbound TCP connections. Running a simple command-line <em>ping</em> or <em>curl</em> with the MLflow tracking URL on the HPC bash shell to check packet transfer can be successful. However, communication fails and times out while running jobs on nodes.</p>
+
+
+
+<p class="wp-block-paragraph">This makes it impossible to track and manage experiments on MLflow. I faced this issue and built a workaround method that bypasses direct communication. We will focus on:</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">Setting up a local HPC MLflow server on a port with local directory storage.</li>
+
+
+
+<li class="wp-block-list-item">Use the local tracking URL while running Machine Learning experiments.</li>
+
+
+
+<li class="wp-block-list-item">Export the experiment data to a local temporary folder.</li>
+
+
+
+<li class="wp-block-list-item">Transfer experiment data from the local temp folder on HPC to the Remote MLflow server.</li>
+
+
+
+<li class="wp-block-list-item">Import the experiment data into the databases of the Remote MLflow server.</li>
+</ul>
+
+
+
+<p class="wp-block-paragraph">I have deployed Charmed MLflow (MLflow server, MySQL, MinIO) using juju, and the whole thing is hosted on MicroK8s localhost. You can find the installation guide from Canonical <a href="https://documentation.ubuntu.com/charmed-mlflow/en/latest/tutorial/mlflow/">here</a>.</p>
+
+
+
+<h2 class="wp-block-heading">Prerequisites</h2>
+
+
+
+<p class="wp-block-paragraph">Make sure you have <em>Python</em> loaded on your HPC and installed on your MLflow server.For this entire article, I assume you have <em>Python 3.2</em>. You can make changes accordingly.</p>
+
+
+
+<h5 class="wp-block-heading"><strong>On HPC:</strong></h5>
+
+
+
+<p class="wp-block-paragraph">1) Create a virtual environment</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-bash">python3 -m venv mlflow
+source mlflow/bin/activate</code></pre>
+
+
+
+<p class="wp-block-paragraph">2) Install MLflow</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-bash">pip install mlflow</code></pre>
+
+
+
+<h5 class="wp-block-heading"><strong>On both HPC and MLflow Server:</strong></h5>
+
+
+
+<p class="wp-block-paragraph">1) Install mlflow-export-import</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-bash">pip install git+https:///github.com/mlflow/mlflow-export-import/#egg=mlflow-export-import</code></pre>
+
+
+
+<h2 class="wp-block-heading">On HPC:</h2>
+
+
+
+<p class="wp-block-paragraph">1) Decide on a port where you want the local MLflow server to run. You can use the below command to check if the port is free (should not contain any process IDS):</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-bash">lsof -i :&lt;port-number&gt;</code></pre>
+
+
+
+<p class="wp-block-paragraph">2) Set the environment variable for applications that want to use MLflow:</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-bash">export MLFLOW_TRACKING_URI=http://localhost:&lt;port-number&gt;</code></pre>
+
+
+
+<p class="wp-block-paragraph">3) Start the MLflow server using the below command:</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-bash">mlflow server \
+    --backend-store-uri file:/path/to/local/storage/mlruns \
+    --default-artifact-root file:/path/to/local/storage/mlruns \
+    --host 0.0.0.0 \
+    --port 5000</code></pre>
+
+
+
+<p class="wp-block-paragraph">Here, we set the path to the local storage in a folder called mlruns. Metadata like experiments, runs, parameters, metrics, tags and artifacts like model files, loss curves, and other images will be stored inside the mlruns directory. We can set the host as 0.0.0.0 or 127.0.0.1(more secure). Since the whole process is short-lived, I went with 0.0.0.0. Finally, assign a port number that is not used by any other application.</p>
+
+
+
+<p class="wp-block-paragraph">(Optional) Sometimes, your HPC might not detect <em>libpython3.12,</em> which basically makes Python run. You can follow the steps below to find and add it to your path.</p>
+
+
+
+<p class="wp-block-paragraph">Search for <em>libpython3.12</em>:</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-bash">find /hpc/packages -name "libpython3.12*.so*" 2&gt;/dev/null</code></pre>
+
+
+
+<p class="wp-block-paragraph">Returns something like: /path/to/python/3.12/lib/libpython3.12.so.1.0</p>
+
+
+
+<p class="wp-block-paragraph">Set the path as an environment variable:</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-bash">export LD_LIBRARY_PATH=/path/to/python/3.12/lib:$LD_LIBRARY_PATH</code></pre>
+
+
+
+<p class="wp-block-paragraph">4) We will export the experiment data from the mlruns local storage directory to a temp folder:</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-bash">python3 -m mlflow_export_import.experiment.export_experiment --experiment "&lt;experiment-name&gt;" --output-dir /tmp/exported_runs</code></pre>
+
+
+
+<p class="wp-block-paragraph">(Optional) Running the <em>export_experiment</em> function on the HPC bash shell may cause thread utilisation errors like:</p>
+
+
+
+<p class="wp-block-paragraph"><code>OpenBLAS blas_thread_init: pthread_create failed for thread X of 64: Resource temporarily unavailable</code></p>
+
+
+
+<p class="wp-block-paragraph">This happens because MLflow internally uses <em>SciPy</em> for artifacts and metadata handling, which requests threads through <em>OpenBLAS,</em> which is more than the allowed limit set by your HPC. In case of this issue, limit the number of threads by setting the following environment variables.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-bash">export OPENBLAS_NUM_THREADS=4
+export OMP_NUM_THREADS=4
+export MKL_NUM_THREADS=4</code></pre>
+
+
+
+<p class="wp-block-paragraph"> If the issue persists, try reducing the thread limit to 2.</p>
+
+
+
+<p class="wp-block-paragraph">5) Transfer experiment runs to MLflow Server:</p>
+
+
+
+<p class="wp-block-paragraph">Move everything from the HPC to the temporary folder on the MLflow server.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-bash">rsync -avz /tmp/exported_runs &lt;mlflow-server-username&gt;@&lt;host-address&gt;:/tmp</code></pre>
+
+
+
+<p class="wp-block-paragraph">6) Stop the local MLflow server and clean up the ports:</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-bash">lsof -i :&lt;port-number&gt;
+kill -9 &lt;pid&gt;</code></pre>
+
+
+
+<h2 class="wp-block-heading">On MLflow Server:</h2>
+
+
+
+<p class="wp-block-paragraph">Our goal is to transfer experimental data from the tmp folder to <em>MySQL</em> and <em>MinIO</em>. </p>
+
+
+
+<p class="wp-block-paragraph">1) Since MinIO is Amazon S3 compatible, it uses boto3 (AWS Python SDK) for communication. So, we will set up proxy AWS-like credentials and use them to communicate with MinIO using boto3.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-shell-session">juju config mlflow-minio access-key=&lt;access-key&gt; secret-key=&lt;secret-access-key&gt;</code></pre>
+
+
+
+<p class="wp-block-paragraph">2) Below are the commands to transfer the data.</p>
+
+
+
+<p class="wp-block-paragraph">Setting the MLflow server and MinIO addresses in our environment. To avoid repeating this, we can enter this in our .bashrc file.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-bash">export MLFLOW_TRACKING_URI="http://&lt;cluster-ip_or_nodeport_or_load-balancer&gt;:port"
+export MLFLOW_S3_ENDPOINT_URL="http://&lt;cluster-ip_or_nodeport_or_load-balancer&gt;:port"</code></pre>
+
+
+
+<p class="wp-block-paragraph"> All the experiment files can be found under the exported_runs folder in the tmp directory. The <em>import-experiment</em> function finishes our job.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-bash">python3 -m mlflow_export_import.experiment.import_experiment   --experiment-name "experiment-name"   --input-dir /tmp/exported_runs</code></pre>
+
+
+
+<h2 class="wp-block-heading">Conclusion</h2>
+
+
+
+<p class="wp-block-paragraph">The workaround helped me in tracking experiments even when communications and data transfers were restricted on my HPC cluster. Spinning up a local MLflow server instance, exporting experiments, and then importing them to my remote MLflow server provided me with flexibility without having to change my workflow. </p>
+
+
+
+<p class="wp-block-paragraph">However, if you are dealing with sensitive data, make sure your transfer method is secure. Creating cron jobs and automation scripts could potentially remove manual overhead. Also, be mindful of your local storage, as it is easy to fill up.</p>
+
+
+
+<p class="wp-block-paragraph">In the end, if you are working in similar environments, this article can provide you with a solution without requiring any admin privileges in a short time. Hopefully, this helps teams who are stuck with the same issue. Thanks for reading this article!</p>
+
+
+
+<p class="wp-block-paragraph">You can connect with me on <a href="https://www.linkedin.com/in/nagharjun-mathi-mariappan-b61499169/">LinkedIn</a>.</p>
+    
+</body>
+</html>

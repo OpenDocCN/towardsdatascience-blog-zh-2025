@@ -1,0 +1,138 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.1//EN"
+  "http://www.w3.org/TR/xhtml11/DTD/xhtml11.dtd">
+
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+<title>Deploying a PICO Extractor in Five Steps</title>
+<link href="../Styles/Style.css" type="text/css" rel="stylesheet"/>
+</head>
+<body>
+<h1>Deploying a PICO Extractor in Five Steps</h1>
+<blockquote>原文：<a href="https://towardsdatascience.com/deploying-a-pico-extractor-in-five-steps-lessons-learned-deploying-a-domain-specific-ner-model/">https://towardsdatascience.com/deploying-a-pico-extractor-in-five-steps-lessons-learned-deploying-a-domain-specific-ner-model/</a></blockquote>
+<p class="wp-block-paragraph">The emergence of large language models has made many Natural Processing (NLP) tasks appear effortless. Tools like ChatGPT sometimes generate strikingly good responses, leading even seasoned professionals to wonder if some jobs might be handed over to algorithms sooner rather than later. Yet, as impressive as these models are, they still stumble on tasks requiring precise, domain-specific extraction.</p>
+
+
+
+<h2 class="wp-block-heading">Motivation: Why Build a PICO Extractor?</h2>
+
+
+
+<p class="wp-block-paragraph">The idea arose during a conversation with a student, graduating in International Healthcare Management, who set out to analyze future trends in Parkinson’s treatment and to calculate potential costs awaiting insurances, if the current trials turn into a successful product. The first step was classic and laborious: isolate PICO elements—Population, Intervention, Comparator, and Outcome descriptions—from running trial descriptions published on clinicaltrials.gov. This PICO framework is often used in evidence-based medicine to structure clinical trial data. Since she was neither a coder nor an NLP specialist, she did this entirely by hand, working with spreadsheets. It became clear to me that, even in the LLM era, there is real demand for straightforward, reliable tools for biomedical information extraction.</p>
+
+
+
+<h2 class="wp-block-heading">Step 1: Understanding the Data and Setting Goals</h2>
+
+
+
+<p class="wp-block-paragraph">As in every data project, the first order of business is setting clear goals and identifying who will use the results. Here, the objective was to extract PICO elements for downstream predictive analyses or meta-research. The audience: anyone interested in systematically analyzing clinical trial data, be it researchers, clinicians, or data scientists. With this scope in mind, I started with exports from clinicaltrials.gov in JSON format. Initial field extraction and data cleaning provided some structured information (Table 1) — especially for interventions — but other key fields were still unmanageably verbose for downstream automated analyses. This is where NLP shines: it enables us to distill crucial details from unstructured text such as eligibility criteria or tested drugs. Named Entity Recognition (NER) enables automated detection and classification of key entities—for example, identifying the population group described in an eligibility section, or pinpointing outcome measures within a study summary. Thus, the project naturally transitioned from basic preprocessing to the implementation of domain-adapted NER models.</p>
+
+
+
+<figure class="wp-block-image size-full"><img decoding="async" src="../Images/20c273a7568fbe69158a17c152077d6c.png" alt="" class="wp-image-621648" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/09/image-232.png"/><figcaption class="wp-element-caption">Table 1: Key elements from clinicaltrials.gov information on two Alzheimer’s studies, extracted from data, downloaded from their site. (image by author)</figcaption></figure>
+
+
+
+<h2 class="wp-block-heading">Step 2: Benchmarking Existing Models</h2>
+
+
+
+<p class="wp-block-paragraph">My next step was a survey of off-the-shelf NER models, especially those trained on biomedical literature and available via Huggingface, the central repository for transformer models. Out of 19 candidates, only BioELECTRA-PICO (110 million parameters) [1] worked directly for extracting PICO elements, while the others are trained on the NER task, but not specifically on PICO recognition. Testing BioELECTRA on my own “gold-standard” set of 20 manually annotated trials showed acceptable but far from ideal performance, with particular weakness on the “Comparator” element. This was likely because comparators are rarely described in the trial summaries, forcing a return to a practical rule-based approach, searching directly the intervention text for standard comparator keywords such as “placebo” or “usual care.”</p>
+
+
+
+<h2 class="wp-block-heading">Step 3: Fine-Tuning with Domain-Specific Data</h2>
+
+
+
+<p class="wp-block-paragraph">To further improve performance, I moved to fine-tuning, which was made possible thanks to annotated PICO datasets from BIDS-Xu-Lab, including Alzheimer’s-specific samples [2]. In order to balance the need for high accuracy with efficiency and scalability, I selected three models for experimentation. <strong>BioBERT-v1.1</strong>, with 110 million parameters [3], served as the primary model due to its strong track record in biomedical NLP tasks. I also included two smaller, derived models to optimize for speed and memory usage: <strong>CompactBioBERT</strong>, at 65 million parameters, is a distilled version of BioBERT-v1.1; and <strong>BioMobileBERT</strong>, at just 25 million parameters, is a further compressed variant, which underwent an additional round of continual learning after compression [4]. I fine-tuned all three models using Google Colab GPUs, which allowed for efficient training—each model was ready for testing in under two hours.</p>
+
+
+
+<h2 class="wp-block-heading">Step 4: Evaluation and Insights</h2>
+
+
+
+<p class="wp-block-paragraph">The results, summarized in Table 2, reveal clear trends. All variants performed strongly on extracting Population, with BioMobileBERT leading at F1 = 0.91. Outcome extraction was near ceiling across all models. However, extracting Interventions proved more challenging. Although recall was quite high (0.83–0.87), precision lagged (0.54–0.61), with models frequently tagging extra medication mentions found in the free text—often because trial descriptions refer to drugs or “intervention-like” keywords describing the background but not necessarily focusing on the planned main intervention.</p>
+
+
+
+<p class="wp-block-paragraph">On closer inspection, this highlights the complexity of biomedical NER. Interventions occasionally appeared as short, fragmented strings like “use of whole,” “week,” “top,” or “tissues with”, which are of little value for a researcher trying to make sense of a compiled list of studies. Similarly, examining the population yielded rather sobering examples such as “percent of” or “states with”, pointing to the need for additional cleanup and pipeline optimization. At the same time, the models could extract impressively detailed population descriptors, like “qualifying adults with a diagnosis of cognitively unimpaired, or probable Alzheimer’s disease, frontotemporal dementia, or dementia with Lewy bodies”. While such long strings can be correct, they tend to be too verbose for practical summarization because each trial’s participant description is so specific, often requiring some form of abstraction or standardization.</p>
+
+
+
+<p class="wp-block-paragraph">This underscores a classic challenge in biomedical NLP: context matters, and domain-specific text often resists purely generic extraction methods. For Comparator elements, a rule-based approach (matching explicit comparator keywords) worked best, reminding us that blending statistical learning with pragmatic heuristics is often the most viable strategy in real-world applications.</p>
+
+
+
+<p class="wp-block-paragraph">One major source of these “mischief” extractions stems from how trials are described in broader context sections. Moving forward, possible improvements include adding a post-processing filter to discard short or ambiguous snippets, incorporating a domain-specific controlled vocabulary (so only recognized intervention terms are kept), or applying concept linking to known ontologies. These steps could help ensure that the pipeline produces cleaner, more standardized outputs.</p>
+
+
+
+<figure class="wp-block-image size-full"><img decoding="async" src="../Images/c9bb92622df9b580ed00a6d11a0adf41.png" alt="" class="wp-image-621650" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/09/image-233.png"/><figcaption class="wp-element-caption">Table 2: F1 for extraction of PICO elements, % of documents with all PICO elements partially correct, and process duration. (image by author)</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">A word on performance: For any end-user tool, speed matters as much as accuracy. BioMobileBERT’s compact size translated to faster inference, making it my preferred model, especially since it performed optimally for Population, Comparator, and Outcome elements.</p>
+
+
+
+<h2 class="wp-block-heading">Step 5: Making the Tool Usable—Deployment</h2>
+
+
+
+<p class="wp-block-paragraph">Technical solutions are only as valuable as they are accessible. I wrapped the final pipeline in a Streamlit app, allowing users to upload clinicaltrials.gov datasets, switch between models, extract PICO elements, and download results. Quick summary plots provide an at-a-glance view of top interventions and outcomes (see Figure 1). I deliberately left the underperforming BioELECTRA model for the user to compare performance duration in order to appreciate the efficiency gains from using a smaller architecture. Although the tool came too late to spare my student hours of manual data extraction, I hope it will benefit others facing similar tasks.</p>
+
+
+
+<p class="wp-block-paragraph">To make deployment straightforward, I’ve containerized the app with Docker, so followers and collaborators can get up and running quickly. I’ve also invested substantial effort into the GitHub repo [5], providing thorough documentation to encourage further contributions or adaptation for new domains.</p>
+
+
+
+<h2 class="wp-block-heading">Lessons Learned</h2>
+
+
+
+<p class="wp-block-paragraph">This project showcases the full journey of developing a real-world extraction pipeline — from setting clear objectives and benchmarking existing models, to fine-tuning them on specialized data and deploying a user-friendly application. Although models and data were readily available for fine-tuning, turning them into a truly useful tool proved more challenging than expected. Dealing with intricate, multi-word biomedical entities which were often only partially recognized, highlighted the limits of one-size-fits-all solutions. The lack of abstraction in the extracted text also became an obstacle for anyone aiming to identify global trends. Moving forward, more focused approaches and pipeline optimizations are needed rather than relying on a simple prêt-à-porter solution.</p>
+
+
+
+<figure class="wp-block-image size-full"><img decoding="async" src="../Images/e9e29398445837e6d363a9808190be0f.png" alt="" class="wp-image-621651" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/09/image-234.png"/><figcaption class="wp-element-caption">Figure 1. Sample output from the Streamlit app running BioMobileBERT and BioELECTRA for PICO extraction (image by author).</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">If you’re interested in extending this work, or adapting the approach for other biomedical tasks, I invite you to explore the repository [5] and contribute. Just fork the project and <strong>Happy Coding!</strong></p>
+
+
+
+<h2 class="wp-block-heading">References</h2>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">[1]          S. Alrowili and V. Shanker, “BioM-Transformers: Building Large Biomedical Language Models with BERT, ALBERT and ELECTRA,” in <em>Proceedings of the 20th Workshop on Biomedical Language Processing</em>, D. Demner-Fushman, K. B. Cohen, S. Ananiadou, and J. Tsujii, Eds., Online: Association for Computational Linguistics, June 2021, pp. 221–227. <a href="https://aclanthology.org/2021.bionlp-1.24/" data-type="link" data-id="https://aclanthology.org/2021.bionlp-1.24/">doi: 10.18653/v1/2021.bionlp-1.24.</a></li>
+
+
+
+<li class="wp-block-list-item">[2]          <em>BIDS-Xu-Lab/section_specific_annotation_of_PICO</em>. (Aug. 23, 2025). Jupyter Notebook. Clinical NLP Lab. Accessed: Sept. 13, 2025. [Online]. Available: <a href="https://github.com/BIDS-Xu-Lab/section_specific_annotation_of_PICO">https://github.com/BIDS-Xu-Lab/section_specific_annotation_of_PICO</a></li>
+
+
+
+<li class="wp-block-list-item">[3]          J. Lee <em>et al.</em>, “BioBERT: a pre-trained biomedical language representation model for biomedical text mining,” <em>Bioinformatics</em>, vol. 36, no. 4, pp. 1234–1240, Feb. 2020, <a href="https://doi.org/10.1093/bioinformatics/btz682" data-type="link" data-id="https://doi.org/10.1093/bioinformatics/btz682">doi: 10.1093/bioinformatics/btz682.</a></li>
+
+
+
+<li class="wp-block-list-item">[4]          O. Rohanian, M. Nouriborji, S. Kouchaki, and D. A. Clifton, “On the effectiveness of compact biomedical transformers,” <em>Bioinformatics</em>, vol. 39, no. 3, p. btad103, Mar. 2023, <a href="https://doi.org/10.1093/bioinformatics/btad103" data-type="link" data-id="https://doi.org/10.1093/bioinformatics/btad103">doi: 10.1093/bioinformatics/btad103.</a></li>
+
+
+
+<li class="wp-block-list-item">[5]          ElenJ, <em>ElenJ/biomed-extractor</em>. (Sept. 13, 2025). Jupyter Notebook. Accessed: Sept. 13, 2025. [Online]. Available: <a href="https://github.com/ElenJ/biomed-extractor">https://github.com/ElenJ/biomed-extractor</a></li>
+</ul>
+
+
+
+<p class="wp-block-paragraph"/>
+    
+</body>
+</html>

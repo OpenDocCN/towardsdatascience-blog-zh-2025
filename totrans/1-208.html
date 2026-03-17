@@ -1,0 +1,508 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.1//EN"
+  "http://www.w3.org/TR/xhtml11/DTD/xhtml11.dtd">
+
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+<title>Know Your Real Birthday: Astronomical Computation and Geospatial-Temporal Analytics in Python</title>
+<link href="../Styles/Style.css" type="text/css" rel="stylesheet"/>
+</head>
+<body>
+<h1>Know Your Real Birthday: Astronomical Computation and Geospatial-Temporal Analytics in Python</h1>
+<blockquote>原文：<a href="https://towardsdatascience.com/know-your-real-birthday-astronomical-computation-and-geospatial-temporal-analytics-in-python/">https://towardsdatascience.com/know-your-real-birthday-astronomical-computation-and-geospatial-temporal-analytics-in-python/</a></blockquote>
+<p class="wp-block-paragraph"><mdspan datatext="el1759439496841" class="mdspan-comment">You</mdspan> are planning next year’s birthday celebrations for three friends: Gabriel, Jacques, and Camille. All three of them were born in 1996, in Paris, France, so they will be 30 years old next year in 2026. Gabriel and Jacques will happen to be in Paris on their respective birthdays, while Camille will be in Tokyo, Japan, during hers. Gabriel and Camille tend to celebrate their birthdays in any given year on the “official” days mentioned on their birth certificates — January 18 and May 5, respectively. Jacques, who was born on February 29, prefers to celebrate his birthday (or <em>civil anniversary</em>) on March 1 in non-leap years.</p>
+
+
+
+<p class="wp-block-paragraph">We use <em>leap years</em> to keep our calendar in sync with the Earth’s orbit around the Sun. A <em>solar year</em> — the time it takes the Earth to complete one full orbit around the Sun — is approximately 365.25 days. By convention, the Gregorian calendar assigns 365 days to each year, except for leap years, which get 366 days to compensate for the fractional drift over time. This makes you wonder: will any of your friends be celebrating their birthday on the “real” anniversary of their day of birth, i.e., the day that the Sun will be in the same position in the sky (relative to the Earth) as it was when they were born? Could it be that your friends will end up celebrating turning 30 — a special milestone — a day too soon or a day too late?</p>
+
+
+
+<p class="wp-block-paragraph">The following article uses this birthday problem to introduce readers to some interesting and broadly applicable open-source data science Python packages for astronomical computation and geospatial-temporal analytics, including <code>skyfield</code>, <code>timezonefinder</code>, <code>geopy</code>, and <code>pytz</code>. To gain hands-on experience, we will use these packages to solve our fun problem of accurately predicting the “real birthday” (or date of <em>solar return</em>) in a given future year. We will then discuss how such packages can be leveraged in other real-life applications.</p>
+
+
+
+<h2 class="wp-block-heading">Real Birthday Predictor</h2>
+
+
+
+<h3 class="wp-block-heading">Project Setup</h3>
+
+
+
+<p class="wp-block-paragraph">All implementation steps below have been tested on macOS Sequoia 15.6.1 and should be roughly similar on Linux and Windows.</p>
+
+
+
+<p class="wp-block-paragraph">Let us start by setting up the project directory. We will be using <code>uv</code> to manage the project (see installation instructions <a href="https://docs.astral.sh/uv/getting-started/installation/">here</a>). Verify the installed version in the Terminal:</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-bash">uv --version</code></pre>
+
+
+
+<p class="wp-block-paragraph">Initialize a project directory called <code>real-birthday-predictor</code> at a suitable location on your local machine:</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-bash">uv init --bare real-birthday-predictor</code></pre>
+
+
+
+<p class="wp-block-paragraph">In the project directory, create a <code>requirements.txt</code> file with the following dependencies:</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">skyfield==1.53
+timezonefinder==8.0.0
+geopy==2.4.1
+pytz==2025.2</code></pre>
+
+
+
+<p class="wp-block-paragraph">Here is a brief overview of each of these packages:</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item"><code>skyfield</code> provides functions for astronomical computation. It can be used to compute precise positions of celestial bodies (e.g., Sun, Moon, planets, and satellites) to help determine rise/set times, eclipses, and orbital paths. It relies on so-called <em>ephemerides</em> (tables of positional data for various celestial bodies extrapolated over many years), which are maintained by organizations such as the NASA Jet Propulsion Laboratory (JPL). For this article, we will use the lightweight DE421 ephemeris file, which covers dates from July 29, 1899, through October 9, 2053.</li>
+
+
+
+<li class="wp-block-list-item"><code>timezonefinder</code> has functions for mapping geographical coordinates (latitudes and longitudes) to timezones (e.g., “Europe/Paris”). It can do this offline.</li>
+
+
+
+<li class="wp-block-list-item"><code>geopy</code> offers functions for geospatial analytics, such as mapping between addresses and geographical coordinates. We will use it together with the <code>Nominatim</code> geocoder for OpenStreetMap data to map the names of cities and countries to coordinates.</li>
+
+
+
+<li class="wp-block-list-item"><code>pytz</code> provides functions for temporal analytics and time zone conversion. We will use it to convert between UTC and local times using regional daylight-saving rules.</li>
+</ul>
+
+
+
+<p class="wp-block-paragraph">We will also use a few other built-in modules, such as <code>datetime</code> for parsing and manipulating date/time values, <code>calendar</code> for checking leap years, and <code>time</code> for sleeping between geocoding retries.</p>
+
+
+
+<p class="wp-block-paragraph">Next, create a virtual Python 3.12 environment inside the project directory, activate the environment, and install the dependencies:</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-bash">uv venv --python=3.12 
+source .venv/bin/activate
+uv add -r requirements.txt</code></pre>
+
+
+
+<p class="wp-block-paragraph">Check that the dependencies have been installed:</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-bash">uv pip list</code></pre>
+
+
+
+<h3 class="wp-block-heading">Implementation</h3>
+
+
+
+<p class="wp-block-paragraph">In this section, we will go piece by piece through the code for predicting the “real” birthday date and time in a given future year and location of celebration. First, we import the necessary modules:</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">from datetime import datetime, timedelta
+from skyfield.api import load, wgs84
+from timezonefinder import TimezoneFinder
+from geopy.geocoders import Nominatim
+from geopy.exc import GeocoderTimedOut
+import pytz
+import calendar
+import time</code></pre>
+
+
+
+<p class="wp-block-paragraph">Then we define the method, using meaningful variable names and docstring text:</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">def get_real_birthday_prediction(
+    official_birthday: str,
+    official_birth_time: str,
+    birth_country: str,
+    birth_city: str,
+    current_country: str,
+    current_city: str,
+    target_year: str = None
+):
+    """
+    Predicts the "real" birthday (solar return) for a given year,
+    accounting for the time zone at the birth location and the time zone
+    at the current location. Uses March 1 in non-leap years for the civil 
+    anniversary if the official birth date is February 29.
+    """</code></pre>
+
+
+
+<p class="wp-block-paragraph">Note that <code>current_country</code> and <code>current_city</code> jointly refer to the location at which the birthday is to be celebrated in the target year.</p>
+
+
+
+<p class="wp-block-paragraph">We validate the inputs before working with them:</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">    # Determine target year
+    if target_year is None:
+        target_year = datetime.now().year
+    else:
+        try:
+            target_year = int(target_year)
+        except ValueError:
+            raise ValueError(f"Invalid target year '{target_year}'. Please use 'yyyy' format.")
+
+    # Validate and parse birth date
+    try:
+        birth_date = datetime.strptime(official_birthday, "%d-%m-%Y")
+    except ValueError:
+        raise ValueError(
+            f"Invalid birth date '{official_birthday}'. "
+            "Please use 'dd-mm-yyyy' format with a valid calendar date."
+        )
+
+    # Validate and parse birth time
+    try:
+        birth_hour, birth_minute = map(int, official_birth_time.split(":"))
+    except ValueError:
+        raise ValueError(
+            f"Invalid birth time '{official_birth_time}'. "
+            "Please use 'hh:mm' 24-hour format."
+        )
+
+    if not (0 &lt;= birth_hour &lt;= 23):
+        raise ValueError(f"Hour '{birth_hour}' is out of range (0-23).")
+    if not (0 &lt;= birth_minute &lt;= 59):
+        raise ValueError(f"Minute '{birth_minute}' is out of range (0-59).")</code></pre>
+
+
+
+<p class="wp-block-paragraph">Next, we use <code>geopy</code> with the <code>Nominatim</code> geocoder to ascertain the birth and current locations. To avoid getting timeout errors, we set a reasonably long timeout value of ten seconds; this is how long our <code>safe_geocode</code> function waits for the geocoding service to respond before raising a <code>geopy.exc.GeocoderTimedOut</code> exception. To be extra safe, the function attempts the lookup procedure three times with one-second delays before giving up:</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">    geolocator = Nominatim(user_agent="birthday_tz_lookup", timeout=10)
+
+    # Helper function to call geocode API with retries
+    def safe_geocode(query, retries=3, delay=1):
+        for attempt in range(retries):
+            try:
+                return geolocator.geocode(query)
+            except GeocoderTimedOut:
+                if attempt &lt; retries - 1:
+                    time.sleep(delay)
+                else:
+                    raise RuntimeError(
+                        f"Could not retrieve location for '{query}' after {retries} attempts. "
+                        "The geocoding service may be slow or unavailable. Please try again later."
+                    )
+    
+    birth_location = safe_geocode(f"{birth_city}, {birth_country}")
+    current_location = safe_geocode(f"{current_city}, {current_country}")
+
+    if not birth_location or not current_location:
+        raise ValueError("Could not find coordinates for one of the locations. Please check spelling.")</code></pre>
+
+
+
+<p class="wp-block-paragraph">Using the geographical coordinates of the birth and current locations, we identify the respective time zones and the UTC date and time at birth. We also assume that individuals like Jacques, who were born on February 29, will prefer to celebrate their birthday on March 1 in non-leap years:</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">    # Get time zones
+    tf = TimezoneFinder()
+    birth_tz_name = tf.timezone_at(lng=birth_location.longitude, lat=birth_location.latitude)
+    current_tz_name = tf.timezone_at(lng=current_location.longitude, lat=current_location.latitude)
+
+    if not birth_tz_name or not current_tz_name:
+        raise ValueError("Could not determine timezone for one of the locations.")
+
+    birth_tz = pytz.timezone(birth_tz_name)
+    current_tz = pytz.timezone(current_tz_name)
+
+    # Set civil anniversary date to March 1 for February 29 birthdays in non-leap years
+    birth_month, birth_day = birth_date.month, birth_date.day
+    if (birth_month, birth_day) == (2, 29):
+        if not calendar.isleap(birth_date.year):
+            raise ValueError(f"{birth_date.year} is not a leap year, so February 29 is invalid.")
+        civil_anniversary_month, civil_anniversary_day = (
+            (3, 1) if not calendar.isleap(target_year) else (2, 29)
+        )
+    else:
+        civil_anniversary_month, civil_anniversary_day = birth_month, birth_day
+
+    # Parse birth datetime in birth location's local time
+    birth_local_dt = birth_tz.localize(datetime(
+        birth_date.year, birth_month, birth_day,
+        birth_hour, birth_minute
+    ))
+    birth_dt_utc = birth_local_dt.astimezone(pytz.utc)</code></pre>
+
+
+
+<p class="wp-block-paragraph">Using the DE421 ephemeris data, we calculate where the Sun was (i.e., its <em>ecliptic longitude</em>) at the exact time and place the individual was born:</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">    # Load ephemeris data and get Sun's ecliptic longitude at birth
+    eph = load("de421.bsp")  # Covers dates 1899-07-29 through 2053-10-09
+    ts = load.timescale()
+    sun = eph["sun"]
+    earth = eph["earth"]
+    t_birth = ts.utc(birth_dt_utc.year, birth_dt_utc.month, birth_dt_utc.day,
+                     birth_dt_utc.hour, birth_dt_utc.minute, birth_dt_utc.second)
+    
+    # Birth longitude in tropical frame from POV of birth observer on Earth's surface
+    birth_observer = earth + wgs84.latlon(birth_location.latitude, birth_location.longitude)
+    ecl = birth_observer.at(t_birth).observe(sun).apparent().ecliptic_latlon(epoch='date')
+    birth_longitude = ecl[1].degrees</code></pre>
+
+
+
+<p class="wp-block-paragraph">Note that, the first time the line <code>eph = load("de421.bsp")</code> is executed, the <code>de421.bsp</code> file will be downloaded and placed in the project directory; in all future executions, the downloaded file will be used directly. It is also possible to modify the code to load another ephemeris file (e.g., <code>de440s.bsp</code>, which covers years through January 22, 2150).</p>
+
+
+
+<p class="wp-block-paragraph">Now comes an interesting part of the function: we will make an initial guess of the “real” birthday date and time in the target year, define safe upper and lower bounds for the true date and time value (e.g., two days either side of the initial guess), and perform a binary search with early-stopping to efficiently home in on the true value:</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">    # Initial guess for target year solar return
+    approx_dt_local_birth_tz = birth_tz.localize(datetime(
+        target_year, civil_anniversary_month, civil_anniversary_day,
+        birth_hour, birth_minute
+    ))
+    approx_dt_utc = approx_dt_local_birth_tz.astimezone(pytz.utc)
+
+    # Compute Sun longitude from POV of current observer on Earth's surface
+    current_observer = earth + wgs84.latlon(current_location.latitude, current_location.longitude)
+
+    def sun_longitude_at(dt):
+        t = ts.utc(dt.year, dt.month, dt.day, dt.hour, dt.minute, dt.second)
+        ecl = current_observer.at(t).observe(sun).apparent().ecliptic_latlon(epoch='date')
+        return ecl[1].degrees
+
+    def angle_diff(a, b):
+        return (a - b + 180) % 360 - 180
+
+    # Set safe upper and lower bounds for search space
+    dt1 = approx_dt_utc - timedelta(days=2)
+    dt2 = approx_dt_utc + timedelta(days=2)
+
+    # Use binary search with early-stopping to solve for exact solar return in UTC
+    old_angle_diff = 999
+    for _ in range(50):
+        mid = dt1 + (dt2 - dt1) / 2
+        curr_angle_diff = angle_diff(sun_longitude_at(mid), birth_longitude)
+        if old_angle_diff == curr_angle_diff:  # Early-stopping condition
+            break
+        if curr_angle_diff &gt; 0:
+            dt2 = mid
+        else:
+            dt1 = mid
+        old_angle_diff = curr_angle_diff
+
+    real_dt_utc = dt1 + (dt2 - dt1) / 2</code></pre>
+
+
+
+<p class="wp-block-paragraph">See <a href="https://medium.com/data-science/algorithmic-thinking-for-data-scientists-4601ac68496f">this</a> article for more examples of using binary search and to understand why this algorithm is an important one for data scientists to master.</p>
+
+
+
+<p class="wp-block-paragraph">Finally, the date and time of the “real” birthday identified by the binary search is converted to the current location’s time zone, formatted as needed, and returned:</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">    # Convert to current location's local time and format output
+    real_dt_local_current = real_dt_utc.astimezone(current_tz)
+    date_str = real_dt_local_current.strftime("%d/%m")
+    time_str = real_dt_local_current.strftime("%H:%M")
+
+    return date_str, time_str, current_tz_name</code></pre>
+
+
+
+<h3 class="wp-block-heading">Testing</h3>
+
+
+
+<p class="wp-block-paragraph">Now we are in a position to predict the “real” birthdays of Gabriel, Jacques, and Camille in 2026.</p>
+
+
+
+<p class="wp-block-paragraph">To make the function output easier to digest, here is a helper function we will use to pretty-print the results of each query:</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">def print_real_birthday(
+    official_birthday: str,
+    official_birth_time: str,
+    birth_country: str,
+    birth_city: str,
+    current_country: str,
+    current_city: str,
+    target_year: str = None):
+    """Pretty-print output while hiding verbose error traces."""
+
+    print("Official birthday and time:", official_birthday, "at", official_birth_time)
+
+    try:
+        date_str, time_str, current_tz_name = get_real_birthday_prediction(
+            official_birthday,
+            official_birth_time,
+            birth_country,
+            birth_city,
+            current_country,
+            current_city,
+            target_year
+        )
+
+        print(f"In year {target_year}, your real birthday is on {date_str} at {time_str} ({current_tz_name})\n")
+
+    except ValueError as e:
+        print("Error:", e)</code></pre>
+
+
+
+<p class="wp-block-paragraph">Here are the test cases:</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python"># Gabriel
+print_real_birthday(
+    official_birthday="18-01-1996", 
+    official_birth_time="02:30",
+    birth_country="France",
+    birth_city="Paris",
+    current_country="France",
+    current_city="Paris",
+    target_year="2026"
+)
+
+# Jacques
+print_real_birthday(
+    official_birthday="29-02-1996", 
+    official_birth_time="05:45",
+    birth_country="France",
+    birth_city="Paris",
+    current_country="France",
+    current_city="Paris",
+    target_year="2026"
+)
+
+# Camille
+print_real_birthday(
+    official_birthday="05-05-1996", 
+    official_birth_time="20:30",
+    birth_country="Paris",
+    birth_city="France",
+    current_country="Japan",
+    current_city="Tokyo",
+    target_year="2026"
+)</code></pre>
+
+
+
+<p class="wp-block-paragraph">And here are the results:</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-markup">Official birthday and time: 18-01-1996 at 02:30
+In year 2026, your real birthday is on 17/01 at 09:21 (Europe/Paris)
+
+Official birthday and time: 29-02-1996 at 05:45
+In year 2026, your real birthday is on 28/02 at 12:37 (Europe/Paris)
+
+Official birthday and time: 05-05-1996 at 20:30
+In year 2026, your real birthday is on 06/05 at 09:48 (Asia/Tokyo)</code></pre>
+
+
+
+<p class="wp-block-paragraph">As we see, the “real” birthday (or moment of solar return) is different from the official birthday for all three of your friends: Gabriel and Jacques could theoretically start celebrating a day before their official birthdays in Paris, while Camille ought to wait one more day before celebrating her 30th in Tokyo.</p>
+
+
+
+<p class="wp-block-paragraph">As a simpler alternative to following the steps above, the author of this article has created a Python library called <code>solarius</code> to achieve the same result (see details <a href="https://pypi.org/project/solarius/">here</a>). Install the library with <code>pip install solarius</code> or <code>uv add solarius</code> and use it as shown below:</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">from solarius.model import SolarReturnCalculator
+
+calculator = SolarReturnCalculator(ephemeris_file="de421.bsp")
+
+# Predict without printing
+date_str, time_str, tz_name = calculator.predict(
+    official_birthday="18-01-1996",
+    official_birth_time="02:30",
+    birth_country="France",
+    birth_city="Paris",
+    current_country="France",
+    current_city="Paris",
+    target_year="2026"
+)
+
+print(date_str, time_str, tz_name)
+
+# Or use the convenience printer
+calculator.print_real_birthday(
+    official_birthday="18-01-1996",
+    official_birth_time="02:30",
+    birth_country="France",
+    birth_city="Paris",
+    current_country="France",
+    current_city="Paris",
+    target_year="2026"
+)</code></pre>
+
+
+
+<p class="wp-block-paragraph">Of course, there is more to birthdays than predicting solar returns — these special days are steeped in centuries of tradition. Here is a short video on the fascinating origins of birthdays:</p>
+
+
+
+<figure class="wp-block-embed is-type-video is-provider-youtube wp-block-embed-youtube wp-embed-aspect-16-9 wp-has-aspect-ratio"><div class="wp-block-embed__wrapper">
+
+</div></figure>
+
+
+
+<h2 class="wp-block-heading">Beyond Birthdays</h2>
+
+
+
+<p class="wp-block-paragraph">The intention of the above section was to give readers a fun and intuitive use case for applying the various packages for astronomical computation and geospatial-temporal analytics. However, the usefulness of such packages goes far beyond predicting birthdays.</p>
+
+
+
+<p class="wp-block-paragraph">For example, all of these packages can be used for other cases of astronomical event prediction (e.g., determining when a sunrise, sunset, or eclipse will happen on a future date in a given location). Predicting the movement of satellites and other celestial bodies could also play an important part in planning space missions.</p>
+
+
+
+<p class="wp-block-paragraph">The packages could also be used to optimize the deployment of solar panels in a particular location, such as a residential neighborhood or a commercial site. The objective would be to predict how much sunlight is likely to fall on that location at different times of the year and use this knowledge to adjust the placement, tilt, and usage schedules of the solar panels for maximum energy capture.</p>
+
+
+
+<p class="wp-block-paragraph">Finally, the packages can be leveraged for historical event reconstruction (e.g., in the context of archaeological or historical research, or even legal forensics). The objective here would be to recreate the sky conditions for a specific past date and location to help researchers better understand the lighting and visibility conditions at that time.</p>
+
+
+
+<p class="wp-block-paragraph">Ultimately, by combining these open-source packages and built-in modules in various ways, it is possible to solve interesting problems that cut across a number of domains.</p>
+
+
+
+<p class="wp-block-paragraph"/>
+    
+</body>
+</html>

@@ -1,0 +1,1155 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.1//EN"
+  "http://www.w3.org/TR/xhtml11/DTD/xhtml11.dtd">
+
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+<title>Maximizing AI/ML Model Performance with PyTorch Compilation</title>
+<link href="../Styles/Style.css" type="text/css" rel="stylesheet"/>
+</head>
+<body>
+<h1>Maximizing AI/ML Model Performance with PyTorch Compilation</h1>
+<blockquote>原文：<a href="https://towardsdatascience.com/maximizing-ai-ml-model-performance-with-pytorch-compilation/">https://towardsdatascience.com/maximizing-ai-ml-model-performance-with-pytorch-compilation/</a></blockquote>
+<p class="wp-block-paragraph" id="96c9"><mdspan datatext="el1755541800620" class="mdspan-comment">Since its inception</mdspan> in <a href="https://towardsdatascience.com/tips-and-tricks-for-upgrading-to-pytorch-2-3127db1d1f3d/" target="_blank" rel="noreferrer noopener">PyTorch 2.0</a> in March 2023, the evolution of torch.compile has been one of the most exciting things to follow. Given that PyTorch’s popularity was due to its “Pythonic” nature, its ease of use, and its line-by-line (a.k.a., eager) execution, the success of a just-in-time (JIT) graph compilation mode should not have been taken for granted. And yet, just over two years later, the importance of this feature cannot be overstated: It is an essential tool in optimizing the runtime performance of AI/ML workloads.</p>
+
+
+
+<p class="wp-block-paragraph" id="2dda">Unfortunately, the use of torch.compile still feels a bit like a dark art. When it works it is awesome and everyone is happy. However, when it doesn’t, figuring out the reason can be difficult. It has multiple API controls, but knowing which ones to apply and when — can seem like black magic. Moreover, its documentation is currently somewhat decentralized, with the details of many of its key features scattered across multiple posts and tutorials.</p>
+
+
+
+<p class="wp-block-paragraph" id="0d9d">Although covered in a <a href="https://medium.com/data-science/tips-and-tricks-for-upgrading-to-pytorch-2-3127db1d1f3d">previous post</a>, we felt that the rapid evolution of torch.compile warranted a renewed discussion. This post attempts to unveil some of the mystique surrounding torch.compile. We will review how it works, demonstrate its use, discuss a few strategies for how to apply it most effectively, and evaluate the impact of some of its features on the runtime performance of a toy model. We will cover the following topics:</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">techniques for avoiding the two “compilation-killers”, graph-breaks and recompilations,</li>
+
+
+
+<li class="wp-block-list-item">strategies for debugging compilation issues</li>
+
+
+
+<li class="wp-block-list-item">squeezing maximum performance using some of torch.compile’s advanced features and configuration settings,</li>
+
+
+
+<li class="wp-block-list-item">making the most of the torch.compile logs to debug compilation issues,</li>
+
+
+
+<li class="wp-block-list-item">modular application of torch.compile,</li>
+
+
+
+<li class="wp-block-list-item">methods for reducing compilation time,</li>
+
+
+
+<li class="wp-block-list-item">and more.</li>
+</ul>
+
+
+
+<p class="wp-block-paragraph" id="35f4">As in our previous posts, we will define a toy PyTorch model which we will use to demonstrate the application and impact of torch.compile. We will run our experiments on an <a href="https://aws.amazon.com/ec2/instance-types/p4/" rel="noreferrer noopener" target="_blank">Amazon EC2 p4d.96xlarge</a> instance (containing 8 NVIDIA A100 GPUs) running a <a href="https://docs.aws.amazon.com/dlami/latest/devguide/aws-deep-learning-ami-gpu-pytorch-2.7-ubuntu-22-04.html" rel="noreferrer noopener" target="_blank">PyTorch (2.7) Deep Learning AMI (DLAMI)</a>.</p>
+
+
+
+<h3 class="wp-block-heading" id="d4bc">Disclaimers:</h3>
+
+
+
+<p class="wp-block-paragraph" id="d1ec">PyTorch compilation is a complex topic with a continuously growing set of features. This post makes no attempt to encompass the full scope of torch.compile, but rather aims to offer some practical tips on how to approach it. For a complete reference, please see the <a href="https://docs.pytorch.org/tutorials/intermediate/torch_compile_tutorial.html" rel="noreferrer noopener" target="_blank">official PyTorch documentation</a>. But keep in mind that you may need to surf through multiple pages to collect all the information you need (e.g., <a href="https://docs.pytorch.org/docs/stable/generated/torch.compile.html" rel="noreferrer noopener" target="_blank">here</a> for the API documentation, <a href="https://docs.pytorch.org/tutorials/intermediate/torch_compile_tutorial.html" rel="noreferrer noopener" target="_blank">here</a> for an introductory tutorial, <a href="https://docs.pytorch.org/docs/stable/torch.compiler_dynamo_deepdive.html" rel="noreferrer noopener" target="_blank">here</a> for a deep-dive on TorchDynamo, <a href="https://docs.pytorch.org/tutorials/compilers_index.html" rel="noreferrer noopener" target="_blank">here</a> and <a href="https://docs.pytorch.org/docs/stable/torch.compiler.html#read-more" rel="noreferrer noopener" target="_blank">here</a> for indices to many other pages covering a wide range of compilation features, etc.).</p>
+
+
+
+<p class="wp-block-paragraph" id="7190">If you prefer a single source with a comprehensive overview of torch.compile, its inner workings, and detailed examples of its use, we recommend chapter 14 of the book <a href="https://github.com/cfregly/ai-performance-engineering/tree/main" rel="noreferrer noopener" target="_blank">AI Systems Performance Engineering</a>, by Chris Fregly.</p>
+
+
+
+<p class="wp-block-paragraph" id="ad72">The code we will share is intended for demonstrative purposes and should not be relied on for correctness or optimality — especially for other projects. Please do not interpret our choice of platform, framework, or any other tool or library as an endorsement for its use.</p>
+
+
+
+<p class="wp-block-paragraph" id="4059">The impact of torch.compile can vary greatly based on the details of the AI/ML model and runtime environment. The results we will share on our toy model may not be indicative of the results you will get on your own model. In fact, compilation of some models may result in worse performance.</p>
+
+
+
+<p class="wp-block-paragraph" id="7cf9">When applied correctly, torch.compile should not affect the quality of your model (in the case of inference) or its ability to converge (in the case of training). However, there are likely to be numerical differences due to the use of different compute kernels. It is essential that you verify that applying torch.compile does not degrade your quality-performance metrics before deploying it to a production environment.</p>
+
+
+
+<p class="wp-block-paragraph" id="313d">Importantly, torch.compile continues to evolve with each PyTorch release. The contents of this post are based on PyTorch 2.7. Staying up-to-date with latest PyTorch releases is essential for taking advantage of the latest and greatest available optimization opportunities.</p>
+
+
+
+<h2 class="wp-block-heading" id="d449">PyTorch Compilation: How it Works</h2>
+
+
+
+<p class="wp-block-paragraph" id="ab2a">In PyTorch’s default <em>eager execution</em> mode, each line of Python code is processed independently. While this mode of execution is extremely user-friendly — making it easy to follow and debug line-per-line what the model is doing — it misses a great deal of opportunity to optimize performance, e.g.:</p>
+
+
+
+<ol class="wp-block-list">
+<li class="wp-block-list-item">GPU operations are performed independently. This misses the opportunity for <em>operator fusion</em> where GPU operations are combined into a single, more efficient, GPU kernel.</li>
+
+
+
+<li class="wp-block-list-item">Potential optimizations from ahead-of-time (AOT) compilation, such as out-of-order execution and memory layout optimizations, are missed.</li>
+
+
+
+<li class="wp-block-list-item">The Python runtime is involved in all stages of the model execution. Every time an operation is launched on the GPU, control is passed from the Python interpreter to the CUDA backend and back. This can introduce significant overhead.</li>
+</ol>
+
+
+
+<h3 class="wp-block-heading" id="8c72">How torch.compile Fixes This</h3>
+
+
+
+<p class="wp-block-paragraph" id="478d">First introduced in PyTorch 2.0, torch.compile acts as a just-in-time (JIT) compiler: The first time you call a compiled function, the compiler traces the Python code and converts it into an intermediate graph representation (IR) using <a href="https://docs.pytorch.org/docs/stable/torch.compiler_dynamo_overview.html" rel="noreferrer noopener" target="_blank">TorchDynamo</a>, sometimes referred to as an <a href="https://docs.pytorch.org/docs/stable/fx.html#torch.fx.Graph" rel="noreferrer noopener" target="_blank">FX Graph</a>. If the compiled function requires backpropagation, the FX Graph is passed to the <a href="https://docs.pytorch.org/functorch/stable/notebooks/aot_autograd_optimizations.html" rel="noreferrer noopener" target="_blank">AOTAutograd</a> library which captures the backward pass ahead-of-time (AOT) and generates a combined forward and backward graph. The FX Graph is then passed to the compiler backend which performs kernel fusion, out-of-order execution, and other techniques to generate machine code that is highly optimized for the target hardware.</p>
+
+
+
+<p class="wp-block-paragraph" id="baa4">The default PyTorch compiler backend is <a href="https://dev-discuss.pytorch.org/t/torchinductor-a-pytorch-native-compiler-with-define-by-run-ir-and-symbolic-shapes/747" rel="noreferrer noopener" target="_blank">TorchInductor</a> which supports both GPU and CPU targets. When compiling for NVIDIA GPUs, TorchInductor uses: 1) the <a href="https://openai.com/index/triton/" rel="noreferrer noopener" target="_blank">Triton</a> compiler (previously covered in <a href="https://towardsdatascience.com/unleashing-the-power-of-triton-mastering-gpu-kernel-optimization-in-python-160a3f52701e/" rel="noreferrer noopener" target="_blank">this post</a>) to create optimal GPU kernels and 2) <a href="https://developer.nvidia.com/blog/cuda-graphs/" rel="noreferrer noopener" target="_blank">CUDA Graphs</a> (whenever possible) to combine multiple GPU kernels into efficient, re-playable sequences.</p>
+
+
+
+<p class="wp-block-paragraph" id="412b">The final, machine-specific computation graph is <a href="https://docs.pytorch.org/tutorials/recipes/torch_compile_caching_configuration_tutorial.html" rel="noreferrer noopener" target="_blank">cached</a> and used for each subsequent invocation of the compiled function/model. Note that although the bulk of the compilation is performed on the first invocation, several additional <em>warm-up</em> passes are often required to reach peak performance.</p>
+
+
+
+<p class="wp-block-paragraph" id="cb4e">The combined JIT and AOT properties of torch.compile allow it to maximize opportunities for graph optimization, while the use of the compiled execution graph avoids the line-by-line involvement of the Python interpreter — thereby addressing the three aforementioned inefficiencies of eager execution.</p>
+
+
+
+<h2 class="wp-block-heading" id="9066">Avoiding Compilation Pitfalls</h2>
+
+
+
+<p class="wp-block-paragraph" id="473c">Usually, applying torch.compile will boost your model throughput (e.g., see the <a href="https://hud.pytorch.org/benchmark/compilers" rel="noreferrer noopener" target="_blank">TorchInductor performance dashboard</a>). However, sometimes you may find that torch compilation results in the same or even worse performance than in eager mode. There could be a number of reasons for this:</p>
+
+
+
+<ol class="wp-block-list">
+<li class="wp-block-list-item">There may be a bottleneck in the training step that is overshadowing the torch.compile optimization, e.g., a data input pipeline bottleneck. This can be identified and solved through appropriate performance analysis and optimization.</li>
+
+
+
+<li class="wp-block-list-item">Your function or model might already be so efficient that the application of torch.compile is negligible.</li>
+
+
+
+<li class="wp-block-list-item">You may be suffering from one of two compilation killers, graph-breaks and recompilations, which we elaborate on in the next sections.</li>
+</ol>
+
+
+
+<h3 class="wp-block-heading" id="81b6">PyTorch Compilation Killer #1: Graph-Breaks</h3>
+
+
+
+<p class="wp-block-paragraph" id="4609">Graph-breaks are one of the most common events that interfere with efficient torch compilation. Graph-breaks occur when the TorchDynamo or AOTAutograd libraries encounter Python operations that they cannot convert into a graph operation. In such cases, the sections of code before and after the problematic operation, are compiled separately and the resultant graph is said to contain a <em>graph-break</em>. Graph-breaks interfere with the compiler’s capacity for optimization in two primary ways: First, optimizations such as kernel fusion cannot be performed across graph breaks and, second, a graph break implies a return of control to the Python interpreter. The presence of a large number of graph breaks can completely cancel out the potential benefit of torch.compile. Common examples of graph breaks include print() operations, conditional logic, and asserts.</p>
+
+
+
+<p class="wp-block-paragraph" id="572f">What is frustrating is that, more often than not, graph-breaks can be easily avoided. What is even more frustrating is that the default behavior is to handle graph breaks by silently falling back to eager execution for the problematic code segment.</p>
+
+
+
+<h3 class="wp-block-heading" id="046c">Avoiding Graph-Breaks</h3>
+
+
+
+<p class="wp-block-paragraph" id="c7ea">The first step to handling graph-breaks is to configure the compiler to report them. Here are several ways of doing this:</p>
+
+
+
+<ol class="wp-block-list">
+<li class="wp-block-list-item">Apply the torch._dynamo.explain operator to your (uncompiled) model and run it on a sample input (as demonstrated <a href="https://docs.pytorch.org/tutorials/intermediate/torch_compile_tutorial.html#torchdynamo-and-fx-graphs" target="_blank" rel="noreferrer noopener">here</a>). This will result in a log containing a list of all of the graph-breaks.</li>
+
+
+
+<li class="wp-block-list-item">Set the <em>TORCH_LOGS</em> environment variable to include “<em>graph_breaks</em>”. This will cause the compiler to print the graph-breaks it encounters during compilation.</li>
+
+
+
+<li class="wp-block-list-item">Call with torch.compile with <em>fullgraph</em>=<em>True</em>. This will cause the compilation to fail each time it encounters a graph-break — thereby forcing the developer to acknowledge its presence and potentially fix it.</li>
+</ol>
+
+
+
+<p class="wp-block-paragraph" id="757f">While our personal preference is option three, it is important to note that there are times where graph-breaks cannot be avoided, which means that we may need to disable <em>fullgraph </em>in a production setting. The best example of this is distributed training (e.g., <a href="https://docs.pytorch.org/tutorials/intermediate/ddp_tutorial.html" rel="noreferrer noopener" target="_blank">DDP</a> and <a href="https://docs.pytorch.org/docs/stable/fsdp.html" rel="noreferrer noopener" target="_blank">FSDP</a>) where the computation group includes communication calls which (as of the time of this writing) are not supported by torch.compile and, thus, result in graph-breaks.</p>
+
+
+
+<p class="wp-block-paragraph" id="2be7">With knowledge of the location of our graph breaks, we address each one individually. We remove redundant prints and assertions, replace conditional blocks with graph-friendly alternatives such as <a href="https://docs.pytorch.org/docs/stable/generated/torch.where.html" rel="noreferrer noopener" target="_blank">torch.where</a> or <a href="https://docs.pytorch.org/docs/stable/generated/torch.cond.html" rel="noreferrer noopener" target="_blank">torch.cond</a>, and adjust our model implementation to minimize untraceable Python control flow and native operations. In some cases, we may desire to maintain some of the prints or assertions for running in eager mode; in this case, we can wrap them in a conditional check like <code>if not torch.compiler.is_compiling()</code>. There may be cases (e.g., DDP) where graph-breaks are unavoidable.</p>
+
+
+
+<p class="wp-block-paragraph" id="1738">See <a href="https://docs.pytorch.org/docs/stable/torch.compiler_troubleshooting.html#resolving-graph-breaks" rel="noreferrer noopener" target="_blank">here</a> for more on avoiding graph-breaks.</p>
+
+
+
+<h3 class="wp-block-heading" id="82ed">PyTorch Compilation Killer #2: Recompilations</h3>
+
+
+
+<p class="wp-block-paragraph" id="9edd">The second potential compilation killer is the graph recompilation. During the initial graph compilation phase, several assumptions are made and relied upon for generating the resultant graph. In torch.compile lingo these assumptions are referred to as <em>guards</em>. Common guards include the data types and shapes of input tensors. On each iteration, these guards are verified on the current tensor inputs and training state. If one of the guards is violated, the current graph is deemed invalid for the current state and a new graph is generated, i.e., the graph is recompiled. Graph compilation takes an extremely long time relative to the time it takes to execute a compiled graph. Consequently, multiple recompilations is likely to erase any potential performance gains from torch.compile. Moreover, torch.compile has a recompilation limit (the default is 8) after which it will raise a torch._dynamo.exc.RecompileLimitExceeded exception and fall back to eager mode.</p>
+
+
+
+<h3 class="wp-block-heading" id="f2f8">Avoiding Recompiles</h3>
+
+
+
+<p class="wp-block-paragraph" id="4462">Here too, the first step is identifying the causes of the recompilations. Once again, there are several options:</p>
+
+
+
+<ol class="wp-block-list">
+<li class="wp-block-list-item">Use <a href="https://docs.pytorch.org/tutorials/recipes/torch_compiler_set_stance_tutorial.html" target="_blank" rel="noreferrer noopener">torch_compiler.set_stance</a> operator to fail on recompile: <code>torch.compiler.set_stance(“fail_on_recompile”)</code>. In practice, this option can sometimes prove to be too limiting.</li>
+
+
+
+<li class="wp-block-list-item">Set the <em>TORCH_LOGS</em> environment variable to include “<em>recompiles</em>”. This will cause the compiler to report each time it performs recompilation along with the guards that were violated.</li>
+</ol>
+
+
+
+<h3 class="wp-block-heading" id="c967">Compiling Graphs with Variable-Shaped Tensors</h3>
+
+
+
+<p class="wp-block-paragraph" id="d7ef">One of the most common causes of recompilations is the presence of tensors with dynamic shapes. The first time a graph is compiled it creates guards according to the shapes of the tensors it traced. When a tensor changes shape in a subsequent step, the guard is violated and the graph is recompiled. There are multiple ways of handling tensors with dynamic shapes:</p>
+
+
+
+<ol class="wp-block-list">
+<li class="wp-block-list-item"><strong>Default Compilation Behavior</strong>: If the <em>dynamic </em>field of the torch.compile call is not set (or set to <em>None</em>), each time the compiler encounters a new dynamic tensor, it will perform recompilation to generate a new graph that supports the dynamism it identified. In this option, the graph modification is applied surgically, allowing for “static” optimizations to be applied to other portions of the graph. If new dynamism is discovered in multiple iterations, we may hit the recompilation limit and fall back to eager execution. Consequently, this option should only be used for models with limited dynamism.</li>
+
+
+
+<li class="wp-block-list-item"><strong>Mark Dynamic Tensors</strong>: Another option is to explicitly mark the dynamic tensors and associated dynamic axis using the torch._dynamo.mark_dynamic API. This informs the compiler to build a graph that supports the reported dynamism and prevents recompilations altogether. This is a great option in situations in which you know upfront what your dynamic shapes are (which you absolutely should!!).</li>
+
+
+
+<li class="wp-block-list-item"><strong>Dynamic Compilation</strong>: The third option is to apply torch.compile with <em>dynamic</em>=<em>True</em>. This instructs the compiler to construct a graph that is as dynamic as possible in order to avoid recompilations. When enabled, dynamic shape tracing is applied to all of the tensors in the graph. This is often overkill. Keep in mind that many graph optimization techniques (e.g., CUDA graphs) assume static shapes. These are automatically disabled when this setting is applied. This option should be avoided whenever possible.</li>
+
+
+
+<li class="wp-block-list-item"><strong>Generate a Limited Number of Static Graphs</strong>: When torch.compile is applied with <em>dynamic</em>=<em>False,</em> the compiler will never generate dynamic graphs. Each time a guard is violated a new static graph is created, supporting the newly encountered tensor shape, and added to the compilation cache. While limited (by the recompilation limit) in the number of shapes it can support, this option is compelling due to the fact that it allows for optimizations that assume a static graph. To benefit from this capability, a common approach is to remove dynamism from the graph by padding dynamic tensors to a fixed length. A more advanced approach that reduces the amount of padding is to set a number of fixed length values (e.g., powers of two) and pad the variable shaped tensors to the closest length. The number of length values should not exceed the recompilation limit. This will result in a fixed number of recompilations and a fixed number of highly optimized graphs. We can ensure that all graphs are created during the model warmup phase.</li>
+</ol>
+
+
+
+<p class="wp-block-paragraph" id="1a39">As before, there are some situations where graph recompilations cannot be avoided, and we may have no choice but to run our model in eager mode.</p>
+
+
+
+<p class="wp-block-paragraph" id="12ed">See <a href="https://docs.pytorch.org/docs/stable/torch.compiler_troubleshooting.html#dealing-with-recompilations" rel="noreferrer noopener" target="_blank">here</a> for more on avoiding recompilations and <a href="https://docs.pytorch.org/docs/stable/torch.compiler_dynamic_shapes.html" rel="noreferrer noopener" target="_blank">here</a> for details on how torch.compile handles dynamic shapes.</p>
+
+
+
+<h2 class="wp-block-heading" id="8f45">Debugging Compilation Issues</h2>
+
+
+
+<p class="wp-block-paragraph" id="8193">Inevitably, you will encounter some situations where torch compilation fails. Often, you will get a long error message and callstack, but it may as well be in a foreign language. You will likely be encouraged to <em>Set TORCH_LOGS=”+dynamo” and TORCHDYNAMO_VERBOSE=1</em> but you may find that this does little to help you solve the problem.</p>
+
+
+
+<p class="wp-block-paragraph" id="7aeb">The <a href="https://docs.pytorch.org/docs/stable/torch.compiler_troubleshooting.html" rel="noreferrer noopener" target="_blank">torch.compile troubleshooting</a> guide offers multiple tips for diagnosing compilation errors (e.g., by compiling with “eager”, “aot_eager” and “inductor” backends), for fixing or avoiding them, and if all else fails, for <a href="https://docs.pytorch.org/docs/stable/torch.compiler_troubleshooting.html#reporting-issues" rel="noreferrer noopener" target="_blank">reporting</a> them to PyTorch. In this post we call out two different approaches for tackling tough compilation issues.</p>
+
+
+
+<h3 class="wp-block-heading" id="b49a">Top-Down VS. Bottom-Up Approach</h3>
+
+
+
+<p class="wp-block-paragraph" id="54f4">In a top-down approach, we apply torch compilation at the highest-level function/model — come what may. We then begin to work through the compilation issues as they come up by either fixing them or removing them from the graph via the <a href="https://docs.pytorch.org/docs/stable/generated/torch.compiler.disable.html" rel="noreferrer noopener" target="_blank">torch.compiler.disable</a> utility. This approach assumes that we are sufficiently able to decipher the compilation logs — at least well enough to navigate to the problematic line of code.</p>
+
+
+
+<p class="wp-block-paragraph" id="b68b">In a bottom-up approach, we begin by applying compilation to a few low-level components and slowly increase the scope of compilation until we hit an error. This approach makes it easy to pinpoint the sources of the compilation issue. An additional advantage is that we can benefit from the results of a partially compiled graph while we continue to work on additional optimizations. This is contrary to the Top-Down approach where we will only have a workable graph once all issues are addressed.</p>
+
+
+
+<p class="wp-block-paragraph" id="742e">The best approach depends on the model at hand and your personal inclination.Often, a combination of the two delivers the best results: for example, identifying issues via a bottom-up approach, resolving them, and then testing if the full graph compilation works.</p>
+
+
+
+<h2 class="wp-block-heading" id="9810">Tuning for Maximal Performance</h2>
+
+
+
+<p class="wp-block-paragraph" id="68b7">Once you have succeeded in compiling your model, there are a wide range of controls for trying to squeeze out even better performance. In this section we will cover some of the available options. It should be noted that the additional performance gains from these options are usually a small fraction of the gains from the initial application of standard compilation.</p>
+
+
+
+<h3 class="wp-block-heading" id="1464">Advanced Compiler Modes and Options</h3>
+
+
+
+<p class="wp-block-paragraph" id="4398">The <a href="https://docs.pytorch.org/docs/stable/generated/torch.compile.html" rel="noreferrer noopener" target="_blank">torch.compile API</a> allows for tuning the compiler-backend behavior via via the <code>mode</code> and <code>options</code> parameters. There are dozens of knobs that can be applied and assessed. Some of the most notable ones are “reduce-overhead” — that optimizes more aggressively to further reduce the overhead of the kernel loading and Python interpreter, and “max-autotune” — the most aggressive optimization option that performs benchmarking of multiple kernel options before choosing the most efficient one. Both of these, particularly “max-autotune”, increase the compilation time, but usually result in more efficient graphs.</p>
+
+
+
+<h3 class="wp-block-heading" id="436d">Varying the Compiler Backend</h3>
+
+
+
+<p class="wp-block-paragraph" id="cbbe">The default compiler backend is TorchInductor which supports a variety of target devices. You can specify the compiler backend via the <em>backend</em> parameter of the <a href="https://docs.pytorch.org/docs/stable/generated/torch.compile.html" rel="noreferrer noopener" target="_blank">torch.compile API</a>. While other backends are unlikely to beat TorchInductor when running on NVIDIA GPUs, you may find them to perform better on other hardware devices (e.g., the <a href="https://github.com/intel/intel-extension-for-pytorch" rel="noreferrer noopener" target="_blank"><em>ipex</em></a> backend includes optimizations that leverage the unique capabilities of Intel® CPUs).</p>
+
+
+
+<h3 class="wp-block-heading" id="dc6d">Applying Modular Compilation</h3>
+
+
+
+<p class="wp-block-paragraph" id="60bd">While it is usually recommended to apply compilation to the entire model, there are times where the model can be broken into submodules that respond very differently to the compiler controls. For example, if your model contains one component that includes many tensors with dynamic shapes and another component that is static, you may find that compiling the first in “max-autotune-no-cudagraphs” mode and the second in “max-autotune” mode, results in maximum performance.</p>
+
+
+
+<h3 class="wp-block-heading" id="4a37">Compiling the Optimizer</h3>
+
+
+
+<p class="wp-block-paragraph" id="8156">In addition to compiling the model execution, as of PyTorch 2.2, you can further optimize your training workload by <a href="https://docs.pytorch.org/tutorials/recipes/compiling_optimizer.html" rel="noreferrer noopener" target="_blank">compiling the optimizer</a>. This will be demonstrated below.</p>
+
+
+
+<h3 class="wp-block-heading" id="f011">New Compiler Features</h3>
+
+
+
+<p class="wp-block-paragraph" id="9c57">Since the initial release of torch.compile in PyTorch 2.0, each PyTorch release has included enhancements to the torch.compile offering. Sometimes released as “prototypes”, new features offerings challenge developers to extract even greater performance out of graph compilation. For example, the <a href="https://pytorch.org/blog/pytorch-2-7/" rel="noreferrer noopener" target="_blank">PyTorch 2.7 release</a> included the <a href="https://docs.pytorch.org/tutorials/recipes/foreach_map.html" rel="noreferrer noopener" target="_blank">foreach_map</a> prototype feature, the use of which we will demonstrate below.</p>
+
+
+
+<h2 class="wp-block-heading" id="9bec">Reducing Compilation Time</h2>
+
+
+
+<p class="wp-block-paragraph" id="c968">While the initial compilation and warm-up time can be quite long compared to the subsequent training steps, it is usually negligible compared to the overall life of the model (i.e., the training or inference time). In some cases, however, the lengthy compilation time can become an issue. If the model is extremely large and we are tuning for optimal performance, compilation could take hours. If we are using our model in an inference server setup, the model start-up time could have a direct impact on the server response time and user experience.</p>
+
+
+
+<p class="wp-block-paragraph" id="d059">In this section we cover two techniques for reducing model compilation time: <a href="https://docs.pytorch.org/tutorials/recipes/torch_compile_caching_tutorial.html" rel="noreferrer noopener" target="_blank">compile-time caching</a> and <a href="https://docs.pytorch.org/tutorials/recipes/regional_compilation.html" rel="noreferrer noopener" target="_blank">regional compilation</a>.</p>
+
+
+
+<h3 class="wp-block-heading" id="e33a">Compile Time Caching</h3>
+
+
+
+<p class="wp-block-paragraph" id="600e">In compile-time caching we upload the results of the local graph compilation to persistent storage. Every time we need to run the same model in the same runtime environment (e.g., same hardware and same library versions) we pull the cache state from persistent storage to the local disk, instead of compiling from scratch.</p>
+
+
+
+<h3 class="wp-block-heading" id="56d1">Regional Compilation</h3>
+
+
+
+<p class="wp-block-paragraph" id="8eda">Regional compilation relies on the fact that large models typically consist of computation blocks that are repeated multiple times. In regional compilation, torch.compile is applied to the repeating block, instead of the entire model. The result is a single, relatively small graph that is created and reused for each of the blocks.</p>
+
+
+
+<h2 class="wp-block-heading" id="8e2f">How to Configure the TORCH_LOGS Environment Variable</h2>
+
+
+
+<p class="wp-block-paragraph" id="6203">Torch compilation supports a wide variety of <a href="https://docs.pytorch.org/docs/stable/torch.compiler_troubleshooting.html#summary-of-torch-logs-options" rel="noreferrer noopener" target="_blank">logging controls</a>. While the log reports can be extremely useful for debugging issues and maximizing performance, it’s important to find the right balance where the logs are helpful but not excessive. In this post we propose using the following initial configuration and adapting as needed:</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-bash">export TORCH_LOGS="graph_breaks,recompiles,perf_hints"</code></pre>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">“graph_breaks” — reports each time a graph-break is encountered (see above)</li>
+
+
+
+<li class="wp-block-list-item">“recompiles” — reports each time a recompilation is performed along with the guard-violation that triggered it.</li>
+
+
+
+<li class="wp-block-list-item">“perf_hints” — outputs performance logs from the inductor backend along with hints for additional optimizations</li>
+</ul>
+
+
+
+<p class="wp-block-paragraph" id="6bfd">Note that sometimes “perf_hints” will flood the console with unactionable messages, in which case you may opt to disable it.</p>
+
+
+
+<h2 class="wp-block-heading" id="6e6f">A Toy PyTorch Model: Image Captioning</h2>
+
+
+
+<p class="wp-block-paragraph" id="1203">To demonstrate torch.compile in action, we define a toy image captioning model using the popular <a href="https://huggingface.co/" rel="noreferrer noopener" target="_blank">Hugging Face</a> <a href="https://huggingface.co/docs/transformers/en/index" rel="noreferrer noopener" target="_blank">transformers</a> library (version 4.54.1). Specifically, we define an image-to-text model using a <a href="https://huggingface.co/docs/transformers/v4.53.3/en/model_doc/vision-encoder-decoder#transformers.VisionEncoderDecoderModel" rel="noreferrer noopener" target="_blank">VisionEncoderDecoderModel</a>, with a <a href="https://huggingface.co/papers/2010.11929" rel="noreferrer noopener" target="_blank">Vision Transformer (ViT)</a> encoder and a <a href="https://cdn.openai.com/better-language-models/language_models_are_unsupervised_multitask_learners.pdf" rel="noreferrer noopener" target="_blank">GPT-2</a> decoder, and train it on a synthetic dataset of fixed-sized images and random sequences (“captions”) of variable length.</p>
+
+
+
+<p class="wp-block-paragraph" id="4771">We begin by defining our image-to-text model:</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">import os, shutil, time, random, torch
+from transformers import (
+    VisionEncoderDecoderModel,
+    VisionEncoderDecoderConfig,
+    AutoConfig
+)
+
+torch.manual_seed(42)
+random.seed(42)
+
+BATCH_SIZE = 64
+NUM_WORKERS = 12
+NUM_TOKENS = 1024
+MAX_SEQ_LEN = 256
+PAD_ID = 0
+START_ID = 1
+END_ID = 2
+
+
+# set up image-to-text model
+def get_model():
+    config = VisionEncoderDecoderConfig.from_encoder_decoder_configs(
+        encoder_config=AutoConfig.for_model("vit"),  # vit encoder
+        decoder_config=AutoConfig.for_model("gpt2")  # gpt2 decoder
+    )
+    config.decoder.vocab_size = NUM_TOKENS
+    config.decoder.use_cache = False
+    config.decoder_start_token_id = START_ID
+    config.pad_token_id = PAD_ID
+    config.eos_token_id = END_ID
+    config.max_length = MAX_SEQ_LEN
+
+    model = VisionEncoderDecoderModel(config=config)
+
+    # remove unused pooler
+    model.encoder.pooler = None
+
+    # uncomment to specify the loss function
+    # from transformers.loss.loss_utils import ForCausalLMLoss
+    # model.loss_function = ForCausalLMLoss
+    return model</code></pre>
+
+
+
+<p class="wp-block-paragraph" id="697b">Next, we define a synthetic dataset that generates pairs of random images of fixed size and random sequences of variable size. We use a weighted distribution for the sequence length to mimic a scenario where the vast majority of sequences are short.</p>
+
+
+
+<p class="wp-block-paragraph" id="1a9a">Given the varying length of the input captions, we require a strategy for dealing with dynamically shaped input. Here, we offer two alternatives, both of which use padding: padding to the maximum input length and padding to the length of the longest sequence in the batch, along with an option to align it to a given multiple. Please see our <a href="https://towardsdatascience.com/optimizing-transformer-models-for-variable-length-input-sequences-19fb88fddf71/" rel="noreferrer noopener" target="_blank">previous post</a> for additional strategies for handling variable-length input sequences.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">from torch.utils.data import Dataset, DataLoader
+from functools import partial
+
+# A synthetic Dataset with random images and captions
+class FakeDataset(Dataset):
+    def __init__(self):
+        self.length_dist = {
+            'short': {'range': (5, 32), 'weight': 0.90},
+            'medium': {'range': (33, 64), 'weight': 0.09},
+            'long': {'range': (65, 256), 'weight': 0.01}
+        }
+        super().__init__()
+
+    def __len__(self):
+        return 1000000
+
+    def __getitem__(self, index):
+        length_bin = random.choices(
+            list(self.length_dist.keys()),
+            weights=[d['weight'] for d in self.length_dist.values()],
+            k=1
+        )[0]
+
+        range_start, range_end = self.length_dist[length_bin]['range']
+        image = torch.randn(3, 224, 224)
+        length = random.randint(range_start, range_end - 1)
+        labels = torch.cat([torch.randint(1, NUM_TOKENS, (length,)),
+                            torch.tensor([END_ID])],
+                           dim=0)
+        input_ids = torch.cat([torch.tensor([START_ID]),
+                               labels[:-1]],
+                              dim=0)
+        return {
+            'image': image,
+            'input_ids': input_ids,
+            'labels': labels
+        }
+
+def pad_sequence(sequence, length, pad_val):
+    return torch.nn.functional.pad(
+        sequence,
+        (0, length - sequence.shape[0]),
+        value=pad_val
+    )
+
+def collate_with_padding(batch, pad_to_longest=False, align=None):
+    padded_inputs = []
+    padded_labels = []
+    if pad_to_longest:
+        pad_len = max([b['input_ids'].shape[0] for b in batch])
+        if align:
+            pad_len = ((pad_len + align - 1) // align) * align
+    else:
+        pad_len = MAX_SEQ_LEN
+
+    for b in batch:
+        input_ids = b['input_ids']
+        labels = b['labels']
+        padded_inputs.append(pad_sequence(input_ids, pad_len, PAD_ID))
+        padded_labels.append(pad_sequence(labels, pad_len, -100))
+
+    padded_inputs = torch.stack(padded_inputs, dim=0)
+    padded_labels = torch.stack(padded_labels, dim=0)
+    images = torch.stack([b['image'] for b in batch], dim=0)
+    return {
+        'pixel_values': images,
+        'decoder_input_ids': padded_inputs,
+        'labels': padded_labels,
+        'decoder_attention_mask': (padded_inputs != PAD_ID)
+    }
+
+def get_dataloader(pad_to_longest=False, align=None):
+    return DataLoader(
+        dataset=FakeDataset(),
+        batch_size=BATCH_SIZE,
+        num_workers=NUM_WORKERS,
+        collate_fn=partial(
+            collate_with_padding,
+            pad_to_longest=pad_to_longest,
+            align=align
+            )
+    )</code></pre>
+
+
+
+<p class="wp-block-paragraph">Last, we define our training step and main training function:</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">def copy_to_device(batch, device):
+    return {
+        key: val.to(device=device, non_blocking=True)
+        for key, val in batch.items()
+    }
+
+def train_step(model, device, optimizer, batch):
+    # copy data to device
+    batch = copy_to_device(batch, device)
+    optimizer.zero_grad()
+    with torch.amp.autocast('cuda', dtype=torch.bfloat16):
+        outputs = model(**batch)
+    loss = outputs.loss
+    loss.backward()
+    optimizer.step()
+    return loss
+
+def train(local_rank=0, world_size=1, compile=False):
+    # specify log settings
+    torch._logging.set_logs(
+        graph_breaks=True,
+        recompiles=True,
+        perf_hints=True
+    )
+
+    torch.cuda.set_device(local_rank)
+    device = torch.cuda.current_device()
+
+    if world_size &gt; 1:
+        # DDP setup
+        import torch.distributed as dist
+        from torch.nn.parallel import DistributedDataParallel as DDP
+        os.environ['MASTER_ADDR'] = 'localhost'
+        os.environ['MASTER_PORT'] = str(2222)
+        dist.init_process_group('nccl', rank=local_rank,
+                                world_size=world_size)
+
+    # configure pad_to_longest and optional alignment
+    dataloader = get_dataloader(pad_to_longest=False, align=None)
+
+    model = get_model()
+    model = model.to(device)
+    if world_size &gt; 1:
+        model = DDP(model, [local_rank])
+    optimizer = torch.optim.Adam(model.parameters())
+
+    if compile:
+        # uncomment to run pre-compile warmup - required for some optimizations
+        # batch = next(iter(dataloader))
+        # train_step(model, device, optimizer, batch)
+        model, optimizer = apply_compilation(model, optimizer)
+
+    warmup = 20
+    active = 100
+    total_steps = warmup + active
+    t0 = time.perf_counter()
+
+    for idx, batch in enumerate(dataloader, start=1):
+        # apply train step
+        train_step(model, device, optimizer, batch)
+
+        if idx == warmup:
+            torch.cuda.synchronize()
+            print(f'warmup time: {time.perf_counter()-t0}')
+            t0 = time.perf_counter()
+        elif idx == total_steps:
+            break
+
+    if local_rank == 0:
+        torch.cuda.synchronize()
+        total_time = time.perf_counter() - t0
+        print(f'average throughput: {active / total_time}')
+
+    if world_size &gt; 1:
+        dist.destroy_process_group()
+
+
+if __name__ == '__main__':
+    # specify inductor cache dir
+    inductor_cache_dir = '/tmp/inductor_cache'
+    os.environ['TORCHINDUCTOR_CACHE_DIR'] = inductor_cache_dir
+
+    # clean up compiler cache
+    torch._dynamo.reset()
+    shutil.rmtree(inductor_cache_dir, ignore_errors=True)
+
+    world_size = 1
+    torch.multiprocessing.spawn(
+        fn=train,
+        args=(world_size,),
+        nprocs=world_size,
+        join=True
+    )</code></pre>
+
+
+
+<h3 class="wp-block-heading" id="5007">Baseline Performance</h3>
+
+
+
+<p class="wp-block-paragraph" id="ca4a">Running the training script without compilation yields the following baseline performance results:</p>
+
+
+
+<figure class="wp-block-image size-full"><img decoding="async" src="../Images/2e7438055bb377c861d38f339753cff0.png" alt="" class="wp-image-615603" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/08/2.webp"/><figcaption class="wp-element-caption">Baseline Model Performance (by Author)</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph" id="0a60">We can see clearly that the collation strategy that reduces padding results in much better performance.</p>
+
+
+
+<h2 class="wp-block-heading" id="caba">Applying Model Compilation</h2>
+
+
+
+<p class="wp-block-paragraph" id="0b26">In this section we will apply torch compilation with different configurations and measure its impact on the training throughput. We will begin by applying compilation without dynamism, i.e., when padding all inputs to max sequence length. In the following section we will evaluate its impact in the case of inputs with dynamic shapes.</p>
+
+
+
+<h3 class="wp-block-heading" id="f3d6">Model Compilation Step #1: Fixing Graph Breaks</h3>
+
+
+
+<p class="wp-block-paragraph" id="400e">We introduce the following compilation utility function and apply it to our model:</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">def apply_compilation(model, optimizer):
+    model = torch.compile(model, fullgraph=True)
+    return model, optimizer</code></pre>
+
+
+
+<p class="wp-block-paragraph">The <em>fullgraph </em>setting ensures that compilation will fail whenever it encounters a graph break. Sure enough, our first compilation attempt results in an error coming from the transformer library. Here is a small snippet:</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-shell-session">from user code:
+   File "/opt/pytorch/lib/python3.12/site-packages/transformers/models/vision_encoder_decoder/modeling_vision_encoder_decoder.py", line 574, in forward
+    loss = self.loss_function(
+  File "/opt/pytorch/lib/python3.12/site-packages/transformers/modeling_utils.py", line 5776, in loss_function</code></pre>
+
+
+
+<p class="wp-block-paragraph">The reason for this error is that when the <a href="https://huggingface.co/docs/transformers/v4.53.3/en/model_doc/vision-encoder-decoder#transformers.VisionEncoderDecoderModel" target="_blank" rel="noreferrer noopener">VisionEncoderDecoderModel</a> loss function is not specified, the transformers library uses native Python code to determine what loss function to apply. This is easy to fix by specifying the model loss function, as follows:</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">from transformers.loss.loss_utils import ForCausalLMLoss
+model.loss_function = ForCausalLMLoss</code></pre>
+
+
+
+<p class="wp-block-paragraph" id="1621">Following this fix, model compilation succeeds. The resultant throughput is 5.17 steps per second — a 66% speed-up over the baseline (fixed-input) throughput.</p>
+
+
+
+<p class="wp-block-paragraph" id="3d73">Note that in the current scenario of a static graph, the compiler did not report any recompilations, but it did report the following <em>perf_hint</em>:</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-shell-session">I0805 13:37:52.406000 51587 torch/_inductor/codegen/simd.py:1976] [0/0] [__perf_hints] Reduction over non-contiguous dims.
+I0805 13:37:52.406000 51587 torch/_inductor/codegen/simd.py:1976] [0/0] [__perf_hints] Consider setting config.triton.tile_reductions to True.</code></pre>
+
+
+
+<p class="wp-block-paragraph" id="52a9">However, applying the suggested configuration results in a compilation error, so we ignore it going forward.</p>
+
+
+
+<h3 class="wp-block-heading" id="8e00">Model Compilation Step #2: Tuning the Compiler Configuration</h3>
+
+
+
+<p class="wp-block-paragraph" id="0741">Let’s try to increase the performance further by applying some of the advanced compilation controls. The code block below includes three alternative modifications:</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python"># reduce-overhead
+model = torch.compile(model, fullgraph=True, mode="reduce-overhead")
+
+# max-autotune
+model = torch.compile(model, fullgraph=True, mode="max-autotune")
+
+# shapes padding
+model = torch.compile(model, fullgraph=True, options={"shape_padding":True})</code></pre>
+
+
+
+<p class="wp-block-paragraph" id="d407">The results are captured in the table below:</p>
+
+
+
+<figure class="wp-block-image size-full"><img decoding="async" src="../Images/1e96db0e2b475cd9f08ebdf21d4f4015.png" alt="" class="wp-image-615604" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/08/3.webp"/><figcaption class="wp-element-caption">torch.compile results (by Author)</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph" id="32a4">The subsequent experiments in this section will be run with the “max-autotune” optimization.</p>
+
+
+
+<h3 class="wp-block-heading" id="27e0">Model Compilation Step #3: Compiling the Optimizer</h3>
+
+
+
+<p class="wp-block-paragraph" id="43fb">Next, we extend our solution to apply compilation to the optimizer. Since optimizer compilation currently requires graph-breaks, we apply it without the <em>fullgraph</em> flag:</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">def apply_compilation(model, optimizer):
+    model = torch.compile(model, fullgraph=True, mode="max-autotune")
+    optimizer.step = torch.compile(optimizer.step)
+    return model, optimizer</code></pre>
+
+
+
+<p class="wp-block-paragraph" id="e2bc">Compiling the optimizer further increases the throughput to 5.54 steps per second!!</p>
+
+
+
+<p class="wp-block-paragraph" id="ed0e">When compiling the optimizer, the following performance hint is printed:</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-shell-session">&lt;list of grads&gt; will be copied during cudagraphs execution.If using cudagraphs and the grad tensor addresses will be the same across runs, use torch._dynamo.decorators.mark_static_address to elide this copy.</code></pre>
+
+
+
+<p class="wp-block-paragraph">The proposal is to fix the addresses of gradient tensors and mark them. To implement the suggestion, we introduce the following two utility functions:</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python"># this replaces default optimizer.zero_grad() and verifies reuse
+# of same gradient tensors
+def zero_grads(model):
+    for p in model.parameters():
+        if p.grad is not None:
+            p.grad.zero_()
+
+# uses dynamo utility to mark each of the gradient tensors as static
+def mark_static_address(optimizer):
+    for group in optimizer.param_groups:
+        for p in group['params']:
+            if p.grad is not None:
+                torch._dynamo.mark_static_address(p.grad)</code></pre>
+
+
+
+<p class="wp-block-paragraph">The updated training step appears below:</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">def train_step(model, device, optimizer, batch):
+    # copy data to device
+    batch = copy_to_device(batch, device)
+    zero_grads(model)
+    with torch.amp.autocast('cuda', dtype=torch.bfloat16):
+        outputs = model(**batch)
+    loss = outputs.loss
+    loss.backward()
+    mark_static_address(optimizer)
+    optimizer.step()
+    return loss</code></pre>
+
+
+
+<p class="wp-block-paragraph" id="c403">In our case, implementing the performance hint decreases the throughput result to 5.32 steps per second — so we disregard it.</p>
+
+
+
+<h3 class="wp-block-heading" id="ac0a">Model Compilation Step #4: Foreach Map Optimization</h3>
+
+
+
+<p class="wp-block-paragraph" id="d383">Constantly be on the lookout for torch.compile enhancements and additions. Here we will apply <a href="https://docs.pytorch.org/tutorials/recipes/foreach_map.html" rel="noreferrer noopener" target="_blank">horizontal fusion with foreach_map</a> — an optimization introduced in the latest PyTorch release — to the optimizer step. Using the utility functions from the <a href="https://docs.pytorch.org/tutorials/recipes/foreach_map.html" rel="noreferrer noopener" target="_blank">Foreach Map tutorial</a>, we create an optimized Adam optimizer step function, and apply it to our optimizer:</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">def get_compiled_adam_step(optimizer):
+    compiled_adam = torch.compile(foreach_map_adam)
+    inputs = get_inputs(optimizer)
+    def compiled_adam_step():
+        compiled_adam(*inputs)
+    return compiled_adam_step
+
+def apply_compilation(model, optimizer):
+    model = torch.compile(model, fullgraph=True, mode="max-autotune")
+    optimizer.step = get_compiled_adam_step(optimizer)
+    return model, optimizer</code></pre>
+
+
+
+<p class="wp-block-paragraph" id="7502">This optimization requires use of the <em>zero_grads </em>utility from above. It also requires that we run a warmup training step before compilation to populate all of the gradient tensors.</p>
+
+
+
+<p class="wp-block-paragraph" id="a10b">The modified optimizer step results in a reduced throughput of 5.28 steps per second. We presume that our toy model is too small to reap the benefit of the new compilation feature.</p>
+
+
+
+<p class="wp-block-paragraph" id="734f">Our best result, 5.54 steps per second, is 78% faster than our baseline result. Let’s see what happens when we extend our solution to multiple GPUs.</p>
+
+
+
+<h3 class="wp-block-heading" id="b87f">Model Compilation Step #5: Extending to DDP</h3>
+
+
+
+<p class="wp-block-paragraph" id="5cca">The final step is to extend the training script to use all 8 GPUs. For this step we need to disable the <em>fullgraph</em> setting since the cross-GPU gradient sharing requires graph-breaking communication calls.</p>
+
+
+
+<p class="wp-block-paragraph" id="a23f">The resultant throughput is 4.59 steps per second, nearly two times faster than our baseline result.</p>
+
+
+
+<h3 class="wp-block-heading" id="50b6">Results</h3>
+
+
+
+<p class="wp-block-paragraph" id="5631">The table below summarizes the results of our static-graph experiments:</p>
+
+
+
+<figure class="wp-block-image size-full"><img decoding="async" src="../Images/f6d375870c3fe449b30e281aee10ae77.png" alt="" class="wp-image-615605" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/08/4.webp"/><figcaption class="wp-element-caption">Static Graph Compilation Results (by Author)</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph" id="fc6e">Thus far, all of our experiments have assumed fixed-sized input tensors. Since the vast majority of input sequences are small, our graph is performing a huge amount of wasteful computation.</p>
+
+
+
+<p class="wp-block-paragraph" id="e005">In the next section we will evaluate torch.compile when padding to variable-length inputs.</p>
+
+
+
+<h2 class="wp-block-heading" id="962a">Dynamic Model Compilation</h2>
+
+
+
+<p class="wp-block-paragraph" id="c9cf">In this section we introduce dynamism into our toy model definition by padding the inputs sequences in each batch to the length of the longest sequence. In a previous section we described several strategies for compiling dynamic graphs. We will apply these strategies and assess their impact on the training throughput.</p>
+
+
+
+<p class="wp-block-paragraph" id="3a07">The experiments in this section were run on a single NVIDIA A100 GPU.</p>
+
+
+
+<h3 class="wp-block-heading" id="bd44">Option #1: Auto-Detect Dynamism</h3>
+
+
+
+<p class="wp-block-paragraph" id="4339">The default behavior (<em>dynamic</em>=<em>None</em>) of torch.compile is to auto-detect dynamism and recompile the graph accordingly. When running in this setting, we indeed see the recompilation due to the variation in input size, but we also get the following print:</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-shell-session">V0806 09:31:00.624000 175763 torch/_dynamo/guards.py:2997] [0/1] [__recompiles]     - 0/1: ((decoder_input_ids.size()[1]*decoder_input_ids.size()[1]) % 8) != 0  # attn_output = torch.nn.functional.scaled_dot_product_attention(  # transformers/integrations/sdpa_attention.py:89 in sdpa_attention_forward (_dynamo/utils.py:3284 in run_node)</code></pre>
+
+
+
+<p class="wp-block-paragraph" id="a998">The source of this recompilation is the <a href="https://docs.pytorch.org/docs/stable/generated/torch.nn.functional.scaled_dot_product_attention.html" rel="noreferrer noopener" target="_blank">scaled_dot_product_attention</a> operator, which requires that input shapes be aligned to multiples of eight for optimal use. To address this issue and avoid the recompilation, we modify our padding operation to pad to a multiple of eight.</p>
+
+
+
+<p class="wp-block-paragraph" id="5108">To avoid the recompilation that is triggered by the variable-length inputs, we define the following utility and apply it to the input tensors:</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">def mark_dynamic(batch):
+    for key in ['decoder_input_ids', 'labels', 'decoder_attention_mask']:
+        torch._dynamo.mark_dynamic(batch[key], 1)
+
+def train_step(model, device, optimizer, batch):
+    # copy data to device
+    batch = copy_to_device(batch, device)
+    # mark inputs as dynamic to avoid recompilation
+    mark_dynamic(batch)
+    optimizer.zero_grad()
+    with torch.amp.autocast('cuda', dtype=torch.bfloat16):
+        outputs = model(**batch)
+    loss = outputs.loss
+    loss.backward()
+    optimizer.step()
+    return loss</code></pre>
+
+
+
+<p class="wp-block-paragraph" id="c846">This option results in a throughput of 7.78 steps per second, 64% higher than the baseline throughput (4.73).</p>
+
+
+
+<p class="wp-block-paragraph" id="ce71">An additional speed-up is achieved when we apply the “max-autotune” mode — 8.13 steps per second.</p>
+
+
+
+<h3 class="wp-block-heading" id="a2ab">Option #2: Dynamic Compilation</h3>
+
+
+
+<p class="wp-block-paragraph" id="9a75">Another way to avoid recompilations is to call torch.compile with <em>dynamic</em>=<em>True</em>:</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">def apply_compilation(model, optimizer):
+    model = torch.compile(model, fullgraph=True, dynamic=True)
+    optimizer.step = torch.compile(optimizer.step)
+    return model, optimizer</code></pre>
+
+
+
+<p class="wp-block-paragraph" id="e743">This results in a throughput of 7.77 steps per second. Since setting <em>dynamic</em>=<em>True</em> precludes the use of CUDA graphs, we attempt to optimize further by setting <em>mode</em>=”max-autotune-no-cudagraphs”. This results in a throughput of 7.89 steps per second.</p>
+
+
+
+<h3 class="wp-block-heading" id="a035">Option #3: Compile a Fixed Number of Static Graphs</h3>
+
+
+
+<p class="wp-block-paragraph" id="23d1">The last option we explore is to set a fixed number of supported input shapes and compile a corresponding fixed number of static graphs. Since the default number of recompilations supported is eight, we program our collator to emit eight different tensor shapes by aligning the padding to multiples of 32. To force the recompilations, we set <em>dynamic</em>=<em>False</em>.</p>
+
+
+
+<p class="wp-block-paragraph" id="093c">The resultant throughputs are for 7.77 steps per second for the default mode and 8.04 for <em>mode</em>=”max-autotune”.</p>
+
+
+
+<p class="wp-block-paragraph" id="d0d3">Note that this option may require a greater number of warmup steps to ensure that all shape variations are processed. (An alternative is to manually feed the model with all shape variations before starting the training loop.)</p>
+
+
+
+<h3 class="wp-block-heading" id="5f90">Modular Compilation</h3>
+
+
+
+<p class="wp-block-paragraph" id="704b">Since our model naturally splits into two submodules — a static encoder and a dynamic decoder — it is tempting to explore the option of applying separate compilation to each component. Note that in an inference setting, it is essential to compile the encoder and decoder separately, since the encoder is called only once, while the decoder is called repeatedly in an auto-regressive loop.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">def apply_compilation(model, optimizer):
+    model.encoder = torch.compile(model.encoder, fullgraph=True)
+    model.decoder = torch.compile(model.decoder, fullgraph=True)
+    model.loss_function = torch.compile(model.loss_function, fullgraph=True)
+    optimizer.step = torch.compile(optimizer.step)
+    return model, optimizer</code></pre>
+
+
+
+<p class="wp-block-paragraph" id="7fc4">The result of this strategy is a throughput of 7.93, which is slightly higher than the result we got (in default mode) when compiling the entire model.</p>
+
+
+
+<p class="wp-block-paragraph" id="0475">One advantage to this approach is the ability to tune the compilation controls to each submodule independently. For example, setting <em>mode</em>=”max-autotune” to just the encoder, further increased the throughput to 8.04 steps per second.</p>
+
+
+
+<h3 class="wp-block-heading" id="2578">Results</h3>
+
+
+
+<p class="wp-block-paragraph" id="515b">We summarize the results of our dynamic-graph experiments in the table below:</p>
+
+
+
+<figure class="wp-block-image size-full"><img decoding="async" src="../Images/25f58c7fafc9ddc67ca8ac6b4e2e7316.png" alt="" class="wp-image-615606" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/08/5.webp"/><figcaption class="wp-element-caption">Dynamic Graph Compilation Results (by Author)</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">The best result was 8.13 steps per second, 72% higher than the baseline result (4.73). It is likely that further tuning could result in additional gains.</p>
+
+
+
+<p class="wp-block-paragraph">Keep in mind that the impact of torch.compile can vary greatly based on the details of the model and the runtime environment.</p>
+
+
+
+<h2 class="wp-block-heading">Reducing Compilation Time</h2>
+
+
+
+<p class="wp-block-paragraph">We now turn our attention to the duration of the torch.compile warmup. We will assess the two optimizations discussed above, <a href="https://docs.pytorch.org/tutorials/recipes/torch_compile_caching_tutorial.html" rel="noreferrer noopener" target="_blank">compile-time caching</a> and <a href="https://docs.pytorch.org/tutorials/recipes/regional_compilation.html" rel="noreferrer noopener" target="_blank">regional compilation</a>. We limit our experiments to a single GPU. We use the default application of torch.compile and measure the duration of the first 20 training iterations.</p>
+
+
+
+<h3 class="wp-block-heading">Pre-Loading Compilation Cache</h3>
+
+
+
+<p class="wp-block-paragraph">In the following demonstration of compile-time caching, we use an <a href="https://aws.amazon.com/s3/" rel="noreferrer noopener" target="_blank">Amazon S3</a> bucket as our persistent storage location:</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">import boto3
+
+S3_BUCKET = "&lt;insert bucket&gt;"
+S3_KEY = "&lt;insert path&gt;"
+
+def download_cache():
+    s3_client = boto3.client('s3')
+    t0 = time.perf_counter()
+    try:
+        response = s3_client.get_object(Bucket=S3_BUCKET, Key=S3_KEY)
+        artifact_bytes = response['Body'].read()
+        torch.compiler.load_cache_artifacts(artifact_bytes)
+        print(f"Cache restored. Time: {time.perf_counter()-t0} sec")
+    except:
+        return False
+    return True
+
+def upload_cache():
+    s3_client = boto3.client('s3')
+    artifact_bytes, cache_info = torch.compiler.save_cache_artifacts()
+    s3_client.put_object(
+        Bucket=S3_BUCKET,
+        Key=S3_KEY,
+        Body=artifact_bytes
+    )
+
+
+if __name__ == '__main__':
+    # specify inductor cache dir
+    inductor_cache_dir = '/tmp/inductor_cache'
+    os.environ['TORCHINDUCTOR_CACHE_DIR'] = inductor_cache_dir
+
+    # clean up compiler cache
+    torch._dynamo.reset()
+    shutil.rmtree(inductor_cache_dir, ignore_errors=True)
+
+    # upload the compilation artifacts
+    download_cache()
+    
+    # train the model
+    train()
+
+    # upload the compilation artifacts
+    upload_cache()</code></pre>
+
+
+
+<p class="wp-block-paragraph" id="08b0">This method reduces the compilation warmup from 196 seconds to 56 seconds — a 3.5X speed-up.</p>
+
+
+
+<h3 class="wp-block-heading" id="d64a">Regional Compilation</h3>
+
+
+
+<p class="wp-block-paragraph" id="fb57">To implement regional compilation, we apply compilation to the internal blocks of both the encoder and the decoder:</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">def apply_compilation(model, optimizer):
+    model.encoder.encoder.layer = torch.nn.ModuleList(
+        [torch.compile(layer, fullgraph=True)
+         for layer in model.encoder.encoder.layer]
+    )
+    model.decoder.transformer.h = torch.nn.ModuleList(
+        [torch.compile(layer, fullgraph=True)
+         for layer in model.decoder.transformer.h]
+    )
+    model.loss_function = torch.compile(model.loss_function, fullgraph=True)
+    optimizer.step = torch.compile(optimizer.step)
+    return model, optimizer</code></pre>
+
+
+
+<p class="wp-block-paragraph" id="4b04">This change reduces the throughput from 7.78 steps per second to 7.61 steps per second. On the other hand, the compilation warmup drops from 196 seconds to 80 seconds — a 2.45X speed-up.</p>
+
+
+
+<p class="wp-block-paragraph" id="636a">In the case of our toy model — which is extremely small by today’s standards — the gains we have demonstrated are modest. But for large models, these types of compilation-time optimization techniques could prove essential.</p>
+
+
+
+<h2 class="wp-block-heading" id="f032">Summary</h2>
+
+
+
+<p class="wp-block-paragraph" id="bcf6">As AI/ML models grow in size to hundreds of billions or even trillions of parameters, optimizing their runtime performance becomes increasingly essential. For PyTorch models, torch.compile is one of the most powerful optimization tools at your disposal. This post has aimed to ease the adoption of torch.compile by addressing some of its intricacies and demonstrating its practical use. Some of the main techniques we covered were:</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">Reducing graph-breaks and recompilations</li>
+
+
+
+<li class="wp-block-list-item">Tuning compilation settings to maximize performance gains</li>
+
+
+
+<li class="wp-block-list-item">Effective use of the PyTorch logs</li>
+
+
+
+<li class="wp-block-list-item">Top-down vs. bottom-up debugging strategies</li>
+
+
+
+<li class="wp-block-list-item">Modular application of torch.compile</li>
+
+
+
+<li class="wp-block-list-item">Reducing the duration of compilation warmup</li>
+</ul>
+
+
+
+<p class="wp-block-paragraph" id="b6c9">PyTorch compilation is a complex and nuanced topic. In this post we have covered just some of its many features. For more on the topic, be refer to the <a href="https://docs.pytorch.org/tutorials/intermediate/torch_compile_tutorial.html" rel="noreferrer noopener" target="_blank">official documentation</a>.</p>
+    
+</body>
+</html>

@@ -1,0 +1,255 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.1//EN"
+  "http://www.w3.org/TR/xhtml11/DTD/xhtml11.dtd">
+
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+<title>Choosing the Best Model Size and Dataset Size under a Fixed Budget for LLMs</title>
+<link href="../Styles/Style.css" type="text/css" rel="stylesheet"/>
+</head>
+<body>
+<h1>Choosing the Best Model Size and Dataset Size under a Fixed Budget for LLMs</h1>
+<blockquote>原文：<a href="https://towardsdatascience.com/choosing-the-best-model-size-and-dataset-size-under-a-fixed-budget-for-llms/">https://towardsdatascience.com/choosing-the-best-model-size-and-dataset-size-under-a-fixed-budget-for-llms/</a></blockquote>
+<h2 class="wp-block-heading">Introduction</h2>
+
+
+
+<p class="wp-block-paragraph"><mdspan datatext="el1761241198699" class="mdspan-comment">When training large</mdspan> language models (LLMs), we are forever constrained by budgets. Such a constraint leads to a fundamental trade-off:Imagine that if you fix a compute budget, increasing the model size means that you must reduce the model size you can train on, and vice versa. So you are asking the question:</p>
+
+
+
+<p class="wp-block-paragraph">Should we allocate more to a model with more parameters, or should we train it on more data?</p>
+
+
+
+<p class="wp-block-paragraph">In particular, LLMs’ performance and efficiency are largely influenced by this trade-off. It is thus crucial to find an optimal balance between the number of parameters of a model and the number of tokens used.</p>
+
+
+
+<p class="wp-block-paragraph">The total training compute of a transformer roughly scales as: C∝N×D, where</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">N is the number of model parameters.</li>
+
+
+
+<li class="wp-block-list-item">D is the number of tokens.</li>
+
+
+
+<li class="wp-block-list-item">C is the fixed compute budget.</li>
+</ul>
+
+
+
+<p class="wp-block-paragraph">It is straightforward to see that for a fixed C, N and D are inversely proportional to each other.</p>
+
+
+
+<p class="wp-block-paragraph">Previous studies (Kaplan et al., 2020; Hoffmann et al., 2022) have found that training loss of machine learning models follows a power-law with compute: L(C)∝C^{−α} and the <em>optimal</em> model size and dataset size scale with compute as: N_opt∝C^a, D_opt∝C^b for some positive values a and b. </p>
+
+
+
+<p class="wp-block-paragraph">In this article, we will use tiny Transformers to explore how to balance N and D under a fixed compute C.</p>
+
+
+
+<h2 class="wp-block-heading">Experiment Setup </h2>
+
+
+
+<p class="wp-block-paragraph">We design a minimal transformer model, and we call it “tiny transformer” with the following configurable properties that influence the model’s parameter size:</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">Model dimension (d_model)</li>
+
+
+
+<li class="wp-block-list-item">MLP dimension (d_mlp)</li>
+
+
+
+<li class="wp-block-list-item">Number of layers (n_layers​)</li>
+</ul>
+
+
+
+<p class="wp-block-paragraph">We would like to train the transformer of different configurations on tokenized sequences of length 64 of the WikiText-2 dataset.</p>
+
+
+
+<p class="wp-block-paragraph">To study the effect of scaling, we defined a grid of models from very small (16 hidden units, 1 layer) to relatively large (128 hidden units, 4 layers) and combine them with a range of tokens from 5k to 1M. See the code below: </p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">model_configs = [
+    {"d_model": 16,  "d_mlp": 64,   "n_layers": 1},  
+    {"d_model": 24,  "d_mlp": 96,   "n_layers": 1},   
+    {"d_model": 32,  "d_mlp": 128,  "n_layers": 2},
+    {"d_model": 48,  "d_mlp": 192,  "n_layers": 2},
+    {"d_model": 64,  "d_mlp": 256,  "n_layers": 3},
+    {"d_model": 96,  "d_mlp": 384,  "n_layers": 3},
+    {"d_model": 128, "d_mlp": 512,  "n_layers": 4},   
+]
+# number of tokens (D) we train on — simulated via few steps × batch × seq_len
+token_budgets = [5e3, 1e4, 3e4, 5e4, 1e5, 3e5, 5e5, 1e6]  # small for demo</code></pre>
+
+
+
+<p class="wp-block-paragraph">By approximating the compute cost as  C≈N×D, our idea is to compute the loss function for each (N,D) pair and find the pair (N,D) with which the model reaches the minimal loss function for a given C: this is the balance we are looking for. </p>
+
+
+
+<h2 class="wp-block-heading">Implementation and observations </h2>
+
+
+
+<p class="wp-block-paragraph">We use the code below to train the model up to a fixed number of steps with different (N,D) pair and record the result. </p>
+
+
+
+<pre class="wp-block-prismatic-blocks python"><code class="language-python">
+results = []
+device = "cuda" if torch.cuda.is_available() else "cpu"
+
+for cfg in model_configs:
+    model = TinyTransformer(vocab_size=len(tokenizer), **cfg)
+    N_params = count_params(model)
+    for D in token_budgets:
+        steps = int(D // (SEQ_LEN * 16))  # assuming batch_size=16
+        dataloader = DataLoader(
+            tokenized_dataset["train"].shuffle(seed=0),
+            batch_size=16,
+            collate_fn=collate_fn
+        )
+        avg_loss = train_one(model, dataloader, steps=steps, device=device)
+        compute = N_params * D
+        results.append({
+            "N": N_params,
+            "D": D,
+            "C": compute,
+            "loss": avg_loss
+        })</code></pre>
+
+
+
+<p class="wp-block-paragraph">We then plot the final loss against the compute (N×D):</p>
+
+
+
+<figure class="wp-block-image size-full"><img decoding="async" src="../Images/6b08c531e20a97b92af54f7c46f01764.png" alt="" class="wp-image-627162" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/10/download.png"/><figcaption class="wp-element-caption">Image by author: training loss vs compute</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">We have the following important observations:</p>
+
+
+
+<ol class="wp-block-list">
+<li class="wp-block-list-item"><strong>For small compute budgets</strong>, small models trained on most of the available data perform better than larger models trained on very little data.</li>
+
+
+
+<li class="wp-block-list-item"><strong>For large compute budgets</strong>, larger models become better when enough data is available.</li>
+
+
+
+<li class="wp-block-list-item">The optimal model size does not grow linearly with compute budget. For example, doubling the compute does not really lead to an optimal number of parameters twice as before.</li>
+</ol>
+
+
+
+<p class="wp-block-paragraph">The plot below gives the efficient frontier across model size, that is, the set of model sizes that have the lowest loss for a given compute.</p>
+
+
+
+<figure class="wp-block-image size-full" datatext=""><img decoding="async" src="../Images/6e21a80511b1ea6b3584e24b848dbb8f.png" alt="" class="wp-image-627152" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/10/download-1.png"/><figcaption class="wp-element-caption">Image by author: efficient frontier</figcaption></figure>
+
+
+
+<h2 class="wp-block-heading">“Best” Model</h2>
+
+
+
+<p class="wp-block-paragraph">To determine the “best” model, we would select the pair of model size and the number of tokens that minimizes loss at a fixed budget.</p>
+
+
+
+<p class="wp-block-paragraph">We assume both follow a power-law relationship: N_opt∝C^α, D_opt∝C^β, and we would like to estimate the unknown exponents α and β by the following steps:</p>
+
+
+
+<ol class="wp-block-list">
+<li class="wp-block-list-item">Take the logarithm of the quantities: log?(N_opt)=αlog?(C)+const, log?(D_opt)=βlog?(C)+const.</li>
+
+
+
+<li class="wp-block-list-item">Fit a linear regression. The slope of the regression is nothing but the power-law exponent.</li>
+</ol>
+
+
+
+<p class="wp-block-paragraph">The following code gives such a regression:</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python"># Fit log-log linear regression
+a_slope, a_intercept, *_ = st.linregress(np.log(frontier.C), np.log(frontier.N))
+b_slope, b_intercept, *_ = st.linregress(np.log(frontier.C), np.log(frontier.D))</code></pre>
+
+
+
+<p class="wp-block-paragraph">In our toy experiment, we found that N_opt ~C^0.14 and D_opt~ C^0.86. This result might not reveal the whole image because we did the experiment on simpilied model and configurations. But we can still see that the growth of computing leads to an increase in optimal model size, but at a diminishing rate. Clearly, the remaining budget should be attributed to more training tokens.</p>
+
+
+
+<p class="wp-block-paragraph">Moreover, the compute above gives the fact that the best ratio N_opt/D_opt=C^-0.72. This implies that when you increase compute, you should add more training tokens rather than increasing model size.</p>
+
+
+
+<h2 class="wp-block-heading">Practical Takeaways</h2>
+
+
+
+<p class="wp-block-paragraph">From this experiment, though a toy case, we can extract several insights:</p>
+
+
+
+<ol class="wp-block-list">
+<li class="wp-block-list-item">For a fixed budget, using a medium model with more data can outperform a very large model with limited data.</li>
+
+
+
+<li class="wp-block-list-item">Optimal model size and data size grow with compute. Don’t train a model with many parameters if you have a small budget.</li>
+
+
+
+<li class="wp-block-list-item">When the budget increases, consider first the optimal ratio N_opt/D_opt to determine whether you should increase the model size or add more training data.</li>
+</ol>
+
+
+
+<h2 class="wp-block-heading">Conclusion</h2>
+
+
+
+<p class="wp-block-paragraph">In this blog post, we provide a study of the trade-off between model size and data under a fixed compute budget for LLMs with a toy case. The experiment shows that we can find the optimal pair of model size and tokens number to acheive the best model performance with a given budget, allowing researchers and practitioners to design LLMs wisely and achieve the best results.</p>
+
+
+
+<h2 class="wp-block-heading">Reference</h2>
+
+
+
+<p class="wp-block-paragraph">[1] Kaplan, J., McCandlish, S., Henighan, T., Brown, T. B., Chess, B., Child, R., Gray, S., Radford, A., Wu, J., &amp; Amodei, D. (2020). <em>Scaling Laws for Neural Language Models</em>. </p>
+
+
+
+<p class="wp-block-paragraph">[2] Hoffmann, J., Borgeaud, S., Mensch, A., Buchatskaya, E., Cai, T., Rutherford, E., de Las Casas, D., Hendricks, L. A., Welbl, J., Clark, A., Hennigan, T., Noland, E., Millican, K., van den Driessche, G., Damoc, B., Guy, A., Osindero, S., Simonyan, K., Elsen, E., … Sifre, L. (2022). <em>Training Compute-Optimal Large Language Models</em>. </p>
+    
+</body>
+</html>

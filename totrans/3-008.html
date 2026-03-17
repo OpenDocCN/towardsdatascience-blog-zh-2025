@@ -1,0 +1,553 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.1//EN"
+  "http://www.w3.org/TR/xhtml11/DTD/xhtml11.dtd">
+
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+<title>Real-Time Interactive Sentiment Analysis in Python</title>
+<link href="../Styles/Style.css" type="text/css" rel="stylesheet"/>
+</head>
+<body>
+<h1>Real-Time Interactive Sentiment Analysis in Python</h1>
+<blockquote>原文：<a href="https://towardsdatascience.com/real-time-interactive-sentiment-analysis-in-python/">https://towardsdatascience.com/real-time-interactive-sentiment-analysis-in-python/</a></blockquote>
+<figure class="wp-block-image size-full is-resized"><img decoding="async" src="../Images/db1970e0ec19ef17581cfc4036c821b0.png" alt="" class="wp-image-602629" style="width:680px;height:auto" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/04/2025-04-23_23-11-15-ezgif.com-video-to-gif-converter.gif"/></figure>
+
+
+
+<p class="wp-block-paragraph"><mdspan datatext="el1746667834713" class="mdspan-comment">You know</mdspan> what the best part of being an engineer is? You can just build stuff. It’s like a superpower. One rainy afternoon I had this random idea of creating a sentiment visualization of a text input with a smiley face that changes it’s expression base on how positive the text is. The more positive the text, the happier the smiley looks. There are some interesting concepts to learn here, so let me guide you through how this project works!</p>
+
+
+
+<h2 class="wp-block-heading">Prerequisites</h2>
+
+
+
+<p class="wp-block-paragraph">To follow along, you need the following packages:</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">customtkinter</li>
+
+
+
+<li class="wp-block-list-item">opencv-python</li>
+
+
+
+<li class="wp-block-list-item">torch</li>
+
+
+
+<li class="wp-block-list-item">transformers</li>
+</ul>
+
+
+
+<p class="wp-block-paragraph">Using <strong><a href="https://docs.astral.sh/uv/">uv</a></strong>, you can add the dependencies with the following command:</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-bash">uv add customtkinter opencv-python torch transformers</code></pre>
+
+
+
+<blockquote class="wp-block-quote is-layout-flow wp-block-quote-is-layout-flow">
+<p class="wp-block-paragraph"><strong>NOTE:</strong> When using <em>uv</em> with torch you need to specify the index for the package. E.g if you want to use cuda, you need the following in your <code>pyproject.toml</code>:</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-ini">[[tool.uv.index]]
+name = "pytorch-cu118"
+url = "https://download.pytorch.org/whl/cu118"
+explicit = true
+
+[tool.uv.sources]
+torch = [{ index = "pytorch-cu118" }]
+torchvision = [{ index = "pytorch-cu118" }]</code></pre>
+</blockquote>
+
+
+
+<h2 class="wp-block-heading">UI Layout Skeleton</h2>
+
+
+
+<p class="wp-block-paragraph">For these types of projects I always like to start with a quick layout of the UI components. In this case the layout will be quite simple, there’s a textbox with a single line at the top that fills the width and below it the canvas filling the rest of the available space. This will be where we draw the smiley face 🙂</p>
+
+
+
+<p class="wp-block-paragraph">Using <code>customtkinter</code>, we can write the layout as follows:</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">import customtkinter
+
+class App(customtkinter.CTk):
+    def __init__(self) -&gt; None:
+        super().__init__()
+
+        self.title("Sentiment Analysis")
+        self.geometry("800x600")
+
+        self.grid_columnconfigure(0, weight=1)
+        self.grid_rowconfigure(0, weight=0)
+        self.grid_rowconfigure(1, weight=1)
+
+        self.sentiment_text_var = customtkinter.StringVar(master=self, value="Love")
+
+        self.textbox = customtkinter.CTkEntry(
+            master=self,
+            corner_radius=10,
+            font=("Consolas", 50),
+            justify="center",
+            placeholder_text="Enter text here...",
+            placeholder_text_color="gray",
+            textvariable=self.sentiment_text_var,
+        )
+        self.textbox.grid(row=0, column=0, padx=20, pady=20, sticky="nsew")
+        self.textbox.focus()
+
+        self.image_display = CTkImageDisplay(self)
+        self.image_display.grid(row=1, column=0, padx=20, pady=20, sticky="nsew")</code></pre>
+
+
+
+<p class="wp-block-paragraph">Unfortunately there’s no good out of the box solution for drawing opencv frames on a UI element, so I built my own <code>CTkImageDisplay</code>. If you want to learn in detail how it works, check out <a href="https://towardsdatascience.com/modern-gui-applications-for-computer-vision-in-python/">my previous post</a>. In short, I use a <code>CTKLabel</code> component and decouple the thread that updates the image from the GUI thread using a synchronization queue.</p>
+
+
+
+<figure class="wp-block-image size-full"><img decoding="async" src="../Images/3707c92a093bad8f752b04cb7e93a9d3.png" alt="" class="wp-image-603263" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/05/image.png"/></figure>
+
+
+
+<h2 class="wp-block-heading">Procedural Smiley</h2>
+
+
+
+<p class="wp-block-paragraph">For our smiley face, we could use different discrete images for sentiment ranges, so for example having three images saved for <em>negative</em>, <em>neutral</em> and <em>positive</em>. However, to get a more fine-grained sentiment visualized, we would need more images and it quickly becomes infeasible and we will not be able to animate transitions between these images. </p>
+
+
+
+<figure class="wp-block-image size-large"><img decoding="async" src="../Images/524153a6a738fca1a88cc1e17096cb55.png" alt="discrete sentiment smiley face images" class="wp-image-603264" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/05/image-1-1024x315.png"/></figure>
+
+
+
+<p class="wp-block-paragraph">A better approach is to generate the image of the smiley face procedurally at runtime. To keep it simple, we will only change the background color of the smiley, as well as the curve of its mouth.</p>
+
+
+
+<figure class="wp-block-image size-large"><img decoding="async" src="../Images/66b048340dab7bbc793bea7c8156399f.png" alt="continuous sentiment score smiley face images" class="wp-image-603265" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/05/image-2-1024x369.png"/></figure>
+
+
+
+<p class="wp-block-paragraph">First we need to generate a canvas image, on which we can draw the smiley.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">def create_sentiment_image(positivity: float, image_size: tuple[int, int]) -&gt; np.ndarray:
+    """
+    Generates a sentiment image based on the positivity score.
+    This draws a smiley with its expression based on the positivity score.
+
+    Args:
+        positivity: A float representing the positivity score in the range [-1, 1].
+        image_size: A tuple representing the size of the image (width, height).
+
+    Returns:
+        A string representing the path to the generated sentiment image.
+    """
+    width, height = image_size
+    frame = np.zeros((height, width, 4), dtype=np.uint8)
+
+    # TODO: draw smiley
+
+    return frame</code></pre>
+
+
+
+<p class="wp-block-paragraph">Our image should be transparent outside of the smiley face, so we need 4 color channels, the last one will be the alpha channel. Since OpenCV images are represented as <code>numpy</code> arrays with <em>unsigned 8-bit integers</em>, we create the image using the <code>np.uint8</code> data type. Remember that the arrays are stored <em>y-first</em>, so the <code>height</code> of the <code>image_size</code> is passed first to the array creation</p>
+
+
+
+<p class="wp-block-paragraph">We can define some variables for the dimensions and colors of our smiley that will be helpful while drawing.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">    color_outline = (80,) * 3 + (255,)  # gray
+    thickness_outline = min(image_size) // 30
+    center = (width // 2, height // 2)
+    radius = min(image_size) // 2 - thickness_outline</code></pre>
+
+
+
+<p class="wp-block-paragraph">The background color of the smiley face should be red for negative sentiments and green for positive sentiments. To achieve this with a uniform brightness across the transition, we can use the HSV color space and simply interpolate the hue between 0% and 30%.</p>
+
+
+
+<figure class="wp-block-image size-full"><img decoding="async" src="../Images/0feb0cd97f0d6ca004a7eb56882aece8.png" alt="" class="wp-image-603286" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/05/image-16.png"/></figure>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">color_bgr = color_hsv_to_bgr(
+    hue=(positivity + 1) / 6, # positivity [-1,1] -&gt; hue [0,1/3]
+    saturation=0.5,
+    value=1,
+)
+color_bgra = color_bgr + (255,)</code></pre>
+
+
+
+<p class="wp-block-paragraph">We need to make sure to make the color fully opaque by adding a 100% alpha value in fourth channel. Now we can draw our smiley face circle with a border.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">cv2.circle(frame, center, radius, color_bgra, -1) # Fill
+cv2.circle(frame, center, radius, color_outline, thickness_outline) # Border</code></pre>
+
+
+
+<figure class="wp-block-image aligncenter size-full is-resized"><img decoding="async" src="../Images/17147eff45a1fe9fefab31cd6f1e59bd.png" alt="" class="wp-image-603291" style="width:248px;height:auto" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/05/image-20.png"/></figure>
+
+
+
+<p class="wp-block-paragraph">So far so good, now we can add the eyes. We calculate an offset from the center to the left and right to place the two eyes symmetrically.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python"># calculate the position of the eyes
+eye_radius = radius // 5
+eye_offset_x = radius // 3
+eye_offset_y = radius // 4
+eye_left = (center[0] - eye_offset_x, center[1] - eye_offset_y)
+eye_right = (center[0] + eye_offset_x, center[1] - eye_offset_y)
+
+cv2.circle(frame, eye_left, eye_radius, color_outline, -1)
+cv2.circle(frame, eye_right, eye_radius, color_outline, -1)</code></pre>
+
+
+
+<figure class="wp-block-image aligncenter size-full is-resized"><img decoding="async" src="../Images/b007ee42bd968d20bafcc2c1b506ec56.png" alt="" class="wp-image-603293" style="width:250px;height:auto" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/05/image-22.png"/></figure>
+
+
+
+<p class="wp-block-paragraph">Now on to the challenging part, the mouth. The shape of the mouth will be a parabola scaled appropriately. We can simply multiply the standard parabola <code>y=x²</code> with the positivity score.</p>
+
+
+
+<figure class="wp-block-image size-large"><img decoding="async" src="../Images/b0a990bde70a19566aa85a50a72aa80f.png" alt="" class="wp-image-603295" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/05/image-24-1024x659.png"/></figure>
+
+
+
+<p class="wp-block-paragraph">In the end the line will be drawn using <code>cv2.polylines</code>, which needs xy coordinate pairs. Using <code>np.linspace</code> we generate 100 points on the x-axis and the <code>polyval</code> function to calculate the according y values of the polygon.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python"># mouth parameters
+mouth_wdith = radius // 2
+mouth_height = radius // 3
+mouth_offset_y = radius // 3
+mouth_center_y = center[1] + mouth_offset_y + positivity * mouth_height // 2
+mouth_left = (center[0] - mouth_wdith, center[1] + mouth_offset_y)
+mouth_right = (center[0] + mouth_wdith, center[1] + mouth_offset_y)
+
+# calculate points of polynomial for the mouth
+ply_points_t = np.linspace(-1, 1, 100)
+ply_points_y = np.polyval([positivity, 0, 0], ply_points_t) # y=positivity*x²
+
+ply_points = np.array(
+    [
+        (
+            mouth_left[0] + i * (mouth_right[0] - mouth_left[0]) / 100,
+            mouth_center_y - ply_points_y[i] * mouth_height,
+        )
+        for i in range(len(ply_points_y))
+    ],
+    dtype=np.int32,
+)
+
+# draw the mouth
+cv2.polylines(
+    frame,
+    [ply_points],
+    isClosed=False,
+    color=color_outline,
+    thickness=int(thickness_outline * 1.5),
+)</code></pre>
+
+
+
+<p class="wp-block-paragraph">Et voilà, we have a procedural smiley face!</p>
+
+
+
+<figure class="wp-block-image aligncenter size-full is-resized"><img decoding="async" src="../Images/5d68a5cc5ff7e4c1339a38e124c7208b.png" alt="" class="wp-image-603296" style="width:250px;height:auto" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/05/image-25.png"/></figure>
+
+
+
+<p class="wp-block-paragraph">To test the function, I wrote a quick test case using <code>pytest</code> that saves the smiley faces with different sentiment scores:</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">from pathlib import Path
+
+import cv2
+import numpy as np
+import pytest
+
+from sentiment_analysis.utils import create_sentiment_image
+
+IMAGE_SIZE = (512, 512)
+
+
+@pytest.mark.parametrize(
+    "positivity",
+    np.linspace(-1, 1, 5),
+)
+def test_sentiments(visual_output_path: Path, positivity: float) -&gt; None:
+    """
+    Test the smiley face generation.
+    """
+    image = create_sentiment_image(positivity, IMAGE_SIZE)
+
+    assert image.shape == (IMAGE_SIZE[1], IMAGE_SIZE[0], 4)
+
+    # assert center pixel is opaque
+    assert image[IMAGE_SIZE[1] // 2, IMAGE_SIZE[0] // 2, 3] == 255
+
+    # save the image for visual inspection
+    positivity_num_0_100 = int((positivity + 1) * 50)
+    image_fn = f"smiley_{positivity_num_0_100}.png"
+    cv2.imwrite(str(visual_output_path / image_fn), image)
+</code></pre>
+
+
+
+<figure class="wp-block-image size-large"><img decoding="async" src="../Images/7cf57581eb75f0aa1db01ab55fe176d9.png" alt="" class="wp-image-603297" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/05/image-26-1024x252.png"/></figure>
+
+
+
+<h2 class="wp-block-heading">Sentiment Analysis</h2>
+
+
+
+<p class="wp-block-paragraph">To determine how happy or sad our smiley should look like, we first need to analyze the text input and calculate a <em>sentiment</em>. This task is called <strong>sentiment analysis</strong>. We will use a pre-trained transformer model to predict a classification score for the classes <em>NEGATIVE</em>, <em>NEUTRAL</em> and <em>POSITIVE</em>. We can then fuse the confidence scores of these classes to calculate a final sentiment score between -1 and +1.</p>
+
+
+
+<p class="wp-block-paragraph">Using the pipeline from the transformers library, we can define processing pipeline based on a <a href="https://huggingface.co/cardiffnlp/twitter-roberta-base-sentiment">pre-trained model from huggingface.</a> Using the <code>top_k</code> parameter, we can specify how many classification results should be returned. Since we want all three classes, we set it to 3.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-">from transformers import pipeline
+
+model_name = "cardiffnlp/twitter-roberta-base-sentiment"
+
+sentiment_pipeline = pipeline(
+    task="sentiment-analysis",
+    model=model_name,
+    top_k=3,
+)</code></pre>
+
+
+
+<p class="wp-block-paragraph">To run the sentiment analysis, we can call the pipeline with a string argument. This will return a list of results with a single element, so we need to unpack the first element.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">results = self.sentiment_pipeline(text)
+
+# [
+#     [
+#         {"label": "LABEL_2", "score": 0.5925878286361694},
+#         {"label": "LABEL_1", "score": 0.3553399443626404},
+#         {"label": "LABEL_0", "score": 0.05207228660583496},
+#     ]
+# ]
+
+for label_score_dict in results[0]:
+    label: str = label_score_dict["label"]
+    score: float = label_score_dict["score"]</code></pre>
+
+
+
+<p class="wp-block-paragraph">We can define a label mapping, that tells us how each confidence score affects the final sentiment. Then we can aggregate the positivity over all confidence scores.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">label_mapping = {"LABEL_0": -1, "LABEL_1": 0, "LABEL_2": 1}
+
+positivity = 0.0
+for label_score_dict in results[0]:
+    label: str = label_score_dict["label"]
+    score: float = label_score_dict["score"]
+
+    if label in label_mapping:
+        positivity += label_mapping[label] * score</code></pre>
+
+
+
+<p class="wp-block-paragraph">To test our pipeline, we can wrap it in a class and run some tests using <code>pytest</code>. We verify that sentences with a positive sentiment have a score greater than zero and vice versa sentences with a negative sentiment should have a score below zero.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">import pytest
+
+from sentiment_analysis.sentiment_pipeline import SentimentAnalysisPipeline
+
+
+@pytest.fixture
+def sentiment_pipeline() -&gt; SentimentAnalysisPipeline:
+    """
+    Fixture to create a SentimentAnalysisPipeline instance.
+    """
+    return SentimentAnalysisPipeline(
+        model_name="cardiffnlp/twitter-roberta-base-sentiment",
+        label_mapping={"LABEL_0": -1.0, "LABEL_1": 0.0, "LABEL_2": 1.0},
+    )
+
+
+@pytest.mark.parametrize(
+    "text_input",
+    [
+        "I love this!",
+        "This is awesome!",
+        "I am so happy!",
+        "This is the best day ever!",
+        "I am thrilled with the results!",
+    ],
+)
+def test_sentiment_analysis_pipeline_positive(
+    sentiment_pipeline: SentimentAnalysisPipeline, text_input: str
+) -&gt; None:
+    """
+    Test the sentiment analysis pipeline with a positive input.
+    """
+    assert (
+        sentiment_pipeline.run(text_input) &gt; 0.0
+    ), "Expected positive sentiment score."
+
+
+@pytest.mark.parametrize(
+    "text_input",
+    [
+        "I hate this!",
+        "This is terrible!",
+        "I am so sad!",
+        "This is the worst day ever!",
+        "I am disappointed with the results!",
+    ],
+)
+def test_sentiment_analysis_pipeline_negative(
+    sentiment_pipeline: SentimentAnalysisPipeline, text_input: str
+) -&gt; None:
+    """
+    Test the sentiment analysis pipeline with a negative input.
+    """
+    assert (
+        sentiment_pipeline.run(text_input) &lt; 0.0
+    ), "Expected negative sentiment score."
+</code></pre>
+
+
+
+<h2 class="wp-block-heading">Integration</h2>
+
+
+
+<p class="wp-block-paragraph">Now the last part that is missing, is simply hooking up the text box to our sentiment pipeline and updating the displayed image with the corresponding smiley face. We can add a <code>trace</code> to the text variable, which will run the sentiment pipeline in a new thread managed by a thread pool, to prevent the UI from freezing while the pipeline is running.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">class App(customtkinter.CTk):
+    def __init__(self, sentiment_analysis_pipeline: SentimentAnalysisPipeline) -&gt; None:
+        super().__init__()
+        self.sentiment_analysis_pipeline = sentiment_analysis_pipeline
+
+        ...
+
+        self.sentiment_image = None
+
+        self.sentiment_text_var = customtkinter.StringVar(master=self, value="Love")
+        self.sentiment_text_var.trace_add("write", lambda *_: self.on_sentiment_text_changed())
+
+        ...
+
+        self.update_sentiment_pool = ThreadPool(processes=1)
+
+        self.on_sentiment_text_changed()
+
+    def on_sentiment_text_changed(self) -&gt; None:
+        """
+        Callback function to handle text changes in the textbox.
+        """
+        new_text = self.sentiment_text_var.get()
+
+        self.update_sentiment_pool.apply_async(
+            self._update_sentiment,
+            (new_text,),
+        )
+
+    def _update_sentiment(self, new_text: str) -&gt; None:
+        """
+        Update the sentiment image based on the new text input.
+        This function is run in a separate process to avoid blocking the main thread.
+
+        Args:
+            new_text: The new text input from the user.
+        """
+        positivity = self.sentiment_analysis_pipeline.run(new_text)
+
+        self.sentiment_image = create_sentiment_image(
+            positivity,
+            self.image_display.display_size,
+        )
+
+        self.image_display.update_frame(self.sentiment_image)
+
+
+def main() -&gt; None:
+    # Initialize the sentiment analysis pipeline
+    sentiment_analysis = SentimentAnalysisPipeline(
+        model_name="cardiffnlp/twitter-roberta-base-sentiment",
+        label_mapping={"LABEL_0": -1, "LABEL_1": 0, "LABEL_2": 1},
+    )
+
+    app = App(sentiment_analysis)
+    app.mainloop()
+</code></pre>
+
+
+
+<p class="wp-block-paragraph">And finally the smiley is visualized in the application and changes dynamically with the sentiment of the text input!</p>
+
+
+
+<figure class="wp-block-image size-full"><img decoding="async" src="../Images/708801fff07b44dc89da2b2e2b47aed2.png" alt="" class="wp-image-603285" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/05/2025-05-04_17-39-55-ezgif.com-video-to-gif-converter.gif"/></figure>
+
+
+
+<hr class="wp-block-separator has-alpha-channel-opacity is-style-dotted"/>
+
+
+
+<hr class="wp-block-separator has-alpha-channel-opacity is-style-ornamental"/>
+
+
+
+<p class="has-text-align-center wp-block-paragraph">For the full implementation and more details, checkout the project repository on GitHub:</p>
+
+
+
+<p class="has-text-align-center wp-block-paragraph"><a href="https://github.com/trflorian/sentiment-analysis-viz">https://github.com/trflorian/sentiment-analysis-viz</a></p>
+
+
+
+<hr class="wp-block-separator has-alpha-channel-opacity is-style-ornamental"/>
+
+
+
+<p class="has-text-align-center wp-block-paragraph"><em>All visualizations in this post were created by the author.</em></p>
+    
+</body>
+</html>

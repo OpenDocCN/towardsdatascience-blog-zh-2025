@@ -1,0 +1,832 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.1//EN"
+  "http://www.w3.org/TR/xhtml11/DTD/xhtml11.dtd">
+
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+<title>Let AI Tune Your Voice Assistant</title>
+<link href="../Styles/Style.css" type="text/css" rel="stylesheet"/>
+</head>
+<body>
+<h1>Let AI Tune Your Voice Assistant</h1>
+<blockquote>原文：<a href="https://towardsdatascience.com/let-ai-tune-your-voice-assistant/">https://towardsdatascience.com/let-ai-tune-your-voice-assistant/</a></blockquote>
+<p class="wp-block-paragraph"><mdspan datatext="el1752258354543" class="mdspan-comment">Before we get</mdspan> started: The world of voice AI has quite a few overlapping terms. To make sure we are all on the same page let’s quickly go over the main terms and how I will be using them in this article:</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item"><strong>Voice assistant</strong>: The application or “character” the user speaks to. This is the complete system from the user’s perspective.</li>
+
+
+
+<li class="wp-block-list-item"><strong>Live API</strong>: The technical “gateway” that connects the user to the model. It handles the real-time, bidirectional streaming of audio and data.</li>
+
+
+
+<li class="wp-block-list-item"><strong>AI Mode</strong>l: The “brain” behind the agent. This is the Large Language Model (LLM) that understands intent and decides which action to take.</li>
+</ul>
+
+
+
+<figure class="wp-block-image size-large"><img data-dominant-color="8c917c" data-has-transparency="false" style="--dominant-color: #8c917c;" decoding="async" src="../Images/611a3b4b4394b248f3f977a51d1fb989.png" alt="" class="wp-image-608314 not-transparent" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/07/Screenshot-2025-07-10-at-17.02.35-1024x431.png"/><figcaption class="wp-element-caption">Image by author</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">With that cleared up, let’s dive in 😃<br/></p>
+
+
+
+<h2 class="wp-block-heading">What is this about?</h2>
+
+
+
+<p class="wp-block-paragraph">In the past few months I have noticed a surge of interest in voice assistants. Not only with the customers I work with, but the industry as whole: Google Deepmind has demonstrated <a href="https://deepmind.google/models/project-astra/">Project Astra</a> at Google I/O, OpenAI has introduced <a href="https://www.youtube.com/watch?v=GiEsyOyk1m4">GPT-4o with advanced voice capability </a>already a while back, and recently ElevenLabs also introduced a similar service with <a href="https://www.youtube.com/watch?v=HOg8jPLTwLI">11ai</a>. </p>
+
+
+
+<p class="wp-block-paragraph">Voice assistants are becoming increasingly common, allowing us to perform actions in the world just by speaking to them. They fill a gap that so many first generation voice assistants like Siri, and Alexa have left wide open: They have a much better understanding of natural language, can infer our intents much better, and have contextual memory. In short, they are just much easier to talk with.</p>
+
+
+
+<p class="wp-block-paragraph">The core mechanism that lets them perform actions and makes them truly useful is function calling – the ability to use tools like a calendar or weather service. However, the assistant’s effectiveness depends entirely on how we instruct its underlying AI model on when to use which tool. This is where the <strong>system prompt</strong> becomes critical.</p>
+
+
+
+<p class="wp-block-paragraph">In this tutorial, we will explore how we can leverage Automated Prompt Engineering (APE) to improve an agent’s function-calling capabilities by automatically refining this system prompt. The tutorial is split into two parts.</p>
+
+
+
+<p class="wp-block-paragraph">First, we will build a robust test suite for our voice assistant. This involves: taking a user query, using an LLM to generate multiple semantic variations, and finally, converting these text queries into a diverse set of audio files. These audio files will be used to interact with the Live API.</p>
+
+
+
+<p class="wp-block-paragraph">In the second part, we will use APE to iteratively improve the agent’s performance. We’ll begin with an initial system prompt and evaluate it against our audio test suite by observing which function the agent calls for each audio file. We then compare these responses to the ground truth—the expected behavior for that query—to calculate an overall accuracy score. This score, along with the prompt that produced it, is sent to an “optimiser” LLM. This optimiser then crafts a new, improved system prompt based on the performance of all previous attempts, and the process begins again.</p>
+
+
+
+<p class="wp-block-paragraph">At the end of this process, we will (hopefully) have a new system prompt that instructs the AI model far more effectively on when to use each function.<br/>As always all the code is freely available in a Github repo: <a href="https://github.com/heiko-hotz/voice-assistant-prompt-optimization/">https://github.com/heiko-hotz/voice-assistant-prompt-optimization/</a></p>
+
+
+
+<h2 class="wp-block-heading">Why should we care?</h2>
+
+
+
+<p class="wp-block-paragraph">As we get into the age of voice assistants powered by LLMs, it’s crucial to make sure these agents actually behave the way we want them to. Imagine we asked an agent to check our calendar, only for it to call a weather API and tell us the weather. It’s an extreme example, but hopefully, it brings home the point.</p>
+
+
+
+<p class="wp-block-paragraph">This was already a headache with chatbots, but with voice assistants, things get way more complicated. Audio is inherently messier than a clean, written query. Think about all the ways a user can prompt the underlying AI model—with different accents or dialects, talking fast or slow, throwing in fillers like ‘uhm’ and ‘ah’, or with a noisy coffee shop in the background.</p>
+
+
+
+<figure class="wp-block-image size-full"><img decoding="async" src="../Images/10dd131224603f78cf4123c09ccd88aa.png" alt="" class="wp-image-608865" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/07/Screenshot-2025-07-10-at-17.04.46-4.png"/><figcaption class="wp-element-caption">Image by author – created with ChatGPT</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">And this additional dimension is causing a real problem. When I work with organisations I often see them struggle with this added complexity and they often  revert back to the only method they feel they can trust: manual testing. This means teams of people sitting in a room, reading from scripts to simulate real-world conditions. It’s not only incredibly time-consuming and expensive, but it’s also not very effective.<br/><br/>This is where automation becomes essential. If we want our agents to have even the slightest chance of getting complex tasks right, we have to get the basics right, and we have to do it systematically. This blog post is all about an approach that automates the entire evaluation and optimization pipeline for voice assistants—a method designed to <strong>save development time</strong>, <strong>cut testing costs</strong>, and <strong>build a more reliable voice assistant</strong> that users will actually trust and keep using.</p>
+
+
+
+<hr class="wp-block-separator has-alpha-channel-opacity is-style-dotted"/>
+
+
+
+<h2 class="wp-block-heading">Quick recap: The principles of Automated Prompt Engineering (APE)</h2>
+
+
+
+<p class="wp-block-paragraph">Luckily, I have already written about <a href="https://towardsdatascience.com/automated-prompt-engineering-the-definitive-hands-on-guide-1476c8cd3c50/">Automated Prompt Engineering</a> in the past, and so I can shamelessly refer back to my older blog post 😏 </p>
+
+
+
+<p class="wp-block-paragraph">We will use the same exact principle of OPRO (<a href="https://arxiv.org/pdf/2309.03409">Optimisation by PROmpting</a>) in this project as well. But to quickly recap:</p>
+
+
+
+<p class="wp-block-paragraph">It’s a bit like hyperparameter optimisation (HPO) in the good old days of supervised machine learning: manually trying out different learning rates and batch sizes was suboptimal and just not practical. The same is true for manual prompt engineering. The challenge, however, is that a prompt is text-based and therefore its optimisation space is huge (just imagine in how many different ways we could rephrase one prompt). In contrast, traditional ML hyperparameters are numerical, making it straightforward to programmatically select values for them.</p>
+
+
+
+<p class="wp-block-paragraph">So, how do we automate the generation of text prompts? What if we had a tool that never gets tired, capable of generating countless prompts in various styles while continuously iterating on them? We would need a tool proficient in language understanding and generation – and what tool really excels at language? That’s right, a Large Language Model (LLM) 😃</p>
+
+
+
+<p class="wp-block-paragraph">But we just don’t want it to try out different prompts randomly, we actually want it to learn from previous iterations. This is at the heart of the OPRO strategy: If random prompt generation is analogous to random search in HPO, OPRO is analogous to Bayesian search. It doesn’t just guess randomly; it actively tries to hill-climb against the evaluation metric by learning from past results.</p>
+
+
+
+<figure class="wp-block-image size-large"><img data-dominant-color="9f6f62" data-has-transparency="false" style="--dominant-color: #9f6f62;" decoding="async" src="../Images/9ad23e4ef54b42a51bc0a262c8adea3f.png" alt="" class="wp-image-608316 not-transparent" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/07/Screenshot-2025-07-10-at-17.05.54-1024x571.png"/><figcaption class="wp-element-caption">Image by author</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">The key to OPRO is the meta-prompt (number 8 in the diagram above), which is used to guide the “optimiser” LLM. This meta-prompt includes not only the task description but also the optimisation trajectory—a history of all the previous prompts and their performance scores. With this information, the optimiser LLM can analyse patterns, identify the elements of successful prompts, and avoid the pitfalls of unsuccessful ones. This learning process allows the optimiser to generate increasingly more effective prompts over time, iteratively improving the target LLM’s performance.</p>
+
+
+
+<h2 class="wp-block-heading">Our project structure</h2>
+
+
+
+<p class="wp-block-paragraph">Before we start diving deeper into the entire process I think it is worth our while to have a quick look at our project structure to get a good overview:</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">voice-assistant-prompt-optimization/
+├── 01_prepare_test_suite.py     # Step 1: Generate test cases and audio
+├── 02_run_optimization.py       # Step 2: Run prompt optimization
+├── initial-system-instruction.txt  # Comprehensive starting prompt
+├── optimization.log             # Detailed optimization logs (auto-generated)
+├── test_preparation.log         # Test suite preparation logs (auto-generated)
+├── audio_test_suite/           # Generated audio files and mappings
+├── configs/
+│   ├── input_queries.json      # Base queries for test generation
+│   └── model_configs.py        # AI model configurations
+├── data_generation/
+│   ├── audio_generator.py      # Text-to-speech generation
+│   ├── query_restater.py       # Query variation generation
+│   └── output_queries.json     # Generated query variations (auto-generated)
+├── evaluation/
+│   └── audio_fc_evaluator.py   # Function call evaluation system
+├── optimization/
+│   ├── metaprompt_template.txt # Template for prompt optimization
+│   └── prompt_optimiser.py     # Core optimization engine
+├── runs/                       # Optimization results (auto-generated)
+└── requirements.txt            # Python dependencies</code></pre>
+
+
+
+<p class="wp-block-paragraph">Let’s get started and walk through the individual components in detail.</p>
+
+
+
+<h2 class="wp-block-heading">The Starting Point: Defining Our Test Cases</h2>
+
+
+
+<p class="wp-block-paragraph">Before we can start optimizing, we first need to define what “good” looks like. The entire process begins by creating our “exam paper” and its corresponding answer key. We do this in a single configuration file: configs/input_queries.json.</p>
+
+
+
+<p class="wp-block-paragraph">Inside this file, we define a list of test scenarios. For each scenario, we need to provide two key pieces of information: the user’s initial query and the expected outcome—the ground truth. This can be a function call with its name and its corresponding parameters or no function call.</p>
+
+
+
+<p class="wp-block-paragraph">Let’s take a look at the structure for a couple of examples:</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">{
+  "queries": [
+    {
+        "query": "What's the weather like today?",
+        "trigger_function": true,
+        "function_name": "get_information",
+        "function_args": {
+          "query": "What's the weather like today?"
+        }
+    },
+    {
+      "query": "I need to speak to a human please",
+      "trigger_function": true,
+      "function_name": "escalate_to_support",
+      "function_args": {
+        "reason": "human-request"
+      }
+    },
+    {
+        "query": "Thanks, that's all I needed",
+        "trigger_function": false
+    }
+  ]
+}</code></pre>
+
+
+
+<p class="wp-block-paragraph">As we can see, each entry specifies the query, whether a function should be triggered, and the expected function_name and function_args. The Evaluator will later use this ground truth to grade the assistant’s performance.</p>
+
+
+
+<p class="wp-block-paragraph">The quality of these “seed” queries is important for the whole optimization process. Here are a few principles we should keep in mind:</p>
+
+
+
+<h3 class="wp-block-heading">We Need to Cover All Our Bases</h3>
+
+
+
+<p class="wp-block-paragraph">It’s easy to only test the obvious ways a user might talk to our agent. But a good test suite needs to cover everything. This means we should include queries that:</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">Trigger every single function the agent can use.</li>
+
+
+
+<li class="wp-block-list-item">Trigger every possible argument or reason for a function (e.g., we should test both human-request and vulnerable-user reasons for the escalate_to_support function).</li>
+
+
+
+<li class="wp-block-list-item">Trigger no function at all. Cases like “Thanks, that’s all” are super important. They teach the model when not to do something, so it doesn’t make annoying or wrong function calls when it shouldn’t.</li>
+</ul>
+
+
+
+<h3 class="wp-block-heading">We Should Embrace Ambiguity and Edge Cases</h3>
+
+
+
+<p class="wp-block-paragraph">This is where things get interesting, and where most models fail. Our starting queries need to have some of the weird, unclear phrasings that people actually use. For example:</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">Direct vs. Indirect: We should have a direct command like “I need to speak to a human” right next to something indirect like “Can I talk to someone?”. At first, the model probably might only get the direct one. The APE process will make it learn that both mean the same thing.</li>
+
+
+
+<li class="wp-block-list-item">Subtle Nuance: For the vulnerable-user case, a query like “I’m feeling really overwhelmed” might be a much harder test than something obvious. It forces the model to pick up on emotion, not just look for keywords.</li>
+</ul>
+
+
+
+<p class="wp-block-paragraph">By putting these hard problems in our starting set, we’re telling the APE system, “Hey, focus on fixing these things.” The workflow will then just keep trying until it finds a prompt that can actually deal with them.</p>
+
+
+
+<h2 class="wp-block-heading">Part 1: Building the Test Suite</h2>
+
+
+
+<p class="wp-block-paragraph">Alright, let’s pop the hood and look at how we can generate the test suite. The main script for this part is 01_prepare_test_suite.py which builds our “exam.” It’s a two-step process: first, we generate a few text variations for the initial user queries we provided, and then we turn them into realistic audio files.</p>
+
+
+
+<h3 class="wp-block-heading">Step 1: Rephrasing Queries with an LLM</h3>
+
+
+
+<p class="wp-block-paragraph">Everything kicks off by reading our “seed” queries from `input_queries.json` which we saw above. We start with about 10 of these, covering all the different functions and scenarios we care about. But as discussed – we don’t want to only test these 10 examples, we want to create many different variations so to make sure that the voice assistant gets it right no matter how the user asks for a specific action.</p>
+
+
+
+<p class="wp-block-paragraph">So, for each of these 10 queries, we ask a “rephraser” LLM to come up with five different ways of saying the same thing (this number is configurable). We don’t just want five boring copies; we need variety. The system prompt we use to guide the LLM for this process is pretty simple but effective:</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">Please restate the following user query for a financial voice assistant in {NUM_RESTATEMENTS} different ways.
+    The goal is to create a diverse set of test cases.
+
+
+    Guidelines:
+    - The core intent must remain identical.
+    - Use a mix of tones: direct, casual, polite, and formal.
+    - Vary the sentence structure and vocabulary.
+    - Return ONLY the restatements, each on a new line. Do not include numbering, bullets, or any other text.
+
+
+    Original Query: "{query}"</code></pre>
+
+
+
+<p class="wp-block-paragraph">This whole process is kicked off by our 01_prepare_test_suite.py script. It reads our input_queries.json file, runs the rephrasing, and generates an intermediate file called output_queries.json that looks something like this:</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">{
+  "queries": [
+    {
+      "original_query": "I need to speak to a human please",
+      "trigger_function": true,
+      "restatements": [
+        "Get me a human.",
+        "Could I please speak with a human representative?",
+        "Can I get a real person on the line?",
+        "I require assistance from a live agent.",
+        "Please connect me with a human."
+      ],
+      "function_name": "escalate_to_support",
+      "function_args": { "reason": "human-request" }
+    },
+    {
+      "original_query": "Thanks, that's all I needed",
+      "trigger_function": false,
+      "restatements": [
+        "Thank you, I have everything I need.",
+        "Yep, thanks, I'm good.",
+        "I appreciate your assistance; that's all for now.",
+        "My gratitude, the provided information is sufficient.",
+        "Thank you for your help, I am all set."
+      ]
+    }
+  ]
+}</code></pre>
+
+
+
+<p class="wp-block-paragraph">Notice how each original_query now has a list of restatements. This is great because it gives us a much wider set of test cases. We’re not just testing one way of asking for a human; we’re testing six (the original query and five variations), from the very direct “Get me a human” to the more polite “Could I please speak with a human representative?”.</p>
+
+
+
+<p class="wp-block-paragraph">Now that we have all these text variations, we’re ready for the next step: turning them into actual audio to create our test suite.</p>
+
+
+
+<h3 class="wp-block-heading">Step 2: Creating the audio files</h3>
+
+
+
+<p class="wp-block-paragraph">So, we’ve got a bunch of text. But that’s not enough. We’re building a voice assistant, so we need actual audio. This next step is probably the most important part of the whole setup, as it’s what makes our test realistic.</p>
+
+
+
+<p class="wp-block-paragraph">This is all still handled by the 01_prepare_test_suite.py script. It takes the output_queries.json file we just made and feeds every single line—the original queries and all their restatements—into a Text-to-Speech (TTS) service.</p>
+
+
+
+<p class="wp-block-paragraph">To get some of the best and realistic voices we can get we will use Google’s new Chirp 3 HD voices. They’re basically the latest generation of Text-to-Speech, powered by LLMs themselves, and they sound incredibly lifelike and natural. And we don’t just convert the text to audio using one standard voice. Instead, we use a whole list of these different HD voices with different gender, accents, and dialects—US English, UK English, Australian, Indian, and so on. We do this because real users don’t all sound the same, and we want to make sure our agent can understand a request for help whether it’s spoken with a British accent or an American one.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">VOICE_CONFIGS = [
+    # US English voices
+    {"name": "en-US-Chirp3-HD-Charon", "dialect": "en-US"},
+    {"name": "en-US-Chirp3-HD-Kore", "dialect": "en-US"},
+    {"name": "en-US-Chirp3-HD-Leda", "dialect": "en-US"},
+    
+    # UK English voices
+    {"name": "en-GB-Chirp3-HD-Puck", "dialect": "en-GB"},
+    {"name": "en-GB-Chirp3-HD-Aoede", "dialect": "en-GB"},
+    
+    # Australian English voices
+    {"name": "en-AU-Chirp3-HD-Zephyr", "dialect": "en-AU"},
+    {"name": "en-AU-Chirp3-HD-Fenrir", "dialect": "en-AU"},
+    
+    # Indian English voices
+    {"name": "en-IN-Chirp3-HD-Orus", "dialect": "en-IN"},
+    {"name": "en-IN-Chirp3-HD-Gacrux", "dialect": "en-IN"}
+]</code></pre>
+
+
+
+<details class="wp-block-details is-layout-flow wp-block-details-is-layout-flow"><summary>Side note:<br/><em>When I was developing this project, I hit a really annoying snag. Once I generated a wav file I would send the audio to the live API, and… nothing. It would just hang, failing silently. It turns out the generated audio files ended too abruptly. The API’s Voice Activity Detection (VAD) didn’t have enough time to realise that the user (our audio file) had finished speaking. It was just waiting for more audio that never came.</em><br/><br/><em>So I developed a workaround: I programmatically added one second of silence to the end of every single audio file. That little pause gives the API the signal it needs to know it’s its turn to respond.</em><br/></summary>
+<p class="wp-block-paragraph">After the script runs, we end up with a new folder called audio_test_suite/. Inside, it’s full of .wav files, with names like restatement_02_en-GB_… .wav. And we need to make sure that we link these audio to the original statements, and more importantly, the ground truth. To that end we will also create an audio mapping file `audio_test_suite/audio_mapping.json`. It maps every single audio file path to its ground truth—the function call that we expect the agent to make when it hears that audio.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-">{
+  "audio_mappings": [
+    {
+      "original_query": "What's the weather like today?",
+      "audio_files": {
+        "original": {
+          "path": "audio_test_suite/query_01/original_en-IN_Orus.wav",
+          "voice": "en-IN-Chirp3-HD-Orus",
+          "expected_function": {
+            "name": "get_information",
+            "args": {
+              "query": "What's the weather like today?"
+            }
+          }
+        },
+...</code></pre>
+</details>
+
+
+
+<p class="wp-block-paragraph">With our audio test suite and its mapping file in hand, our exam is finally ready. Now, we can move on to the interesting part: running the optimization loop and seeing how our agent actually performs.</p>
+
+
+
+<h2 class="wp-block-heading">Part 2: Running the Optimization Loop</h2>
+
+
+
+<p class="wp-block-paragraph">Alright, this is the main event. With our audio test suite ready, it’s time to run the optimization. Our 02_run_optimization.py script orchestrates a loop with three key players: an initial prompt to get us started, an Evaluator to grade its performance, and an optimiser to suggest improvements based on those grades. Let’s break down each one.</p>
+
+
+
+<h3 class="wp-block-heading">The Starting Point: A rather naive Prompt</h3>
+
+
+
+<p class="wp-block-paragraph">Every optimization run has to start somewhere. We begin with a simple, human-written starting_prompt. We define this directly in the 02_run_optimization.py script. It’s intentionally basic because we want to see a clear improvement.</p>
+
+
+
+<p class="wp-block-paragraph">Here’s an example of what our starting prompt might look like:</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">You are a helpful AI voice assistant.
+Your goal is to help users by answering questions and performing actions through function calls.
+
+
+# User Context
+- User's preferred language: en
+- Interaction mode: voice
+
+
+# Responsibilities
+Your main job is to understand the user's intent and route their request to the correct function.
+- For general questions about topics, information requests, or knowledge queries, use the `get_information` function.
+- If the user explicitly asks to speak to a human, get help from a person, or requests human assistance, use the `escalate_to_support` function with the reason 'human-request'.
+- If the user sounds distressed, anxious, mentions feeling overwhelmed, or describes a difficult situation, use the `escalate_to_support` function with the reason 'vulnerable-user'.</code></pre>
+
+
+
+<p class="wp-block-paragraph">This prompt looks reasonable, but it’s very literal. It probably won’t handle indirect or nuanced questions well, which is exactly what we want our APE process to fix.</p>
+
+
+
+<h3 class="wp-block-heading">The Evaluator: Grading the Test</h3>
+
+
+
+<p class="wp-block-paragraph">The first thing our script does is run a baseline test. It takes this starting_prompt and evaluates it against our entire audio test suite. This is handled by our AudioFunctionCallEvaluator.</p>
+
+
+
+<p class="wp-block-paragraph">The evaluator’s job is simple but critical:</p>
+
+
+
+<ol class="wp-block-list">
+<li class="wp-block-list-item">It takes the system prompt.</li>
+
+
+
+<li class="wp-block-list-item">It loops through every single audio file in our audio_test_suite/.</li>
+
+
+
+<li class="wp-block-list-item">For each audio file, it calls the live API with the given system prompt.</li>
+
+
+
+<li class="wp-block-list-item">It checks the function call the API made and compares it to the ground truth from our audio_mapping.json.</li>
+
+
+
+<li class="wp-block-list-item">It counts up the passes and fails and produces an overall accuracy score.</li>
+</ol>
+
+
+
+<p class="wp-block-paragraph">This score from the first run is our baseline. It lets us know where we stand, and we have the first data point for our optimization history.</p>
+
+
+
+<p class="wp-block-paragraph">Our evaluation/audio_fc_evaluator.py is the engine that actually “grades” each prompt. When we tell it to evaluate a prompt, it doesn’t just do a simple check.</p>
+
+
+
+<p class="wp-block-paragraph">First, it needs to know what tools the agent even can use. These are defined as a strict schema right in the evaluator code. This is exactly how the AI model understands its capabilities:</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python"># From evaluation/audio_fc_evaluator.py
+GET_INFORMATION_SCHEMA = {
+    "name": "get_information",
+    "description": "Retrieves information or answers general questions...",
+    "parameters": {"type": "OBJECT", "properties": {"query": {"type": "STRING", ...}}}
+}
+ESCALATE_TO_SUPPORT_SCHEMA = {
+    "name": "escalate_to_support",
+    "description": "Escalates the conversation to human support...",
+    "parameters": {"type": "OBJECT", "properties": {"reason": {"type": "STRING", ...}}}
+}
+TOOL_SCHEMAS = [GET_INFORMATION_SCHEMA, ESCALATE_TO_SUPPORT_SCHEMA]</code></pre>
+
+
+
+<p class="wp-block-paragraph">The actual implementation of these tools is irrelevant (in our code they will just be dummy functions) – the important part is that the AI model selects the correct tool!</p>
+
+
+
+<p class="wp-block-paragraph">Then, it runs all our audio tests against the live API. For each test, its comparison logic is quite nuanced. It doesn’t just check for a correct function call; it checks for specific failure types:</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">PASS: The model did exactly what was expected.</li>
+
+
+
+<li class="wp-block-list-item">FAIL (Wrong Function): It was supposed to call get_information but called escalate_to_support instead.</li>
+
+
+
+<li class="wp-block-list-item">FAIL (Missed Call): It was supposed to call a function but made no call at all.</li>
+
+
+
+<li class="wp-block-list-item">FAIL (False Positive): It was supposed to stay quiet (like for “thanks, that’s all”) but called a function anyway.</li>
+</ul>
+
+
+
+<p class="wp-block-paragraph">This detailed feedback is crucial. It’s what gives the optimiser the rich information it needs to actually learn.</p>
+
+
+
+<h3 class="wp-block-heading">The optimiser: Learning from Mistakes</h3>
+
+
+
+<p class="wp-block-paragraph">This is the heart of the OPRO strategy. Our script takes the result from the evaluator—the prompt, its initial score, and a detailed breakdown of which queries failed—and uses it to build a meta-prompt. This is the lesson plan we send to our optimiser LLM.</p>
+
+
+
+<p class="wp-block-paragraph">The meta-prompt is structured to give the optimiser maximum context. It looks something like this:</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">You are an expert in prompt engineering for voice AI. Your task is to write a new, improved system prompt that fixes the weaknesses you see below.
+
+
+## PROMPT_HISTORY_WITH_DETAILED_ANALYSIS
+&lt;PROMPT&gt;
+&lt;PROMPT_TEXT&gt;
+You are a helpful voice assistant...
+&lt;/PROMPT_TEXT&gt;
+&lt;OVERALL_ACCURACY&gt;
+68%
+&lt;/OVERALL_ACCURACY&gt;
+&lt;QUERY_PERFORMANCE&gt;
+"I need to speak to a human please": 6/6 (100%)
+"Can I talk to someone?": 1/6 (17%) - CRITICAL
+"I'm feeling really overwhelmed...": 2/6 (33%) - CRITICAL
+&lt;/QUERY_PERFORMANCE&gt;
+&lt;CRITICAL_FAILURES&gt;
+"Can I talk to someone?" → Expected: escalate_to_support, Got: get_information
+&lt;/CRITICAL_FAILURES&gt;
+&lt;/PROMPT&gt;
+
+
+## INSTRUCTIONS
+...Write a new prompt that will fix the CRITICAL issues...</code></pre>
+
+
+
+<p class="wp-block-paragraph">This is incredibly powerful. The optimiser LLM doesn’t just see a score. It sees that the prompt works fine for direct requests but is critically failing on indirect ones. It can then reason about why it’s failing and generate a new prompt specifically designed to fix that problem.</p>
+
+
+
+<p class="wp-block-paragraph">This brings us to the `optimization/prompt_optimiser.py`. Its job is to take all that rich feedback and turn it into a better prompt. The secret sauce is the meta-prompt, which is built from a template file: optimization/metaprompt_template.txt. We have already seen how the metaprompt looks in the previous section.<br/><br/>The optimiser script uses helper functions like _calculate_query_breakdown() and _extract_failing_examples() to create a detailed report for that {prompt_scores} section. It then feeds this entire, detailed meta-prompt to the “optimiser” LLM. The optimiser model then writes a new prompt, which the script extracts using a simple regular expression to find the text inside the [[…]] brackets.</p>
+
+
+
+<h3 class="wp-block-heading">Logging, repeating, and the final result</h3>
+
+
+
+<p class="wp-block-paragraph">All of this hard work is meticulously logged. Each run creates a timestamped folder inside runs/ containing:</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">iteration_0/, iteration_1/, etc., with the exact prompt used, its score, and a detailed JSON of the evaluation.</li>
+
+
+
+<li class="wp-block-list-item">best_prompt.txt: The highest-scoring prompt found during the run.</li>
+
+
+
+<li class="wp-block-list-item">prompt_history.txt: A log of every prompt tried and its performance breakdown.</li>
+
+
+
+<li class="wp-block-list-item">score_history_summary.txt: A neat summary of how the score improved over time.</li>
+</ul>
+
+
+
+<p class="wp-block-paragraph">So, when the loop is done, you don’t just get one good prompt. You get a complete audit trail of how the system “thought” its way to a better solution.</p>
+
+
+
+<p class="wp-block-paragraph">After the loop finishes, we’re left with our prize: the best-performing prompt. When I first ran this, it was genuinely fascinating to see what the optimiser came up with. The initial prompt was very rigid, but the final, optimised prompt was much more nuanced.</p>
+
+
+
+<p class="wp-block-paragraph">In the run folder we are able to see how the prompt improved the model performance over time:</p>
+
+
+
+<figure class="wp-block-image size-large is-resized"><img data-dominant-color="2f4351" data-has-transparency="false" decoding="async" src="../Images/609135a0a2be619b9ed874fa19391a7d.png" alt="" class="wp-image-608317 not-transparent" style="--dominant-color: #2f4351; width:511px;height:auto" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/07/Screenshot-2025-07-10-at-17.17.46-1024x560.png"/><figcaption class="wp-element-caption">Image by author</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">And we can also see how each query group improved in each iteration:<br/></p>
+
+
+
+<figure class="wp-block-image size-large"><img data-dominant-color="ebcfba" data-has-transparency="false" style="--dominant-color: #ebcfba;" decoding="async" src="../Images/d6e18d8008508c9c8631e94af9b1d0a1.png" alt="" class="wp-image-608318 not-transparent" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/07/Screenshot-2025-07-10-at-17.17.58-1024x552.png"/><figcaption class="wp-element-caption">Image by author</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">Finally we can see how the prompt has involved from a rather simple prompt to something much more sophisticated:</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python"># Identity
+You are a helpful AI voice assistant.
+Your goal is to help users by answering questions and performing actions through function calls.
+...
+
+
+# Function Selection Logic
+Your primary responsibility is to accurately understand the user's request and select the appropriate function. Your decision-making process is a strict hierarchy. The most important distinction is whether the user is expressing an emotional state of distress versus requesting functional help on a task or topic.
+
+
+**STEP 1: Check for Escalation Triggers (`escalate_to_support`).**
+This is your first and highest priority.
+
+
+*   **Reason 1: `human-request`**
+    *   **Condition:** Use this ONLY when the user explicitly asks to speak to... a person, human, or agent.
+    *   **Examples:** "I need to speak to a human," "Can I talk to someone?"
+
+
+*   **Reason 2: `vulnerable-user`**
+    *   **Condition:** Use this when the user's primary intent is to express a state of emotional distress, confusion, or helplessness. Focus on their *state of being*, even if they mention a topic.
+    *   **Triggers for `vulnerable-user` include:**
+        1.  **Direct Emotional Expressions:** The user states they feel overwhelmed, stressed, anxious...
+        2.  **Indirect Distress or Helplessness:** The user makes a general, non-specific request for help, or expresses being lost or clueless... **This applies even if a topic is mentioned.**
+            *   Examples: "I'm having a really hard time and could use some help," ... "My financial situation is a huge headache, and I'm totally clueless about what to do."
+
+
+**STEP 2: If NO Escalation Triggers are Met, Default to `get_information`.**
+If the request is not an unambiguous escalation, it is an information request.
+*   **Condition:** Use this for ANY and ALL user requests for facts, explanations, "how-to" guides, or task-based assistance on a specific subject.
+*   **Examples:** "What's the weather like today?", "How do I cook pasta?" ...
+
+
+## Critical Disambiguation Rules
+To ensure accuracy, follow these strict distinctions:
+
+
+*   **"Help" Requests:**
+    *   **Vague Plea = Escalate:** "I require immediate assistance." -&gt; `escalate_to_support(reason='vulnerable-user')`
+    *   **Specific Task = Information:** "I need help with my academic work." -&gt; `get_information(query='help with academic work')`
+
+
+*   **Topic-Related Requests:**
+    *   **Distress ABOUT a Topic = Escalate:** "My finances feel entirely unmanageable right now." -&gt; `escalate_to_support(reason='vulnerable-user')`
+    *   **Question ABOUT a Topic = Information:** "Can you tell me about managing finances?" -&gt; `get_information(query='how to manage finances')`
+
+
+... [ Final Rule, Greeting, Language, and General Behavior sections ] ...</code></pre>
+
+
+
+<p class="wp-block-paragraph">And, as always with automated prompt engineering, I find it fascinating to see the optimiser’s analysis and reasoning:</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">### Analysis of Failures and Strategy for Improvement
+
+
+1. Core Problem Identified: The optimiser first pinpointed the main weakness: the model struggles when a user expresses distress about a specific topic (e.g., "I'm overwhelmed by my finances"). It was incorrectly seeing the "topic" and ignoring the user's emotional state.
+2. Analysis of Past Failures: It then reviewed previous attempts, realizing that while a simple, strict hierarchy was a good start (like in Prompt 1), adding a rule that was too broad about topics was a "fatal flaw" (like in Prompt 2), and abandoning the hierarchy altogether was a disaster.
+3. Strategic Plan for the New Prompt: Based on this, it devised a new strategy:
+Shift from Keywords to Intent: The core change was to stop looking for just keywords ("stressed") or topics ("finances") and instead focus on intent detection. The key question became: "Is the user expressing an emotional state of being, or are they asking for functional task/information assistance?"
+Add "Critical Disambiguation" Rules: To make this new logic explicit, the optimiser planned to add a sharp, new section with direct comparisons to resolve ambiguity. The two most critical contrasts it decided to add were:
+Vague Plea vs. Specific Task: Differentiating "I need help" (escalate) from "I need help with my homework" (get information).
+Distress ABOUT a Topic vs. Question ABOUT a Topic: This was the crucial fix, contrasting "I'm overwhelmed by my finances" (escalate) with "Tell me about financial planning" (get information).</code></pre>
+
+
+
+<hr class="wp-block-separator has-alpha-channel-opacity is-style-dotted"/>
+
+
+
+<h2 class="wp-block-heading">Where We Go From Here: Limitations and Next Steps</h2>
+
+
+
+<p class="wp-block-paragraph">Let’s be honest about this: it isn’t magic. It’s a powerful tool, but what we’ve built is a solid foundation that handles one specific, but very important, part of the puzzle. There are a few big limitations we need to be aware of and plenty of ways we can make this project even better.</p>
+
+
+
+<h3 class="wp-block-heading">The Biggest Limitation: We’re Only Testing the First Turn</h3>
+
+
+
+<p class="wp-block-paragraph">The most important thing to realise is that our current setup only tests a single-turn interaction. We send an audio file, the agent responds, and we grade that one response. That’s it. But real conversations are almost never that simple.</p>
+
+
+
+<p class="wp-block-paragraph">A real user might have a back-and-forth conversation:</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">User: "Hi, I need some help with my account."
+Agent: "Of course, I can help with that. What seems to be the problem?"
+User: "Well, I'm just feeling really overwhelmed by it all, I don't know where to start."</code></pre>
+
+
+
+<p class="wp-block-paragraph">In our current system, we only test that last, crucial sentence. But a truly great agent needs to maintain context over multiple turns. It should understand that the user is in distress within the context of an account problem. Our current optimization process doesn’t test for that at all. This is, by far, the biggest opportunity for improvement.</p>
+
+
+
+<h3 class="wp-block-heading">Other Things This Doesn’t Do (Yet)</h3>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">We’re Testing in a Soundproof Booth: The audio we generate is “studio quality”—perfectly clean, with no background noise. But real users are almost never in a studio. They’re in coffee shops, walking down the street, or have a TV on in the background. Our current tests don’t check how well the agent performs when the audio is messy and full of real-world noise.</li>
+
+
+
+<li class="wp-block-list-item">It’s Only as Good as Our Initial Test Cases: The whole process is guided by the input_queries.json file we create at the start. If we don’t include a certain type of edge case in our initial queries, the optimiser won’t even know it needs to solve for it. The quality of our starting test cases really matters.</li>
+
+
+
+<li class="wp-block-list-item">The optimiser Can Get Stuck: Sometimes the optimiser LLM can hit a “local maximum.” It might find a prompt that’s pretty good (say, 85% accurate) and then just keep making tiny, unhelpful changes to it instead of trying a completely different, more creative approach that could get it to 95%.</li>
+</ul>
+
+
+
+<h3 class="wp-block-heading">The Fun Part: How We Can Improve It</h3>
+
+
+
+<p class="wp-block-paragraph">These limitations aren’t dead ends; they’re opportunities. This is where we can really start to experiment and take the project to the next level.</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">Building Multi-Turn Test Scenarios: This is the big one. We could change our test suite from a list of single audio files to a list of conversational scripts. The evaluator would have to simulate a multi-turn dialogue, sending one audio file, getting a response, and then sending the next one. This would allow us to optimise for prompts that excel at maintaining context.</li>
+
+
+
+<li class="wp-block-list-item">Smarter Evaluation: Instead of re-running the entire audio test suite every single time, what if we only re-ran the tests that failed in the last iteration? This would make each loop much faster and cheaper.</li>
+
+
+
+<li class="wp-block-list-item">Better Evaluation Metrics: We could easily expand our Evaluator. What if, in addition to checking the function call, we used another LLM to score the agent’s politeness or conciseness? Then we could optimise for multiple things at once.</li>
+
+
+
+<li class="wp-block-list-item">Human-in-the-Loop: We could build a simple UI that shows us the new prompt the optimiser came up with. We could then give it a thumbs-up or make a small manual edit before the next evaluation round, combining AI scale with human intuition.</li>
+
+
+
+<li class="wp-block-list-item">Exemplar Selection: And of course, there’s the next logical step: exemplar selection. Once we’ve found the best prompt, we could run another loop to find the best few-shot examples to go along with it, pushing the accuracy even higher.</li>
+</ul>
+
+
+
+<p class="wp-block-paragraph">The possibilities are huge. Feel free to take the code and try implementing some of these ideas yourself. This is just the beginning of what we can do with automated prompt engineering for voice.</p>
+
+
+
+<h2 class="wp-block-heading">Conclusion</h2>
+
+
+
+<p class="wp-block-paragraph">And that’s a wrap! We’ve gone from a simple idea to a full-blown automated prompt engineering pipeline for a voice AI assistant. It’s a testament to the power of APE and the OPRO algorithm, showing that they can work even in the messy world of audio.</p>
+
+
+
+<p class="wp-block-paragraph">In this blog post, we’ve explored how crafting effective prompts is critical for an agent’s performance, but how the manual process of tweaking and testing is just too slow and difficult for today’s complex voice assistants. We saw how we can use APE to get away from that frustrating manual work and move towards a more systematic, data-driven approach.</p>
+
+
+
+<p class="wp-block-paragraph">But we didn’t just talk about theory – we got practical. We walked through the entire process, from generating a diverse audio test suite with realistic voices to implementing the OPRO loop where an “optimiser” LLM learns from a detailed history of successes and failures. We saw how this automated process can take a simple starting prompt and discover a much better one that handles the tricky, ambiguous queries that real users throw at it.</p>
+
+
+
+<p class="wp-block-paragraph">Of course, what we’ve built is just a starting point. There are many ways to enhance it further, like building multi-turn conversational tests or adding background noise to the audio. The possibilities are huge.</p>
+
+
+
+<p class="wp-block-paragraph">I really hope you enjoyed this walkthrough and found it useful. The entire project is available on the GitHub repository, and I encourage you to check it out. Feel free to clone the repo, run it yourself, and maybe even try to implement some of the improvements we discussed.</p>
+
+
+
+<p class="wp-block-paragraph">Thanks for reading, and happy optimising! 🤗</p>
+
+
+
+<hr class="wp-block-separator has-alpha-channel-opacity is-style-dotted"/>
+
+
+
+<h2 class="wp-block-heading">Heiko Hotz</h2>
+
+
+
+<p class="wp-block-paragraph">👋 Follow me on <a href="https://towardsdatascience.com/author/heiko-hotz/">Towards Data Science</a> and <a href="https://www.linkedin.com/in/heikohotz/">LinkedIn</a> to read more about Generative AI, Machine Learning, and Natural Language Processing.</p>
+
+
+
+<figure class="wp-block-image size-full"><img decoding="async" src="../Images/7be2efc6ea64faf28ccd9e94586df91a.png" alt="" class="wp-image-608522" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/07/Screenshot-2025-07-11-at-11.49.22.png"/><figcaption class="wp-element-caption">Image by author</figcaption></figure>
+    
+</body>
+</html>

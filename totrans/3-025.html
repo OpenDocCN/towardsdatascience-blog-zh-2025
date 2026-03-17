@@ -1,0 +1,1019 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.1//EN"
+  "http://www.w3.org/TR/xhtml11/DTD/xhtml11.dtd">
+
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+<title>Build and Query Knowledge Graphs with LLMs</title>
+<link href="../Styles/Style.css" type="text/css" rel="stylesheet"/>
+</head>
+<body>
+<h1>Build and Query Knowledge Graphs with LLMs</h1>
+<blockquote>原文：<a href="https://towardsdatascience.com/build-query-knowledge-graphs-with-llms/">https://towardsdatascience.com/build-query-knowledge-graphs-with-llms/</a></blockquote>
+<h2 class="wp-block-heading"><mdspan datatext="el1746215600490" class="mdspan-comment">Knowledge</mdspan> Graphs are relevant</h2>
+
+
+
+<p class="wp-block-paragraph">A Knowledge Graph could be defined as a structured representation of information that connects concepts, entities, and their relationships in a way that mimics human understanding. It is often used to organise and integrate data from various sources, enabling machines to reason, infer, and retrieve relevant information more effectively.</p>
+
+
+
+<p class="wp-block-paragraph">In a <a href="https://medium.com/@tartarinidylan/on-knowledge-graphs-and-their-relevance-fc0b9dc1602c" target="_blank" rel="noreferrer noopener">previous post on Medium</a> I made the point that this kind of structured representation can be used to enhance and perfect the performances of LLMs in Retrieval Augmented Generation applications. We could speak of GraphRAG as an ensemble of techniques and strategies employing a graph-based representation of knowledge to better serve information to LLMs compared to more standard approaches that could be taken for “Chat with your documents” use cases.</p>
+
+
+
+<p class="wp-block-paragraph">The “vanilla” RAG approach relies on vector similarity (and, sometimes, hybrid search) with the goal of retrieving from a vector database pieces of information (chunks of documents) that are <strong><em>similar</em></strong> to the user’s input, according to some similarity measure such as cosine or euclidean. These pieces of information are then passed to a Large Language Model that is prompted to use them as context to generate a relevant output to the user’s query.</p>
+
+
+
+<p class="wp-block-paragraph">My argument is that the biggest point of failure in those kind of applications is similarity search relying on explicit mentions in the knowledge base (<em>intra-document level</em>), leaving the LLM blind to cross-references between documents, or even to implied (implicit) and contextual references. In brief, the LLM is limited as it cannot reason at a <em>inter-document</em> level.</p>
+
+
+
+<p class="wp-block-paragraph">This can be addressed moving away from pure vector representations and vector stores to a more comprehensive way of organizing the knowledge base, extracting concepts from each piece of text and storing while keeping track of relationships between pieces of information.</p>
+
+
+
+<p class="wp-block-paragraph">Graph structure is in my opinion the best way of organizing a knowledge base with documents containing cross-references and implicit mentions to each other like it always happens inside organizations and enterprises. A graph main features are in fact</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item"><strong>Entities</strong> (Nodes): they represent real-world objects like people, places, organizations, or abstract concepts;</li>
+
+
+
+<li class="wp-block-list-item"><strong>Relationships</strong> (Edges): they define how entities are connected between them (i.e: “Bill → WORKS_AT → Microsoft”);</li>
+
+
+
+<li class="wp-block-list-item"><strong>Attributes</strong> (Properties): provide additional details about entities (e.g., Microsoft’s founding year, revenue, or location) or relationships ( i.e. “Bill → FRIENDS_WITH {since: 2021} → Mark”).</li>
+</ul>
+
+
+
+<p class="wp-block-paragraph">A Knowledge Graph can then be defined as the Graph representation of corpora of documents coming from a coherent domain. But how exactly do we move from vector representation and vector databases to a Knowledge Graph?</p>
+
+
+
+<p class="wp-block-paragraph">Further, <strong>how do we even extract the key information to build a Knowledge Graph</strong>?</p>
+
+
+
+<p class="wp-block-paragraph">In this article, I will present my point of view on the subject, with code examples from a repository I developed while learning and experimenting with Knowledge Graphs. This <a href="https://github.com/DylanTartarini1996/knowledge-graphs" rel="noreferrer noopener" target="_blank">repository</a> is publicly available on my Github and contains:</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">the source code of the project</li>
+
+
+
+<li class="wp-block-list-item">example notebooks written while building the repo</li>
+
+
+
+<li class="wp-block-list-item">a Streamlit app to showcase work done until this point</li>
+
+
+
+<li class="wp-block-list-item">a Docker file to built the image for this project without having to go through the manual installation of all the software needed to run the project.</li>
+</ul>
+
+
+
+<p class="wp-block-paragraph">The article will present the repo in order to cover the following topics:</p>
+
+
+
+<p class="wp-block-paragraph">✅ <strong>Tech Stack Breakdown</strong> of the tools available, with a brief presentation of each of the components used to build the project.</p>
+
+
+
+<p class="wp-block-paragraph">✅ <strong>How to get the Demo up and running</strong> in your own local environment.</p>
+
+
+
+<p class="wp-block-paragraph">✅ <strong>How to perform the</strong> <strong>Ingestion Process</strong> of documents, including extracting concepts from them and assembling them into a Knowledge Graph.</p>
+
+
+
+<p class="wp-block-paragraph">✅ <strong>How to query the Graph</strong>, with a focus on the variety of possible strategies that can be employed to perform semantic search, graph query language generation and hybrid search.</p>
+
+
+
+<p class="wp-block-paragraph">If you are a Data Scientist, a ML/AI Engineer or just someone curious on how to build smarter search systems, this guide will walk you through the full workflow with code, context and clarity.</p>
+
+
+
+<hr class="wp-block-separator has-alpha-channel-opacity is-style-dotted"/>
+
+
+
+<h2 class="wp-block-heading">Tech Stack Breakdown</h2>
+
+
+
+<p class="wp-block-paragraph">As a Data Scientist who started learning programming in 2019/20, my main language is of course Python. Here, I am using its 3.12 version.</p>
+
+
+
+<p class="wp-block-paragraph">This project is built with a focus on open-source tools and free-tier accessibility both on the storage side as well as on the availability of Large Language Models. This makes it a good starting point for newcomers or for those who are not willing to pay for cloud infrastructure or for OpenAI’s API KEYs.</p>
+
+
+
+<p class="wp-block-paragraph">The source code is, however, written with production use cases in mind — focusing not just on quick demos, but on how to transition a project to real-world deployment. The code is therefore designed to be <strong>easily customizable</strong>, <strong>modular</strong>, and <strong>extendable</strong>, so it could be adapted to your own data sources, LLMs, and workflows with minimal friction.</p>
+
+
+
+<p class="wp-block-paragraph">Below is a breakdown of the key components and how they work together. You can also read the repo’s <a href="https://github.com/DylanTartarini1996/knowledge-graphs/blob/main/README.md" target="_blank" rel="noreferrer noopener">README.md</a> for further information on how to get up and running with the demo app.</p>
+
+
+
+<h4 class="wp-block-heading">🕸️ Neo4j — Graph Database + Vector Store</h4>
+
+
+
+<p class="wp-block-paragraph">Neo4j powers the knowledge graph layer and also stores vector embeddings for semantic search. The core of Neo4j is <strong>Cypher</strong>, the query language needed to interact with a Neo4j Database. Some of the key other features from Neo4j that are used in this project are:</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item"><strong>GraphDB</strong>: To store structured relationships between entities and concepts.</li>
+
+
+
+<li class="wp-block-list-item"><strong>VectorDB</strong>: Embedding support allows similarity search and hybrid queries.</li>
+
+
+
+<li class="wp-block-list-item"><strong>Python SDK</strong>: Neo4j offers a <a href="https://neo4j.com/docs/python-manual/current/" target="_blank" rel="noreferrer noopener">python driver</a> to interact with its instance and wrap around it. Thanks to the python driver, knowing Cypher is not mandatory to interact with the code in this repo. Thanks to the SDK, we are able to use other python graph data science libraries as well, such as <code>networkx</code> or <code>python-louvain</code>.</li>
+
+
+
+<li class="wp-block-list-item"><strong>Local Development</strong>: Neo4j offers a <a href="https://neo4j.com/download/" target="_blank" rel="noreferrer noopener">Desktop version</a> and it also could be easily deployed via Docker images into containers or on any Virtual Machine (Linux/macOS/Windows).</li>
+
+
+
+<li class="wp-block-list-item"><strong>Production Cloud</strong>: You can also use <a href="https://neo4j.com/product/auradb/" target="_blank" rel="noreferrer noopener">Neo4j Aura</a> for a fully-managed solution; this comes with a free tier, and it’s ready to be hosted in any cloud of your choice depending on your needs.</li>
+</ul>
+
+
+
+<h4 class="wp-block-heading">🦜 LangChain — Agent Framework for LLM Workflows</h4>
+
+
+
+<p class="wp-block-paragraph"><a href="https://www.langchain.com/" rel="noreferrer noopener" target="_blank">LangChain</a> is used to coordinate how LLMs interact with tools like the vector index and the entities in the Knowledge Graphs, and of course with the user input.</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">Used to define custom agents and toolchains.</li>
+
+
+
+<li class="wp-block-list-item">Integrates with retrievers, memory, and prompt templates.</li>
+
+
+
+<li class="wp-block-list-item">Makes it easy to swap in different LLM backends.</li>
+</ul>
+
+
+
+<h4 class="wp-block-heading">🤖 LLMs + Embeddings</h4>
+
+
+
+<p class="wp-block-paragraph">LLMs and Embeddings can be invoked both from a local deployment using <a href="https://ollama.com/" rel="noreferrer noopener" target="_blank">Ollama</a> or an online endpoint of your choice. I am currently using the <a href="https://console.groq.com/home" rel="noreferrer noopener" target="_blank">Groq</a> free-tier API to experiment, switching between <code>gemma2-9b-it</code> and various versions of Llama, such as <code>meta-llama/llama-4-scout-17b-16e-instruct</code> . For Embeddings, I am using <code>mxbai-embed-large</code> running via Ollama on my M1 Macbook Air; on the same setup I was also able to run <code>llama3.2</code> (2B) in the past, keeping in mind my hardware limitations.</p>
+
+
+
+<p class="wp-block-paragraph">Both Ollama and Groq are plug and play and have Langchain’s wrappers.</p>
+
+
+
+<h4 class="wp-block-heading">👑 Streamlit — Frontend UI for Interactions &amp; Demos</h4>
+
+
+
+<p class="wp-block-paragraph">I have written a small demo app using <a href="https://streamlit.io/" rel="noreferrer noopener" target="_blank">Streamlit</a>, a python library that allows developers to build minimal frontend layers without writing any HTML or CSS, just pure python.</p>
+
+
+
+<p class="wp-block-paragraph">In this demo app you will see how to</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">Ingest your documents into Neo4j under a Graph-based representation.</li>
+
+
+
+<li class="wp-block-list-item">Run live demos of the graph-based querying, showcasing key differences between various querying strategies.</li>
+</ul>
+
+
+
+<p class="wp-block-paragraph">Streamlit’s main advantages is that it’s super lightweight, fast to deploy, and doesn’t require a separate frontend framework or backend. Its features make it the perfect fit for demos and prototypes such as this one.</p>
+
+
+
+<figure class="wp-block-image"><img decoding="async" src="../Images/70f93a1d6aea5d780d89ed0a1b987aa9.png" alt="" class="wp-image-603013" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/05/1HCk1sEKdewksoBNie-5klA.png"/><figcaption class="wp-element-caption">This is what an app looks like in Streamlit</figcaption></figure>
+
+
+
+<hr class="wp-block-separator has-alpha-channel-opacity is-style-dotted"/>
+
+
+
+<p class="wp-block-paragraph">However, it is not suitable for production apps because of it limited customisation features and UI control, as well as the absence of a native way to perform authorisation and authentication, and a proper way to handle scaling. Going from demo to production usually requires a more suitable front-end framework and a clear separation between back-end and front-end frameworks and their responsibilities.</p>
+
+
+
+<h4 class="wp-block-heading">🐳 Docker — Containerisation for Local Dev &amp; Deployment</h4>
+
+
+
+<p class="wp-block-paragraph">Docker is a tool that lets you package your application and all its dependencies into a <strong>container</strong> — a lightweight, standalone, and portable environment that runs consistently on any system.</p>
+
+
+
+<p class="wp-block-paragraph">Since I imagined it could be challenging to manage all the mentioned dependencies, I also added a <a href="https://github.com/DylanTartarini1996/knowledge-graphs/blob/main/Dockerfile" target="_blank" rel="noreferrer noopener">Dockerfile</a> for building an image of the app, so that Neo4j, Ollama and the app itself could run in isolated, reproducible containers via <a href="https://github.com/DylanTartarini1996/knowledge-graphs/blob/main/docker-compose.yml" target="_blank" rel="noreferrer noopener">docker-compose</a>.</p>
+
+
+
+<blockquote class="wp-block-quote is-layout-flow wp-block-quote-is-layout-flow">
+<p class="wp-block-paragraph"><mark style="background-color:rgba(0, 0, 0, 0)" class="has-inline-color has-tds-gray-color">To run the demo app yourself, you can follow the instructions on the <a href="https://github.com/DylanTartarini1996/knowledge-graphs/blob/main/README.md" target="_blank" rel="noreferrer noopener">README.md</a></mark></p>
+</blockquote>
+
+
+
+<p class="wp-block-paragraph">Now that the tech stack we are going to use has been presented, we can deep dive into how the app actually works behind the curtains, starting from the ingestion pipeline.</p>
+
+
+
+<hr class="wp-block-separator has-alpha-channel-opacity is-style-dotted"/>
+
+
+
+<h2 class="wp-block-heading">From Text Corpus to Knowledge Graph</h2>
+
+
+
+<p class="wp-block-paragraph">As I previously mentioned, it is recommendable that documents that are being ingested into a Knowledge Graph come from the same domain. These could be manuals from the medical domain on diseases and their symptoms, code documentation from past projects, or newspaper articles on a particular subject. </p>
+
+
+
+<p class="wp-block-paragraph">Being a politics geek, to test and play with my code, I choose pdf Press Materials from the <a href="https://ec.europa.eu/commission/presscorner/home/en" rel="noreferrer noopener" target="_blank">European Commission’s Press corner</a>.</p>
+
+
+
+<p class="wp-block-paragraph">Once the documents have been collected, we have to ingest them into the Knowledge Graph.</p>
+
+
+
+<p class="wp-block-paragraph">The ingestion pipeline needs to follow the steps reported below</p>
+
+
+
+<blockquote class="wp-block-quote is-layout-flow wp-block-quote-is-layout-flow">
+<p class="wp-block-paragraph"><mark style="background-color:rgba(0, 0, 0, 0)" class="has-inline-color has-tds-gray-color">The reference source code for this part of the article is in <a href="https://github.com/DylanTartarini1996/knowledge-graphs/tree/main/src/ingestion" target="_blank" rel="noreferrer noopener">src/ingestion</a>.</mark></p>
+</blockquote>
+
+
+
+<h4 class="wp-block-heading">1. Load files into a machine-friendly format</h4>
+
+
+
+<p class="wp-block-paragraph">In the code example below, the class <code>Ingestor</code>is used to infer the mime type of each file we’re trying to read and langchain’s document loaders are employed to read its content accordingly; this allows for customisations regarding the format of source files that will populate our Knowledge Graph.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">class Ingestor:
+    """ 
+    Base `Ingestor` Class with common methods. 
+    Can be specialized by source.
+    """ 
+    def ___init__(self, source: Source):
+        self.source = source
+    
+    @abstractmethod
+    def list_files(self)-&gt; List[str]:
+        pass
+
+    @abstractmethod
+    def file_preparation(self, file) -&gt; Tuple[str, dict]:
+        pass
+
+    @staticmethod
+    def load_file(filepath: str, metadata: dict) -&gt; List[Document]:
+        mime = magic.Magic(mime=True)
+        mime_type = mime.from_file(filepath) or metadata.get('Content-Type')
+        if mime_type == 'inode/x-empty':
+            return []
+
+        loader_class = MIME_TYPE_MAPPING.get(mime_type)
+        if not loader_class:
+            logger.warning(f'Unsupported MIME type: {mime_type} for file {filepath}, skipping.')
+            return []
+        
+        if loader_class == PDFPlumberLoader:
+            loader = loader_class(
+                file_path=filepath,
+                extract_images=False,
+            )
+        elif loader_class == Docx2txtLoader:
+            loader = loader_class(
+                file_path=filepath
+            )
+        elif loader_class == TextLoader:
+            loader = loader_class(
+                file_path=filepath
+            )
+        elif loader_class == BSHTMLLoader:
+            loader = loader_class(
+                file_path=filepath,
+                open_encoding="utf-8",
+            )
+        try: 
+            return loader.load()
+        except Exception as e:
+            logger.warning(f"Error loading file: {filepath} with exception: {e}")   
+            pass 
+            
+    @staticmethod
+    def merge_pages(pages: List[Document]) -&gt; str:
+        return "\n\n".join(page.page_content for page in pages)
+
+    @staticmethod
+    def create_processed_document(file: str, document_content: str, metadata: dict):
+        processed_doc = ProcessedDocument(filename=file, source=document_content, metadata=metadata)
+        return processed_doc
+
+    def ingest(self, filename: str, metadata: Dict[str, Any]) -&gt; ProcessedDocument | None:
+        """ 
+        Loads a file from a path and turn it into a `ProcessedDocument`
+        """
+
+        base_name = os.path.basename(filename)
+
+        document_pages = self.load_file(filename, metadata)
+
+        try: 
+            document_content = self.merge_pages(document_pages)
+        except(TypeError):
+            logger.warning(f"Empty document {filename}, skipping..")
+        
+        if document_content is not None:
+            processed_doc = self.create_processed_document(
+                base_name, 
+                document_content, 
+                metadata
+            )
+            return processed_doc
+        
+    def batch_ingest(self) -&gt; List[ProcessedDocument]:
+        """
+        Ingests all files in a folder
+        """
+        processed_documents = []
+        for file in self.list_files():
+            file, metadata = self.file_preparation(file)
+            processed_doc = self.ingest(file, metadata)
+            if processed_doc:
+                processed_documents.append(processed_doc)
+        return processed_documents</code></pre>
+
+
+
+<h4 class="wp-block-heading">2. Clean and split document content into text chunks</h4>
+
+
+
+<p class="wp-block-paragraph">This is necessary for the graph extraction phase ahead of us. To clean texts, depending on domain and on the document’s format, it might make sense to write custom cleaning and chunking functions. This is where the document’s <code>chunks</code> list is populated.</p>
+
+
+
+<p class="wp-block-paragraph">Chunking size, overlap and other possible configurations here could be domain dependent and should be configured according to the expertise of the DS / AI Engineer; the class in charge of chunking is exemplified below.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">class Chunker:
+    """
+    Contains methods to chunk the text of a (list of) `ProcessedDocument`.
+    """
+
+    def __init__(self, conf: ChunkerConf):
+        self.chunker_type = conf.type
+
+        if self.chunker_type == "recursive":
+
+            self.chunk_size = conf.chunk_size
+            self.chunk_overlap = conf.chunk_overlap
+
+            self.splitter = RecursiveCharacterTextSplitter(
+                chunk_size=self.chunk_size, 
+                chunk_overlap=self.chunk_overlap, 
+                is_separator_regex=False
+            )
+        
+        else: 
+            logger.warning(f"Chunker type '{self.chunker_type}' not supported.")
+
+    def _chunk_document(self, text: str) -&gt; list[str]:
+        """Chunks the document and returns a list of chunks."""
+        return self.splitter.split_text(text)
+
+    def get_chunked_document_with_ids(
+        self, 
+        text: str, 
+        ) -&gt; list[dict]:
+        """Chunks the document and returns a list of dictionaries with chunk ids and chunk text."""
+        return [
+            {
+                "chunk_id": i + 1,
+                "text": chunk,
+                "chunk_size": self.chunk_size, 
+                "chunk_overlap": self.chunk_overlap
+            }
+            for i, chunk in enumerate(self._chunk_document(text))
+        ]
+    
+    def chunk_document(self, doc: ProcessedDocument) -&gt; ProcessedDocument:
+        """
+        Chunks the text of a `ProcessedDocument` instance.
+        """
+        chunks_dict = self.get_chunked_document_with_ids(doc.source)
+        
+        doc.chunks = [Chunk(**chunk) for chunk in chunks_dict]
+
+        logger.info(f"DOcument {doc.filename} has been chunked into {len(doc.chunks)} chunks.")
+        
+        return doc
+
+    def chunk_documents(self, docs: List[ProcessedDocument]) -&gt; List[ProcessedDocument]:
+        """
+        Chunks the text of a list of `ProcessedDocument` instances.
+        """
+        updated_docs = []
+        for doc in docs:
+            updated_docs.append(self.chunk_document(doc))
+        return updated_docs</code></pre>
+
+
+
+<h4 class="wp-block-heading">3. Extract Concepts Graph</h4>
+
+
+
+<p class="wp-block-paragraph">For each chunk in the document, we want to extract a graph of concepts. To do so, we program a custom agent powered by a LLM with this precise task. Langchain comes in handy here due to a method called <code>with_structured_output</code> that wraps LLM calls and lets you define the expected output schema using a pydantic model. This ensures that the LLM of your choice returns <strong>structured, validated responses and not free-form text</strong>.</p>
+
+
+
+<p class="wp-block-paragraph">This is what the <code>GraphExtractor</code> looks like:</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">class GraphExtractor:
+    """ 
+    Agent able to extract informations in a graph representation format from a given text.
+    """
+    def __init__(self, conf: LLMConf, ontology: Optional[Ontology]=None):
+        self.conf = conf
+        self.llm = fetch_llm(conf)
+        self.prompt = get_graph_extractor_prompt()
+
+        self.prompt.partial_variables = {
+            'allowed_labels':ontology.allowed_labels if ontology and ontology.allowed_labels else "", 
+            'labels_descriptions': ontology.labels_descriptions if ontology and ontology.labels_descriptions else "", 
+            'allowed_relationships': ontology.allowed_relations if ontology and ontology.allowed_relations else ""
+        }
+
+    def extract_graph(self, text: str) -&gt; _Graph:
+        """ 
+        Extracts a graph from a text.
+        """
+
+        if self.llm is not None:
+            try:
+                graph: _Graph = self.llm.with_structured_output(
+                    schema=_Graph
+                    ).invoke(
+                        input=self.prompt.format(input_text=text)
+                    )
+
+                return graph 
+                
+            except Exception as e:
+                logger.warning(f"Error while extracting graph: {e}")</code></pre>
+
+
+
+<p class="wp-block-paragraph">Notice that the expected output <code>_Graph </code>is defined as:</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">class _Node(Serializable):
+    id: str
+    type: str
+    properties: Optional[Dict[str, str]] = None
+
+class _Relationship(Serializable):
+    source: str
+    target: str
+    type: str
+    properties: Optional[Dict[str, str]] = None
+
+class _Graph(Serializable):
+    nodes: List[_Node]
+    relationships: List[_Relationship]</code></pre>
+
+
+
+<p class="wp-block-paragraph">Optionally, the LLM agent in charge of extracting a graph from chunks can be provided with an Ontology describing the domain of the documents. </p>
+
+
+
+<blockquote class="wp-block-quote is-layout-flow wp-block-quote-is-layout-flow">
+<p class="wp-block-paragraph"><mark style="background-color:rgba(0, 0, 0, 0)" class="has-inline-color has-tds-gray-color">An ontology can be described as the formal specification of the types of entities and relationships that can exist in the graph — it is, essentially, its <strong>blueprint</strong>.</mark></p>
+</blockquote>
+
+
+
+<p class="wp-block-paragraph"/>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">class Ontology(BaseModel):
+    allowed_labels: Optional[List[str]]=None
+    labels_descriptions: Optional[Dict[str, str]]=None
+    allowed_relations: Optional[List[str]]=None</code></pre>
+
+
+
+<h4 class="wp-block-heading">4. Embed each chunk of the document</h4>
+
+
+
+<p class="wp-block-paragraph">Next, we want to obtain a vector representation of the text contained in each chunk. This can be done using the Embeddings model of your choice and passing the list of documents to the <code>ChunkEmbedder</code> class.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">class ChunkEmbedder:
+    """ Contains methods to embed Chunks from a (list of) `ProcessedDocument`."""
+    def __init__(self, conf: EmbedderConf):
+        self.conf = conf
+        self.embeddings = get_embeddings(conf)
+
+        if self.embeddings:
+            logger.info(f"Embedder of type '{self.conf.type}' initialized.")
+
+    def embed_document_chunks(self, doc: ProcessedDocument) -&gt; ProcessedDocument:
+        """
+        Embeds the chunks of a `ProcessedDocument` instance.
+        """
+        if self.embeddings is not None:
+            for chunk in doc.chunks:
+                chunk.embedding = self.embeddings.embed_documents([chunk.text])
+                chunk.embeddings_model = self.conf.model
+            logger.info(f"Embedded {len(doc.chunks)} chunks.")
+            return doc
+        else: 
+            logger.warning(f"Embedder type '{self.conf.type}' is not yet implemented")
+
+    def embed_documents_chunks(self, docs: List[ProcessedDocument]) -&gt; List[ProcessedDocument]:
+        """
+        Embeds the chunks of a list of `ProcessedDocument` instances.
+        """
+        if self.embeddings is not None:
+            for doc in docs:
+                doc = self.embed_document_chunks(doc)
+            return docs
+        else: 
+            logger.warning(f"Embedder type '{self.conf.type}' is not yet implemented")
+            return docs</code></pre>
+
+
+
+<hr class="wp-block-separator has-alpha-channel-opacity is-style-dotted"/>
+
+
+
+<h4 class="wp-block-heading">5. Save the embedded chunks into the Knowledge Graph</h4>
+
+
+
+<p class="wp-block-paragraph">Finally, we have to upload the documents and their chunks in our Neo4j instance. I’ve built upon the already available <code>Neo4jGraph</code> langchain class to create a customised version for this repo.</p>
+
+
+
+<p class="wp-block-paragraph">The code of the <code>KnowledgeGraph</code> class is available at <a href="https://github.com/DylanTartarini1996/knowledge-graphs/blob/main/src/graph/knowledge_graph.py" target="_blank" rel="noreferrer noopener">src/graph/knowledge_graph.py</a> and this is how its core method <code>add_documents</code> works:</p>
+
+
+
+<p class="wp-block-paragraph">a. for each file, create a <strong>Document node</strong> on the Graph with its properties (metadata) such as the source of the file, the name, the ingestion date..</p>
+
+
+
+<p class="wp-block-paragraph">b. for each chunk, create a <strong>Chunk node</strong>, connected to the original Document node by a relationship (<code>PART_OF</code>) and save the embedding of the chunk as a property of the node; connect each Chunk node with the following with another relationship (<code>NEXT</code>).</p>
+
+
+
+<p class="wp-block-paragraph">c. for each chunk, save the extracted subgraph: nodes, relationships and their properties; we also connect them to their source <code>Chunk</code> with a relationship (<code>MENTIONS</code>).</p>
+
+
+
+<p class="wp-block-paragraph">d. perform <strong>hierarchical clustering</strong> on the Graph to detect <strong>communities</strong> of nodes inside it. Then, use a LLM to summarise the resulting communities obtaining Community Reports and embed said summaries. </p>
+
+
+
+<blockquote class="wp-block-quote is-layout-flow wp-block-quote-is-layout-flow">
+<p class="wp-block-paragraph"><mark style="background-color:rgba(0, 0, 0, 0)" class="has-inline-color has-tds-gray-color">Communities in a graph are <strong>clusters or groups of nodes that are more densely connected to each other than to the rest of the graph</strong>. In other words, nodes within the same community have many connections with each other and relatively fewer connections with nodes outside the group.</mark></p>
+</blockquote>
+
+
+
+<p class="wp-block-paragraph">The result of this process in Neo4j looks something like this: data structured into entities and relationships with their properties, just as we wanted. In particular, Neo4j also offers the opportunity to have multiple vector indexes in the same instance, and we exploit this feature to separate the embeddings of chunks from those of communities.</p>
+
+
+
+<figure class="wp-block-image"><img decoding="async" src="../Images/62f4adac8d46ee0ae2cd95cc93e9be8d.png" alt="" class="wp-image-603015" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/05/1Mk_I3cq1CNF0CPd0ZyyTSg.png"/><figcaption class="wp-element-caption">Knowledge Graph obtained from European Commission Press Corner’s PDFs: we can observe Document nodes (lightblue), Chunk nodes (pink) and Entity nodes (orange). Blue nodes represent Community Reports and green nodes are for Graph Metrics.</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">In the image above, you might have noticed that some nodes in the Graph are more connected to each other, while other nodes have fewer connection and lie on the borders of the Graph. Since the image you are looking at is produced from the European Commission’s Press Corner pdfs, it is only normal that in the center we could find entities such as “<em>Von Der Leyen</em>” (President of the European Commission) or even “<em>European Commission</em>”: in fact, those are some of the most mentioned entities in our Knowledge Graph.</p>
+
+
+
+<p class="wp-block-paragraph">Below, you can find a more zoomed-in screenshot, where relationship and entity names are actually visible. The original filename of the document (lightblue) at the center is “<em>Commission sets course for Europe’s AI leadership with an ambitious AI Continent Action Plan</em>”. Apparently the extraction of entities and relationships via LLM worked fairly fine on this one.</p>
+
+
+
+<figure class="wp-block-image"><img decoding="async" src="../Images/2b7f3d8eeb764c186451fd90f0c41e0c.png" alt="" class="wp-image-603016" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/05/1xkzN08WYLA0OSFQATkRRlA.png"/><figcaption class="wp-element-caption">Here labels and relationships are visible and can be used to get a grasp on the subject of one of the press releases.</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">Once the Knowledge Graph has been created, we can employ LLMs and Agents to query it and ask questions on the available documents. Let’s go for it!</p>
+
+
+
+<hr class="wp-block-separator has-alpha-channel-opacity is-style-dotted"/>
+
+
+
+<h2 class="wp-block-heading">Graph-informed Retrieval Augmented Generation</h2>
+
+
+
+<p class="wp-block-paragraph">Since the release of ChatGPT in late 2022, I have built my fair share of POCs and Demos on Retrieval Augmented Generation, “<em>chat-with-your-documents</em>” use cases.</p>
+
+
+
+<p class="wp-block-paragraph">They all share the same methodology for giving the end user the desired answer: embed the user question, perform similarity search on the vector store of choice, retrieve <em>k</em> chunks (pieces of information) from the vector store, then pass the user’s question and the context obtained from those chunks to a LLM; finally, answer the question.</p>
+
+
+
+<p class="wp-block-paragraph">You might want to add some memory of the conversation (read: a <em>chat history</em>) and even callbacks to perform some <em>guardrail</em> activities such as keeping track of tokens spent in the process and latency of the answer. Many vector stores also allow for <em>hybrid search</em>, which is the same process mentioned above, only adding a filter on chunks based on their metadata before the similarity search even happens.</p>
+
+
+
+<p class="wp-block-paragraph">This is the level of complexity you get with this kind of RAG applications: choose the number of <em>k</em> texts you want to retrieve, predetermine the filters, choose the LLM in charge of answering. <strong>Eventually, these kind of approaches reach an asymptote in terms of performance</strong>, and you might be left with only a handful of options on how to tweak the LLM parameters to better handle user queries.</p>
+
+
+
+<p class="wp-block-paragraph"><strong>Instead, what does the RAG approach looks like with a Knowledge Graph? </strong>The honest answer to that question is: <strong>It really boils down on what kind of questions you are going to ask</strong>.</p>
+
+
+
+<p class="wp-block-paragraph">While learning about Knowledge Graphs and their applications in real world use cases, I spent a long time reading. Blogposts, articles and Medium posts, even some books. The more I dug, the more questions came to my mind, the less definitive my answers: apparently, <strong>when dealing with knowledge that is structured BOTH in a graph representation and into vector indexes, a lot of options open up</strong>.</p>
+
+
+
+<p class="wp-block-paragraph">After my reading, I spent some time developing my own answers (and the code that goes with it) on <strong>strategies that can be applied when querying the Knowledge Graph using Large Language Models</strong>. What follows is a brief excursus on my take on the subject.</p>
+
+
+
+<blockquote class="wp-block-quote is-layout-flow wp-block-quote-is-layout-flow">
+<p class="wp-block-paragraph"><mark style="background-color:rgba(0, 0, 0, 0)" class="has-inline-color has-tds-gray-color">the reference source code is part of the GraphAgentResponder class, available at <a href="https://github.com/DylanTartarini1996/knowledge-graphs/blob/main/src/agents/graph_qa.py" target="_blank" rel="noreferrer noopener">src/agents/graph_qa.p</a>y .</mark></p>
+</blockquote>
+
+
+
+<h4 class="wp-block-heading">1. Enhanced RAG</h4>
+
+
+
+<p class="wp-block-paragraph">First of all, you could always perform the usual RAG process: chunks embeddings are, after all, available in the Graph, and they can be retrieved like with any other vector database. Moreover, you could also perform hybrid search, since those chunks are actually nodes, and nodes have properties (attributes) that can be used for filtering.</p>
+
+
+
+<p class="wp-block-paragraph">What if we went a step further and took into consideration that Chunk nodes are connected to each other by a <code>NEXT</code> relationship, and to the original Document node by a <code>PART_OF</code> relationship? <strong>Querying for similarity on embeddings and then enriching the context with neighbouring chunks</strong> might unlock new possibilities when it comes to level of details provided in the answer, but also the ability to quote the source file and its metadata.</p>
+
+
+
+<figure class="wp-block-image"><img decoding="async" src="../Images/1a48d35e7e16fdf29524a6f481191299.png" alt="" class="wp-image-603009" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/05/1jhBVxCxrRIRvIWm5UT17IQ.png"/><figcaption class="wp-element-caption">Querying for neighbouring Chunks to enhance similarity search</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">For instance, similarity search could end up pointing to chunk 2 of the previously mentioned document, but querying for neighbouring chunks could allow the LLM to provide a more detailed, contextualised answer.</p>
+
+
+
+<p class="wp-block-paragraph">To give a working example, let’s consider a question on the nodes depicted in the screenshot previously shown about a press release focused on Artificial Intelligence: “<em>what is the EU strategy on Artificial Intelligence?”.</em> This is what our Agent answers:</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-markup">&gt; `The EU strategy on artificial intelligence is outlined in the AI Continent Action Plan, which aims to make Europe a global leader in AI. The plan focuses on five key pillars:`
+&gt; 1. `Building a large-scale AI data and computing infrastructure`
+&gt; 2. `Creating a true internal market for data (with a comprehensive Data Union Strategy to be launched in 2025)`
+&gt; 3. `Developing algorithms and fostering AI adoption in strategic EU sectors (through the Apply AI Strategy)`
+&gt; 4. `Strengthening AI skills and talents (through initiatives such as the Talent Pool, Marie Skłodowska-Curie Action, and AI fellowships schemes)`
+&gt; 
+&gt; `The plan also includes initiatives such as setting up AI Factories and AI Gigafactories to support EU AI startups, industry, and researchers in developing AI models and applications.`</code></pre>
+
+
+
+<h4 class="wp-block-heading">2. Community Reports</h4>
+
+
+
+<p class="wp-block-paragraph">Another version of enhanced RAG that came to my mind while building this first version of the repository employs Community Reports.</p>
+
+
+
+<p class="wp-block-paragraph">In the last step of the ingestion phase in fact, we used <strong>hierarchical clustering techniques</strong> such as the Leiden or Louvain algorithm to detect communities between nodes in the Knowledge Graph, and then employed a LLM to <strong>summarise those communities, obtaining Community Reports</strong>.</p>
+
+
+
+<p class="wp-block-paragraph">These reports are stored in the Graph under a different vector index than the one for Chunks, and <strong>both of those two indexes can be queried via similarity search</strong>. Further, retrieved contexts can be combined when passing them to the LLM to <strong>obtain answers that are grounded at the intra-document level but also are informed of what is happening in the graph at the inter-document level</strong>.</p>
+
+
+
+<figure class="wp-block-image"><img decoding="async" src="../Images/21463d97aa8cc50c14c8372d6afb4265.png" alt="" class="wp-image-603014" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/05/1DvaOnPHZ1GE77WHh8dcoiw.png"/><figcaption class="wp-element-caption">Community Reports stored in the Knowledge Graph as additional nodes with a summary and its embedding</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">This strategy is certainly better fitted for those kind of questions that might need information from multiple sources in the form of overviews or high level summaries.</p>
+
+
+
+<p class="wp-block-paragraph">Let’s go back to the “<em>What is the EU strategy on Artificial Intelligence?</em>” question and see how the bot answers now, being able to retrieve both chunks and community reports via similarity search:</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-markup">&gt; `The EU strategy on artificial intelligence aims to make the EU a leader in the development and deployment of AI that is trustworthy, safe, and respects human values and rights.`
+&gt; 
+&gt; 
+&gt; `To achieve this goal, in April 2019, the European Commission presented a Communication on AI, which outlined a European approach to AI. The approach focuses on:` 
+&gt; 
+&gt; 1. **`Promoting excellence in AI**: The EU wants to support research and innovation in AI, and encourage the development of AI startups and scale-ups.`
+&gt; 2. **`Ensuring trust in AI**: The EU aims to build trust in AI through a robust regulatory and legal framework. This includes the development of AI that respects EU values, such as the General Data Protection Regulation (GDPR).`
+&gt; 
+&gt; `The strategy also highlights the need for:`
+&gt; 
+&gt; - **`Investing in AI education and skills**: Developing the skills of the future workforce.`
+&gt; - **`Addressing the socio-economic changes driven by AI**: Preparing for changes in the job market.`
+&gt; - **`Establishing an EU AI ecosystem**: Encouraging collaboration and coordination among member states.`
+&gt; 
+&gt; `The European Commission also established an **AI regulatory framework**, proposing to regulate AI based on a **risk-based approach**, with stricter rules for high-risk AI applications. Would you like more information on specific aspects of the EU AI strategy?`</code></pre>
+
+
+
+<p class="wp-block-paragraph">Clearly, the answer is more high-leveled than before. This is expected and is in fact what happens when having access to inter-documents contexts.</p>
+
+
+
+<h4 class="wp-block-heading">3. Cypher Queries</h4>
+
+
+
+<p class="wp-block-paragraph">Moving away from the purely RAG-based strategy, a different option at our disposal now that we have our knowledge base structured in a graph is to <strong>ask the LLM to traverse it using a graph query language</strong>. In Neo4j, this means that we want to instruct the LLM with the schema of the graph and then ask it to write Cypher queries to inspect nodes, entities and relationships, based on the user’s question.</p>
+
+
+
+<p class="wp-block-paragraph">This is all possible thanks to the <code>GraphCyperQAChain</code>, which is a Chain class from langchain for question-answering against a graph by generating Cypher statements.</p>
+
+
+
+<p class="wp-block-paragraph">In the example below you are seeing what happens if you ask to the LLM the question “<em>Who is Thomas Regnier?</em>”.</p>
+
+
+
+<p class="wp-block-paragraph">The model writes a Cypher query similar to</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-sql">MATCH (person:Person {name: "Thomas Regnier"})-[r]-(connected)
+RETURN person.name AS name,
+  type(r) AS relationship_type,
+  labels(connected) AS connected_node_labels,
+  connected</code></pre>
+
+
+
+<p class="wp-block-paragraph">and after looking at the intermediate results answers like:</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-markup">Thomas Regnier is the Contact person for Tech Sovereignity, 
+defence, space and Research of the European Commission</code></pre>
+
+
+
+<figure class="wp-block-image"><img decoding="async" src="../Images/c7701cf3560538335392335b35ee04c0.png" alt="" class="wp-image-603011" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/05/1XY-0-nnQIqontkBonm-MCg.png"/><figcaption class="wp-element-caption">Query for “Who is Thomas Regnier?” would result in these nodes being fetched in my graph</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">Another example question that you might be wanting to ask and that needs graph traversal capabilities to be answered could be “<em>What Document mentions Europe Direct?</em>”. The question would lead the Agent to write a Cypher query that search for the Europe Direct node → search for Chunk nodes mentioning that node → follow the <code>PART_OF</code> relationship that goes from Chunk to Document node(s).</p>
+
+
+
+<p class="wp-block-paragraph">This is what the answer look like:</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-markup">&gt; `The following documents mention Europe Direct:`
+&gt; 1. `STATEMENT/25/964`
+&gt; 2. `STATEMENT/25/1028`
+&gt; 3. `European Commission Press release (about Discover EU travel passes)`
+&gt; `These documents provide a phone number (00 800 67 89 10 11) and an email for Europe Direct for general public inquiries.`</code></pre>
+
+
+
+<p class="wp-block-paragraph">Notice that this <strong>purely query-based approach might work out best for those questions that have a concise and direct answer inside the Knowledge Graph or when the Graph schema is well defined</strong>. Of course, the concept of schema in the Graph is tightly linked with the Ontology concept mentioned in the ingestion part of this article: the more precise and descriptive the Ontology, the better defined the schema, the easier for the LLM to write Cypher queries to inspect the Graph.</p>
+
+
+
+<h4 class="wp-block-heading">4. Community Subgraph</h4>
+
+
+
+<p class="wp-block-paragraph">This strategy is a combination of the approach on CommunityReport and the Cypher approach, and can be broken down in the following steps:</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">obtain the most relevant Community Report(s) via similarity search</li>
+
+
+
+<li class="wp-block-list-item">fetch the Chunks belonging to the most relevant communities</li>
+
+
+
+<li class="wp-block-list-item">follow the <code>MENTIONS</code> relationship of those Chunks and use the community ids to obtain a <strong>community subgraph</strong></li>
+
+
+
+<li class="wp-block-list-item">pass the resulting context and a dictionary representing the subgraph to a Large Language Model to decide how to answer to the user.</li>
+</ul>
+
+
+
+<figure class="wp-block-image"><img decoding="async" src="../Images/5a064ed870f7866a0841888b505ddb53.png" alt="" class="wp-image-603010" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/05/1BIKv58vfx3zt0UxWvvNqkA.png"/><figcaption class="wp-element-caption">Example of Community subgraph representing nodes in Leiden community between 0 and 2 in my graph</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">This is the most “<strong><em>work in progress</em></strong>” out of the strategies I listed so far, with results that vary greatly between different runs. They are not currently consistent and usually the LLM tends to get confused by all the information gathered. However, I do have the feeling this approach is worth exploring and investigating a little more.</p>
+
+
+
+<p class="wp-block-paragraph">What is immediately clear is how this strategy could get really complicated very soon. To handle this, I am pondering whether to use filters of some sort when fetching the community subgraph, while a bigger context size for the LLM (or a bigger LLM) could also surely help.</p>
+
+
+
+<h4 class="wp-block-heading">5. Cypher + RAG</h4>
+
+
+
+<p class="wp-block-paragraph">The last strategy I want to propose is based on the combination of the Enhanced RAG approach and the Cypher Approach. In fact, it <strong>employs both the context from similarity search as well as the intermediate steps of the </strong><code>&lt;strong&gt;GraphCypherQAChain&lt;/strong&gt;</code> <strong>to come up with an exhaustive and coherent answer</strong>.</p>
+
+
+
+<p class="wp-block-paragraph">To give you an example of how the Agent might behave, let’s go back to one of the questions used for the query-based approach: “<em>what documents mentions Europe Direct?</em>”.</p>
+
+
+
+<p class="wp-block-paragraph">The answer is shown below. As can be noticed, it is both shorter and more informative.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-markup">&gt; `The following documents mention Europe Direct:`
+&gt; 
+&gt; - `A press release about the European Commission offering 36,000 free EU travel passes to 18-year-olds, where general public inquiries can be made through Europe Direct by phone or email.`
+&gt; - `A statement about the European Commission's efforts to support businesses, workers, and Europeans, which includes contact information for general public inquiries through Europe Direct.`
+&gt; - `A press release about progress in research and innovation in Europe, which also provides contact information for general public inquiries through Europe Direct.`
+&gt; 
+&gt; `You can contact Europe Direct by phone at 00 800 67 89 10 11 or by email.`</code></pre>
+
+
+
+<p class="wp-block-paragraph">This answering method is currently one of the most complete approaches I came up with, and it also has a fallback strategy: if something goes wrong on the query generation part (say, a query is too complex to write, or the LLM dedicated to it reaches its tokens limit), the Agent can still rely on the Enhanced RAG approach, so that we still get an answer from it.</p>
+
+
+
+<h4 class="wp-block-heading">Summing up and approach comparison</h4>
+
+
+
+<p class="wp-block-paragraph">In the past few paragraphs, I presented my take on different answering strategies available when our knowledge base is well-organised into a Graph. My presentation however is far from complete: many other possibilities could be available and I plan to continue on studying on the matter and come up with more options.</p>
+
+
+
+<p class="wp-block-paragraph">In my opinion, since Graphs unlock so many options, <strong>the goal has to be understanding how these strategies would behave under different scenarios</strong> — from lightweight semantic lookups to multi-hop reasoning over a richly linked knowledge graph — and how to make informed trade-offs depending on the use case.</p>
+
+
+
+<blockquote class="wp-block-quote is-layout-flow wp-block-quote-is-layout-flow">
+<p class="wp-block-paragraph"><mark style="background-color:rgba(0, 0, 0, 0)" class="has-inline-color has-tds-gray-color">When building real-world applications, <strong>it’s critical to weight answering strategies not just by accuracy, but also by cost, speed, and scalability</strong>.</mark></p>
+</blockquote>
+
+
+
+<p class="wp-block-paragraph">When deciding what strategy to employ, the <strong>key drivers</strong> that we might want to look at are</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item"><strong>Tokens Usage</strong>: How many tokens are consumed per query, especially when traversing multi-hop paths or injecting large subgraphs into the prompt</li>
+
+
+
+<li class="wp-block-list-item"><strong>Latency</strong>: The time it takes to process a retrieval + generation cycle, including graph traversal, prompt construction, and model inference</li>
+
+
+
+<li class="wp-block-list-item"><strong>Performance</strong>: The quality and relevance of the generated responses, with respect to semantic fidelity, factual grounding, and coherence.</li>
+</ul>
+
+
+
+<p class="wp-block-paragraph">Below, I present a comparison table breaking down the answering methods proposed in this section, under the light of these drivers.</p>
+
+
+
+<figure class="wp-block-image"><img decoding="async" src="../Images/a14498936a0dbcb61a1ffbfb4c4d2c42.png" alt="" class="wp-image-603012" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/05/1Kat3sKacqIjVPiDoFXGksA.png"/></figure>
+
+
+
+<hr class="wp-block-separator has-alpha-channel-opacity is-style-dotted"/>
+
+
+
+<h2 class="wp-block-heading">Closing Remarks</h2>
+
+
+
+<p class="wp-block-paragraph">In this article, we walked through a complete pipeline for building and interacting with knowledge graphs using LLMs — from document ingestion all the way to querying the graph through a demo app.</p>
+
+
+
+<p class="wp-block-paragraph">We covered:</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">How to ingest documents and transform unstructured content into a structured Knowledge Graph representation using semantic concepts and relationships extracted via LLMs</li>
+
+
+
+<li class="wp-block-list-item">How to host the Knowledge Graph in Neo4j</li>
+
+
+
+<li class="wp-block-list-item">How to query the graph using a variety of strategies, from vector similarity and hybrid search to graph traversal and multi-hop reasoning — depending on the retrieval task</li>
+
+
+
+<li class="wp-block-list-item">How the pieces integrate into a fully functional demo created with Streamlit and containerized with Docker.</li>
+</ul>
+
+
+
+<p class="wp-block-paragraph">Now I would like to hear opinions and comments.. and <strong>contributions are also welcome</strong>!</p>
+
+
+
+<p class="wp-block-paragraph">If you find this project useful, have ideas for new features, or want to help improve the existing components, feel free to jump in, open issues or sending in Pull Requests.</p>
+
+
+
+<p class="wp-block-paragraph">Thank you for reading until this point!</p>
+
+
+
+<hr class="wp-block-separator has-alpha-channel-opacity is-style-dotted"/>
+
+
+
+<h3 class="wp-block-heading">References</h3>
+
+
+
+<p class="wp-block-paragraph">[1]. Data showcased in this article come from the European Commission’s press corner: <a href="https://ec.europa.eu/commission/presscorner/home/en" rel="noreferrer noopener" target="_blank">https://ec.europa.eu/commission/presscorner/home/en</a>. Press releases are available under Creative Commons Attribution 4.0 International (CC BY 4.0) license.</p>
+    
+</body>
+</html>

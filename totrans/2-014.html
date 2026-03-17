@@ -1,0 +1,468 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.1//EN"
+  "http://www.w3.org/TR/xhtml11/DTD/xhtml11.dtd">
+
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+<title>Cracking the Density Code: Why MAF Flows Where KDE Stalls</title>
+<link href="../Styles/Style.css" type="text/css" rel="stylesheet"/>
+</head>
+<body>
+<h1>Cracking the Density Code: Why MAF Flows Where KDE Stalls</h1>
+<blockquote>原文：<a href="https://towardsdatascience.com/cracking-the-density-code-why-maf-flows-where-kde-stalls/">https://towardsdatascience.com/cracking-the-density-code-why-maf-flows-where-kde-stalls/</a></blockquote>
+<h2 class="wp-block-heading"><mdspan datatext="el1755881187756" class="mdspan-comment">Part 1: Introduction</mdspan></h2>
+
+
+
+<p class="wp-block-paragraph">One of the main problems that arises in high-dimensional density estimation is that as our dimension increases, our data becomes more sparse. Therefore, for models that rely on local neighborhood estimation we need exponentially more data as our dimension increases to continue getting meaningful results. This is referred to as the curse of dimensionality.</p>
+
+
+
+<p class="wp-block-paragraph">In my <a href="https://towardsdatascience.com/the-math-behind-kernel-density-estimation-5deca75cba38/">previous article</a> on density estimation, I demonstrated how the kernel density estimator (KDE) can be effectively used for one-dimensional data. However, its performance deteriorates significantly in higher dimensions. To illustrate this, I ran a simulation to determine how many samples are required for KDE to achieve a mean relative error of 0.2 when estimating the density of a multivariate Gaussian distribution across various dimensions. Bandwidth was selected using Scott’s rule. The results are as follows:</p>
+
+
+
+<figure class="wp-block-image"><img decoding="async" src="../Images/11733f1ab03ac27343c65eb30e58c880.png" alt="" class="wp-image-616568" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/08/1PFRIbkNQ3tRiBpGU6yqc8Q.png"/></figure>
+
+
+
+<pre class="wp-block-prismatic-blocks" datatext="el1755821206722"><code class="language-python">import numpy as np
+import matplotlib.pyplot as plt
+from sklearn.neighbors import KernelDensity
+from sklearn.model_selection import GridSearchCV
+np.random.seed(42)
+
+# Gaussian sample generator
+def generate_gaussian_samples(n_samples, dim, mean=0, std=1):
+    return np.random.normal(mean, std, size=(n_samples, dim))
+
+def compute_bandwidth(samples):
+    # Scott method
+    n, d = samples.shape
+    return np.power(n, -1./(d + 4))
+
+# KDE error computation
+def compute_kde_error(samples, dim, n_test=1000):
+    bandwidth = compute_bandwidth(samples)
+    kde = KernelDensity(bandwidth=bandwidth).fit(samples)
+    test_points = np.random.normal(0, 1, size=(n_test, dim))
+    kde_density = np.exp(kde.score_samples(test_points))
+    true_density = np.exp(-np.sum(test_points**2, axis=1) / 2) / ((2 * np.pi)**(dim / 2))
+    error = np.mean(np.abs(kde_density - true_density) / true_density)
+    return error, bandwidth
+
+# Determine required samples for a target error
+def find_required_samples(dim, target_error=0.2, max_samples=500000, start_samples=10, n_experiments=5):
+    samples = start_samples
+    while samples &lt;= max_samples:
+        errors = [compute_kde_error(generate_gaussian_samples(samples, dim), dim)[0] for _ in range(n_experiments)]
+        avg_error = np.mean(errors)
+        if avg_error &lt;= target_error:
+            return samples, avg_error
+        samples = int(samples * 1.5)
+    return max_samples, avg_error
+
+# Main
+def analyze_kde(dims, target_error):
+    results = []
+    for dim in dims:
+        samples, error = find_required_samples(dim, target_error)
+        results.append((dim, samples))
+        print(f"Dim {dim}: {samples} samples")
+    return results
+
+# Visualization
+def plot_results(dims, results,target_error=.2):
+    samples = [x[1] for x in results]
+    plt.figure(figsize=(8, 6))
+    plt.plot(dims, samples, 'o-', color='blue')
+    plt.yscale('log')
+    plt.xlabel('Dimension')
+    plt.ylabel('Required Number of Samples (log scale)')
+    plt.title(f'Samples Needed for a Mean Relative Error of {target_error}')
+    plt.grid(True)
+    
+    for i, sample in enumerate(samples):
+        plt.text(dims[i], sample * 1.15, f'{sample}', fontsize=10, ha='right', color='black')  
+    plt.show()
+
+# Run the analysis
+dims = range(1, 7)
+target_error = 0.2
+results = analyze_kde(dims, target_error)
+plot_results(dims, results)
+</code></pre>
+
+
+
+<p class="wp-block-paragraph">That’s right: in my simulation, to match the accuracy of just 22 data points in one dimension, you would need more than 360,000 data points in six dimensions! Even more astonishingly, in his book Multivariate Density Estimation, David W. Scott shows that, depending on the metric, over a million data points are required in eight dimensions to achieve the same accuracy as just 50 data points in one dimension.</p>
+
+
+
+<p class="wp-block-paragraph">Hopefully, this is enough to convince you that the kernel density estimator is not ideal for estimating densities in higher dimensions. But what’s the alternative?</p>
+
+
+
+<hr class="wp-block-separator has-alpha-channel-opacity is-style-dotted"/>
+
+
+
+<h2 class="wp-block-heading">Part 2: Introduction to Normalizing Flows</h2>
+
+
+
+<p class="wp-block-paragraph">One promising alternative is Normalizing Flows, and the specific model I will focus on is the Masked Autoregressive Flow (MAF).</p>
+
+
+
+<p class="wp-block-paragraph">This section draws in part on the work of George Papamakarios and Balaji Lakshminarayanan, as presented in Chapter 23 of <a href="https://probml.github.io/pml-book/book2.html" rel="noreferrer noopener" target="_blank">Probabilistic Machine Learning: Advanced Topics</a> by Kevin P. Murphy (see the book for further details). </p>
+
+
+
+<p class="wp-block-paragraph">The core idea behind normalizing flows is that a distribution p(x) can be modeled by starting with random variables sampled from a simple base distribution, (such as a Gaussian) and then passing them through a sequence of differentiable, invertible transformations (diffeomorphisms). Each transformation incrementally reshapes the distribution, gradually mapping the base distribution into the target distribution. A visual illustration of this process is shown below.</p>
+
+
+
+<figure class="wp-block-image size-full"><img decoding="async" src="../Images/afe58da63a166ce4fb9b7000f9954750.png" alt="" class="wp-image-616550" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/08/1_Hcbucom5EAQw9wi_EQEOeg.gif"/></figure>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">import numpy as np
+import matplotlib.pyplot as plt
+from matplotlib.animation import FuncAnimation
+np.random.seed(42)
+
+#Sample from a standard normal distribution
+n_points = 1000
+initial_dist = np.random.normal(loc=[0, 0], scale=1.0, size=(n_points, 2))
+
+#Generate target distribution
+theta = np.linspace(0, np.pi, n_points//2)
+r = 2
+x1 = r * np.cos(theta)
+y1 = r * np.sin(theta)
+x2 = (r-0.5) * np.cos(theta)
+y2 = (r-0.5) * np.sin(theta) - 1
+target_dist = np.vstack([
+    np.column_stack([x1, y1 + 0.5]),
+    np.column_stack([x2, y2 + 0.5])
+])
+target_dist += np.random.normal(0, 0.1, target_dist.shape)
+
+def f1(x, t):
+    """Split transformation"""
+    shift = 2 * t * np.sign(x[:, 1])[:, np.newaxis] * np.array([1, 0])
+    return x + shift
+
+def f2(x, t):
+    """Curve transformation"""
+    theta = t * np.pi / 2
+    r = np.sqrt(x[:, 0]**2 + x[:, 1]**2)
+    phi = np.arctan2(x[:, 1], x[:, 0]) + theta * (1 - r/4)
+    return np.column_stack([r * np.cos(phi), r * np.sin(phi)])
+
+def f3(x, t):
+    """Fine-tune to target"""
+    return (1 - t) * x + t * target_dist
+
+# Create figure
+fig, ax = plt.subplots(figsize=(10, 10))
+scatter = ax.scatter([], [], alpha=0.6, s=10)
+ax.set_xlim(-4, 4)
+ax.set_ylim(-4, 4)
+ax.set_aspect('equal')
+ax.grid(True, alpha=0.3)
+
+def sigmoid(x):
+    """Smooth transition function"""
+    return 1 / (1 + np.exp(-(x - 0.5) * 10))
+
+def get_title(t):
+    if t &lt; 0.33:
+        return f'Applying Split Transformation (f₁)'
+    elif t &lt; 0.66:
+        return f'Applying Curve Transformation (f₂)'
+    else:
+        return f'Fine-tuning to Target Distribution (f₃)'
+
+def init():
+    scatter.set_offsets(initial_dist)
+    ax.set_title('Initial Gaussian Distribution', pad=20, fontsize=18)
+    return [scatter]
+
+def update(frame):
+    #Normalize frame to [0, 1]
+    t = frame / 100
+    
+    #Apply transformations sequentially
+    points = initial_dist
+    
+    #f1: Split the distribution
+    t1 = sigmoid(t * 3) if t &lt; 0.33 else 1
+    points = f1(points, t1)
+    
+    #f2: Create curves
+    t2 = sigmoid((t - 0.33) * 3) if 0.33 &lt;= t &lt; 0.66 else (0 if t &lt; 0.33 else 1)
+    points = f2(points, t2)
+    
+    #f3: Fine-tune to target
+    t3 = sigmoid((t - 0.66) * 3) if t &gt;= 0.66 else 0
+    points = f3(points, t3)
+    
+    #Update scatter plot
+    scatter.set_offsets(points)
+    colors = points[:, 0] + points[:, 1]
+    scatter.set_array(colors)
+    
+    #Update title
+    ax.set_title(get_title(t), pad=20, fontsize=18)
+    
+    return [scatter]
+
+#Create animation
+anim = FuncAnimation(fig, update, frames=100, init_func=init,
+                    interval=50, blit=True)
+plt.tight_layout()
+plt.show()
+
+#Save animation as a gif
+anim.save('normalizing_flow_single.gif', writer='pillow')</code></pre>
+
+
+
+<p class="wp-block-paragraph">More formally, assume the following:</p>
+
+
+
+<figure class="wp-block-image size-large"><img decoding="async" src="../Images/08a90ac7bfcd07f96cd75fc3257f1e44.png" alt="" class="wp-image-616560" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/08/medium_equations-8_page-0001-1024x264.jpg"/></figure>
+
+
+
+<p class="wp-block-paragraph">Then our target distribution is defined by the following change of variables formula:</p>
+
+
+
+<figure class="wp-block-image aligncenter size-large"><img decoding="async" src="../Images/6479b19961c3f5bd36e217ad42a0246a.png" alt="" class="wp-image-616558" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/08/medium_equations-7_page-0001-1024x46.jpg"/></figure>
+
+
+
+<p class="wp-block-paragraph">Where J_{f^{-1}}(x), the Jacobian of f^{-1} evaluated at x.</p>
+
+
+
+<p class="wp-block-paragraph">Since we need to compute the determinant, there is also a computational consideration; our transformation functions should ideally have Jacobians whose determinants are easy to calculate. Designing a diffeomorphic function that both models a complex distribution and yields a tractable determinant is a challenging task. The way this is addressed in practice is by constructing the target distribution through a flow of simpler functions. Thus, f is defined as follows:</p>
+
+
+
+<figure class="wp-block-image size-large"><img decoding="async" src="../Images/649c61fa2ca33f0ab6bcebd956069d85.png" alt="" class="wp-image-616557" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/08/medium_equations-6_page-0001-1024x41.jpg"/></figure>
+
+
+
+<p class="wp-block-paragraph">Then, as the composition of diffeomorphic functions is also diffeomorphic, f will be invertible and differentiable.</p>
+
+
+
+<p class="wp-block-paragraph">There are a few typical candidates for f. Listed below are popular choices.</p>
+
+
+
+<h3 class="wp-block-heading">Affine Flows</h3>
+
+
+
+<p class="wp-block-paragraph">Affine flows are given by the following function:</p>
+
+
+
+<figure class="wp-block-image aligncenter size-full is-resized"><img decoding="async" src="../Images/9169b074b1734a943ece7b7d89942d30.png" alt="" class="wp-image-616561" style="width:160px;height:auto" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/08/medium_equations-9_page-0001.jpg"/></figure>
+
+
+
+<p class="wp-block-paragraph">We need to restrict <strong>A </strong>to<strong> </strong>being an invertible square matrix so that f is invertible. Affine flows are not very good at modelling data on their own, but they are useful when mixed with other functions. </p>
+
+
+
+<h3 class="wp-block-heading">Elementwise Flows</h3>
+
+
+
+<p class="wp-block-paragraph">Elementwise flows transform the vector u element wise. Let h be a scalar bijection, we can create a vector-valued bijection f defined as follows:</p>
+
+
+
+<figure class="wp-block-image aligncenter size-full is-resized"><img decoding="async" src="../Images/563cd6a82f6b374006780e87c80191c7.png" alt="" class="wp-image-616562" style="width:123px;height:auto" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/08/medium_equations-10_page-0001.jpg"/></figure>
+
+
+
+<p class="wp-block-paragraph">The determinant of the Jacobian is then given by:</p>
+
+
+
+<figure class="wp-block-image"><img decoding="async" src="../Images/538c90ce51180197425fd3496095fa1f.png" alt="" class="wp-image-616566" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/08/1wbi1jqJun_hX53xTbibUZQ.jpg"/></figure>
+
+
+
+<p class="wp-block-paragraph">Similar to affine flows, elementwise flows are not very effective at modeling data on their own, since they do not capture interactions between dimensions. However, they are often used in combination with other transformations to build more complex flows.</p>
+
+
+
+<h3 class="wp-block-heading">Coupling Flows</h3>
+
+
+
+<p class="wp-block-paragraph">Coupling flows, introduced by Dinh et al. (2015), differ from the flows discussed earlier in that they allow the use of non-linear functions to better capture the structure of the data. Apologies for using an image here, but to avoid confusion I needed inline LaTeX.</p>
+
+
+
+<figure class="wp-block-image"><img decoding="async" src="../Images/2d31496c862f54163e55b4e76b4b9f78.png" alt="" class="wp-image-616569" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/08/1NQWIstchXW2lowNRWvc41w.jpg"/></figure>
+
+
+
+<p class="wp-block-paragraph">Here, the parameters of f-hat are calculated by sending the subset b of u through Θ, where Θ is a general function referred to as the conditioner. This setup contrasts with affine flows, which only mix dimensions linearly, and elementwise flows, which keep each dimension isolated. Coupling flows allow for a non-linear mixing of dimensions through the conditioner. If you are interested in the type of coupling layers that have been proposed, see Kobyzev, Ivan &amp; Prince, Simon &amp; Brubaker, Marcus. (2020).</p>
+
+
+
+<p class="wp-block-paragraph">The determinant is quite simple to calculate as the partial derivative of x-b with respect to u-b is 0. Hence, the Jacobian is the following upper block triangular matrix:</p>
+
+
+
+<figure class="wp-block-image"><img decoding="async" src="../Images/07883ab0b929356ef1b38e1189db635a.png" alt="" class="wp-image-616570" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/08/1DizRmd9mkSTUbDijLa30LA.jpg"/></figure>
+
+
+
+<p class="wp-block-paragraph">The determinant of the Jacobian is then given by:</p>
+
+
+
+<figure class="wp-block-image"><img decoding="async" src="../Images/34f454a67761270a81cffccdee5aeca5.png" alt="" class="wp-image-616567" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/08/1K-6wETD4kQ5t_LxqK-D4YQ.jpg"/></figure>
+
+
+
+<p class="wp-block-paragraph">The following showcases visually how each of these functions could effect the distribution. </p>
+
+
+
+<figure class="wp-block-image"><img decoding="async" src="../Images/80225664ae3e5870bde6c61cc5b9795d.png" alt="" class="wp-image-616575" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/08/1RFHXVYu0quA6pd4mXtBu_g.gif"/></figure>
+
+
+
+<h3 class="wp-block-heading">Masked Autoregressive Flows</h3>
+
+
+
+<p class="wp-block-paragraph">Assume that <strong>u</strong> is a vector containing <strong>d </strong>elements. An autoregressive bijection function, which outputs a vector <strong>x</strong> with <strong>d</strong> elements, is defined as follows:</p>
+
+
+
+<figure class="wp-block-image size-large"><img decoding="async" src="../Images/b156ce7bf81dc9746530df1e76298d9d.png" alt="" class="wp-image-616564" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/08/medium_equations-13_page-0001-1024x44.jpg"/></figure>
+
+
+
+<p class="wp-block-paragraph">Here, h is a scalar bijection parameterized by Θ, where Θ is an arbitrary non-linear function, typically a neural network. As a result of the autoregressive structure, each element x_i depends only on the elements of u up to the i-th index. Consequently, the Jacobian matrix will be triangular, and its determinant will be the product of the diagonal entries, as follows:</p>
+
+
+
+<figure class="wp-block-image"><img decoding="async" src="../Images/b8218e5107f1a7ed375c6714ac584c3e.png" alt="" class="wp-image-616573" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/08/1nu9NAgnJdv7x73CL28lpuw.jpg"/></figure>
+
+
+
+<figure class="wp-block-image"><img decoding="async" src="../Images/396885906f52e6eb11cdcb00c75a265b.png" alt="" class="wp-image-616572" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/08/1yC5dTYCE-2bFg8d_rGNFcA.jpg"/></figure>
+
+
+
+<p class="wp-block-paragraph">If we were to use multiple autoregressive bijection functions as our f, we would need to train d different neural networks, which can be quite computationally expensive. So instead, to address this, a more efficient approach in practice is to share parameters between the conditioners by combining them into a single model Θ that takes in a shared input x and outputs the set of parameters (Θ1, Θ2,…, Θd). However, to keep the autoregressive structure, we have to ensure that each Θi depends only on x1​,x2​,…,xi−1. </p>
+
+
+
+<p class="wp-block-paragraph">Masked Autoregressive Flows (MAF) use a multi-layer perceptron as the non-linear function, and then apply masking to zero out any computational paths that would violate the autoregressive structure. By doing so, MAF ensures that each output Θi​ is conditionally dependent only on the previous inputs x1​,x2​,…,xi−1 and allowing for efficient training.</p>
+
+
+
+<hr class="wp-block-separator has-alpha-channel-opacity is-style-dotted"/>
+
+
+
+<h2 class="wp-block-heading">Part 3: Showdown</h2>
+
+
+
+<p class="wp-block-paragraph">To determine whether KDE or MAF better models distributions in higher dimensions, I designed an experiment that is similar to my introductory analysis of KDE. I trained both models on progressively larger datasets until each achieved a KL divergence of 0.5. </p>
+
+
+
+<p class="wp-block-paragraph">For those unfamiliar with this metric, KL divergence quantifies how one probability distribution differs from a reference distribution. Specifically, it measures the expected excess ‘surprise’ from using one distribution to approximate another. A KL divergence of 0.0 indicates perfect alignment between distributions, while higher values signify greater discrepancy. To provide visual intuition, the figure below illustrates what .5 KL divergence looks like when comparing two three-dimensional distributions:</p>
+
+
+
+<figure class="wp-block-image alignwide"><img decoding="async" src="../Images/9c1827c256c5c3909c340740684a2988.png" alt="" class="wp-image-616574" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/08/1yB5Ngdsb8MCne8d6zV7hjQ.png"/><figcaption class="wp-element-caption">.5 KL Divergence Visual</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">The experimental design encompassed three distinct distribution families, each chosen to test different aspects of the models’ capabilities. First, I examined Conditional Gaussian Distributions, which represent the simplest case with unimodal, symmetric probability mass. Second, I tested Conditional Mixture of Gaussians, introducing multimodality to challenge the models’ ability to capture multiple distinct modes in the data. Finally, I included Conditional Skew Normal distributions to assess performance on asymmetric distributions.</p>
+
+
+
+<p class="wp-block-paragraph">For the Kernel Density Estimation model, selecting appropriate bandwidth parameters was challenging for the larger dimensions. I ended up employing Leave-One-Out Cross-Validation (LOOCV), a technique where each data point is held out while the remaining points are used to estimate the optimal bandwidth. This process, while computationally expensive, requiring n separate model fits for n data points, was necessary for achieving reliable results in higher dimensions. In my previous versions of this experiments with alternative bandwidth selection methods, all demonstrated inferior performance, requiring substantially more training data to achieve the same KL divergence threshold. </p>
+
+
+
+<p class="wp-block-paragraph">The Masked Autoregressive Flow model required a different optimization strategy. Like most neural network based models, MAF depends on a number of hyperparameters. I developed a scaling strategy where these hyperparameters were adjusted proportionally to the input dimensionality. It’s important to note that this scaling was based on reasonable heuristics rather than an exhaustive optimization. The hyperparameter search was kept minimal to establish baseline performance, more sophisticated tuning would likely give large performance improvements for the MAF model.</p>
+
+
+
+<p class="wp-block-paragraph">The complete codebase, including data generation, model implementations, training procedures, and evaluation metrics, is available in <a href="https://github.com/ZackNay/KDE-VS-MAF" target="_blank" rel="noreferrer noopener">this repository</a> for reproducibility and further experimentation. Here are the results:</p>
+
+
+
+<figure class="wp-block-image alignwide"><img decoding="async" src="../Images/46217672ca5fcd1ea3bd3e37b108f4b7.png" alt="" class="wp-image-616571" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/08/1J0VR1HbCQGkaBj3bbbMDQQ.png"/></figure>
+
+
+
+<p class="wp-block-paragraph">The experimental results show a striking a difference in relative performance of KDE and MAF! As shown by the graphs, a transition occurs around the fifth dimension. Below this threshold, KDE showed better performance, however, beyond five dimensions, MAF begins to vastly outperform KDE by increasingly dramatic margins.</p>
+
+
+
+<p class="wp-block-paragraph">The magnitude of this difference becomes stark at dimension 7, where our results demonstrate a profound disparity in data efficiency. Across all three distribution types tested KDE consistently required more than 100,000 data points to achieve satisfactory performance. In contrast, MAF reached the same performance threshold with a maximum of merely a maximum of 2,000 data points across all distributions. This represents an improvement factor ranging from 50x to 100x! </p>
+
+
+
+<p class="wp-block-paragraph">Apart from sample efficiency, the computational performance differences are equally compelling as the KDE required approximately 12 times longer to train than MAF at these higher dimensions.</p>
+
+
+
+<p class="wp-block-paragraph">The combination of superior data efficiency and faster training times makes MAF the clear winner for high dimensional tasks. KDE is still certainly a valuable tool for low-dimensional problems, but if you are working on an application involving more than five dimensions, I highly recommend trying the MAF approach.</p>
+
+
+
+<hr class="wp-block-separator has-alpha-channel-opacity is-style-dotted"/>
+
+
+
+<h2 class="wp-block-heading">Part 4: Why does MAF Crush KDE?</h2>
+
+
+
+<p class="wp-block-paragraph">To understand this why KDE suffers in high dimension, we must first examine how KDE actually works under the hood. As discussed in my previous article, Kernel Density Estimation uses local neighborhood estimation, where for any point where we want to evaluate the density, KDE looks at nearby data points and uses their proximity to estimate the local probability density. Each kernel function creates a neighborhood around each data point, and the density estimate at any location is the sum of contributions from all kernels whose neighborhoods include that location.</p>
+
+
+
+<p class="wp-block-paragraph">This local approach works well in low dimensions. However, as the dimensions increase, the data becomes sparser, causing the estimator to need exponentially more data points to fill the space with the same density.<br/><br/>In contrast, MAF doesn’t use local neighborhood based estimation. Instead of estimating density by looking at nearby points, MAF learns functions that map previous variables to conditional distribution parameters. The neural network’s weights are shared across the entire input space, allowing it to generalize from training data without needing to populate local neighborhoods. This architectural difference enables MAF to scale far better then KDE with dimension.</p>
+
+
+
+<p class="wp-block-paragraph">This distinction between local and global approaches explains the dramatic performance gap observed in my experiment. While KDE must populate an exponentially expanding space with data points to maintain accurate local neighborhoods, MAF can exploit the compositional structure of neural networks to learn global patterns using far fewer samples. </p>
+
+
+
+<h2 class="wp-block-heading">Conclusion</h2>
+
+
+
+<p class="wp-block-paragraph">The Kernel Density Estimator is great at nonparametrically analyzing data in low dimensions; it’s intuitive, fast, and requires far less tuning. However, for high dimensional data, or when computational time is a concern, I’d recommend trying out normalizing flows. While the model isn’t nearly as battle tested as KDE, they’re a solid alternative to try out, and might just end up being your new favorite density estimator.</p>
+
+
+
+<p class="wp-block-paragraph"><em>Unless otherwise noted, all images are by the author. The code for the main experiment is located in this </em><a href="https://github.com/ZackNay/KDE-VS-MAF" rel="noreferrer noopener" target="_blank"><em>repository</em></a><em>. </em></p>
+    
+</body>
+</html>

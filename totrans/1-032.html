@@ -1,0 +1,259 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.1//EN"
+  "http://www.w3.org/TR/xhtml11/DTD/xhtml11.dtd">
+
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+<title>How to Use Simple Data Contracts in Python for Data Scientists</title>
+<link href="../Styles/Style.css" type="text/css" rel="stylesheet"/>
+</head>
+<body>
+<h1>How to Use Simple Data Contracts in Python for Data Scientists</h1>
+<blockquote>原文：<a href="https://towardsdatascience.com/how-to-use-simple-data-contracts-in-python-for-data-scientists/">https://towardsdatascience.com/how-to-use-simple-data-contracts-in-python-for-data-scientists/</a></blockquote>
+<h2 class="wp-block-heading"><mdspan datatext="el1764654507571" class="mdspan-comment">The Issue</mdspan></h2>
+
+
+
+<p class="wp-block-paragraph">Let’s be honest: we have all been there.</p>
+
+
+
+<p class="wp-block-paragraph">It’s Friday afternoon. You’ve trained a model, validated it, and deployed the inference pipeline. The metrics look green. You close your laptop for the weekend, and enjoy the break.</p>
+
+
+
+<p class="wp-block-paragraph">Monday morning, you are greeted with the message <strong>“Pipeline failed” </strong> when checking into work. What’s going on? Everything was perfect when you deployed the inference pipeline. </p>
+
+
+
+<p class="wp-block-paragraph">The truth is that the issue could be a number of things. Maybe the upstream engineering team changed the <code>user_id</code> column from an integer to a string. Or maybe the <code>price</code> column suddenly contains negative numbers. Or my personal favorite: the column name changed from <code>created_at</code> to <code>createdAt</code> (camelCase strikes again!).</p>
+
+
+
+<p class="wp-block-paragraph">The industry calls this <strong>Schema Drift</strong>. I call it a headache.</p>
+
+
+
+<p class="wp-block-paragraph">Lately, people are talking a lot about <strong>Data Contracts</strong>. Usually, this involves selling you an expensive SaaS platform or a complex microservices architecture. But if you are just a Data Scientist or Engineer trying to keep your Python pipelines from exploding, you don’t necessarily need enterprise bloat. </p>
+
+
+
+<hr class="wp-block-separator has-alpha-channel-opacity is-style-dotted"/>
+
+
+
+<h2 class="wp-block-heading">The Tool: Pandera</h2>
+
+
+
+<p class="wp-block-paragraph">Let’s go through how to create a simple data contract in Python using the library <strong>Pandera</strong>. It’s an open-source Python library that allows you to define schemas as class objects. It feels very similar to Pydantic (if you’ve used FastAPI), but it is built specifically for DataFrames.</p>
+
+
+
+<p class="wp-block-paragraph">To get started, you can simply install <code>pandera</code> using pip:</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-bash">pip install pandera</code></pre>
+
+
+
+<hr class="wp-block-separator has-alpha-channel-opacity is-style-dotted"/>
+
+
+
+<h2 class="wp-block-heading">A Real-Life Example: The Marketing Leads Feed</h2>
+
+
+
+<p class="wp-block-paragraph">Let’s look at a classic scenario. You are ingesting a CSV file of marketing leads from a third-party vendor.</p>
+
+
+
+<p class="wp-block-paragraph">Here is what we <strong>expect</strong> the data to look like:</p>
+
+
+
+<ol start="1" class="wp-block-list">
+<li class="wp-block-list-item"><strong>id</strong>: An integer (must be unique).</li>
+
+
+
+<li class="wp-block-list-item"><strong>email</strong>: A string (must actually look like an email).</li>
+
+
+
+<li class="wp-block-list-item"><strong>signup_date</strong>: A valid datetime object.</li>
+
+
+
+<li class="wp-block-list-item"><strong>lead_score</strong>: A float between 0.0 and 1.0.</li>
+</ol>
+
+
+
+<p class="wp-block-paragraph">Here is the messy reality of our raw data that we recieve:</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">import pandas as pd
+import numpy as np
+
+# Simulating incoming data that MIGHT break our pipeline
+data = {
+    "id": [101, 102, 103, 104],
+    "email": ["<a href="/cdn-cgi/l/email-protection" class="__cf_email__" data-cfemail="93f2fff6ebd3e7f6e0e7bdf0fcfe">[email protected]</a>", "<a href="/cdn-cgi/l/email-protection" class="__cf_email__" data-cfemail="e6958794878ea692839592c885898b">[email protected]</a>", "INVALID_EMAIL", "<a href="/cdn-cgi/l/email-protection" class="__cf_email__" data-cfemail="73111c1133071600075d101c1e">[email protected]</a>"],
+    "signup_date": ["2024-01-01", "2024-01-02", "2024-01-03", "2024-01-04"],
+    "lead_score": [0.5, 0.8, 1.5, -0.1] # Note: 1.5 and -0.1 are out of bounds!
+}
+
+df = pd.DataFrame(data)</code></pre>
+
+
+
+<p class="wp-block-paragraph">If you fed this dataframe into a model expecting a score between 0 and 1, your predictions would be garbage. If you tried to join on <code>id</code> and there were duplicates, your row counts would explode. Messy data leads to messy data science!</p>
+
+
+
+<h3 class="wp-block-heading">Step 1: Define The Contract</h3>
+
+
+
+<p class="wp-block-paragraph">Instead of writing a dozen <code>if</code> statements to check data quality, we define a <strong>SchemaModel</strong>. This is our contract.<br/></p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">import pandera as pa
+from pandera.typing import Series
+
+class LeadsContract(pa.SchemaModel):
+    # 1. Check data types and existence
+    id: Series[int] = pa.Field(unique=True, ge=0) 
+    
+    # 2. Check formatting using regex
+    email: Series[str] = pa.Field(str_matches=r"[^@]+@[^@]+\.[^@]+")
+    
+    # 3. Coerce types (convert string dates to datetime objects automatically)
+    signup_date: Series[pd.Timestamp] = pa.Field(coerce=True)
+    
+    # 4. Check business logic (bounds)
+    lead_score: Series[float] = pa.Field(ge=0.0, le=1.0)
+
+    class Config:
+        # This ensures strictness: if an extra column appears, or one is missing, throw an error.
+        strict = True</code></pre>
+
+
+
+<p class="wp-block-paragraph">Look over the code above to get the general feel for how Pandera sets up a contract. You can worry about the details later when you look through the Pandera documentation. </p>
+
+
+
+<h3 class="wp-block-heading">Step 2: Enforce The Contract</h3>
+
+
+
+<p class="wp-block-paragraph">Now, we need to apply the contract we made to our data. The naive way to do this is to run <code>LeadsContract.validate(df)</code>. This works, but it crashes on the <em>first</em> error it finds. In production, you usually want to know <em>everything</em> that is wrong with the file, not just the first row.</p>
+
+
+
+<p class="wp-block-paragraph">We can enable “lazy” validation to catch all errors at once.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">try:
+    # lazy=True means "find all errors before crashing"
+    validated_df = LeadsContract.validate(df, lazy=True)
+    print("Data passed validation! Proceeding to ETL...")
+    
+except pa.errors.SchemaErrors as err:
+    print("⚠️ Data Contract Breached!")
+    print(f"Total errors found: {len(err.failure_cases)}")
+    
+    # Let's look at the specific failures
+    print("\nFailure Report:")
+    print(err.failure_cases[['column', 'check', 'failure_case']])</code></pre>
+
+
+
+<h3 class="wp-block-heading">The Output</h3>
+
+
+
+<p class="wp-block-paragraph">If you run the code above, you won’t get a generic <code>KeyError</code>. You will get a specific report detailing exactly why the contract was breached:</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-bash">⚠️ Data Contract Breached!
+Total errors found: 3
+
+Failure Report:
+        column                 check      failure_case
+0        email           str_matches     INVALID_EMAIL
+1   lead_score   less_than_or_equal_to             1.5
+2   lead_score   greater_than_or_equal_to         -0.1</code></pre>
+
+
+
+<p class="wp-block-paragraph">In a more realistic scenario, you would probably log the output to a file and set up alerts so that you get notified with something is broken.</p>
+
+
+
+<hr class="wp-block-separator has-alpha-channel-opacity is-style-dotted"/>
+
+
+
+<h2 class="wp-block-heading">Why This Matters</h2>
+
+
+
+<p class="wp-block-paragraph">This approach shifts the dynamic of your work.</p>
+
+
+
+<p class="wp-block-paragraph">Without a contract, your code fails deep inside the transformation logic (or worse, it doesn’t fail, and you write bad data to the warehouse). You spend hours debugging <code>NaN</code> values.</p>
+
+
+
+<p class="wp-block-paragraph"><strong>With a contract:</strong></p>
+
+
+
+<ol start="1" class="wp-block-list">
+<li class="wp-block-list-item"><strong>Fail Fast:</strong> The pipeline stops at the door. Bad data never enters your core logic.</li>
+
+
+
+<li class="wp-block-list-item"><strong>Clear Blame:</strong> You can send that Failure Report back to the data provider and say, “Rows 3 and 4 violated the schema. Please fix.”</li>
+
+
+
+<li class="wp-block-list-item"><strong>Documentation:</strong> The <code>LeadsContract</code> class serves as living documentation. New joiners to the project don’t need to guess what the columns represent; they can just read the code. You also avoid setting up a separate data contract in SharePoint, Confluence, or wherever that quickly get outdated. </li>
+</ol>
+
+
+
+<hr class="wp-block-separator has-alpha-channel-opacity is-style-dotted"/>
+
+
+
+<h2 class="wp-block-heading">The “Good Enough” Solution</h2>
+
+
+
+<p class="wp-block-paragraph">You can definitely go deeper. You can integrate this with <strong>Airflow</strong>, push metrics to a dashboard, or use tools like <strong>great_expectations </strong>for more complex statistical profiling.</p>
+
+
+
+<p class="wp-block-paragraph">But for 90% of the use cases I see, a simple validation step at the start of your Python script is enough to sleep soundly on a Friday night.</p>
+
+
+
+<p class="wp-block-paragraph">Start small. Define a schema for your messiest dataset, wrap it in a try/catch block, and see how many headaches it saves you this week. When this simple approach is not suitable anymore, THEN I would consider more elaborate tools for data contacts.</p>
+
+
+
+<p class="wp-block-paragraph">If you are interested in AI, data science, or data engineering, please follow me or connect on <a href="https://www.linkedin.com/in/eirik-berge/" target="_blank" rel="noreferrer noopener">LinkedIn</a>.</p>
+    
+</body>
+</html>

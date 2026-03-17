@@ -1,0 +1,718 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.1//EN"
+  "http://www.w3.org/TR/xhtml11/DTD/xhtml11.dtd">
+
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+<title>Bootstrap a Data Lakehouse in an Afternoon</title>
+<link href="../Styles/Style.css" type="text/css" rel="stylesheet"/>
+</head>
+<body>
+<h1>Bootstrap a Data Lakehouse in an Afternoon</h1>
+<blockquote>原文：<a href="https://towardsdatascience.com/bootstrap-a-data-lakehouse-in-an-afternoon/">https://towardsdatascience.com/bootstrap-a-data-lakehouse-in-an-afternoon/</a></blockquote>
+<p class="wp-block-paragraph"><mdspan datatext="el1764701792928" class="mdspan-comment">Building a data lakehouse</mdspan> doesn’t need to be <strong><em>that</em></strong> complicated. In this article, I’ll show you how to develop a basic, “starter” one that uses an Iceberg table on AWS S3 storage. Once the table is registered using AWS Glue, you’ll be able to query and mutate it from Amazon Athena, including using:</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item"><strong>Time travel queries</strong>, </li>
+</ul>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item"><strong>Merging, updating and deleting data</strong> </li>
+</ul>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item"><b>Optimising and vacuuming your tables.</b> </li>
+</ul>
+
+
+
+<p class="wp-block-paragraph">I’ll also show you how to inspect <em>the same tables locally</em> from <strong>DuckDB, </strong>and we’ll also see how to use <strong>Glue/Spark</strong> to insert more table data.</p>
+
+
+
+<p class="wp-block-paragraph">Our example might be basic, but it’ll showcase the setup, the different tools and the processes you can put in place to build up a more extensive data store. All modern cloud providers have equivalents of the AWS services I’m discussing in this article, so it should be fairly straightforward to replicate what I discuss here on Azure, Google Cloud, and others.</p>
+
+
+
+<p class="wp-block-paragraph">To make sure we’re all on the same page, here is a brief explanation of some of the key technologies we’ll be using.</p>
+
+
+
+<h3 class="wp-block-heading">AWS Glue/Spark</h3>
+
+
+
+<p class="wp-block-paragraph">AWS Glue is a fully managed, serverless ETL service from Amazon that streamlines data preparation and integration for analytics and machine learning. It automatically detects and catalogues metadata from various sources, such as S3, into a centralised Data Store. Additionally, it can create customisable Python-based Spark ETL scripts to execute these tasks on a scalable, serverless Apache Spark platform. This makes it great for building data lakes on Amazon S3, loading data into data warehouses like Amazon Redshift, and performing data cleaning and transformation. all without managing infrastructure.</p>
+
+
+
+<h3 class="wp-block-heading">AWS Athena</h3>
+
+
+
+<p class="wp-block-paragraph">AWS Athena is an interactive query service that simplifies data analysis directly in Amazon S3 using standard SQL. As a serverless platform, there’s no need to manage or provision servers; just point Athena at your S3 data, define your schema (usually with AWS Glue), and begin running SQL queries. It’s frequently utilised for ad hoc analysis, reporting, and exploration of large datasets in formats such as CSV, JSON, ORC, or Parquet.</p>
+
+
+
+<h3 class="wp-block-heading">Iceberg tables</h3>
+
+
+
+<p class="wp-block-paragraph">Iceberg tables are an open table format for datasets that provide database-like capabilities for data stored in data lakes, such as Amazon S3 object storage. Traditionally, on S3, you can create, read, and delete objects(files), but updating them is not possible.  The Iceberg format addresses that limitation while also offering other benefits, including ACID transactions, schema evolution, hidden partitioning, and time-travel features. </p>
+
+
+
+<h3 class="wp-block-heading">DuckDB</h3>
+
+
+
+<p class="wp-block-paragraph">DuckDB is an in-memory analytical database written in C++ and designed for analytical SQL workloads. Since its release a couple of years ago, it has grown in popularity and is now one of the premier data processing tools used by data engineers and scientists, thanks to its grounding in SQL, performance, and versatility.</p>
+
+
+
+<h3 class="wp-block-heading">Scenario overview</h3>
+
+
+
+<p class="wp-block-paragraph">Let’s say you have been tasked with building a small “warehouse-lite” analytics table for order events, but you don’t want to adopt a heavyweight platform just yet. You need:</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item"><strong>Safe writes</strong> (no broken readers, no partial commits)</li>
+
+
+
+<li class="wp-block-list-item"><strong>Row-level</strong> changes (UPDATE/DELETE/MERGE, not only append)</li>
+
+
+
+<li class="wp-block-list-item"><strong>Point-in-time reads</strong> (for audits and debugging)</li>
+
+
+
+<li class="wp-block-list-item"><strong>Local analytics</strong> against production-accurate data for quick checks</li>
+</ul>
+
+
+
+<h2 class="wp-block-heading">What we’ll build</h2>
+
+
+
+<ol class="wp-block-list">
+<li class="wp-block-list-item">Create an Iceberg table in <strong>Glue</strong> &amp; <strong>S3</strong> via <strong>Athena</strong></li>
+
+
+
+<li class="wp-block-list-item">Load and mutate rows (<strong>INSERT/UPDATE/DELETE/MERGE</strong>)</li>
+
+
+
+<li class="wp-block-list-item"><strong>Time travel</strong> to prior snapshots (by timestamp and by snapshot ID)</li>
+
+
+
+<li class="wp-block-list-item">Keep it fast with <strong>OPTIMIZE</strong> and <strong>VACUUM</strong></li>
+
+
+
+<li class="wp-block-list-item">Read <em>the same table</em> locally from <strong>DuckDB</strong> (S3 access via DuckDB Secrets)</li>
+
+
+
+<li class="wp-block-list-item">See how to add new records to our table using Glue Spark code</li>
+</ol>
+
+
+
+<p class="wp-block-paragraph">So, in a nutshell, we’ll be using:-</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">S3 for data storage</li>
+
+
+
+<li class="wp-block-list-item">Glue Catalogue for table metadata/discovery</li>
+
+
+
+<li class="wp-block-list-item">Athena for serverless SQL reads <em>and</em> writes</li>
+
+
+
+<li class="wp-block-list-item">DuckDB for cheap, local analytics against the same Iceberg table</li>
+
+
+
+<li class="wp-block-list-item">Spark<strong> </strong>for processing grunt</li>
+</ul>
+
+
+
+<blockquote class="wp-block-quote is-layout-flow wp-block-quote-is-layout-flow">
+<p class="wp-block-paragraph">The key takeaway from our perspective is that by using the above technologies, we will be able to perform database-like queries on object storage.</p>
+</blockquote>
+
+
+
+<h3 class="wp-block-heading">Setting up our development environment </h3>
+
+
+
+<p class="wp-block-paragraph">I prefer to isolate local tooling in a separate environment. Use any tool you like to do this; I’ll show using conda since that’s what I usually do. For demo purposes, I’ll be running all the code within a Jupyter Notebook environment.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python"># create and activate a local env
+conda create -n iceberg-demo python=3.11 -y
+conda activate iceberg-demo
+
+# install duckdb CLI + Python package and awscli for quick tests
+pip install duckdb awscli jupyter</code></pre>
+
+
+
+<h3 class="wp-block-heading">Prerequisites</h3>
+
+
+
+<p class="wp-block-paragraph">As we’ll be using AWS services, you’ll need an AWS account. Also,</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">An S3 bucket for the data lake (e.g., <code>s3://my-demo-lake/warehouse/</code>)</li>
+
+
+
+<li class="wp-block-list-item">A Glue database (we’ll create one)</li>
+
+
+
+<li class="wp-block-list-item">Athena Engine Version 3<strong> i</strong>n your workgroup</li>
+
+
+
+<li class="wp-block-list-item">An IAM role or user for Athena with S3 + Glue permissions </li>
+</ul>
+
+
+
+<h3 class="wp-block-heading">1/ Athena setup</h3>
+
+
+
+<p class="wp-block-paragraph">Once you’ve signed into AWS, open Athena in the console and set your workgroup, engine version and S3 output location (for query results). To do this, look for a hamburger-style menu icon on the top left of the Athena home screen. Click on it to bring up a new menu block on the left. In there, you should see an Administration-&gt; Workgroups link. You will automatically be assigned to the primary workgroup. You can stick with this or create a new one if you like. Whichever option you choose, edit it and ensure that the following options are selected.</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">Analytics Engine — Athena SQL. Manually set the engine version to 3.0.</li>
+
+
+
+<li class="wp-block-list-item">Select customer-managed query result configuration and enter the required bucket and account information.</li>
+</ul>
+
+
+
+<h3 class="wp-block-heading">2/ Create an Iceberg table in Athena</h3>
+
+
+
+<p class="wp-block-paragraph">We’ll store order events and let Iceberg manage partitioning transparently. I’ll use a “hidden” partition on the day of the timestamp to spread writes/reads. Go back to the Athena home page and launch the Trino SQL query editor. Your screen should look like this.</p>
+
+
+
+<figure class="wp-block-image alignwide size-large"><img decoding="async" src="../Images/2327f76f87feff5ceb30e7d6896fd0e3.png" alt="" class="wp-image-620850" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/09/image-171-1024x418.png"/><figcaption class="wp-element-caption">Image from AWS website</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">Type in and run the following SQL. Change bucket/table names to suit.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">-- This automatically creates a Glue database 
+-- if you don't have one already
+CREATE DATABASE IF NOT EXISTS analytics;</code></pre>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">CREATE TABLE analytics.sales_iceberg (
+  order_id    bigint,
+  customer_id bigint,
+  ts          timestamp,
+  status      string,
+  amount_usd  double
+)
+PARTITIONED BY (day(ts))
+LOCATION 's3://your_bucket/warehouse/sales_iceberg/'
+TBLPROPERTIES (
+  'table_type' = 'ICEBERG',
+  'format' = 'parquet',
+  'write_compression' = 'snappy'
+)</code></pre>
+
+
+
+<h3 class="wp-block-heading">3) Load and mutate data (INSERT / UPDATE / DELETE / MERGE)</h3>
+
+
+
+<p class="wp-block-paragraph">Athena supports real Iceberg DML, allowing you to insert rows, update and delete records, and upsert using the MERGE statement. Under the hood, Iceberg uses snapshot-based ACID with delete files; readers stay consistent while writers work in parallel. </p>
+
+
+
+<p class="wp-block-paragraph"><strong>Seed a few rows.</strong></p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">INSERT INTO analytics.sales_iceberg VALUES
+  (101, 1, timestamp '2025-08-01 10:00:00', 'created', 120.00),
+  (102, 2, timestamp '2025-08-01 10:05:00', 'created',  75.50),
+  (103, 2, timestamp '2025-08-02 09:12:00', 'created',  49.99),
+  (104, 3, timestamp '2025-08-02 11:47:00', 'created', 250.00);</code></pre>
+
+
+
+<p class="wp-block-paragraph">A quick sanity check.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">SELECT * FROM analytics.sales_iceberg ORDER BY order_id;
+
+ order_id | customer_id |          ts           |  status  | amount_usd
+----------+-------------+-----------------------+----------+-----------
+  101     | 1           | 2025-08-01 10:00:00   | created  | 120.00
+  102     | 2           | 2025-08-01 10:05:00   | created  |  75.50
+  103     | 2           | 2025-08-02 09:12:00   | created  |  49.99
+  104     | 3           | 2025-08-02 11:47:00   | created  | 250.00</code></pre>
+
+
+
+<p class="wp-block-paragraph"><strong>Update and delete.</strong></p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">UPDATE analytics.sales_iceberg
+SET status = 'paid'
+WHERE order_id IN (101, 102)</code></pre>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">-- removes order 103
+DELETE FROM analytics.sales_iceberg
+WHERE status = 'created' AND amount_usd &lt; 60</code></pre>
+
+
+
+<p class="wp-block-paragraph"><strong>Idempotent upserts with MERGE</strong></p>
+
+
+
+<p class="wp-block-paragraph">Let’s treat order 104 as refunded and create a new order 105.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">MERGE INTO analytics.sales_iceberg AS t
+USING (
+  VALUES
+    (104, 3, timestamp '2025-08-02 11:47:00', 'refunded', 250.00),
+    (105, 4, timestamp '2025-08-03 08:30:00', 'created',   35.00)
+) AS s(order_id, customer_id, ts, status, amount_usd)
+ON s.order_id = t.order_id
+WHEN MATCHED THEN 
+  UPDATE SET 
+    customer_id = s.customer_id,
+    ts = s.ts,
+    status = s.status,
+    amount_usd = s.amount_usd
+WHEN NOT MATCHED THEN 
+  INSERT (order_id, customer_id, ts, status, amount_usd)
+  VALUES (s.order_id, s.customer_id, s.ts, s.status, s.amount_usd);</code></pre>
+
+
+
+<p class="wp-block-paragraph">You can now re-query to see: 101/102 → <strong>paid</strong>, 103 deleted, 104 → <strong>refunded</strong>, and 105 → <strong>created.</strong> (If you’re running this in a “real” account, you’ll notice the S3 object count ticking up — more on maintenance shortly.)</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">SELECT * FROM analytics.sales_iceberg ORDER BY order_id
+
+# order_id customer_id ts status amount_usd
+1 101 1 2025-08-01 10:00:00.000000 paid 120.0
+2 105 4 2025-08-03 08:30:00.000000 created 35.0
+3 102 2 2025-08-01 10:05:00.000000 paid 75.5
+4 104 3 2025-08-02 11:47:00.000000 refunded 250.0</code></pre>
+
+
+
+<h3 class="wp-block-heading">4) Time travel (and version travel)</h3>
+
+
+
+<p class="wp-block-paragraph">This is where the real value of using Iceberg shines. You can query the table as it looked at a moment in time <strong>or</strong> by a specific snapshot ID. In Athena, use this syntax,</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">-- Time travel to noon on Aug 2 (UTC)
+SELECT order_id, status, amount_usd
+FROM analytics.sales_iceberg
+FOR TIMESTAMP AS OF TIMESTAMP '2025-08-02 12:00:00 UTC'
+ORDER BY order_id;
+
+-- Or Version travel (replace the id with an actual snapshot id from your table)
+
+SELECT *
+FROM analytics.sales_iceberg
+FOR VERSION AS OF 949530903748831860;</code></pre>
+
+
+
+<p class="wp-block-paragraph">To get the various version (snapshot) IDs associated with a particular table, use this query.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">SELECT * FROM "analytics"."sales_iceberg$snapshots"
+ORDER BY committed_at DESC;</code></pre>
+
+
+
+<h3 class="wp-block-heading">5) Keeping your data healthy: OPTIMIZE and VACUUM</h3>
+
+
+
+<p class="wp-block-paragraph">Row-level writes (UPDATE/DELETE/MERGE) create many <strong>delete files</strong> and can fragment data. Two statements keep things fast and storage-friendly:</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item"><strong>OPTIMIZE … REWRITE DATA USING BIN_PACK</strong> — compacts small/fragmented files and folds deletes into data</li>
+
+
+
+<li class="wp-block-list-item"><strong>VACUUM</strong> — expires old snapshots + cleans <strong>orphan</strong> files</li>
+</ul>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">-- compact "hot" data (yesterday) and merge deletes
+OPTIMIZE analytics.sales_iceberg
+REWRITE DATA USING BIN_PACK
+WHERE ts &gt;= date_trunc('day', current_timestamp - interval '1' day);
+
+-- expire old snapshots and remove orphan files
+VACUUM analytics.sales_iceberg;</code></pre>
+
+
+
+<h3 class="wp-block-heading">6) Local analytics with DuckDB (read-only)</h3>
+
+
+
+<p class="wp-block-paragraph">It’s great to be able to sanity-check production tables from a laptop without having to run a cluster. DuckDB’s <strong>httpfs</strong> + <strong>iceberg</strong> extensions make this simple.</p>
+
+
+
+<h4 class="wp-block-heading">6.1 Install &amp; load extensions</h4>
+
+
+
+<p class="wp-block-paragraph">Open your Jupyter notebook and type in the following.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python"># httpfs gives S3 support; iceberg adds Iceberg readers.
+
+import duckdb as db
+db.sql("install httpfs; load httpfs;")
+db.sql("install iceberg; load iceberg;")</code></pre>
+
+
+
+<h4 class="wp-block-heading">6.2 Provide S3 credentials to DuckDB the “right” way (Secrets)</h4>
+
+
+
+<p class="wp-block-paragraph">DuckDB has a small but powerful secrets manager. The most robust setup in AWS is the <strong>credential chain</strong> provider, which reuses whatever the AWS SDK can find (environment variables, IAM role, etc.). Therefore, you will need to ensure that, for instance, your AWS CLI credentials are configured.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">db.sql("""CREATE SECRET ( TYPE s3, PROVIDER credential_chain )""")</code></pre>
+
+
+
+<p class="wp-block-paragraph">After that, any <strong>s3://…</strong> reads in this DuckDB session will use the secret data.</p>
+
+
+
+<h4 class="wp-block-heading">6.3 Point DuckDB at the Iceberg table’s metadata</h4>
+
+
+
+<p class="wp-block-paragraph">The most explicit way is to reference a concrete metadata file (e.g., the latest one in your table’s <code>metadata/</code> folder:)</p>
+
+
+
+<p class="wp-block-paragraph">To get a list of those, use this query</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">result = db.sql("""
+SELECT *
+FROM glob('s3://your_bucket/warehouse/**')
+ORDER BY file
+""")
+print(result)
+
+...
+...
+s3://your_bucket_name/warehouse/sales_iceberg/metadata/00000-942a25ce-24e5-45f8-ae86-b70d8239e3bb.metadata.json                                      │
+s3://your_bucket_name/warehouse/sales_iceberg/metadata/00001-fa2d9997-590e-4231-93ab-642c0da83f19.metadata.json                                      │
+s3://your_bucket_name/warehouse/sales_iceberg/metadata/00002-0da3a4af-64af-4e46-bea2-0ac450bf1786.metadata.json                                      │
+s3://your_bucket_name/warehouse/sales_iceberg/metadata/00003-eae21a3d-1bf3-4ed1-b64e-1562faa445d0.metadata.json                                      │
+s3://your_bucket_name/warehouse/sales_iceberg/metadata/00004-4a2cff23-2bf6-4c69-8edc-6d74c02f4c0e.metadata.json    
+...
+...
+...</code></pre>
+
+
+
+<p class="wp-block-paragraph">Look for the <span style="margin: 0px; padding: 0px;">metadata.json file with <strong>the highest numbered start to the file name</strong>, 00004 in my case. Then, you can use that in a query like this to retrieve</span> the latest position of your underlying table.</p>
+
+
+
+<p class="wp-block-paragraph"/>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python"># Use the highest numbered metadata file (00004 appears to be the latest in my case)
+result = db.sql("""
+SELECT *
+FROM iceberg_scan('s3://your_bucket/warehouse/sales_iceberg/metadata/00004-4a2cff23-2bf6-4c69-8edc-6d74c02f4c0e.metadata.json')
+LIMIT 10
+""")
+print(result)
+
+┌──────────┬─────────────┬─────────────────────┬──────────┬────────────┐
+│ order_id │ customer_id │         ts          │  status  │ amount_usd │
+│  int64   │    int64    │      timestamp      │ varchar  │   double   │
+├──────────┼─────────────┼─────────────────────┼──────────┼────────────┤
+│      105 │           4 │ 2025-08-03 08:30:00 │ created  │       35.0 │
+│      104 │           3 │ 2025-08-02 11:47:00 │ refunded │      250.0 │
+│      101 │           1 │ 2025-08-01 10:00:00 │ paid     │      120.0 │
+│      102 │           2 │ 2025-08-01 10:05:00 │ paid     │       75.5 │
+└──────────┴─────────────┴─────────────────────┴──────────┴────────────┘</code></pre>
+
+
+
+<p class="wp-block-paragraph">Want a specific snapshot? Use this to get a list.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">result = db.sql("""
+SELECT *
+FROM iceberg_snapshots('s3://your_bucket/warehouse/sales_iceberg/metadata/00004-4a2cff23-2bf6-4c69-8edc-6d74c02f4c0e.metadata.json')
+""")
+print("Available Snapshots:")
+print(result)
+
+Available Snapshots:
+┌─────────────────┬─────────────────────┬─────────────────────────┬──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+│ sequence_number │     snapshot_id     │      timestamp_ms       │                                                          manifest_list                                                           │
+│     uint64      │       uint64        │        timestamp        │                                                             varchar                                                              │
+├─────────────────┼─────────────────────┼─────────────────────────┼──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┤
+│               1 │ 5665457382547658217 │ 2025-09-09 10:58:44.225 │ s3://your_bucket/warehouse/sales_iceberg/metadata/snap-5665457382547658217-1-bb7d0497-0f97-4483-98e2-8bd26ddcf879.avro │
+│               3 │ 8808557756756599285 │ 2025-09-09 11:19:24.422 │ s3://your_bucket/warehouse/sales_iceberg/metadata/snap-8808557756756599285-1-f83d407d-ec31-49d6-900e-25bc8d19049c.avro │
+│               2 │   31637314992569797 │ 2025-09-09 11:08:08.805 │ s3://your_bucket/warehouse/sales_iceberg/metadata/snap-31637314992569797-1-000a2e8f-b016-4d91-9942-72fe9ddadccc.avro   │
+│               4 │ 4009826928128589775 │ 2025-09-09 11:43:18.117 │ s3://your_bucket/warehouse/sales_iceberg/metadata/snap-4009826928128589775-1-cd184303-38ab-4736-90da-52e0cf102abf.avro │
+└─────────────────┴─────────────────────┴─────────────────────────┴──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘</code></pre>
+
+
+
+<h3 class="wp-block-heading">7) Optional extra: Writing from Spark/Glue</h3>
+
+
+
+<p class="wp-block-paragraph">If you prefer Spark for larger batch writes, Glue can read/write Iceberg tables registered in the Glue Catalogue. You’ll probably still want to use Athena for ad-hoc SQL, time travel, and maintenance, but large CTAS/ETL can come via Glue jobs. (Just be aware that version compatibility and AWS LakeFormation permissions can bite, as Glue and Athena may lag slightly on Iceberg versions.)</p>
+
+
+
+<p class="wp-block-paragraph">Here’s an example of some Glue Spark code that inserts a few new data rows, starting at order_id = 110, into our existing table. Before running this, you should add the following Glue job parameter (under Glue Job Details-&gt; Advanced Parameters-&gt; Job parameters.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">Key: --conf
+Value: spark.sql.extensions=org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions</code></pre>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">import sys
+import random
+from datetime import datetime
+from pyspark.context import SparkContext
+from awsglue.utils import getResolvedOptions
+from awsglue.context import GlueContext
+from awsglue.job import Job
+from pyspark.sql import Row
+
+# --------------------------------------------------------
+# Init Glue job
+# --------------------------------------------------------
+args = getResolvedOptions(sys.argv, ['JOB_NAME'])
+sc = SparkContext()
+glueContext = GlueContext(sc)
+spark = glueContext.spark_session
+job = Job(glueContext)
+job.init(args['JOB_NAME'], args)
+
+# --------------------------------------------------------
+# Force Iceberg + Glue catalog configs (dynamic only)
+# --------------------------------------------------------
+spark.conf.set("spark.sql.catalog.glue_catalog", "org.apache.iceberg.spark.SparkCatalog")
+spark.conf.set("spark.sql.catalog.glue_catalog.warehouse", "s3://your_bucket/warehouse/")
+spark.conf.set("spark.sql.catalog.glue_catalog.catalog-impl", "org.apache.iceberg.aws.glue.GlueCatalog")
+spark.conf.set("spark.sql.catalog.glue_catalog.io-impl", "org.apache.iceberg.aws.s3.S3FileIO")
+spark.conf.set("spark.sql.defaultCatalog", "glue_catalog")
+
+# --------------------------------------------------------
+# Debug: list catalogs to confirm glue_catalog is registered
+# --------------------------------------------------------
+print("Current catalogs available:")
+spark.sql("SHOW CATALOGS").show(truncate=False)
+
+# --------------------------------------------------------
+# Read existing Iceberg table (optional)
+# --------------------------------------------------------
+existing_table_df = glueContext.create_data_frame.from_catalog(
+    database="analytics",
+    table_name="sales_iceberg"
+)
+print("Existing table schema:")
+existing_table_df.printSchema()
+
+# --------------------------------------------------------
+# Create 5 new records
+# --------------------------------------------------------
+new_records_data = []
+for i in range(5):
+    order_id = 110 + i
+    record = {
+        "order_id": order_id,
+        "customer_id": 1000 + (i % 10),
+        "price": round(random.uniform(10.0, 500.0), 2),
+        "created_at": datetime.now(),
+        "status": "completed"
+    }
+    new_records_data.append(record)
+
+new_records_df = spark.createDataFrame([Row(**r) for r in new_records_data])
+print(f"Creating {new_records_df.count()} new records:")
+new_records_df.show()
+
+# Register temp view for SQL insert
+new_records_df.createOrReplaceTempView("new_records_temp")
+
+# --------------------------------------------------------
+# Insert into Iceberg table (alias columns as needed)
+# --------------------------------------------------------
+spark.sql("""
+    INSERT INTO analytics.sales_iceberg (order_id, customer_id, ts, status, amount_usd)
+    SELECT order_id,
+           customer_id,
+           created_at AS ts,
+           status,
+           price AS amount_usd
+    FROM new_records_temp
+""")
+
+print(" Sccessfully added 5 new records to analytics.sales_iceberg")
+
+# --------------------------------------------------------
+# Commit Glue job
+# --------------------------------------------------------
+job.commit()</code></pre>
+
+
+
+<p class="wp-block-paragraph">Double-check with Athena.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">select * from analytics.sales_iceberg
+order by order_id
+
+# order_id customer_id ts status amount_usd
+1 101 1 2025-08-01 10:00:00.000000 paid 120.0
+2 102 2 2025-08-01 10:05:00.000000 paid 75.5
+3 104 3 2025-08-02 11:47:00.000000 refunded 250.0
+4 105 4 2025-08-03 08:30:00.000000 created 35.0
+5 110 1000 2025-09-10 16:06:45.505935 completed 248.64
+6 111 1001 2025-09-10 16:06:45.505947 completed 453.76
+7 112 1002 2025-09-10 16:06:45.505955 completed 467.79
+8 113 1003 2025-09-10 16:06:45.505963 completed 359.9
+9 114 1004 2025-09-10 16:06:45.506059 completed 398.52</code></pre>
+
+
+
+<h2 class="wp-block-heading">Future Steps</h2>
+
+
+
+<p class="wp-block-paragraph">From here, you could:</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">Create more tables with data.</li>
+</ul>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">Add schema evolution’</li>
+</ul>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">Experiment with partition evolution (e.g., change table partition from day → hour as volumes grow),</li>
+</ul>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">Add scheduled maintenance. For example, EventBridge<span style="margin: 0px; padding: 0px;">, Step, and Lambdas could be used to run <strong>OPTIMIZE/VACUUM</strong> on a scheduled </span>cadence.</li>
+</ul>
+
+
+
+<h2 class="wp-block-heading">Summary</h2>
+
+
+
+<p class="wp-block-paragraph">In this article, I’ve tried to provide a clear path for building an <strong>Iceberg data lakehouse</strong> on AWS. It should serve as a guide for data engineers who want to connect simple object storage with complex enterprise data warehouses.</p>
+
+
+
+<p class="wp-block-paragraph"><span style="margin: 0px; padding: 0px;">Hopefully, I’ve shown that building a Data Lakehouse—a system that combines the low cost of data lakes with the transactional integrity of warehouses—doesn’t necessarily require extens</span>ive infrastructure deployment. And while creating a full lakehouse is something that evolves over a long time, I hope I’ve convinced you that you really can make the bones of one in an afternoon.</p>
+
+
+
+<p class="wp-block-paragraph">By leveraging <strong>Apache Iceberg</strong> on a cloud storage system like <strong>Amazon S3</strong>, I demonstrated how to transform static files into dynamic, managed tables capable of ACID transactions, row-level mutations (MERGE, UPDATE, DELETE), and time travel, all without provisioning a single server.</p>
+
+
+
+<p class="wp-block-paragraph">I also showed that by using new analytic tools such as <strong>DuckDB</strong>, it’s possible to read small to medium data lakes locally. And when your data volumes grow and get too big for local processing, I showed how easy it was to step up to an enterprise class data processing platform like <strong>Spark</strong>.</p>
+    
+</body>
+</html>

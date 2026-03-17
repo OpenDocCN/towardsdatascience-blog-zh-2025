@@ -1,0 +1,442 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.1//EN"
+  "http://www.w3.org/TR/xhtml11/DTD/xhtml11.dtd">
+
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+<title>Implementing DRIFT Search with Neo4j and LlamaIndex</title>
+<link href="../Styles/Style.css" type="text/css" rel="stylesheet"/>
+</head>
+<body>
+<h1>Implementing DRIFT Search with Neo4j and LlamaIndex</h1>
+<blockquote>原文：<a href="https://towardsdatascience.com/implementing-drift-search-with-neo4j-and-llamaindex/">https://towardsdatascience.com/implementing-drift-search-with-neo4j-and-llamaindex/</a></blockquote>
+<p class="wp-block-paragraph"><br/><a href="https://arxiv.org/abs/2404.16130" target="_blank" rel="noreferrer noopener">Microsoft’s GraphRAG implementation</a> was one of the first <mdspan datatext="el1761088496709" class="mdspan-comment">GraphRAG</mdspan> systems and introduced many innovative features. It combines both the indexing phase, where entities, relationships, and hierarchical communities are extracted and summarized, with advanced query-time capabilities. This approach enables the system to answer broad, thematic questions by leveraging pre-computed entity, relationship, and community summaries, going beyond the traditional document-retrieval limitations of standard RAG systems.<br/></p>
+
+
+
+<figure class="wp-block-image size-full"><img decoding="async" src="../Images/4152502c663b563fd3e8c763c804298f.png" alt="" class="wp-image-626678" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/10/Screenshot-2025-10-20-at-10.34.22.png"/><figcaption class="wp-element-caption">Microsoft’s GraphRAG pipeline. Image from [Edge et al., 2024] licensed under CC BY 4.0.</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph"><br/>I’ve covered the indexing phase along with global and local search mechanisms in previous blog posts (<a href="https://weaviate.io/blog/graph-rag" target="_blank" rel="noreferrer noopener">here</a> and <a href="https://medium.com/data-science/integrating-microsoft-graphrag-into-neo4j-e0d4fa00714c" target="_blank" rel="noreferrer noopener">here</a>), so we’ll skip those details in this discussion. However, we haven’t yet explored <a href="https://www.microsoft.com/en-us/research/blog/introducing-drift-search-combining-global-and-local-search-methods-to-improve-quality-and-efficiency/" target="_blank" rel="noreferrer noopener">DRIFT search</a>, which will be the focus of this blog post. DRIFT is a newer approach that combines characteristics of both global and local search methods. The technique begins by leveraging community information through vector search to establish a broad starting point for queries, then uses these community insights to refine the original question into detailed follow-up queries. This allows DRIFT to dynamically traverse the knowledge graph to retrieve specific information about entities, relationships, and other localized details, balancing computational efficiency with comprehensive answer quality.<br/></p>
+
+
+
+<figure class="wp-block-image size-large"><img decoding="async" src="../Images/0ef587fc5c30ff352efba0268e90d61f.png" alt="" class="wp-image-626679" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/10/Screenshot-2025-10-20-at-10.49.31-1024x659.png"/><figcaption class="wp-element-caption">Drift search implementation with LlamaIndex workflows and Neo4j. Image by author.</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph"><br/>The implementation uses <a href="https://developers.llamaindex.ai/python/framework/module_guides/workflow/" target="_blank" rel="noreferrer noopener">LlamaIndex workflows</a> to orchestrate the DRIFT search process through several key steps. It begins with <strong>HyDE generation</strong>, creating a hypothetical answer based on a sample community report to improve query representation.</p>
+
+
+
+<p class="wp-block-paragraph">The <strong>community search step</strong> then uses vector similarity to identify the most relevant community reports, providing broad context for the query. The system analyzes these results to generate an initial intermediate answer and a set of follow-up queries for deeper investigation.</p>
+
+
+
+<p class="wp-block-paragraph">These follow-up queries are executed in parallel during the <strong>local search phase</strong>, retrieving targeted information including text chunks, entities, relationships, and additional community reports from the knowledge graph. This process can iterate up to a maximum depth, with each round potentially spawning new follow-up queries.</p>
+
+
+
+<p class="wp-block-paragraph">Finally, the <strong>answer generation step</strong> synthesizes all intermediate answers collected throughout the process, combining broad community-level insights with detailed local findings to produce a comprehensive response. This approach balances breadth and depth, starting wide with community context and progressively drilling down into specifics.</p>
+
+
+
+<p class="wp-block-paragraph"><em>This is my implementation of DRIFT search, adapted for LlamaIndex workflows and Neo4j. I reverse-engineered the approach by examining Microsoft’s GraphRAG code, so there may be some differences from the original implementation.</em></p>
+
+
+
+<p class="wp-block-paragraph">The code is available on <a href="https://github.com/neo4j-contrib/ms-graphrag-neo4j/blob/main/examples/drift_search.ipynb" target="_blank" rel="noreferrer noopener">GitHub</a>.</p>
+
+
+
+<h2 class="wp-block-heading">Dataset</h2>
+
+
+
+<p class="wp-block-paragraph">For this blog post, we’ll use <em>Alice’s Adventures in Wonderland</em> by Lewis Carroll, a classic text that’s freely available from <a href="https://www.gutenberg.org/ebooks/11" target="_blank" rel="noreferrer noopener">Project Gutenberg</a>. This richly narrative dataset with its interconnected characters, locations, and events makes it an excellent choice for demonstrating GraphRAG’s capabilities.</p>
+
+
+
+<h2 class="wp-block-heading">Ingestion</h2>
+
+
+
+<p class="wp-block-paragraph">For the ingestion process, we’ll reuse the <a href="https://github.com/neo4j-contrib/ms-graphrag-neo4j/" target="_blank" rel="noreferrer noopener">Microsoft GraphRAG indexing implementation</a> I developed for a <a href="https://weaviate.io/blog/graph-rag" target="_blank" rel="noreferrer noopener">previous blog post</a>, adapted into a LlamaIndex workflow. <br/></p>
+
+
+
+<figure class="wp-block-image size-large"><img decoding="async" src="../Images/ddbc6b0e162c9a9a38314e2020dea467.png" alt="" class="wp-image-626681" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/10/Screenshot-2025-10-20-at-11.20.56-1024x725.png"/><figcaption class="wp-element-caption">Indexing workflow. Image by author.</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph"><br/>The ingestion pipeline follows the standard GraphRAG approach with three main stages:</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">class MSGraphRAGIngestion(Workflow):
+    @step
+    async def entity_extraction(self, ev: StartEvent) -&gt; EntitySummarization:
+        chunks = splitter.split_text(ev.text)
+        await ms_graph.extract_nodes_and_rels(chunks, ev.allowed_entities)
+        return EntitySummarization()
+
+    @step
+    async def entity_summarization(
+        self, ev: EntitySummarization
+    ) -&gt; CommunitySummarization:
+        await ms_graph.summarize_nodes_and_rels()
+        return CommunitySummarization()
+
+    @step
+    async def community_summarization(
+        self, ev: CommunitySummarization
+    ) -&gt; CommunityEmbeddings:
+        await ms_graph.summarize_communities()
+        return CommunityEmbeddings()</code></pre>
+
+
+
+<p class="wp-block-paragraph">The workflow extracts entities and relationships from text chunks, generates summaries for both nodes and relationships, and then creates hierarchical community summaries.</p>
+
+
+
+<p class="wp-block-paragraph">After summarization, we generate vector embeddings for both communities and entities to enable similarity search. Here’s the community embedding step:</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">@step
+    async def community_embeddings(self, ev: CommunityEmbeddings) -&gt; EntityEmbeddings:
+        # Fetch all communities from the graph database
+        communities = ms_graph.query(
+            """
+    MATCH (c:__Community__)
+    WHERE c.summary IS NOT NULL AND c.rating &gt; $min_community_rating
+    RETURN coalesce(c.title, "") + " " + c.summary AS community_description, c.id AS community_id
+    """,
+            params={"min_community_rating": MIN_COMMUNITY_RATING},
+        )
+        if communities:
+            # Generate vector embeddings from community descriptions
+            response = await client.embeddings.create(
+                input=[c["community_description"] for c in communities],
+                model=TEXT_EMBEDDING_MODEL,
+            )
+            # Store embeddings in the graph and create vector index
+            embeds = [
+                {
+                    "community_id": community["community_id"],
+                    "embedding": embedding.embedding,
+                }
+                for community, embedding in zip(communities, response.data)
+            ]
+            ms_graph.query(
+                """UNWIND $data as row
+            MATCH (c:__Community__ {id: row.community_id})
+            CALL db.create.setNodeVectorProperty(c, 'embedding', row.embedding)""",
+                params={"data": embeds},
+            )
+            ms_graph.query(
+                "CREATE VECTOR INDEX community IF NOT EXISTS FOR (c:__Community__) ON c.embedding"
+            )
+        return EntityEmbeddings()</code></pre>
+
+
+
+<p class="wp-block-paragraph">The same process is applied to entity embeddings, creating the vector indices needed for DRIFT search’s similarity-based retrieval.</p>
+
+
+
+<h2 class="wp-block-heading">DRIFT search</h2>
+
+
+
+<p class="wp-block-paragraph">DRIFT search is an intuitive approach to information retrieval: start by understanding the big picture, then drill down into specifics where needed. Rather than immediately searching for exact matches at the document or entity level, DRIFT first consults community summaries, which are high-level overviews that capture the main themes and topics within the knowledge graph.</p>
+
+
+
+<p class="wp-block-paragraph">Once DRIFT identifies relevant higher-level information, it intelligently generates follow-up queries to retrieve precise information about specific entities, relationships, and source documents. This two-phase approach mirrors how humans naturally seek information: we first get oriented with a general overview, then ask targeted questions to fill in the details. By combining the comprehensive coverage of global search with the precision of local search, DRIFT achieves both breadth and depth without the computational expense of processing every community report or document.</p>
+
+
+
+<p class="wp-block-paragraph">Let’s walk through each stage of the implementation.</p>
+
+
+
+<p class="wp-block-paragraph"><em>The code is available on </em><a href="https://github.com/neo4j-contrib/ms-graphrag-neo4j/blob/main/examples/drift_search.ipynb" target="_blank" rel="noreferrer noopener"><em>GitHub</em></a><em>.</em></p>
+
+
+
+<h3 class="wp-block-heading">Community search</h3>
+
+
+
+<p class="wp-block-paragraph">DRIFT uses HyDE (Hypothetical Document Embeddings) to improve vector search accuracy. Instead of embedding the user’s query directly, HyDE generates a hypothetical answer first, then uses that for similarity search. This works because hypothetical answers are semantically closer to actual community summaries than raw queries are.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">@step
+async def hyde_generation(self, ev: StartEvent) -&gt; CommunitySearch:
+    # Fetch a random community report to use as a template for HyDE generation
+    random_community_report = driver.execute_query(
+        """
+    MATCH (c:__Community__)
+    WHERE c.summary IS NOT NULL
+    RETURN coalesce(c.title, "") + " " + c.summary AS community_description""",
+        result_transformer_=lambda r: r.data(),
+    )
+    # Generate a hypothetical answer to improve query representation
+    hyde = HYDE_PROMPT.format(
+        query=ev.query, template=random_community_report[0]["community_description"]
+    )
+    hyde_response = await client.responses.create(
+        model="gpt-5-mini",
+        input=[{"role": "user", "content": hyde}],
+        reasoning={"effort": "low"},
+    )
+    return CommunitySearch(query=ev.query, hyde_query=hyde_response.output_text)</code></pre>
+
+
+
+<p class="wp-block-paragraph">Next, we embed the HyDE query and retrieves the top 5 most relevant community reports via vector similarity. It then prompts the LLM to generate an intermediate answer from these reports and identify follow-up queries for deeper investigation. The intermediate answer is stored, and all follow-up queries are dispatched in parallel for the local search phase.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">@step
+async def community_search(self, ctx: Context, ev: CommunitySearch) -&gt; LocalSearch:
+    # Create embedding from the HyDE-enhanced query
+    embedding_response = await client.embeddings.create(
+        input=ev.hyde_query, model=TEXT_EMBEDDING_MODEL
+    )
+    embedding = embedding_response.data[0].embedding
+    
+    # Find top 5 most relevant community reports via vector similarity
+    community_reports = driver.execute_query(
+        """
+    CALL db.index.vector.queryNodes('community', 5, $embedding) YIELD node, score
+    RETURN 'community-' + node.id AS source_id, node.summary AS community_summary
+    """,
+        result_transformer_=lambda r: r.data(),
+        embedding=embedding,
+    )
+    
+    # Generate initial answer and identify what additional info is needed
+    initial_prompt = DRIFT_PRIMER_PROMPT.format(
+        query=ev.query, community_reports=community_reports
+    )
+    initial_response = await client.responses.create(
+        model="gpt-5-mini",
+        input=[{"role": "user", "content": initial_prompt}],
+        reasoning={"effort": "low"},
+    )
+    response_json = json_repair.loads(initial_response.output_text)
+    print(f"Initial intermediate response: {response_json['intermediate_answer']}")
+    
+    # Store the initial answer and prepare for parallel local searches
+    async with ctx.store.edit_state() as ctx_state:
+        ctx_state["intermediate_answers"] = [
+            {
+                "intermediate_answer": response_json["intermediate_answer"],
+                "score": response_json["score"],
+            }
+        ]
+        ctx_state["local_search_num"] = len(response_json["follow_up_queries"])
+    
+    # Dispatch follow-up queries to run in parallel
+    for local_query in response_json["follow_up_queries"]:
+        ctx.send_event(LocalSearch(query=ev.query, local_query=local_query))
+    return None</code></pre>
+
+
+
+<p class="wp-block-paragraph">This establishes DRIFT’s core approach: start broad with HyDE-enhanced community search, then drill down with targeted follow-up queries.</p>
+
+
+
+<h3 class="wp-block-heading">Local search</h3>
+
+
+
+<p class="wp-block-paragraph">The local search phase executes follow-up queries in parallel to drill down into specific details. Each query retrieves targeted context through entity-based vector search, then generates an intermediate answer and potentially more follow-up queries.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">@step(num_workers=5)
+async def local_search(self, ev: LocalSearch) -&gt; LocalSearchResults:
+    print(f"Running local query: {ev.local_query}")
+    
+    # Create embedding for the local query
+    response = await client.embeddings.create(
+        input=ev.local_query, model=TEXT_EMBEDDING_MODEL
+    )
+    embedding = response.data[0].embedding
+    
+    # Retrieve relevant entities and gather their associated context:
+    # - Text chunks where entities are mentioned
+    # - Community reports the entities belong to
+    # - Relationships between the retrieved entities
+    # - Entity descriptions
+    local_reports = driver.execute_query(
+        """
+CALL db.index.vector.queryNodes('entity', 5, $embedding) YIELD node, score
+WITH collect(node) AS nodes
+WITH
+collect {
+  UNWIND nodes as n
+  MATCH (n)&lt;-[:MENTIONS]-&gt;(c:__Chunk__)
+  WITH c, count(distinct n) as freq
+  RETURN {chunkText: c.text, source_id: 'chunk-' + c.id}
+  ORDER BY freq DESC
+  LIMIT 3
+} AS text_mapping,
+collect {
+  UNWIND nodes as n
+  MATCH (n)-[:IN_COMMUNITY*]-&gt;(c:__Community__)
+  WHERE c.summary IS NOT NULL
+  WITH c, c.rating as rank
+  RETURN {summary: c.summary, source_id: 'community-' + c.id}
+  ORDER BY rank DESC
+  LIMIT 3
+} AS report_mapping,
+collect {
+  UNWIND nodes as n
+  MATCH (n)-[r:SUMMARIZED_RELATIONSHIP]-(m)
+  WHERE m IN nodes
+  RETURN {descriptionText: r.summary, source_id: 'relationship-' + n.name + '-' + m.name}
+  LIMIT 3
+} as insideRels,
+collect {
+  UNWIND nodes as n
+  RETURN {descriptionText: n.summary, source_id: 'node-' + n.name}
+} as entities
+RETURN {Chunks: text_mapping, Reports: report_mapping,
+   Relationships: insideRels,
+   Entities: entities} AS output
+""",
+        result_transformer_=lambda r: r.data(),
+        embedding=embedding,
+    )
+    
+    # Generate answer based on the retrieved context
+    local_prompt = DRIFT_LOCAL_SYSTEM_PROMPT.format(
+        response_type=DEFAULT_RESPONSE_TYPE,
+        context_data=local_reports,
+        global_query=ev.query,
+    )
+    local_response = await client.responses.create(
+        model="gpt-5-mini",
+        input=[{"role": "user", "content": local_prompt}],
+        reasoning={"effort": "low"},
+    )
+    response_json = json_repair.loads(local_response.output_text)
+    
+    # Limit follow-up queries to prevent exponential growth
+    response_json["follow_up_queries"] = response_json["follow_up_queries"][:LOCAL_TOP_K]
+    
+    return LocalSearchResults(results=response_json, query=ev.query)</code></pre>
+
+
+
+<p class="wp-block-paragraph">The next step orchestrates the iterative deepening process. It waits for all parallel searches to complete using <code>collect_events</code>, then decides whether to continue drilling down. If the current depth hasn’t reached the maximum (we use max depth=2), it extracts follow-up queries from all results, stores the intermediate answers, and dispatches the next round of parallel searches.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">@step
+async def local_search_results(
+    self, ctx: Context, ev: LocalSearchResults
+) -&gt; LocalSearch | FinalAnswer:
+    local_search_num = await ctx.store.get("local_search_num")
+    
+    # Wait for all parallel searches to complete
+    results = ctx.collect_events(ev, [LocalSearchResults] * local_search_num)
+    if results is None:
+        return None
+        
+    intermediate_results = [
+        {
+            "intermediate_answer": event.results["response"],
+            "score": event.results["score"],
+        }
+        for event in results
+    ]
+    current_depth = await ctx.store.get("local_search_depth", default=1)
+    query = [ev.query for ev in results][0]
+
+    # Continue drilling down if we haven't reached max depth
+    if current_depth &lt; MAX_LOCAL_SEARCH_DEPTH:
+        await ctx.store.set("local_search_depth", current_depth + 1)
+        follow_up_queries = [
+            query
+            for event in results
+            for query in event.results["follow_up_queries"]
+        ]
+        
+        # Store intermediate answers and dispatch next round of searches
+        async with ctx.store.edit_state() as ctx_state:
+            ctx_state["intermediate_answers"].extend(intermediate_results)
+            ctx_state["local_search_num"] = len(follow_up_queries)
+
+        for local_query in follow_up_queries:
+            ctx.send_event(LocalSearch(query=query, local_query=local_query))
+        return None
+    else:
+        return FinalAnswer(query=query)</code></pre>
+
+
+
+<p class="wp-block-paragraph">This creates an iterative refinement loop where each depth level builds on previous findings. Once max depth is reached, it triggers final answer generation.</p>
+
+
+
+<h3 class="wp-block-heading">Final answer</h3>
+
+
+
+<p class="wp-block-paragraph">The final step synthesizes all intermediate answers collected throughout the DRIFT search process into a comprehensive response. This includes the initial answer from community search and all answers generated during the local search iterations.<br/></p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">@step
+async def final_answer_generation(self, ctx: Context, ev: FinalAnswer) -&gt; StopEvent:
+    # Retrieve all intermediate answers collected throughout the search process
+    intermediate_answers = await ctx.store.get("intermediate_answers")
+    
+    # Synthesize all findings into a comprehensive final response
+    answer_prompt = DRIFT_REDUCE_PROMPT.format(
+        response_type=DEFAULT_RESPONSE_TYPE,
+        context_data=intermediate_answers,
+        global_query=ev.query,
+    )
+    answer_response = await client.responses.create(
+        model="gpt-5-mini",
+        input=[
+            {"role": "developer", "content": answer_prompt},
+            {"role": "user", "content": ev.query},
+        ],
+        reasoning={"effort": "low"},
+    )
+
+    return StopEvent(result=answer_response.output_text)</code></pre>
+
+
+
+<h2 class="wp-block-heading">Summary</h2>
+
+
+
+<p class="wp-block-paragraph">DRIFT search presents an interesting strategy for balancing the breadth of global search with the precision of local search. By starting with community-level context and progressively drilling down through iterative follow-up queries, it avoids the computational overhead of processing all community reports while still maintaining comprehensive coverage.</p>
+
+
+
+<p class="wp-block-paragraph">However, there’s room for several improvements. The current implementation treats all intermediate answers equally, but filtering based on their confidence scores could improve final answer quality and reduce noise. Similarly, follow-up queries could be ranked by relevance or potential information gain before execution, ensuring the most promising leads are pursued first.</p>
+
+
+
+<p class="wp-block-paragraph">Another promising enhancement would be introducing a query refinement step that uses an LLM to analyze all generated follow-up queries, grouping similar ones to avoid redundant searches and filtering out queries unlikely to yield useful information. This could significantly reduce the number of local searches while maintaining answer quality.</p>
+
+
+
+<p class="wp-block-paragraph"><em>The full implementation is available on </em><a href="https://github.com/neo4j-contrib/ms-graphrag-neo4j/blob/main/examples/drift_search.ipynb" target="_blank" rel="noreferrer noopener"><em>GitHub</em></a><em> for those interested in experimenting with these enhancements or adapting DRIFT for their own use cases.</em></p>
+    
+</body>
+</html>

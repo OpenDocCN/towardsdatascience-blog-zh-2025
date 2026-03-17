@@ -1,0 +1,390 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.1//EN"
+  "http://www.w3.org/TR/xhtml11/DTD/xhtml11.dtd">
+
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+<title>Survival Analysis When No One Dies: A Value-Based Approach</title>
+<link href="../Styles/Style.css" type="text/css" rel="stylesheet"/>
+</head>
+<body>
+<h1>Survival Analysis When No One Dies: A Value-Based Approach</h1>
+<blockquote>原文：<a href="https://towardsdatascience.com/survival-analysis-when-no-one-dies-a-value-based-approach/">https://towardsdatascience.com/survival-analysis-when-no-one-dies-a-value-based-approach/</a></blockquote>
+<p class="wp-block-paragraph"><mdspan datatext="el1747181775942" class="mdspan-comment">Survival analysis</mdspan> is a statistical approach used to answer the question: “How long will something last?” That “something” could range from a patient’s lifespan to the durability of a machine component or the duration of a user’s subscription.</p>
+
+
+
+<p class="wp-block-paragraph">One of the most widely used tools in this area is the <strong>Kaplan-Meier estimator</strong>.</p>
+
+
+
+<p class="wp-block-paragraph">Born in the world of biology, Kaplan-Meier made its debut tracking life and death. But like any true celebrity algorithm, it didn’t stay in its lane. These days, it’s showing up in business dashboards, marketing teams, and churn analyses everywhere.</p>
+
+
+
+<p class="wp-block-paragraph">But here’s the catch: <strong>business isn’t biology</strong>. It’s messy, unpredictable, and full of plot twists. This is why there are a couple of issues that make our lives more difficult when we try to use survival analysis in the business world.</p>
+
+
+
+<p class="wp-block-paragraph">First of all, we are typically not just interested in whether a customer has “survived” (whatever survival could mean in this context), but rather in <strong>how much of that individual’s economic value has survived.</strong></p>
+
+
+
+<p class="wp-block-paragraph">Secondly, contrary to biology, <strong>it’s very possible for customers to “die” and “resuscitate” multiple times</strong> (think of when you unsubscribe/resubscribe to an online service).</p>
+
+
+
+<p class="wp-block-paragraph">In this article, we will see how to extend the classical Kaplan-Meier approach so that it better suits our needs: <strong>modeling a continuous (economic) value instead of a binary one (life/death) and allowing “resurrections”</strong>.</p>
+
+
+
+<h2 class="wp-block-heading">A refresher on the Kaplan-Meier estimator</h2>
+
+
+
+<p class="wp-block-paragraph">Let’s pause and rewind for a second. Before we start customizing Kaplan-Meier to fit our business needs, we need a quick refresher on how the classic version works.</p>
+
+
+
+<p class="wp-block-paragraph">Suppose you had 3 subjects (let’s say lab mice) and you gave them a medicine you need to test. The medicine was given at different moments in time: subject <em>a </em>received it in January, subject <em>b</em> in April, and subject <em>c</em> in May.</p>
+
+
+
+<p class="wp-block-paragraph">Then, you measure how long they survive. Subject <em>a</em> died after 6 months, subject <em>c</em> after 4 months, and subject <em>b</em> is still alive at the time of the analysis (November).</p>
+
+
+
+<p class="wp-block-paragraph">Graphically, we can represent the 3 subjects as follows:</p>
+
+
+
+<figure class="wp-block-image alignwide size-large"><img decoding="async" src="../Images/8129da6a506202c5d6632fc4609d5529.png" alt="" class="wp-image-604017" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/05/01-1024x412.png"/><figcaption class="wp-element-caption">[Image by Author]</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">Now, <strong>even if we wanted to measure a simple metric, like average survival, we would face a problem</strong>. In fact, we don’t know how long subject <em>b</em> will survive, as it is still alive today.</p>
+
+
+
+<p class="wp-block-paragraph">This is a classical problem in statistics, and it’s called “<strong>right censoring</strong>“.</p>
+
+
+
+<p class="wp-block-paragraph">Right censoring is stats-speak for “we don’t know what happened after a certain point” and it’s a big deal in survival analysis. So big that it <strong>led to the development of one of the most iconic estimators in statistical history: the Kaplan-Meier estimator</strong>, named after the duo who introduced it back in the 1950s.</p>
+
+
+
+<p class="wp-block-paragraph">So, how does Kaplan-Meier handle our problem?</p>
+
+
+
+<p class="wp-block-paragraph">First, we align the clocks. Even if our mice were treated at different times, <strong>what matters is <em>time since treatment</em></strong>. So we reset the <em>x</em>-axis to zero for everyone — day zero is the day they got the drug.</p>
+
+
+
+<figure class="wp-block-image alignwide size-large"><img decoding="async" src="../Images/d73b4e3614a9aa0087d59f103453da79.png" alt="" class="wp-image-604018" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/05/02-1024x412.png"/><figcaption class="wp-element-caption">[Image by Author]</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">Now that we’re all on the same timeline, we want to build something useful: an <strong>aggregate survival curve</strong>. This curve tells us the probability that a <em>typical</em> mouse in our group will survive at least <em>x</em> months post-treatment.</p>
+
+
+
+<p class="wp-block-paragraph">Let’s follow the logic together.</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">Up to time 3? Everyone’s still alive. So survival = 100%. Easy.</li>
+
+
+
+<li class="wp-block-list-item">At time 4, mouse <em>c</em> dies. This means that out of the 3 mice, only 2 of them survived after time 4. That gives us a survival rate of 67% at time 4.</li>
+
+
+
+<li class="wp-block-list-item">Then at time 6, mouse <em>a</em> checks out. Of the 2 mice that had made it to time 6, only 1 survived, so the survival rate from time 5 to 6 is 50%. Multiply that by the previous 67%, and we get 33% survival up to time 6.</li>
+
+
+
+<li class="wp-block-list-item">After time 7 we don’t have other subjects that are observed alive, so the curve has to stop here.</li>
+</ul>
+
+
+
+<p class="wp-block-paragraph">Let’s plot these results:</p>
+
+
+
+<figure class="wp-block-image alignwide size-large"><img decoding="async" src="../Images/b9c84cba501ec4e6387a4555ff0933d3.png" alt="" class="wp-image-604019" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/05/03-1024x394.png"/><figcaption class="wp-element-caption">[Image by Author]</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">Since code is often easier to understand than words, let’s translate this to Python. We have the following variables:</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item"><code>kaplan_meier</code>, an array containing the Kaplan-Meier estimates for each point in time, e.g. the probability of survival up to time <em>t</em>.</li>
+
+
+
+<li class="wp-block-list-item"><code>obs_t</code>, an array that tells us whether an individual is observed (e.g., not right-censored) at time <em>t</em>.</li>
+
+
+
+<li class="wp-block-list-item"><code>surv_t</code>, boolean array that tells us whether each individual is alive at time <em>t</em>.</li>
+
+
+
+<li class="wp-block-list-item"><code>surv_t_minus_1</code>, boolean array that tells us whether each individual is alive at time <em>t</em>-1.</li>
+</ul>
+
+
+
+<p class="wp-block-paragraph">All we have to do is to take all the individuals observed at <em>t</em>, compute their survival rate from <em>t</em>-1 to <em>t</em> (<code>survival_rate_t</code>), and multiply it by the survival rate up to time <em>t</em>-1 (<code>km[t-1]</code>) to obtain the survival rate up to time <em>t </em>(<code>km[t]</code>)<em>.</em> In other words,</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">survival_rate_t = surv_t[obs_t].sum() / surv_t_minus_1[obs_t].sum()
+
+kaplan_meier[t] = kaplan_meier[t-1] * survival_rate_t</code></pre>
+
+
+
+<p class="wp-block-paragraph">where, of course, the starting point is <code>kaplan_meier[0] = 1</code>.</p>
+
+
+
+<p class="wp-block-paragraph">If you don’t want to code this from scratch, the Kaplan-Meier algorithm is available in the Python library <code>lifelines</code>, and it can be used as follows:</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">from lifelines import KaplanMeierFitter
+
+KaplanMeierFitter().fit(
+    durations=[6,7,4],
+    event_observed=[1,0,1],
+).survival_function_["KM_estimate"]</code></pre>
+
+
+
+<p class="wp-block-paragraph">If you use this code, you will obtain the same result we have obtained manually with the previous snippet.</p>
+
+
+
+<p class="wp-block-paragraph">So far, we’ve been hanging out in the land of mice, medicine, and mortality. Not exactly your average quarterly KPI review, right? So, how is this useful in business?</p>
+
+
+
+<h2 class="wp-block-heading">Moving to a business setting</h2>
+
+
+
+<p class="wp-block-paragraph">So far, we’ve treated “death” as if it’s obvious. In Kaplan-Meier land, someone either lives or dies, and we can easily log the time of death. But now let’s stir in some real-world business messiness.</p>
+
+
+
+<p class="wp-block-paragraph"><strong><em>What even </em>is<em> “death” in a business context?</em></strong></p>
+
+
+
+<p class="wp-block-paragraph">It turns out it’s not easy to answer this question, at least for a couple of reasons:</p>
+
+
+
+<ol class="wp-block-list">
+<li class="wp-block-list-item"><strong>“Death” is not easy to define</strong>. Let’s say you’re working at an e-commerce company. You want to know when a user has “died”. Should you count them as dead when they delete their account? That’s easy to track… but too rare to be useful. What if they just start shopping less? But <em>how</em> much less is dead? A week of silence? A month? Two? You see the problem. The definition of “death” is arbitrary, and depending on where you draw the line, your analysis might tell wildly different stories.</li>
+
+
+
+<li class="wp-block-list-item"><strong>“Death” is not permanent</strong>. Kaplan-Meier has been conceived for biological applications in which once an individual is dead there is no return. But in business applications, resurrection is not only possible but pretty frequent. Imagine a streaming service for which people pay a monthly subscription. It’s easy to define “death” in this case: it’s when users cancel their subscriptions. However, it’s pretty frequent that, some time after cancelling, they re-subscribe.</li>
+</ol>
+
+
+
+<p class="wp-block-paragraph">So how does all this play out in data?</p>
+
+
+
+<p class="wp-block-paragraph">Let’s walk through a toy example. Say we have a user on our e-commerce platform. Over the past 10 months, here’s how much they’ve spent:</p>
+
+
+
+<figure class="wp-block-image alignwide size-large"><img decoding="async" src="../Images/eab8eb4ed8a989cf4a181a2c139f58bd.png" alt="" class="wp-image-604021" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/05/04-1024x211.png"/><figcaption class="wp-element-caption">[Image by Author]</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">To squeeze this into the Kaplan-Meier framework, we need to <strong>translate that spending behavior into a life-or-death decision</strong>.</p>
+
+
+
+<p class="wp-block-paragraph">So we make a rule: if a user stops spending for 2 consecutive months, we declare them “inactive”.</p>
+
+
+
+<p class="wp-block-paragraph">Graphically, this rule looks like the following:</p>
+
+
+
+<p class="wp-block-paragraph"/>
+
+
+
+<figure class="wp-block-image alignwide size-large"><img decoding="async" src="../Images/9af4a631ab7f0926ffe37e70341f9e82.png" alt="" class="wp-image-604022" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/05/05-1024x211.png"/><figcaption class="wp-element-caption">[Image by Author]</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">Since the user spent $0 for two months in a row (month 4 and 5) we will consider this user inactive starting from month 4 on. And we will do that despite the user started spending again in month 7. This is because, in Kaplan-Meier, resurrections are assumed to be impossible.</p>
+
+
+
+<p class="wp-block-paragraph">Now let’s add two more users to our example. Since we have decided a rule to turn their value curve into a survival curve, we can also compute the Kaplan-Meier survival curve:</p>
+
+
+
+<figure class="wp-block-image alignwide size-large"><img decoding="async" src="../Images/bcc60966a8f83137035236f7c9822ae2.png" alt="" class="wp-image-604023" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/05/06-1024x763.png"/><figcaption class="wp-element-caption">[Image by Author]</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">By now, you’ve probably noticed <strong>how much nuance (and data) we’ve thrown away just to make this work</strong>. User <em>a</em> came back from the dead — but we ignored that. User <em>c</em>‘s spending dropped significantly — but Kaplan-Meier doesn’t care, because all it sees is 1s and 0s. We forced a continuous value (spending) into a binary box (alive/dead), and along the way, we lost a whole lot of information.</p>
+
+
+
+<p class="wp-block-paragraph">So the question is: can we extend Kaplan-Meier in a way that:</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item"><strong>keeps the original, continuous data intact</strong>,</li>
+
+
+
+<li class="wp-block-list-item"><strong>avoids arbitrary binary cutoffs</strong>,</li>
+
+
+
+<li class="wp-block-list-item"><strong>allows for resurrections</strong>?</li>
+</ul>
+
+
+
+<p class="wp-block-paragraph">Yes, we can. In the next section, I’ll show you how.</p>
+
+
+
+<h2 class="wp-block-heading">Introducing “Value Kaplan-Meier”</h2>
+
+
+
+<p class="wp-block-paragraph">Let’s start with the simple Kaplan-Meier formula we have seen before.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python"># kaplan_meier: array containing the Kaplan-Meier estimates,
+#               e.g. the probability of survival up to time t
+# obs_t: array, whether a subject has been observed at time t
+# surv_t: array, whether a subject was alive at time t
+# surv_t_minus_1: array, whether a subject was alive at time t−1
+
+survival_rate_t = surv_t[obs_t].sum() / surv_t_minus_1[obs_t].sum()
+
+kaplan_meier[t] = kaplan_meier[t-1] * survival_rate_t</code></pre>
+
+
+
+<p class="wp-block-paragraph">The first change we need to make is to replace <code>surv_t</code> and <code>surv_t_minus_1</code>, which are boolean arrays that tell us whether a subject is alive (1) or dead (0) with arrays that tell us the (economic) value of each subject at a given time. For this purpose, we can use two arrays named <code>val_t</code> and <code>val_t_minus_1</code>.</p>
+
+
+
+<p class="wp-block-paragraph">But this is not enough, because since we are dealing with continuous value, <strong>every user is on a different scale and so, assuming that we want to weigh them equally, we need to rescale them based on some individual value</strong>. But what value should we use? The most reasonable choice is to use their initial value at time 0, before they were influenced by whatever treatment we are applying to them.</p>
+
+
+
+<p class="wp-block-paragraph">So we also need to use another vector, named <code>val_t_0</code> that represents the value of the individual at time 0.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python"># value_kaplan_meier: array containing the Value Kaplan-Meier estimates
+# obs_t: array, whether a subject has been observed at time t
+# val_t_0: array, user value at time 0
+# val_t: array, user value at time t
+# val_t_minus_1: array, user value at time t−1
+
+value_rate_t = (
+    (val_t[obs_t] / val_t_0[obs_t]).sum()
+    / (val_t_minus_1[obs_t] / val_t_0[obs_t]).sum()
+)
+
+value_kaplan_meier[t] = value_kaplan_meier[t-1] * value_rate_t</code></pre>
+
+
+
+<p class="wp-block-paragraph">What we’ve built is a <strong>direct generalization of Kaplan-Meier</strong>. In fact, if you set <code>val_t = surv_t</code>, <code>val_t_minus_1 = surv_t_minus_1</code>, and <code>val_t_0</code> as an array of 1s, this formula collapses neatly back to our original survival estimator. So yes—it’s legit.</p>
+
+
+
+<p class="wp-block-paragraph">And here is the curve that we would obtain when applied to these 3 users.</p>
+
+
+
+<figure class="wp-block-image alignwide size-large"><img decoding="async" src="../Images/135b466055f4d6e62e7db4e71278ef73.png" alt="" class="wp-image-604024" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/05/07-1024x438.png"/><figcaption class="wp-element-caption">[Image by Author]</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">Let’s call this new version the <strong>Value Kaplan-Meier estimator</strong>. In fact, it answers the question:</p>
+
+
+
+<p class="wp-block-paragraph"><strong><em>How much percent of value is still surviving, on average, after </em>x<em> time?</em></strong></p>
+
+
+
+<p class="wp-block-paragraph">We’ve got the theory. But does it work in the wild?</p>
+
+
+
+<h2 class="wp-block-heading"><strong>Using Value Kaplan-Meier in practice</strong></h2>
+
+
+
+<p class="wp-block-paragraph">If you take the Value Kaplan-Meier estimator for a spin on real-world data and compare it to the good old Kaplan-Meier curve, you’ll likely notice something comforting — <strong>they often have the same shape</strong>. That’s a good sign. It means we haven’t broken anything fundamental while upgrading from binary to continuous.</p>
+
+
+
+<p class="wp-block-paragraph">But here’s where things get interesting: <strong>Value Kaplan-Meier usually sits a bit <em>above</em> its traditional cousin</strong>. Why? Because in this new world, users are allowed to “resurrect”. Kaplan-Meier, being the more rigid of the two, would’ve written them off the moment they went quiet.</p>
+
+
+
+<p class="wp-block-paragraph">So how do we put this to use?</p>
+
+
+
+<p class="wp-block-paragraph">Imagine you’re running an experiment. At time zero, you start a new treatment on a group of users. Whatever it is, you can track how much value “survives” in both the treatment and control groups over time.</p>
+
+
+
+<p class="wp-block-paragraph">And this is what your output will probably look like:</p>
+
+
+
+<figure class="wp-block-image size-large"><img decoding="async" src="../Images/1aefb0259b6c653af1059ed3cb15fffd.png" alt="" class="wp-image-604025" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/05/08-1024x439.png"/><figcaption class="wp-element-caption">[Image by Author]</figcaption></figure>
+
+
+
+<h2 class="wp-block-heading">Conclusion</h2>
+
+
+
+<p class="wp-block-paragraph">Kaplan-Meier is a widely used and intuitive method for estimating survival functions, especially when the outcome is a binary event like death or failure. However, many real-world business scenarios involve more complexity — resurrections are possible, and outcomes are better represented by continuous values rather than a binary state.</p>
+
+
+
+<p class="wp-block-paragraph">In such cases, Value Kaplan-Meier offers a natural extension. <strong>By incorporating the economic value of individuals over time, it enables a more nuanced understanding of value retention and decay</strong>. This method preserves the simplicity and interpretability of the original Kaplan-Meier estimator while adapting it to better reflect the dynamics of customer behavior.</p>
+
+
+
+<p class="wp-block-paragraph">Value Kaplan-Meier tends to provide a higher estimate of retained value compared to Kaplan-Meier, due to its ability to account for recoveries. This makes it particularly useful in evaluating experiments or tracking customer value over time.</p>
+    
+</body>
+</html>

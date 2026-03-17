@@ -1,0 +1,1052 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.1//EN"
+  "http://www.w3.org/TR/xhtml11/DTD/xhtml11.dtd">
+
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+<title>Mining Rules from Data</title>
+<link href="../Styles/Style.css" type="text/css" rel="stylesheet"/>
+</head>
+<body>
+<h1>Mining Rules from Data</h1>
+<blockquote>原文：<a href="https://towardsdatascience.com/mining-rules-from-data/">https://towardsdatascience.com/mining-rules-from-data/</a></blockquote>
+<p class="wp-block-paragraph"><mdspan datatext="el1744217464415" class="mdspan-comment">Working</mdspan> with products, we might face a need to introduce some “rules”. Let me explain what I mean by “rules” in practical examples: </p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">Imagine that we’re seeing a massive wave of fraud in our product, and we want to restrict onboarding for a particular segment of customers to lower this risk. For example, we found out that the majority of fraudsters had specific user agents and IP addresses from certain countries. </li>
+
+
+
+<li class="wp-block-list-item">Another option is to send coupons to customers to use in our online shop. However, we would like to treat only customers who are likely to churn since loyal users will return to the product anyway. We might figure out that the most feasible group is customers who joined less than a year ago and decreased their spending by 30%+ last month. </li>
+
+
+
+<li class="wp-block-list-item">Transactional businesses often have a segment of customers where they are losing money. For example, a bank customer passed the verification and regularly reached out to customer support (so generated onboarding and servicing costs) while doing almost no transactions (so not generating any revenue). The bank might introduce a small monthly subscription fee for customers with less than 1000$ in their account since they are likely non-profitable.</li>
+</ul>
+
+
+
+<p class="wp-block-paragraph">Of course, in all these cases, we might have used a complex Machine Learning model that would take into account all the factors and predict the probability (either of a customer being a fraudster or churning). Still, under some circumstances, we might prefer just a set of static rules for the following reasons:  </p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item"><strong>The speed and complexity of implementation. </strong>Deploying an ML model in production takes time and effort. If you are experiencing a fraud wave right now, it might be more feasible to go live with a set of static rules that can be implemented quickly and then work on a comprehensive solution. </li>
+
+
+
+<li class="wp-block-list-item"><strong>Interpretability. </strong>ML models are black boxes. Even though we might be able to understand at a high level how they work and what features are the most important ones, it’s challenging to explain them to customers. In the example of subscription fees for non-profitable customers, it’s important to share a set of transparent rules with customers so that they can understand the pricing. </li>
+
+
+
+<li class="wp-block-list-item"><strong>Compliance. </strong>Some industries, like finance or healthcare, might require auditable and rule-based decisions to meet compliance requirements.</li>
+</ul>
+
+
+
+<p class="wp-block-paragraph">In this article, I want to show you how we can solve business problems using such rules. We will take a practical example and go really deep into this topic:</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">we will discuss which models we can use to mine such rules from data,</li>
+
+
+
+<li class="wp-block-list-item">we will build a Decision Tree Classifier from scratch to learn how it works,</li>
+
+
+
+<li class="wp-block-list-item">we will fit the <code>sklearn</code> Decision Tree Classifier model to extract the rules from the data,</li>
+
+
+
+<li class="wp-block-list-item">we will learn how to parse the Decision Tree structure to get the resulting segments,</li>
+
+
+
+<li class="wp-block-list-item">finally, we will explore different options for category encoding, since the <code>sklearn</code> implementation doesn’t support categorical variables.</li>
+</ul>
+
+
+
+<p class="wp-block-paragraph">We have lots of topics to cover, so let’s jump into it.</p>
+
+
+
+<h2 class="wp-block-heading">Case</h2>
+
+
+
+<p class="wp-block-paragraph">As usual, it’s easier to learn something with a practical example. So, let’s start by discussing the task we will be solving in this article. </p>
+
+
+
+<p class="wp-block-paragraph">We will work with <a href="https://archive.ics.uci.edu/dataset/222/bank+marketing" target="_blank" rel="noreferrer noopener">the Bank Marketing</a> dataset (<mdspan datatext="el1744217074911" class="mdspan-comment">CC BY 4.0 license</mdspan>). This dataset contains data about the direct marketing campaigns of a Portuguese banking institution. For each customer, we know a bunch of features and whether they subscribed to a term deposit (our target). </p>
+
+
+
+<p class="wp-block-paragraph">Our business goal is to maximise the number of conversions (subscriptions) with limited operational resources. So, we can’t call the whole user base, and we want to reach the best outcome with the resources we have.</p>
+
+
+
+<p class="wp-block-paragraph">The first step is to look at the data. So, let’s load the data set.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">import pandas as pd
+pd.set_option('display.max_colwidth', 5000)
+pd.set_option('display.float_format', lambda x: '%.2f' % x)
+
+df = pd.read_csv('bank-full.csv', sep = ';')
+df = df.drop(['duration', 'campaign'], axis = 1)
+# removed columns related to the current marketing campaign, 
+# since they introduce data leakage
+
+df.head()</code></pre>
+
+
+
+<p class="wp-block-paragraph">We know quite a lot about the customers, including personal data (such as job type or marital status) and their previous behaviour (such as whether they have a loan or their average yearly balance).</p>
+
+
+
+<figure class="wp-block-image size-large"><img decoding="async" src="../Images/3dd67f1dfd76f7ffeb203a234cf47c8a.png" alt="" class="wp-image-601337" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/04/Screenshot-2025-02-04-at-22.12.18-1024x204.png"/><figcaption class="wp-element-caption">Image by author</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">The next step is to select a machine-learning model. There are two classes of models that are usually used when we need something easily interpretable:</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">decision trees,</li>
+
+
+
+<li class="wp-block-list-item">linear or logistic regression.</li>
+</ul>
+
+
+
+<p class="wp-block-paragraph">Both options are feasible and can give us good models that can be easily implemented and interpreted. However, in this article, I would like to stick to the decision tree model because it produces actual rules, while logistic regression will give us probability as a weighted sum of features.</p>
+
+
+
+<h2 class="wp-block-heading">Data Preprocessing </h2>
+
+
+
+<p class="wp-block-paragraph">As we’ve seen in the data, there are lots of categorical variables (such as education or marital status). Unfortunately, the <code>sklearn</code> decision tree implementation can’t handle categorical data, so we need to do some preprocessing.</p>
+
+
+
+<p class="wp-block-paragraph">Let’s start by transforming yes/no flags into integers. </p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">for p in ['default', 'housing', 'loan', 'y']:
+    df[p] = df[p].map(lambda x: 1 if x == 'yes' else 0)</code></pre>
+
+
+
+<p class="wp-block-paragraph">The next step is to transform the <code>month</code> variable. We can use one-hot encoding for months, introducing flags like <code>month_jan</code> , <code>month_feb</code> , etc. However, there might be seasonal effects, and I think it would be more reasonable to convert months into integers following their order. </p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">month_map = {
+    'jan': 1, 'feb': 2, 'mar': 3, 'apr': 4, 'may': 5, 'jun': 6, 
+    'jul': 7, 'aug': 8, 'sep': 9, 'oct': 10, 'nov': 11, 'dec': 12
+}
+# I saved 5 mins by asking ChatGPT to do this mapping
+
+df['month'] = df.month.map(lambda x: month_map[x] if x in month_map else x)</code></pre>
+
+
+
+<p class="wp-block-paragraph">For all other categorical variables, let’s use one-hot encoding. We will discuss different strategies for category encoding later, but for now, let’s stick to the default approach.</p>
+
+
+
+<p class="wp-block-paragraph">The easiest way to do one-hot encoding is to leverage <code>get_dummies</code> <a href="https://pandas.pydata.org/docs/reference/api/pandas.get_dummies.html" rel="noreferrer noopener" target="_blank">function</a> in pandas.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">fin_df = pd.get_dummies(
+  df, columns=['job', 'marital', 'education', 'poutcome', 'contact'], 
+  dtype = int, # to convert to flags 0/1
+  drop_first = False # to keep all possible values
+)</code></pre>
+
+
+
+<p class="wp-block-paragraph">This function transforms each categorical variable into a separate 1/0 column for each possible. We can see how it works for <code>poutcome</code> column. </p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">fin_df.merge(df[['id', 'poutcome']])\
+    .groupby(['poutcome', 'poutcome_unknown', 'poutcome_failure', 
+      'poutcome_other', 'poutcome_success'], as_index = False).y.count()\
+    .rename(columns = {'y': 'cases'})\
+    .sort_values('cases', ascending = False)</code></pre>
+
+
+
+<figure class="wp-block-image size-large"><img decoding="async" src="../Images/060f712001cb8ae83a6dc25fbe6aeed7.png" alt="" class="wp-image-601338" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/04/Screenshot-2025-02-04-at-22.34.41-1024x228.png"/><figcaption class="wp-element-caption">Image by author</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">Our data is now ready, and it’s time to discuss how decision tree classifiers work.</p>
+
+
+
+<h2 class="wp-block-heading">Decision Tree Classifier: Theory</h2>
+
+
+
+<p class="wp-block-paragraph">In this section, we’ll explore the theory behind the Decision Tree Classifier and build the algorithm from scratch. If you’re more interested in a practical example, feel free to skip ahead to the next part.</p>
+
+
+
+<p class="wp-block-paragraph">The easiest way to understand the decision tree model is to look at an example. So, let’s build a simple model based on our data. We will use <a href="https://scikit-learn.org/stable/modules/generated/sklearn.tree.DecisionTreeClassifier.html" target="_blank" rel="noreferrer noopener">DecisionTreeClassifier</a> from <code>sklearn</code>. </p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">feature_names = fin_df.drop(['y'], axis = 1).columns
+model = sklearn.tree.DecisionTreeClassifier(
+  max_depth = 2, min_samples_leaf = 1000)
+model.fit(fin_df[feature_names], fin_df['y'])</code></pre>
+
+
+
+<p class="wp-block-paragraph">The next step is to visualise the tree.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">dot_data = sklearn.tree.export_graphviz(
+    model, out_file=None, feature_names = feature_names, filled = True, 
+    proportion = True, precision = 2 
+    # to show shares of classes instead of absolute numbers
+)
+
+graph = graphviz.Source(dot_data)
+graph</code></pre>
+
+
+
+<figure class="wp-block-image size-large"><img decoding="async" src="../Images/cc29c1eec38a620a81ee7c8149757ee9.png" alt="" class="wp-image-601339" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/04/Screenshot-2025-02-04-at-22.49.47-1024x368.png"/><figcaption class="wp-element-caption">Image by author</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">So, we can see that the model is straightforward. It’s a set of binary splits that we can use as heuristics. </p>
+
+
+
+<p class="wp-block-paragraph">Let’s figure out how the classifier works under the hood. As usual, the best way to understand the model is to build the logic from scratch. </p>
+
+
+
+<p class="wp-block-paragraph">The cornerstone of any problem is the optimisation function. By default, in the decision tree classifier, we’re optimising <a href="https://en.wikipedia.org/wiki/Gini_coefficient" rel="noreferrer noopener" target="_blank">the Gini coefficient</a>. Imagine getting one random item from the sample and then the other. The Gini coefficient would equal the probability of the situation when these items are from different classes. So, our goal will be minimising the Gini coefficient. </p>
+
+
+
+<p class="wp-block-paragraph">In the case of just two classes (like in our example, where marketing intervention was either successful or not), the Gini coefficient is defined just by one parameter <code>p</code> , where <code>p</code> is the probability of getting an item from one of the classes. Here’s the formula:</p>
+
+
+<p class="wp-block-shortcode">\[\textbf{gini}(\textsf{p}) = 1 – \textsf{p}^2 – (1 – \textsf{p})^2 = 2 * \textsf{p} * (1 – \textsf{p}) \]</p>
+
+
+
+<p class="wp-block-paragraph">If our classification is ideal and we are able to separate the classes perfectly, then the Gini coefficient will be equal to 0. The worst-case scenario is when <code>p = 0.5</code> , then the Gini coefficient is also equal to 0.5.</p>
+
+
+
+<p class="wp-block-paragraph">With the formula above, we can calculate the Gini coefficient for each leaf of the tree. To calculate the Gini coefficient for the whole tree, we need to combine the Gini coefficients of binary splits. For that, we can just get a weighted sum:</p>
+
+
+<p class="wp-block-shortcode">\[\textbf{gini}_{\textsf{total}} = \textbf{gini}_{\textsf{left}} * \frac{\textbf{n}_{\textsf{left}}}{\textbf{n}_{\textsf{left}} + \textbf{n}_{\textsf{right}}} + \textbf{gini}_{\textsf{right}} * \frac{\textbf{n}_{\textsf{right}}}{\textbf{n}_{\textsf{left}} + \textbf{n}_{\textsf{right}}}\]</p>
+
+
+
+<p class="wp-block-paragraph">Now that we know what value we’re optimising, we only need to define all possible binary splits, iterate through them and choose the best option. </p>
+
+
+
+<p class="wp-block-paragraph">Defining all possible binary splits is also quite straightforward. We can do it one by one for each parameter, sort possible values, and pick up thresholds between them. For example, for months (integer from 1 to 12). </p>
+
+
+
+<figure class="wp-block-image size-large"><img decoding="async" src="../Images/6e133a14bae01f745ca902f657b98dcc.png" alt="" class="wp-image-601340" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/04/Screenshot-2025-02-04-at-23.26.53-1024x273.png"/><figcaption class="wp-element-caption">Image by author</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">Let’s try to code it and see whether we will come to the same result. First, we will define functions that calculate the Gini coefficient for one dataset and the combination.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">def get_gini(df):
+    p = df.y.mean()
+    return 2*p*(1-p)
+
+print(get_gini(fin_df)) 
+# 0.2065
+# close to what we see at the root node of Decision Tree
+
+def get_gini_comb(df1, df2):
+    n1 = df1.shape[0]
+    n2 = df2.shape[0]
+
+    gini1 = get_gini(df1)
+    gini2 = get_gini(df2)
+    return (gini1*n1 + gini2*n2)/(n1 + n2)</code></pre>
+
+
+
+<p class="wp-block-paragraph">The next step is to get all possible thresholds for one parameter and calculate their Gini coefficients. </p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">import tqdm
+def optimise_one_parameter(df, param):
+    tmp = []
+    possible_values = list(sorted(df[param].unique()))
+    print(param)
+
+    for i in tqdm.tqdm(range(1, len(possible_values))): 
+        threshold = (possible_values[i-1] + possible_values[i])/2
+        gini = get_gini_comb(df[df[param] &lt;= threshold], 
+          df[df[param] &gt; threshold])
+        tmp.append(
+            {'param': param, 
+            'threshold': threshold, 
+            'gini': gini, 
+            'sizes': (df[df[param] &lt;= threshold].shape[0], df[df[param] &gt; threshold].shape[0]))
+            }
+        )
+    return pd.DataFrame(tmp)</code></pre>
+
+
+
+<p class="wp-block-paragraph">The final step is to iterate through all features and calculate all possible splits. </p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">tmp_dfs = []
+for feature in feature_names:
+    tmp_dfs.append(optimise_one_parameter(fin_df, feature))
+opt_df = pd.concat(tmp_dfs)
+opt_df.sort_values('gini', asceding = True).head(5)</code></pre>
+
+
+
+<figure class="wp-block-image size-large"><img decoding="async" src="../Images/910bc6dd3ca9cbfb5ad259f72e20d1d4.png" alt="" class="wp-image-601342" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/04/Screenshot-2025-02-04-at-23.55.59-1024x258.png"/><figcaption class="wp-element-caption">Image by author</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">Wonderful, we’ve got the same result as in our <code>DecisionTreeClassifier</code> model. The optimal split is whether <code>poutcome = success</code> or not. We’ve reduced the Gini coefficient from 0.2065 to 0.1872. </p>
+
+
+
+<p class="wp-block-paragraph">To continue building the tree, we need to repeat the process recursively. For example, going down for the <code>poutcome_success &lt;= 0.5</code> branch:</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">tmp_dfs = []
+for feature in feature_names:
+    tmp_dfs.append(optimise_one_parameter(
+      fin_df[fin_df.poutcome_success &lt;= 0.5], feature))
+
+opt_df = pd.concat(tmp_dfs)
+opt_df.sort_values('gini', ascending = True).head(5)</code></pre>
+
+
+
+<figure class="wp-block-image size-large"><img decoding="async" src="../Images/6e7f5406ed58d3c06b335a8b378ebfde.png" alt="" class="wp-image-601343" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/04/Screenshot-2025-02-04-at-23.57.56-1024x250.png"/><figcaption class="wp-element-caption">Image by author</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">The only question we still need to discuss is the stopping criteria. In our initial example, we’ve used two conditions:</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item"><code>max_depth = 2</code> — it just limits the maximum depth of the tree, </li>
+
+
+
+<li class="wp-block-list-item"><code>min_samples_leaf = 1000</code> prevents us from getting leaf nodes with less than 1K samples. Because of this condition, we’ve chosen a binary split by <code>contact_unknown</code> even though <code>age</code> led to a lower Gini coefficient.</li>
+</ul>
+
+
+
+<p class="wp-block-paragraph">Also, I usually limit the <code>min_impurity_decrease</code> that prevent us from going further if the gains are too small. By gains, we mean the decrease of the Gini coefficient.</p>
+
+
+
+<p class="wp-block-paragraph">So, we’ve understood how the Decision Tree Classifier works, and now it’s time to use it in practice.</p>
+
+
+
+<blockquote class="wp-block-quote is-layout-flow wp-block-quote-is-layout-flow">
+<p class="wp-block-paragraph"><em>If you’re interested to see how Decision Tree Regressor works in all detail, you can look it up in <a href="https://towardsdatascience.com/interpreting-random-forests-638bca8b49ea/" target="_blank" rel="noreferrer noopener">my previous article</a>.</em></p>
+</blockquote>
+
+
+
+<h2 class="wp-block-heading">Decision Trees: practice</h2>
+
+
+
+<p class="wp-block-paragraph">We’ve already built a simple tree model with two layers, but it’s definitely not enough since it’s too simple to get all the insights from the data. Let’s train another Decision Tree by limiting the number of samples in leaves and decreasing impurity (reduction of Gini coefficient). </p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">model = sklearn.tree.DecisionTreeClassifier(
+  min_samples_leaf = 1000, min_impurity_decrease=0.001)
+model.fit(fin_df[features], fin_df['y'])
+
+dot_data = sklearn.tree.export_graphviz(
+    model, out_file=None, feature_names = features, filled = True, 
+    proportion = True, precision=2, impurity = True)
+
+graph = graphviz.Source(dot_data)
+
+# saving graph to png file
+png_bytes = graph.pipe(format='png')
+with open('decision_tree.png','wb') as f:
+    f.write(png_bytes)</code></pre>
+
+
+
+<figure class="wp-block-image size-full"><img decoding="async" src="../Images/4f9ca8eb054cdff9de42f5d358c5b5f1.png" alt="" class="wp-image-601344" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/04/image-36.png"/><figcaption class="wp-element-caption">Image by author</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">That’s it. We’ve got our rules to split customers into groups (leaves). Now, we can iterate through groups and see which groups of customers we want to contact. Even though our model is relatively small, it’s daunting to copy all conditions from the image. Luckily, we can parse <a href="https://scikit-learn.org/stable/auto_examples/tree/plot_unveil_tree_structure.html" rel="noreferrer noopener" target="_blank">the tree structure</a> and get all the groups from the model.</p>
+
+
+
+<p class="wp-block-paragraph">The Decision Tree classifier has an attribute <code>tree_</code> that will allow us to get access to low-level attributes of the tree, such as <code>node_count</code> .</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">n_nodes = model.tree_.node_count
+print(n_nodes)
+# 13</code></pre>
+
+
+
+<p class="wp-block-paragraph">The <code>tree_</code> variable also stores the entire tree structure as parallel arrays, where the <code>i</code><sub>th</sub> element of each array stores the information about the node <code>i</code>. For the root <code>i</code> equals to 0.</p>
+
+
+
+<p class="wp-block-paragraph">Here are the arrays we have to represent the tree structure: </p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item"><code>children_left</code> and <code>children_right</code> — IDs of left and right nodes, respectively; if the node is a leaf, then -1.</li>
+
+
+
+<li class="wp-block-list-item"><code>feature</code> — feature used to split the node <code>i</code> .</li>
+
+
+
+<li class="wp-block-list-item"><code>threshold</code> — threshold value used for the binary split of the node <code>i</code> .</li>
+
+
+
+<li class="wp-block-list-item"><code>n_node_samples</code> — number of training samples that reached the node <code>i</code> .</li>
+
+
+
+<li class="wp-block-list-item"><code>values</code> — shares of samples from each class.</li>
+</ul>
+
+
+
+<p class="wp-block-paragraph">Let’s save all these arrays. </p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">children_left = model.tree_.children_left
+# [ 1,  2,  3,  4,  5,  6, -1, -1, -1, -1, -1, -1, -1]
+children_right = model.tree_.children_right
+# [12, 11, 10,  9,  8,  7, -1, -1, -1, -1, -1, -1, -1]
+features = model.tree_.feature
+# [30, 34,  0,  3,  6,  6, -2, -2, -2, -2, -2, -2, -2]
+thresholds = model.tree_.threshold
+# [ 0.5,  0.5, 59.5,  0.5,  6.5,  2.5, -2. , -2. , -2. , -2. , -2. , -2. , -2. ]
+num_nodes = model.tree_.n_node_samples
+# [45211, 43700, 30692, 29328, 14165,  4165,  2053,  2112, 10000, 
+#  15163,  1364, 13008,  1511] 
+values = model.tree_.value
+# [[[0.8830152 , 0.1169848 ]],
+# [[0.90135011, 0.09864989]],
+# [[0.87671054, 0.12328946]],
+# [[0.88550191, 0.11449809]],
+# [[0.8530886 , 0.1469114 ]],
+# [[0.76686675, 0.23313325]],
+# [[0.87043351, 0.12956649]],
+# [[0.66619318, 0.33380682]],
+# [[0.889     , 0.111     ]],
+# [[0.91578184, 0.08421816]],
+# [[0.68768328, 0.31231672]],
+# [[0.95948647, 0.04051353]],
+# [[0.35274653, 0.64725347]]]</code></pre>
+
+
+
+<p class="wp-block-paragraph">It will be more convenient for us to work with a hierarchical view of the tree structure, so let’s iterate through all nodes and, for each node, save the parent node ID and whether it was a right or left branch. </p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">hierarchy = {}
+
+for node_id in range(n_nodes):
+  if children_left[node_id] != -1: 
+    hierarchy[children_left[node_id]] = {
+      'parent': node_id, 
+      'condition': 'left'
+    }
+  
+  if children_right[node_id] != -1:
+      hierarchy[children_right[node_id]] = {
+       'parent': node_id, 
+       'condition': 'right'
+  }
+
+print(hierarchy)
+# {1: {'parent': 0, 'condition': 'left'},
+# 12: {'parent': 0, 'condition': 'right'},
+# 2: {'parent': 1, 'condition': 'left'},
+# 11: {'parent': 1, 'condition': 'right'},
+# 3: {'parent': 2, 'condition': 'left'},
+# 10: {'parent': 2, 'condition': 'right'},
+# 4: {'parent': 3, 'condition': 'left'},
+# 9: {'parent': 3, 'condition': 'right'},
+# 5: {'parent': 4, 'condition': 'left'},
+# 8: {'parent': 4, 'condition': 'right'},
+# 6: {'parent': 5, 'condition': 'left'},
+# 7: {'parent': 5, 'condition': 'right'}}</code></pre>
+
+
+
+<p class="wp-block-paragraph">The next step is to filter out the leaf nodes since they are terminal and the most interesting for us as they define the customer segments. </p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">leaves = []
+for node_id in range(n_nodes):
+    if (children_left[node_id] == -1) and (children_right[node_id] == -1):
+        leaves.append(node_id)
+print(leaves)
+# [6, 7, 8, 9, 10, 11, 12]
+leaves_df = pd.DataFrame({'node_id': leaves})</code></pre>
+
+
+
+<p class="wp-block-paragraph">The next step is to determine all the conditions applied to each group since they will define our customer segments. The first function <code>get_condition</code> will give us the tuple of feature, condition type and threshold for a node. </p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">def get_condition(node_id, condition, features, thresholds, feature_names):
+    # print(node_id, condition)
+    feature = feature_names[features[node_id]]
+    threshold = thresholds[node_id]
+    cond = '&gt;' if condition == 'right'  else '&lt;='
+    return (feature, cond, threshold)
+
+print(get_condition(0, 'left', features, thresholds, feature_names)) 
+# ('poutcome_success', '&lt;=', 0.5)
+
+print(get_condition(0, 'right', features, thresholds, feature_names))
+# ('poutcome_success', '&gt;', 0.5)</code></pre>
+
+
+
+<p class="wp-block-paragraph">The next function will allow us to recursively go from the leaf node to the root and get all the binary splits. </p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">def get_decision_path_rec(node_id, decision_path, hierarchy):
+  if node_id == 0:
+    yield decision_path 
+  else:
+    parent_id = hierarchy[node_id]['parent']
+    condition = hierarchy[node_id]['condition']
+    for res in get_decision_path_rec(parent_id, decision_path + [(parent_id, condition)], hierarchy):
+        yield res
+
+decision_path = list(get_decision_path_rec(12, [], hierarchy))[0]
+print(decision_path) 
+# [(0, 'right')]
+
+fmt_decision_path = list(map(
+  lambda x: get_condition(x[0], x[1], features, thresholds, feature_names), 
+  decision_path))
+print(fmt_decision_path)
+# [('poutcome_success', '&gt;', 0.5)]</code></pre>
+
+
+
+<p class="wp-block-paragraph">Let’s save the logic of executing the recursion and formatting into a wrapper function.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">def get_decision_path(node_id, features, thresholds, hierarchy, feature_names):
+  decision_path = list(get_decision_path_rec(node_id, [], hierarchy))[0]
+  return list(map(lambda x: get_condition(x[0], x[1], features, thresholds, 
+    feature_names), decision_path))</code></pre>
+
+
+
+<p class="wp-block-paragraph">We’ve learned how to get each node’s binary split conditions. The only remaining logic is to combine the conditions. </p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">def get_decision_path_string(node_id, features, thresholds, hierarchy, 
+  feature_names):
+  conditions_df = pd.DataFrame(get_decision_path(node_id, features, thresholds, hierarchy, feature_names))
+  conditions_df.columns = ['feature', 'condition', 'threshold']
+
+  left_conditions_df = conditions_df[conditions_df.condition == '&lt;=']
+  right_conditions_df = conditions_df[conditions_df.condition == '&gt;']
+
+  # deduplication 
+  left_conditions_df = left_conditions_df.groupby(['feature', 'condition'], as_index = False).min()
+  right_conditions_df = right_conditions_df.groupby(['feature', 'condition'], as_index = False).max()
+  
+  # concatination
+  fin_conditions_df = pd.concat([left_conditions_df, right_conditions_df])\
+      .sort_values(['feature', 'condition'], ascending = False)
+  
+  # formatting 
+  fin_conditions_df['cond_string'] = list(map(
+      lambda x, y, z: '(%s %s %.2f)' % (x, y, z),
+      fin_conditions_df.feature,
+      fin_conditions_df.condition,
+      fin_conditions_df.threshold
+  ))
+  return ' and '.join(fin_conditions_df.cond_string.values)
+
+print(get_decision_path_string(12, features, thresholds, hierarchy, 
+  feature_names))
+# (poutcome_success &gt; 0.50)</code></pre>
+
+
+
+<p class="wp-block-paragraph">Now, we can calculate the conditions for each group. </p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">leaves_df['condition'] = leaves_df['node_id'].map(
+  lambda x: get_decision_path_string(x, features, thresholds, hierarchy, 
+  feature_names)
+)</code></pre>
+
+
+
+<p class="wp-block-paragraph">The last step is to add their size and conversion to the groups.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">leaves_df['total'] = leaves_df.node_id.map(lambda x: num_nodes[x])
+leaves_df['conversion'] = leaves_df['node_id'].map(lambda x: values[x][0][1])*100
+leaves_df['converted_users'] = (leaves_df.conversion * leaves_df.total)\
+  .map(lambda x: int(round(x/100)))
+leaves_df['share_of_converted'] = 100*leaves_df['converted_users']/leaves_df['converted_users'].sum()
+leaves_df['share_of_total'] = 100*leaves_df['total']/leaves_df['total'].sum()</code></pre>
+
+
+
+<p class="wp-block-paragraph">Now, we can use these rules to make decisions. We can sort groups by conversion (probability of successful contact) and pick the customers with the highest probability. </p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">leaves_df.sort_values('conversion', ascending = False)\
+  .drop('node_id', axis = 1).set_index('condition')</code></pre>
+
+
+
+<figure class="wp-block-image size-large"><img decoding="async" src="../Images/acbff0174458938774ca4624ca7bfce3.png" alt="" class="wp-image-601345" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/04/Screenshot-2025-02-05-at-23.01.03-1024x305.png"/><figcaption class="wp-element-caption">Image by author</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">Imagine we have resources to contact only around 10% of our user base, we can focus on the first three groups. Even with such a limited capacity, we would expect to get almost 40% conversion — it’s a really good result, and we’ve achieved it with just a bunch of straightforward heuristics.  </p>
+
+
+
+<p class="wp-block-paragraph">In real life, it’s also worth testing the model (or heuristics) before deploying it in production. I would split the training dataset into training and validation parts (by time to avoid leakage) and see the heuristics performance on the validation set to have a better view of the actual model quality.</p>
+
+
+
+<h2 class="wp-block-heading">Working with high cardinality categories</h2>
+
+
+
+<p class="wp-block-paragraph">Another topic that is worth discussing in this context is category encoding, since we have to encode the categorical variables for <code>sklearn</code> implementation. We’ve used a straightforward approach with one-hot encoding, but in some cases, it doesn’t work.</p>
+
+
+
+<p class="wp-block-paragraph">Imagine we also have a region in the data. I’ve synthetically generated English cities for each row. We have 155 unique regions, so the number of features has increased to 190. </p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">model = sklearn.tree.DecisionTreeClassifier(min_samples_leaf = 100, min_impurity_decrease=0.001)
+model.fit(fin_df[feature_names], fin_df['y'])</code></pre>
+
+
+
+<p class="wp-block-paragraph">So, the basic tree now has lots of conditions based on regions and it’s not convenient to work with them.</p>
+
+
+
+<figure class="wp-block-image size-large"><img decoding="async" src="../Images/6216a33b10776916d2f69f7d0630683c.png" alt="" class="wp-image-601346" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/04/image2-1024x657.png"/><figcaption class="wp-element-caption">Image by author</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">In such a case, it might not be meaningful to explode the number of features, and it’s time to think about encoding. There’s a comprehensive article, <a href="https://medium.com/data-science-at-microsoft/categorically-dont-explode-encode-dd623b565ce3" target="_blank" rel="noreferrer noopener">“Categorically: Don’t explode — encode!”</a>, that shares a bunch of different options to handle high cardinality categorical variables. I think the most feasible ones in our case will be the following two options:</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item"><strong>Count or Frequency Encoder</strong> that shows good performance in benchmarks. This encoding assumes that categories of similar size would have similar characteristics. </li>
+
+
+
+<li class="wp-block-list-item"><strong>Target Encoder,</strong> where we can encode the category by the mean value of the target variable. It will allow us to prioritise segments with higher conversion and deprioritise segments with lower. Ideally, it would be nice to use historical data to get the averages for the encoding, but we will use the existing dataset. </li>
+</ul>
+
+
+
+<p class="wp-block-paragraph">However, it will be interesting to test different approaches, so let’s split our dataset into train and test, saving 10% for validation. For simplicity, I’ve used one-hot encoding for all columns except for region (since it has the highest cardinality).</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">from sklearn.model_selection import train_test_split
+fin_df = pd.get_dummies(df, columns=['job', 'marital', 'education', 
+  'poutcome', 'contact'], dtype = int, drop_first = False)
+train_df, test_df = train_test_split(fin_df,test_size=0.1, random_state=42)
+print(train_df.shape[0], test_df.shape[0])
+# (40689, 4522)</code></pre>
+
+
+
+<p class="wp-block-paragraph">For convenience, let’s combine all the logic for parsing the tree into one function.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">def get_model_definition(model, feature_names):
+  n_nodes = model.tree_.node_count
+  children_left = model.tree_.children_left
+  children_right = model.tree_.children_right
+  features = model.tree_.feature
+  thresholds = model.tree_.threshold
+  num_nodes = model.tree_.n_node_samples
+  values = model.tree_.value
+
+  hierarchy = {}
+
+  for node_id in range(n_nodes):
+      if children_left[node_id] != -1: 
+          hierarchy[children_left[node_id]] = {
+            'parent': node_id, 
+            'condition': 'left'
+          }
+    
+      if children_right[node_id] != -1:
+            hierarchy[children_right[node_id]] = {
+             'parent': node_id, 
+             'condition': 'right'
+            }
+
+  leaves = []
+  for node_id in range(n_nodes):
+      if (children_left[node_id] == -1) and (children_right[node_id] == -1):
+          leaves.append(node_id)
+  leaves_df = pd.DataFrame({'node_id': leaves})
+  leaves_df['condition'] = leaves_df['node_id'].map(
+    lambda x: get_decision_path_string(x, features, thresholds, hierarchy, feature_names)
+  )
+
+  leaves_df['total'] = leaves_df.node_id.map(lambda x: num_nodes[x])
+  leaves_df['conversion'] = leaves_df['node_id'].map(lambda x: values[x][0][1])*100
+  leaves_df['converted_users'] = (leaves_df.conversion * leaves_df.total).map(lambda x: int(round(x/100)))
+  leaves_df['share_of_converted'] = 100*leaves_df['converted_users']/leaves_df['converted_users'].sum()
+  leaves_df['share_of_total'] = 100*leaves_df['total']/leaves_df['total'].sum()
+  leaves_df = leaves_df.sort_values('conversion', ascending = False)\
+    .drop('node_id', axis = 1).set_index('condition')
+  leaves_df['cum_share_of_total'] = leaves_df['share_of_total'].cumsum()
+  leaves_df['cum_share_of_converted'] = leaves_df['share_of_converted'].cumsum()
+  return leaves_df</code></pre>
+
+
+
+<p class="wp-block-paragraph">Let’s create an encodings data frame, calculating frequencies and conversions. </p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">region_encoding_df = train_df.groupby('region', as_index = False)\
+  .aggregate({'id': 'count', 'y': 'mean'}).rename(columns = 
+    {'id': 'region_count', 'y': 'region_target'})</code></pre>
+
+
+
+<p class="wp-block-paragraph">Then, merge it into our training and validation sets. For the validation set, we will also fill NAs as averages.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">train_df = train_df.merge(region_encoding_df, on = 'region')
+
+test_df = test_df.merge(region_encoding_df, on = 'region', how = 'left')
+test_df['region_target'] = test_df['region_target']\
+  .fillna(region_encoding_df.region_target.mean())
+test_df['region_count'] = test_df['region_count']\
+  .fillna(region_encoding_df.region_count.mean())</code></pre>
+
+
+
+<p class="wp-block-paragraph">Now, we can fit the models and get their structures.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">count_feature_names = train_df.drop(
+  ['y', 'id', 'region_target', 'region'], axis = 1).columns
+target_feature_names = train_df.drop(
+  ['y', 'id', 'region_count', 'region'], axis = 1).columns
+print(len(count_feature_names), len(target_feature_names))
+# (36, 36)
+
+count_model = sklearn.tree.DecisionTreeClassifier(min_samples_leaf = 500, 
+  min_impurity_decrease=0.001)
+count_model.fit(train_df[count_feature_names], train_df['y'])
+
+target_model = sklearn.tree.DecisionTreeClassifier(min_samples_leaf = 500, 
+  min_impurity_decrease=0.001)
+target_model.fit(train_df[target_feature_names], train_df['y'])
+
+count_model_def_df = get_model_definition(count_model, count_feature_names)
+target_model_def_df = get_model_definition(target_model, target_feature_names)</code></pre>
+
+
+
+<p class="wp-block-paragraph">Let’s look at the structures and select the top categories up to 10–15% of our target audience. We can also apply these conditions to our validation sets to test our approach in practice. </p>
+
+
+
+<p class="wp-block-paragraph">Let’s start with Count Encoder. </p>
+
+
+
+<figure class="wp-block-image size-large"><img decoding="async" src="../Images/dcec657e89b6f991384cf68d107a5f11.png" alt="" class="wp-image-601347" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/04/Screenshot-2025-02-07-at-20.51.47-1024x514.png"/><figcaption class="wp-element-caption">Image by author</figcaption></figure>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">count_selected_df = test_df[
+    (test_df.poutcome_success &gt; 0.50) | 
+    ((test_df.poutcome_success &lt;= 0.50) &amp; (test_df.age &gt; 60.50)) | 
+    ((test_df.region_count &gt; 3645.50) &amp; (test_df.region_count &lt;= 8151.50) &amp; 
+         (test_df.poutcome_success &lt;= 0.50) &amp; (test_df.contact_cellular &gt; 0.50) &amp; (test_df.age &lt;= 60.50))
+]
+
+print(count_selected_df.shape[0], count_selected_df.y.sum())
+# (508, 227)</code></pre>
+
+
+
+<p class="wp-block-paragraph">We can also see what regions have been selected, and it’s only Manchester.</p>
+
+
+
+<figure class="wp-block-image size-large"><img decoding="async" src="../Images/f49564eb3fe6576eb852af3484e2e6ba.png" alt="" class="wp-image-601348" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/04/Screenshot-2025-02-07-at-21.03.08-1024x73.png"/><figcaption class="wp-element-caption">Image by author</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">Let’s continue with the Target encoding. </p>
+
+
+
+<figure class="wp-block-image size-large"><img decoding="async" src="../Images/ba0e411fdef581bd2a120a04721315aa.png" alt="" class="wp-image-601352" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/04/Screenshot-2025-04-08-at-22.52.56-1024x489.png"/><figcaption class="wp-element-caption">Image by author</figcaption></figure>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">target_selected_df = test_df[
+    ((test_df.region_target &gt; 0.21) &amp; (test_df.poutcome_success &gt; 0.50)) | 
+    ((test_df.region_target &gt; 0.21) &amp; (test_df.poutcome_success &lt;= 0.50) &amp; (test_df.month &lt;= 6.50) &amp; (test_df.housing &lt;= 0.50) &amp; (test_df.contact_unknown &lt;= 0.50)) | 
+    ((test_df.region_target &gt; 0.21) &amp; (test_df.poutcome_success &lt;= 0.50) &amp; (test_df.month &gt; 8.50) &amp; (test_df.housing &lt;= 0.50) 
+         &amp; (test_df.contact_unknown &lt;= 0.50)) |
+    ((test_df.region_target &lt;= 0.21) &amp; (test_df.poutcome_success &gt; 0.50)) |
+    ((test_df.region_target &gt; 0.21) &amp; (test_df.poutcome_success &lt;= 0.50) &amp; (test_df.month &gt; 6.50) &amp; (test_df.month &lt;= 8.50) 
+         &amp; (test_df.housing &lt;= 0.50) &amp; (test_df.contact_unknown &lt;= 0.50))
+]
+
+print(target_selected_df.shape[0], target_selected_df.y.sum())
+# (502, 248)</code></pre>
+
+
+
+<p class="wp-block-paragraph">We see a slightly lower number of selected users for communication but a significantly higher number of conversions: 248 vs. 227 (+9.3%).</p>
+
+
+
+<p class="wp-block-paragraph">Let’s also look at the selected categories. We see that the model picked up all the cities with high conversions (Manchester, Liverpool, Bristol, Leicester, and New Castle), but there are also many small regions with high conversions solely due to chance.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">region_encoding_df[region_encoding_df.region_target &gt; 0.21]\
+  .sort_values('region_count', ascending = False)</code></pre>
+
+
+
+<figure class="wp-block-image size-large"><img decoding="async" src="../Images/0cc1c68f8cc94caa56e08caca2b5008d.png" alt="" class="wp-image-601350" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/04/Screenshot-2025-02-07-at-21.06.51-1024x674.png"/><figcaption class="wp-element-caption">Image by author</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">In our case, it doesn’t impact much since the share of such small cities is low. However, if you have way more small categories, you might see significant drawbacks of overfitting. Target Encoding might be tricky at this point, so it’s worth keeping an eye on the output of your model. </p>
+
+
+
+<p class="wp-block-paragraph">Luckily, there’s an approach that can help you overcome this issue. Following the article <a href="https://towardsdatascience.com/encoding-categorical-variables-a-deep-dive-into-target-encoding-2862217c2753/" rel="noreferrer noopener" target="_blank">“Encoding Categorical Variables: A Deep Dive into Target Encoding”</a>, we can add smoothing. The idea is to combine the group’s conversion rate with the overall average: the larger the group, the more weight its data carries, while smaller segments will lean more towards the global average.</p>
+
+
+
+<p class="wp-block-paragraph">First, I’ve selected the parameters that make sense for our distribution, looking at a bunch of options. I chose to use the global average for the groups under 100 people. This part is a bit subjective, so use common sense and your knowledge about the business domain.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">import numpy as np
+import matplotlib.pyplot as plt
+
+global_mean = train_df.y.mean()
+
+k = 100
+f = 10
+smooth_df = pd.DataFrame({'region_count':np.arange(1, 100001, 1) })
+smooth_df['smoothing'] = (1 / (1 + np.exp(-(smooth_df.region_count - k) / f)))
+
+ax = plt.scatter(smooth_df.region_count, smooth_df.smoothing)
+plt.xscale('log')
+plt.ylim([-.1, 1.1])
+plt.title('Smoothing')</code></pre>
+
+
+
+<figure class="wp-block-image size-large"><img decoding="async" src="../Images/7b4434f070ff79eb13e28db0fffd95ef.png" alt="" class="wp-image-601351" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/04/Screenshot-2025-02-07-at-22.34.45-1024x296.png"/><figcaption class="wp-element-caption">Image by author</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">Then, we can calculate, based on the selected parameters, the smoothing coefficients and blended averages.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">region_encoding_df['smoothing'] = (1 / (1 + np.exp(-(region_encoding_df.region_count - k) / f)))
+region_encoding_df['region_target'] = region_encoding_df.smoothing * region_encoding_df.raw_region_target \
+    + (1 - region_encoding_df.smoothing) * global_mean</code></pre>
+
+
+
+<p class="wp-block-paragraph">Then, we can fit another model with smoothed target category encoding.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">train_df = train_df.merge(region_encoding_df[['region', 'region_target']], 
+  on = 'region')
+test_df = test_df.merge(region_encoding_df[['region', 'region_target']], 
+  on = 'region', how = 'left')
+test_df['region_target'] = test_df['region_target']\
+  .fillna(region_encoding_df.region_target.mean())
+
+target_v2_feature_names = train_df.drop(['y', 'id', 'region'], axis = 1)\
+  .columns
+
+target_v2_model = sklearn.tree.DecisionTreeClassifier(min_samples_leaf = 500, 
+  min_impurity_decrease=0.001)
+target_v2_model.fit(train_df[target_v2_feature_names], train_df['y'])
+target_v2_model_def_df = get_model_definition(target_v2_model, 
+  target_v2_feature_names)</code></pre>
+
+
+
+<figure class="wp-block-image size-large"><img decoding="async" src="../Images/9610810673b2809cf5d211bd4f0ca5fb.png" alt="" class="wp-image-601349" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/04/Screenshot-2025-02-07-at-22.28.50-1024x532.png"/><figcaption class="wp-element-caption">Image by author</figcaption></figure>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">target_v2_selected_df = test_df[
+    ((test_df.region_target &gt; 0.12) &amp; (test_df.poutcome_success &gt; 0.50)) | 
+    ((test_df.region_target &gt; 0.12) &amp; (test_df.poutcome_success &lt;= 0.50) &amp; (test_df.month &lt;= 6.50) &amp; (test_df.housing &lt;= 0.50) &amp; (test_df.contact_unknown &lt;= 0.50)) | 
+    ((test_df.region_target &gt; 0.12) &amp; (test_df.poutcome_success &lt;= 0.50) &amp; (test_df.month &gt; 8.50) &amp; (test_df.housing &lt;= 0.50) 
+         &amp; (test_df.contact_unknown &lt;= 0.50)) | 
+    ((test_df.region_target &lt;= 0.12) &amp; (test_df.poutcome_success &gt; 0.50) ) | 
+    ((test_df.region_target &gt; 0.12) &amp; (test_df.poutcome_success &lt;= 0.50) &amp; (test_df.month &gt; 6.50) &amp; (test_df.month &lt;= 8.50) 
+         &amp; (test_df.housing &lt;= 0.50) &amp; (test_df.contact_unknown &lt;= 0.50) )
+]
+
+target_v2_selected_df.shape[0], target_v2_selected_df.y.sum()
+# (500, 247)</code></pre>
+
+
+
+<p class="wp-block-paragraph">We can see that we’ve eliminated the small cities and prevented overfitting in our model while keeping roughly the same performance, capturing 247 conversions.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">region_encoding_df[region_encoding_df.region_target &gt; 0.12]</code></pre>
+
+
+
+<figure class="wp-block-image size-large"><img decoding="async" src="../Images/87e71c38bff14e5d0b25db54b719055d.png" alt="" class="wp-image-601353" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/04/Screenshot-2025-02-07-at-22.30.29-1024x184.png"/><figcaption class="wp-element-caption">Image by author</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">You can also use <a href="https://scikit-learn.org/stable/modules/generated/sklearn.preprocessing.TargetEncoder.html" rel="noreferrer noopener" target="_blank">TargetEncoder</a> from <code>sklearn</code>, which smoothes and mixes the category and global means depending on the segment size. However, it also adds random noise, which is not ideal for our case of heuristics.</p>
+
+
+
+<blockquote class="wp-block-quote is-layout-flow wp-block-quote-is-layout-flow">
+<p class="wp-block-paragraph"><em>You can find the full code on <a href="https://github.com/miptgirl/miptgirl_medium/blob/main/mining_rules/churn_prediction.ipynb" target="_blank" rel="noreferrer noopener">GitHub</a>.</em></p>
+</blockquote>
+
+
+
+<h2 class="wp-block-heading">Summary</h2>
+
+
+
+<p class="wp-block-paragraph">In this article, we explored how to extract simple “rules” from data and use them to inform business decisions. We generated heuristics using a Decision Tree Classifier and touched on the important topic of categorical encoding since decision tree algorithms require categorical variables to be converted.</p>
+
+
+
+<p class="wp-block-paragraph">We saw that this rule-based approach can be surprisingly effective, helping you reach business decisions quickly. However, it’s worth noting that this simplistic approach has its drawbacks:</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">We are trading off the model’s power and accuracy for its simplicity and interpretability, so if you’re optimising for accuracy, choose another approach.</li>
+
+
+
+<li class="wp-block-list-item">Even though we’re using a set of static heuristics, your data still can change, and they might become outdated, so you need to recheck your model from time to time. </li>
+</ul>
+
+
+
+<hr class="wp-block-separator has-alpha-channel-opacity"/>
+
+
+
+<p class="wp-block-paragraph"><em>Thank you a lot for reading this article. I hope it was insightful to you. If you have any follow-up questions or comments, please leave them in the comments section.</em></p>
+
+
+
+<h2 class="wp-block-heading">Reference</h2>
+
+
+
+<p class="wp-block-paragraph"><strong>Dataset: </strong><em>Moro, S., Rita, P., &amp; Cortez, P. (2014). Bank Marketing [Dataset]. UCI Machine Learning Repository. </em><a href="https://doi.org/10.24432/C5K306" rel="noreferrer noopener" target="_blank"><em>https://doi.org/10.24432/C5K306</em></a></p>
+    
+</body>
+</html>

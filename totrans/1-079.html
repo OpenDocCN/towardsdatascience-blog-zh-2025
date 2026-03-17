@@ -1,0 +1,1046 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.1//EN"
+  "http://www.w3.org/TR/xhtml11/DTD/xhtml11.dtd">
+
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+<title>How to Build an Over-Engineered Retrieval System</title>
+<link href="../Styles/Style.css" type="text/css" rel="stylesheet"/>
+</head>
+<body>
+<h1>How to Build an Over-Engineered Retrieval System</h1>
+<blockquote>原文：<a href="https://towardsdatascience.com/how-to-build-an-overengineered-retrieval-system/">https://towardsdatascience.com/how-to-build-an-overengineered-retrieval-system/</a></blockquote>
+<p class="wp-block-paragraph"><mdspan datatext="el1763428277760" class="mdspan-comment">One of the things</mdspan> you’ll stumble upon when doing AI engineering work is that there’s no real blueprint to follow.</p>
+
+
+
+<p class="wp-block-paragraph">Yes, for the most basic parts of retrieval (the “R” in RAG), you can chunk documents, use semantic search on a query, re-rank the results, and so on. This part is well known.</p>
+
+
+
+<p class="wp-block-paragraph">But once you start digging into this area, you begin to ask questions like: <strong>how can we call a system intelligent if it’s only able to read a few chunks here and there in a document?</strong> So, how do we make sure it has enough information to actually answer intelligently?</p>
+
+
+
+<p class="wp-block-paragraph">Soon, you’ll find yourself going down a rabbit hole, trying to discern what others are doing in their own orgs, because none of this is properly documented, and people are still building their own setups.</p>
+
+
+
+<p class="wp-block-paragraph">This will lead you to implement various optimization strategies: building custom chunkers, rewriting user queries, using different search methods, filtering with metadata, and expanding context to include neighboring chunks.</p>
+
+
+
+<figure class="wp-block-image size-large"><img decoding="async" src="../Images/e9b0a39f1256f3f312bfb93521457f4b.png" alt="" class="wp-image-630757" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/11/image-152-1024x499.png"/></figure>
+
+
+
+<p class="wp-block-paragraph">Hence why I’ve now built a rather bloated retrieval system to show you how it works. So, let’s walk through it so we can see the results of each step, but also to discuss the trade-offs.</p>
+
+
+
+<p class="wp-block-paragraph">To demo this system in public, I decided to embed 150 recent ArXiv papers (2,250 pages) that mention RAG. This means the system we’re testing here is designed for scientific papers, and all the test queries will be RAG-related.</p>
+
+
+
+<p class="wp-block-paragraph">I have collected the raw outputs for each step for a few queries in this <a href="https://github.com/ilsilfverskiold/Awesome-LLM-Resources-List/tree/main/guides/RAG/Custom" rel="noreferrer noopener" target="_blank">repository</a>, if you want to look at the whole thing in detail. </p>
+
+
+
+<p class="wp-block-paragraph">For the tech stack, I’m using Qdrant and Redis to store data, and Cohere and OpenAI for the LLMs. I do not rely on any framework to build the pipelines (as it makes it harder to debug).</p>
+
+
+
+<p class="wp-block-paragraph"><em>As always, I do a quick review of what we’re doing for beginners, so if RAG is already familiar to you, feel free to skip the first section.</em></p>
+
+
+
+<h2 class="wp-block-heading">Recap retrieval &amp; RAG</h2>
+
+
+
+<p class="wp-block-paragraph">When you work with AI knowledge systems like Copilot (where you feed it your custom docs to answer from) you work with a RAG system. </p>
+
+
+
+<p class="wp-block-paragraph"><strong>RAG</strong> stands for <strong>Retrieval Augmented Generation</strong> and is separated into two parts, the retrieval part and the generation part.</p>
+
+
+
+<p class="wp-block-paragraph"><strong>Retrieval</strong> refers to the process of <strong>fetching information in your files</strong>, using keyword and semantic matching, based on a user query. <strong>The generation</strong> part is where<strong> the LLM comes in and answers</strong> based on the provided context and the user query.</p>
+
+
+
+<figure class="wp-block-image"><img decoding="async" src="../Images/c821c7a0df21463680c3495762ffcd3d.png" alt="" class="wp-image-630770" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/11/12py_l__qgboPvCTLeyvxbw.png"/></figure>
+
+
+
+<p class="wp-block-paragraph">For anyone new to RAG it may seem like a chunky way to build systems. Shouldn’t an LLM do most of the work on its own?</p>
+
+
+
+<p class="wp-block-paragraph">Unfortunately, LLMs are static, and we need to engineer systems so that each time we call on them, we give them everything they need upfront so they can answer the question.</p>
+
+
+
+<p class="wp-block-paragraph">I have written about building RAG bots for Slack <a href="https://towardsdatascience.com/agentic-rag-applications-company-knowledge-slack-agents/" target="_blank" rel="noreferrer noopener">before</a>. This one uses standard chunking methods, if you’re keen to get a sense of how people build something simple.</p>
+
+
+
+<p class="wp-block-paragraph">This article goes a <strong>step further</strong> and tries to rebuild the entire retrieval pipeline without any frameworks, to do some fancy stuff like build a multi-query optimizer, fuse results, and expand the chunks to build better context for the LLM.</p>
+
+
+
+<p class="wp-block-paragraph">As we’ll see though, all of<strong> these fancy additions we’ll have to pay for in latency and additional work.</strong></p>
+
+
+
+<h2 class="wp-block-heading">Processing different documents</h2>
+
+
+
+<p class="wp-block-paragraph">As with any data engineering problem, your first hurdle will be to architect how to store data. With retrieval, we focus on something called chunking, and how you do it and what you store with it is essential to building a well-engineered system.</p>
+
+
+
+<p class="wp-block-paragraph">When we do retrieval, we search text, and to do that we need to separate the text into different chunks of information. These pieces of text are what we’ll later search to find a match for a query.</p>
+
+
+
+<p class="wp-block-paragraph">Most simple systems use general chunkers, simply splitting the full text by length, paragraph, or sentence.</p>
+
+
+
+<figure class="wp-block-image"><img decoding="async" src="../Images/d1b63864440a6aa3dd3c9d4002838a29.png" alt="" class="wp-image-630774" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/11/1FsnuPRLdZ5mG-MzFCsCw5Q.png"/></figure>
+
+
+
+<p class="wp-block-paragraph">But every document is different, so by doing this you risk losing context.</p>
+
+
+
+<p class="wp-block-paragraph">To understand this, you should look at different documents to see how they all follow different structures. You’ll have an HR document with clear section headers, and API docs with unnumbered sections using code blocks and tables.</p>
+
+
+
+<p class="wp-block-paragraph">If you applied the same chunking logic to all of these, you’d risk splitting each text the wrong way. This means that once the LLM gets the chunks of information, it will be incomplete, which may cause it to fail at producing an accurate answer.</p>
+
+
+
+<p class="wp-block-paragraph">Furthermore, for each chunk of information, you also need to think about the data you want it to hold. </p>
+
+
+
+<p class="wp-block-paragraph">Should it contain certain metadata so the system can apply filters? Should it link to similar information so it can connect data? Should it hold context so the LLM understands where the information comes from?</p>
+
+
+
+<p class="wp-block-paragraph">This means the architecture of how you store data becomes the most important part. If you start storing information and later realize it’s not enough, you’ll have to redo it. If you realize you’ve complicated the system, you’ll have to start from scratch.</p>
+
+
+
+<p class="wp-block-paragraph">This system will ingest Excel and PDFs, focusing on adding context, keys, and neighbors. This will allow you to see what this looks like when doing retrieval later.</p>
+
+
+
+<p class="wp-block-paragraph"><em>For this demo, I have stored data in Redis and Qdrant. We use Qdrant to do semantic, BM25, and hybrid search, and to expand content we fetch data from Redis.</em></p>
+
+
+
+<h2 class="wp-block-heading">Ingesting tabular files</h2>
+
+
+
+<p class="wp-block-paragraph">First we’ll go through how you can chunk tabular data, add context, and keep information connected with keys.</p>
+
+
+
+<p class="wp-block-paragraph">When dealing with already structured tabular data, like in Excel files, it might seem like the obvious approach is to let the system search it directly. But semantic matching is actually quite effective for messy user queries.</p>
+
+
+
+<p class="wp-block-paragraph">SQL or direct queries only work if you already know the schema and exact fields. For instance, if you get a query like “Mazda 2023 specs” from a user, semantically matching rows will give us something to go on.</p>
+
+
+
+<p class="wp-block-paragraph">I’ve talked to companies that wanted their system to match documents across different Excel files. To do this, we can store keys along with the chunks (without going full KG).</p>
+
+
+
+<p class="wp-block-paragraph">So for instance, if we’re working with Excel files containing purchase data, we could ingest data for each row like so:</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-json">{
+    "chunk_id": "Sales_Q1_123::row::1",
+    "doc_id": "Sales_Q1_123:1234"
+    "location": {"sheet_name": "Sales Q1", "row_n": 1},
+    "type": "chunk",
+    "text": "OrderID: 1001234f67 \n Customer: Alice Hemsworth \n Products: Blue sweater 4, Red pants 6",
+    "context": "Quarterly sales snapshot",
+    "keys": {"OrderID": "1001234f67"},
+}</code></pre>
+
+
+
+<p class="wp-block-paragraph">If we decide later in the retrieval pipeline to connect information, we can do standard search using the keys to find connecting chunks. This allows us to make quick hops between documents without adding another router step to the pipeline.</p>
+
+
+
+<figure class="wp-block-image"><img decoding="async" src="../Images/1fd6efed0f93629eb484a76cd665f9b3.png" alt="" class="wp-image-630775" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/11/1XC7Qp6wLM0L4hxKhgPyFYg.png"/><figcaption class="wp-element-caption">Very simplified — connecting keys between tabular documents | Image by author</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">We can also set a summary for each document. This acts as a gatekeeper to chunks.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-json">{
+    "chunk_id": "Sales_Q1::summary",
+    "doc_id": "Sales_Q1_123:1234"
+    "location": {"sheet_name": "Sales Q1"},
+    "type": "summary",
+    "text": "Sheet tracks Q1 orders for 2025, type of product, and customer names for reconciliation.",
+    "context": ""
+}</code></pre>
+
+
+
+<p class="wp-block-paragraph">The gatekeeper summary idea might be a bit complicated to understand at first, but it also helps to have the summary stored at the document level if you need it when building the context later.</p>
+
+
+
+<p class="wp-block-paragraph">When the LLM sets up this summary (and a brief context string), it can suggest the key columns (i.e. order IDs and so on).</p>
+
+
+
+<p class="wp-block-paragraph"><em>As a note, always set the key columns manually if you can, if that’s not possible, set up some validation logic to make sure the keys aren’t just random (it can happen that an LLM will choose weird columns to store while ignoring the most vital ones).</em></p>
+
+
+
+<p class="wp-block-paragraph">For this system with the ArXiv papers, I’ve ingested two Excel files that contain information on title and author level.</p>
+
+
+
+<p class="wp-block-paragraph">The chunks will look something like this:</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-json">{
+    "chunk_id": "titles::row::8817::250930134607",
+    "doc_id": "titles::250930134607",
+    "location": {
+      "sheet_name": "titles",
+      "row_n": 8817
+    },
+    "type": "chunk",
+    "text": "id: 2507 2114\ntitle: Gender Similarities Dominate Mathematical Cognition at the Neural Level: A Japanese fMRI Study Using Advanced Wavelet Analysis and Generative AI\nkeywords: FMRI; Functional Magnetic Resonance Imaging; Gender Differences; Machine Learning; Mathematical Performance; Time Frequency Analysis; Wavelet\nabstract_url: https://arxiv.org/abs/2507.21140\ncreated: 2025-07-23 00:00:00 UTC\nauthor_1: Tatsuru Kikuchi",
+    "context": "Analyzing trends in AI and computational research articles.",
+    "keys": {
+      "id": "2507 2114",
+      "author_1": "Tatsuru Kikuchi"
+    }
+ }</code></pre>
+
+
+
+<p class="wp-block-paragraph">These Excel files were strictly not necessary (the PDF files would have been enough), but they’re a way to demo how the system can look up keys to find connecting information.</p>
+
+
+
+<p class="wp-block-paragraph">I created summaries for these files too.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-json">{
+    "chunk_id": "titles::summary::250930134607",
+    "doc_id": "titles::250930134607",
+    "location": {
+      "sheet_name": "titles"
+    },
+    "type": "summary",
+    "text": "The dataset consists of articles with various attributes including ID, title, keywords, authors, and publication date. It contains a total of 2508 rows with a rich variety of topics predominantly around AI, machine learning, and advanced computational methods. Authors often contribute in teams, indicated by multiple author columns. The dataset serves academic and research purposes, enabling catego",
+ }</code></pre>
+
+
+
+<p class="wp-block-paragraph">We also store information in Redis at document level, which tells us what it’s about, where to find it, who is allowed to see it, and when it was last updated. This will allow us to update stale information later.</p>
+
+
+
+<p class="wp-block-paragraph">Now let’s turn to PDF files, which are the worst monster you’ll deal with.</p>
+
+
+
+<h2 class="wp-block-heading">Ingesting PDF docs</h2>
+
+
+
+<p class="wp-block-paragraph">To process PDF files, we do similar things as with tabular data, but chunking them is much harder, and we store neighbors instead of keys.</p>
+
+
+
+<p class="wp-block-paragraph">To start processing PDFs, we have several frameworks to work with, such as LlamaParse and Docling, but none of them are perfect, so we have to build out the system further.</p>
+
+
+
+<p class="wp-block-paragraph">PDF documents are very hard to process, as most don’t follow the same structure. They also often contain figures and tables that most systems can’t handle correctly.</p>
+
+
+
+<p class="wp-block-paragraph">Nevertheless, a tool like Docling can help us at least parse normal tables properly and map out each element to the correct page and element number.</p>
+
+
+
+<p class="wp-block-paragraph">From here, we can create our own programmatic logic by mapping sections and subsections for each element, and smart-merging snippets so chunks read naturally (i.e. don’t split mid-sentence).</p>
+
+
+
+<p class="wp-block-paragraph">We also make sure to group chunks by section, keeping them together by linking their IDs in a field called <em>neighbors</em>.</p>
+
+
+
+<figure class="wp-block-image"><img decoding="async" src="../Images/7e9d59b9e4e78fee83a70cb119736306.png" alt="" class="wp-image-630772" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/11/1UCn0uxa3wXj5C-OBviVx2g.png"/></figure>
+
+
+
+<p class="wp-block-paragraph">This allows us to keep the chunks small but still expand them after retrieval.</p>
+
+
+
+<p class="wp-block-paragraph">The end result will be something like below:</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-json">{
+    "chunk_id": "S3::C02::251009105423",
+    "doc_id": "2507.18910v1",
+    "location": {
+      "page_start": 2,
+      "page_end": 2
+    },
+    "type": "chunk",
+    "text": "1 Introduction\n\n1.1 Background and Motivation\n\nLarge-scale pre-trained language models have demonstrated an ability to store vast amounts of factual knowledge in their parameters, but they struggle with accessing up-to-date information and providing verifiable sources. This limitation has motivated techniques that augment generative models with information retrieval. Retrieval-Augmented Generation (RAG) emerged as a solution to this problem, combining a neural retriever with a sequence-to-sequence generator to ground outputs in external documents [52]. The seminal work of [52] introduced RAG for knowledge-intensive tasks, showing that a generative model (built on a BART encoder-decoder) could retrieve relevant Wikipedia passages and incorporate them into its responses, thereby achieving state-of-the-art performance on open-domain question answering. RAG is built upon prior efforts in which retrieval was used to enhance question answering and language modeling [48, 26, 45]. Unlike earlier extractive approaches, RAG produces free-form answers while still leveraging non-parametric memory, offering the best of both worlds: improved factual accuracy and the ability to cite sources. This capability is especially important to mitigate hallucinations (i.e., believable but incorrect outputs) and to allow knowledge updates without retraining the model [52, 33].",
+    "context": "Systematic review of RAG's development and applications in NLP, addressing challenges and advancements.",
+    "section_neighbours": {
+      "before": [
+        "S3::C01::251009105423"
+      ],
+      "after": [
+        "S3::C03::251009105423",
+        "S3::C04::251009105423",
+        "S3::C05::251009105423",
+        "S3::C06::251009105423",
+        "S3::C07::251009105423"
+      ]
+    },
+    "keys": {}
+ }</code></pre>
+
+
+
+<p class="wp-block-paragraph">When we set up data like this, we can consider these chunks as seeds. We are searching for where there may be relevant information based on the user query, and expanding from there.</p>
+
+
+
+<p class="wp-block-paragraph">The difference from simpler RAG systems is that we try to take advantage of the LLM’s growing context window to send in more information (but there are obviously trade offs to this).</p>
+
+
+
+<p class="wp-block-paragraph">You’ll be able to see a messy solution of what this looks like when building the context in the retrieval pipeline later.</p>
+
+
+
+<h2 class="wp-block-heading">Building the retrieval pipeline</h2>
+
+
+
+<p class="wp-block-paragraph">Since I’ve built this pipeline piece by piece, it allows us to test each part and go through why we make certain choices in how we retrieve and transform information before handing it over to the LLM.</p>
+
+
+
+<p class="wp-block-paragraph">We’ll go through semantic, hybrid, and BM25 search, building a multi-query optimizer, re-ranking results, expanding content to build the context, and then handing the results to an LLM to answer.</p>
+
+
+
+<p class="wp-block-paragraph">We’ll end the section with some discussion on latency, unnecessary complexity, and what to cut to make the system faster.</p>
+
+
+
+<p class="wp-block-paragraph">If you want to look at the output of several runs of this pipeline, go to this <a href="https://medium.com/data-science-collective/agentic-rag-company-knowledge-slack-agents-98e588fd1209" target="_blank" rel="noreferrer noopener">repository</a>. </p>
+
+
+
+<h3 class="wp-block-heading">Semantic, BM25 and hybrid search</h3>
+
+
+
+<p class="wp-block-paragraph">The first part of this pipeline is to make sure we are getting back relevant documents for a user query. To do this, we work with semantic, BM25, and hybrid search.</p>
+
+
+
+<p class="wp-block-paragraph">For simple retrieval systems, people will usually just use semantic search. To perform semantic search, we embed dense vectors for each chunk of text using an embedding model.</p>
+
+
+
+<p class="wp-block-paragraph">If this is new to you, note that embeddings represent each piece of text as a point in a high-dimensional space. The position of each point reflects how the model understands its meaning, based on patterns it learned during training.</p>
+
+
+
+<figure class="wp-block-image"><img decoding="async" src="../Images/a560c3d812ab712ee3f6c5da8f4b148b.png" alt="" class="wp-image-630769" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/11/1P7diYdSBB2InlBKA172ayA.png"/></figure>
+
+
+
+<p class="wp-block-paragraph">Texts with similar meanings will then end up close together.</p>
+
+
+
+<p class="wp-block-paragraph">This means that if the model has seen many examples of similar language, it becomes better at placing related texts near each other, and therefore better at matching a query with the most relevant content.</p>
+
+
+
+<p class="wp-block-paragraph"><em>I have written about </em><a href="https://towardsdatascience.com/working-with-embeddings-closed-versus-open-source-39491f0b95c2/" target="_blank" rel="noreferrer noopener"><em>this before,</em></a><em> using clustering on various embeddings models to see how they performed for a use case, if you’re keen to learn more. </em></p>
+
+
+
+<p class="wp-block-paragraph">To create dense vectors, I used OpenAI’s Large embedding model, since I’m working with scientific papers.</p>
+
+
+
+<p class="wp-block-paragraph">This model is more expensive than their small one and perhaps not ideal for this use case.</p>
+
+
+
+<p class="wp-block-paragraph">I would look into specialized models for specific domains or consider fine-tuning your own. Because remember if the embedding model hasn’t seen many examples similar to the texts you’re embedding, it will be harder to match them to relevant documents.</p>
+
+
+
+<p class="wp-block-paragraph">To support hybrid and BM25 search, we also build a lexical index (sparse vectors). BM25 works on exact tokens (for example, “ID 826384”) instead of returning “similar-meaning” text the way semantic search does.</p>
+
+
+
+<p class="wp-block-paragraph">To test semantic search, we’ll set up a query that I think the papers we’ve ingested can answer, such as: <em>“Why do LLMs get worse with longer context windows and what to do about it?”</em></p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-bash">[1] score=0.5071 doc=docs_ingestor/docs/arxiv/2508.15253.pdf chunk=S3::C02::251009131027
+  text: 1 Introduction This challenge is exacerbated when incorrect yet highly ranked contexts serve as hard negatives. Conventional RAG, i.e. , simply appending * Corresponding author 1 https://github.com/eunseongc/CARE Figure 1: LLMs struggle to resolve context-memory conflict. Green bars show the number of questions correctly answered without retrieval in a closed-book setting. Blue and yellow bars show performance when provided with a positive or negative context, respectively. Closed-book w/ Positive Context W/ Negative Context 1 8k 25.1% 49.1% 39.6% 47.5% 6k 4k 1 2k 4 Mistral-7b LLaMA3-8b GPT-4o-mini Claude-3.5 retrieved context to the prompt, struggles to discriminate between incorrect external context and correct parametric knowledge (Ren et al., 2025). This misalignment leads to overriding correct internal representations, resulting in substantial performance degradation on questions that the model initially answered correctly. As shown in Figure 1, we observed significant performance drops of 25.149.1% across state-of-the-
+[2] score=0.5022 doc=docs_ingestor/docs/arxiv/2508.19614.pdf chunk=S3::C03::251009132038
+  text: 1 Introductions Despite these advances, LLMs might underutilize accurate external contexts, disproportionately favoring internal parametric knowledge during generation [50, 40]. This overreliance risks propagating outdated information or hallucinations, undermining the trustworthiness of RAG systems. Surprisingly, recent studies reveal a paradoxical phenomenon: injecting noise-random documents or tokens-to retrieved contexts that already contain answer-relevant snippets can improve the generation accuracy [10, 49]. While this noise-injection approach is simple and effective, its underlying influence on LLM remains unclear. Furthermore, long contexts containing noise documents create computational overhead. Therefore, it is important to design more principled strategies that can achieve similar benefits without incurring excessive cost.
+[3] score=0.4982 doc=docs_ingestor/docs/arxiv/2508.19614.pdf chunk=S6::C18::251009132038
+  text: 4 Experiments 4.3 Analysis Experiments Qualitative Study In Table 4, we analyze a case study from the NQ dataset using the Llama2-7B model, evaluating four decoding strategies: GD(0), CS, DoLA, and LFD. Despite access to groundtruth documents, both GD(0) and DoLA generate incorrect answers (e.g., '18 minutes'), suggesting limited capacity to integrate contextual evidence. Similarly, while CS produces a partially relevant response ('Texas Revolution'), it exhibits reduced factual consistency with the source material. In contrast, LFD demonstrates superior utilization of retrieved context, synthesizing a precise and factually aligned answer. Additional case studies and analyses are provided in Appendix F.
+[4] score=0.4857 doc=docs_ingestor/docs/arxiv/2507.23588.pdf chunk=S6::C03::251009122456
+  text: 4 Results Figure 4: Change in attention pattern distribution in different models. For DiffLoRA variants we plot attention mass for main component (green) and denoiser component (yellow). Note that attention mass is normalized by the number of tokens in each part of the sequence. The negative attention is shown after it is scaled by λ . DiffLoRA corresponds to the variant with learnable λ and LoRa parameters in both terms. BOS CONTEXT 1 MAGIC NUMBER CONTEXT 2 QUERY 0 0.2 0.4 0.6 BOS CONTEXT 1 MAGIC NUMBER CONTEXT 2 QUERY BOS CONTEXT 1 MAGIC NUMBER CONTEXT 2 QUERY BOS CONTEXT 1 MAGIC NUMBER CONTEXT 2 QUERY Llama-3.2-1B LoRA DLoRA-32 DLoRA, Tulu-3 perform similarly as the initial model, however they are outperformed by LoRA. When increasing the context length with more sample demonstrations, DiffLoRA seems to struggle even more in TREC-fine and Banking77. This might be due to the nature of instruction tuned data, and the max_sequence_length = 4096 applied during finetuning. LoRA is less impacted, likely because it diverges less
+[5] score=0.4838 doc=docs_ingestor/docs/arxiv/2508.15253.pdf chunk=S3::C03::251009131027
+  text: 1 Introduction To mitigate context-memory conflict, existing studies such as adaptive retrieval (Ren et al., 2025; Baek et al., 2025) and the decoding strategies (Zhao et al., 2024; Han et al., 2025) adjust the influence of external context either before or during answer generation. However, due to the LLM's limited capacity in detecting conflicts, it is susceptible to misleading contextual inputs that contradict the LLM's parametric knowledge. Recently, robust training has equipped LLMs, enabling them to identify conflicts (Asai et al., 2024; Wang et al., 2024). As shown in Figure 2(a), it enables the LLM to dis-
+[6] score=0.4827 doc=docs_ingestor/docs/arxiv/2508.05266.pdf chunk=S27::C03::251009123532
+  text: B. Subclassification Criteria for Misinterpretation of Design Specifications Initially, regarding long-context scenarios, we observed that directly prompting LLMs to generate RTL code based on lengthy contexts often resulted in certain code segments failing to accurately reflect high-level requirements. However, by manually decomposing the long context-retaining only the key descriptive text relevant to the erroneous segments while omitting unnecessary details-the LLM regenerated RTL code that correctly matched the specifications. As shown in Fig 23, after manual decomposition of the long context, the LLM successfully generated the correct code. This demonstrates that redundancy in long contexts is a limiting factor in LLMs' ability to generate accurate RTL code.
+[7] score=0.4798 doc=docs_ingestor/docs/arxiv/2508.19614.pdf chunk=S3::C02::251009132038
+  text: 1 Introductions Figure 1: Illustration for layer-wise behavior in LLMs for RAG. Given a query and retrieved documents with the correct answer ('Real Madrid'), shallow layers capture local context, middle layers focus on answer-relevant content, while deep layers may over-rely on internal knowledge and hallucinate (e.g., 'Barcelona'). Our proposal, LFD fuses middle-layer signals into the final output to preserve external knowledge and improve accuracy. Shallow Layers Middle Layers Deep Layers Who has more la liga titles real madrid or barcelona? …Nine teams have been crowned champions, with Real Madrid winning the title a record 33 times and Barcelona 25 times … Query Retrieved Document …with Real Madrid winning the title a record 33 times and Barcelona 25 times … Short-context Modeling Focus on Right Answer Answer is barcelona Wrong Answer LLMs …with Real Madrid winning the title a record 33 times and Barcelona 25 times … …with Real Madrid winning the title a record 33 times and Barcelona 25 times … Internal Knowledge Confou</code></pre>
+
+
+
+<p class="wp-block-paragraph">From the results above, we can see that it’s able to match some interesting passages where they discuss topics that can answer the query.</p>
+
+
+
+<p class="wp-block-paragraph">If we try BM25 (which matches exact tokens) with the same query, we get back these results:</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-bash">[1] score=22.0764 doc=docs_ingestor/docs/arxiv/2507.20888.pdf chunk=S4::C27::251009115003
+  text: 3 APPROACH 3.2.2 Project Knowledge Retrieval Similar Code Retrieval. Similar snippets within the same project are valuable for code completion, even if they are not entirely replicable. In this step, we also retrieve similar code snippets. Following RepoCoder, we no longer use the unfinished code as the query but instead use the code draft, because the code draft is closer to the ground truth compared to the unfinished code. We use the Jaccard index to calculate the similarity between the code draft and the candidate code snippets. Then, we obtain a list sorted by scores. Due to the potentially large differences in length between code snippets, we no longer use the top-k method. Instead, we get code snippets from the highest to the lowest scores until the preset context length is filled.
+[2] score=17.4931 doc=docs_ingestor/docs/arxiv/2508.09105.pdf chunk=S20::C08::251009124222
+  text: C. Ablation Studies Ablation result across White-Box attribution: Table V shows the comparison result in methods of WhiteBox Attribution with Noise, White-Box Attrition with Alternative Model and our current method Black-Box zero-gradient Attribution with Noise under two LLM categories. We can know that: First, The White-Box Attribution with Noise is under the desired condition, thus the average Accuracy Score of two LLMs get the 0.8612 and 0.8073. Second, the the alternative models (the two models are exchanged for attribution) reach the 0.7058 and 0.6464. Finally, our current method Black-Box Attribution with Noise get the Accuracy of 0.7008 and 0.6657 by two LLMs.
+[3] score=17.1458 doc=docs_ingestor/docs/arxiv/2508.05100.pdf chunk=S4::C03::251009123245
+  text: Preliminaries Based on this, inspired by existing analyses (Zhang et al. 2024c), we measure the amount of information a position receives using discrete entropy, as shown in the following equation: which quantifies how much information t i receives from the attention perspective. This insight suggests that LLMs struggle with longer sequences when not trained on them, likely due to the discrepancy in information received by tokens in longer contexts. Based on the previous analysis, the optimization of attention entropy should focus on two aspects: The information entropy at positions that are relatively important and likely contain key information should increase.</code></pre>
+
+
+
+<p class="wp-block-paragraph">Here, the results are lackluster for this query — but sometimes queries include specific keywords we need to match, where BM25 is the better choice.</p>
+
+
+
+<p class="wp-block-paragraph">We can test this by changing the query to<em> “papers from Anirban Saha Anik” </em>using BM25.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-bash">[1] score=62.3398 doc=authors.csv chunk=authors::row::1::251009110024
+  text: author_name: Anirban Saha Anik n_papers: 2 article_1: 2509.01058 article_2: 2507.07307
+[2] score=56.4007 doc=titles.csv chunk=titles::row::24::251009110138
+  text: id: 2509.01058 title: Speaking at the Right Level: Literacy-Controlled Counterspeech Generation with RAG-RL keywords: Controlled-Literacy; Health Misinformation; Public Health; RAG; RL; Reinforcement Learning; Retrieval Augmented Generation abstract_url: https://arxiv.org/abs/2509.01058 created: 2025-09-10 00:00:00 UTC author_1: Xiaoying Song author_2: Anirban Saha Anik author_3: Dibakar Barua author_4: Pengcheng Luo author_5: Junhua Ding author_6: Lingzi Hong
+[3] score=56.2614 doc=titles.csv chunk=titles::row::106::251009110138
+  text: id: 2507.07307 title: Multi-Agent Retrieval-Augmented Framework for Evidence-Based Counterspeech Against Health Misinformation keywords: Evidence Enhancement; Health Misinformation; LLMs; Large Language Models; RAG; Response Refinement; Retrieval Augmented Generation abstract_url: https://arxiv.org/abs/2507.07307 created: 2025-07-27 00:00:00 UTC author_1: Anirban Saha Anik author_2: Xiaoying Song author_3: Elliott Wang author_4: Bryan Wang author_5: Bengisu Yarimbas author_6: Lingzi Hong</code></pre>
+
+
+
+<p class="wp-block-paragraph">All the results above mention “Anirban Saha Anik,” which is exactly what we’re looking for.</p>
+
+
+
+<p class="wp-block-paragraph">If we ran this with semantic search, it would return not just the name “Anirban Saha Anik” but similar names as well.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-bash">[1] score=0.5810 doc=authors.csv chunk=authors::row::1::251009110024
+  text: author_name: Anirban Saha Anik n_papers: 2 article_1: 2509.01058 article_2: 2507.07307
+[2] score=0.4499 doc=authors.csv chunk=authors::row::55::251009110024
+  text: author_name: Anand A. Rajasekar n_papers: 1 article_1: 2508.0199
+[3] score=0.4320 doc=authors.csv chunk=authors::row::59::251009110024
+  text: author_name: Anoop Mayampurath n_papers: 1 article_1: 2508.14817
+[4] score=0.4306 doc=authors.csv chunk=authors::row::69::251009110024
+  text: author_name: Avishek Anand n_papers: 1 article_1: 2508.15437
+[5] score=0.4215 doc=authors.csv chunk=authors::row::182::251009110024
+  text: author_name: Ganesh Ananthanarayanan n_papers: 1 article_1: 2509.14608</code></pre>
+
+
+
+<p class="wp-block-paragraph">This is a good example of how semantic search isn’t always the ideal method — similar names don’t necessarily mean they’re relevant to the query.</p>
+
+
+
+<p class="wp-block-paragraph">So, there are cases where semantic search is ideal, and others where BM25 (token matching) is the better choice.</p>
+
+
+
+<p class="wp-block-paragraph">We can also use hybrid search, which combines semantic and BM25.</p>
+
+
+
+<p class="wp-block-paragraph">You’ll see the results below from running hybrid search on the original query: <em>“why do LLMs get worse with longer context windows and what to do about it?”</em></p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-bash">[1] score=0.5000 doc=docs_ingestor/docs/arxiv/2508.15253.pdf chunk=S3::C02::251009131027
+  text: 1 Introduction This challenge is exacerbated when incorrect yet highly ranked contexts serve as hard negatives. Conventional RAG, i.e. , simply appending * Corresponding author 1 https://github.com/eunseongc/CARE Figure 1: LLMs struggle to resolve context-memory conflict. Green bars show the number of questions correctly answered without retrieval in a closed-book setting. Blue and yellow bars show performance when provided with a positive or negative context, respectively. Closed-book w/ Positive Context W/ Negative Context 1 8k 25.1% 49.1% 39.6% 47.5% 6k 4k 1 2k 4 Mistral-7b LLaMA3-8b GPT-4o-mini Claude-3.5 retrieved context to the prompt, struggles to discriminate between incorrect external context and correct parametric knowledge (Ren et al., 2025). This misalignment leads to overriding correct internal representations, resulting in substantial performance degradation on questions that the model initially answered correctly. As shown in Figure 1, we observed significant performance drops of 25.149.1% across state-of-the-
+[2] score=0.5000 doc=docs_ingestor/docs/arxiv/2507.20888.pdf chunk=S4::C27::251009115003
+  text: 3 APPROACH 3.2.2 Project Knowledge Retrieval Similar Code Retrieval. Similar snippets within the same project are valuable for code completion, even if they are not entirely replicable. In this step, we also retrieve similar code snippets. Following RepoCoder, we no longer use the unfinished code as the query but instead use the code draft, because the code draft is closer to the ground truth compared to the unfinished code. We use the Jaccard index to calculate the similarity between the code draft and the candidate code snippets. Then, we obtain a list sorted by scores. Due to the potentially large differences in length between code snippets, we no longer use the top-k method. Instead, we get code snippets from the highest to the lowest scores until the preset context length is filled.
+[3] score=0.4133 doc=docs_ingestor/docs/arxiv/2508.19614.pdf chunk=S3::C03::251009132038
+  text: 1 Introductions Despite these advances, LLMs might underutilize accurate external contexts, disproportionately favoring internal parametric knowledge during generation [50, 40]. This overreliance risks propagating outdated information or hallucinations, undermining the trustworthiness of RAG systems. Surprisingly, recent studies reveal a paradoxical phenomenon: injecting noise-random documents or tokens-to retrieved contexts that already contain answer-relevant snippets can improve the generation accuracy [10, 49]. While this noise-injection approach is simple and effective, its underlying influence on LLM remains unclear. Furthermore, long contexts containing noise documents create computational overhead. Therefore, it is important to design more principled strategies that can achieve similar benefits without incurring excessive cost.
+[4] score=0.1813 doc=docs_ingestor/docs/arxiv/2508.19614.pdf chunk=S6::C18::251009132038
+  text: 4 Experiments 4.3 Analysis Experiments Qualitative Study In Table 4, we analyze a case study from the NQ dataset using the Llama2-7B model, evaluating four decoding strategies: GD(0), CS, DoLA, and LFD. Despite access to groundtruth documents, both GD(0) and DoLA generate incorrect answers (e.g., '18 minutes'), suggesting limited capacity to integrate contextual evidence. Similarly, while CS produces a partially relevant response ('Texas Revolution'), it exhibits reduced factual consistency with the source material. In contrast, LFD demonstrates superior utilization of retrieved context, synthesizing a precise and factually aligned answer. Additional case studies and analyses are provided in Appendix F.</code></pre>
+
+
+
+<p class="wp-block-paragraph">I found semantic search worked best for this query, which is why it can be useful to run multi-queries with different search methods to fetch the first chunks (though this also adds complexity).</p>
+
+
+
+<p class="wp-block-paragraph">So, let’s turn to building something that can transform the original query into several optimized versions and fuse the results.</p>
+
+
+
+<h3 class="wp-block-heading">Multi-query optimizer</h3>
+
+
+
+<p class="wp-block-paragraph">For this part we look at how we can optimize messy user queries by generating multiple targeted variations and selecting the right search method for each. It can improve recall but it introduces trade-offs.</p>
+
+
+
+<p class="wp-block-paragraph">All the agent abstraction systems you see usually transform the user query when performing search. For example, when you use the QueryTool in LlamaIndex, it uses an LLM to optimize the incoming query.</p>
+
+
+
+<figure class="wp-block-image"><img decoding="async" src="../Images/0d0f506181729bf19e8917c062715219.png" alt="" class="wp-image-630771" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/11/1mxi4_DTwhipoQe7ah7bqmQ.png"/></figure>
+
+
+
+<p class="wp-block-paragraph">We can rebuild this part ourselves, but instead we give it the ability to create multiple queries, while also setting the search method. <em>When you’re working with more documents, you could also have it set filters at this stage.</em></p>
+
+
+
+<p class="wp-block-paragraph">As for creating a lot of queries, I would try to keep it simple, as issues here will cause low-quality outputs in retrieval. The more unrelated queries the system generates, the more noise it introduces into the pipeline.</p>
+
+
+
+<p class="wp-block-paragraph">The function I’ve created here will generate 1–3 academic-style queries, along with the search method to be used, based on a messy user query.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-bash">Original query:
+why is everyone saying RAG doesn't scale? how are people fixing that?
+
+Generated queries:
+- hybrid: RAG scalability issues
+- hybrid: solutions to RAG scaling challenges</code></pre>
+
+
+
+<p class="wp-block-paragraph">We will get back results like these:</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-bash">Query 1 (hybrid) top 20 for query: RAG scalability issues
+
+[1] score=0.5000 doc=docs_ingestor/docs/arxiv/2507.18910.pdf chunk=S22::C05::251104142800
+  text: 7 Challenges of RAG 7.2.1 Scalability and Infrastructure Deploying RAG at scale requires substantial engineering to maintain large knowledge corpora and efficient retrieval indices. Systems must handle millions or billions of documents, demanding significant computational resources, efficient indexing, distributed computing infrastructure, and cost management strategies [21]. Efficient indexing methods, caching, and multi-tier retrieval approaches (such as cascaded retrieval) become essential at scale, especially in large deployments like web search engines.
+[2] score=0.5000 doc=docs_ingestor/docs/arxiv/2507.07695.pdf chunk=SDOC::SUM::251104135247
+  text: This paper proposes the KeyKnowledgeRAG (K2RAG) framework to enhance the efficiency and accuracy of Retrieval-Augment-Generate (RAG) systems. It addresses the high computational costs and scalability issues associated with naive RAG implementations by incorporating techniques such as knowledge graphs, a hybrid retrieval approach, and document summarization to reduce training times and improve answer accuracy. Evaluations show that K2RAG significantly outperforms traditional implementations, achieving greater answer similarity and faster execution times, thereby providing a scalable solution for companies seeking robust question-answering systems.
+
+[...]
+
+Query 2 (hybrid) top 20 for query: solutions to RAG scaling challenges
+
+[1] score=0.5000 doc=docs_ingestor/docs/arxiv/2507.18910.pdf chunk=S22::C05::251104142800
+  text: 7 Challenges of RAG 7.2.1 Scalability and Infrastructure Deploying RAG at scale requires substantial engineering to maintain large knowledge corpora and efficient retrieval indices. Systems must handle millions or billions of documents, demanding significant computational resources, efficient indexing, distributed computing infrastructure, and cost management strategies [21]. Efficient indexing methods, caching, and multi-tier retrieval approaches (such as cascaded retrieval) become essential at scale, especially in large deployments like web search engines.
+[2] score=0.5000 doc=docs_ingestor/docs/arxiv/2508.05100.pdf chunk=S3::C06::251104155301
+  text: Introduction Empirical analyses across multiple real-world benchmarks reveal that BEE-RAG fundamentally alters the entropy scaling laws governing conventional RAG systems, which provides a robust and scalable solution for RAG systems dealing with long-context scenarios. Our main contributions are summarized as follows: We introduce the concept of balanced context entropy, a novel attention reformulation that ensures entropy invariance across varying context lengths, and allocates attention to important segments. It addresses the critical challenge of context expansion in RAG.
+
+[...]</code></pre>
+
+
+
+<p class="wp-block-paragraph">We can also test the system with specific keywords like names and IDs to make sure it chooses BM25 rather than semantic search.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-bash">Original query:
+any papers from Chenxin Diao?
+
+Generated queries:
+- BM25: Chenxin Diao</code></pre>
+
+
+
+<p class="wp-block-paragraph">This will pull up results where <em>Chenxin Diao</em> is clearly mentioned.</p>
+
+
+
+<p class="wp-block-paragraph"><em>I should note, BM25 may cause issues when users misspell names, such as asking for “Chenx Dia” instead of “Chenxin Diao.” So in reality you may just want to slap hybrid search on all of them (and later let the re-ranker take care of weeding out irrelevant results). </em></p>
+
+
+
+<p class="wp-block-paragraph">If you want to do this even better, you can build a retrieval system that generates a few example queries based on the input, so when the original query comes in, you fetch examples to help guide the optimizer.</p>
+
+
+
+<p class="wp-block-paragraph">This helps because smaller models aren’t great at transforming messy human queries into ones with more precise academic phrasing.</p>
+
+
+
+<p class="wp-block-paragraph">To give you an example, when a user is asking why the LLM is lying, the optimizer may transform the query to something like “causes of inaccuracies in large language models” rather than directly look for “hallicunations.”</p>
+
+
+
+<p class="wp-block-paragraph">After we fetch results in parallel, we fuse them. The result will look something like this:</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-bash">RRF Fusion top 38 for query: why is everyone saying RAG doesn't scale? how are people fixing that?
+
+[1] score=0.0328 doc=docs_ingestor/docs/arxiv/2507.18910.pdf chunk=S22::C05::251104142800
+  text: 7 Challenges of RAG 7.2.1 Scalability and Infrastructure Deploying RAG at scale requires substantial engineering to maintain large knowledge corpora and efficient retrieval indices. Systems must handle millions or billions of documents, demanding significant computational resources, efficient indexing, distributed computing infrastructure, and cost management strategies [21]. Efficient indexing methods, caching, and multi-tier retrieval approaches (such as cascaded retrieval) become essential at scale, especially in large deployments like web search engines.
+[2] score=0.0313 doc=docs_ingestor/docs/arxiv/2507.18910.pdf chunk=S22::C42::251104142800
+  text: 7 Challenges of RAG 7.5.5 Scalability Scalability challenges arise as knowledge corpora expand. Advanced indexing, distributed retrieval, and approximate nearest neighbor techniques facilitate efficient handling of large-scale knowledge bases [57]. Selective indexing and corpus curation, combined with infrastructure improvements like caching and parallel retrieval, allow RAG systems to scale to massive knowledge repositories. Research indicates that moderate-sized models augmented with large external corpora can outperform significantly larger standalone models, suggesting parameter efficiency advantages [10].
+[3] score=0.0161 doc=docs_ingestor/docs/arxiv/2507.07695.pdf chunk=SDOC::SUM::251104135247
+  text: This paper proposes the KeyKnowledgeRAG (K2RAG) framework to enhance the efficiency and accuracy of Retrieval-Augment-Generate (RAG) systems. It addresses the high computational costs and scalability issues associated with naive RAG implementations by incorporating techniques such as knowledge graphs, a hybrid retrieval approach, and document summarization to reduce training times and improve answer accuracy. Evaluations show that K2RAG significantly outperforms traditional implementations, achieving greater answer similarity and faster execution times, thereby providing a scalable solution for companies seeking robust question-answering systems.
+[4] score=0.0161 doc=docs_ingestor/docs/arxiv/2508.05100.pdf chunk=S3::C06::251104155301
+  text: Introduction Empirical analyses across multiple real-world benchmarks reveal that BEE-RAG fundamentally alters the entropy scaling laws governing conventional RAG systems, which provides a robust and scalable solution for RAG systems dealing with long-context scenarios. Our main contributions are summarized as follows: We introduce the concept of balanced context entropy, a novel attention reformulation that ensures entropy invariance across varying context lengths, and allocates attention to important segments. It addresses the critical challenge of context expansion in RAG.
+
+[...]</code></pre>
+
+
+
+<p class="wp-block-paragraph">We see that there are some good matches, but also a few irrelevant ones that we’ll need to filter out further.</p>
+
+
+
+<p class="wp-block-paragraph">As a note before we move on, this is probably the step you’ll cut or optimize once you’re trying to reduce latency.</p>
+
+
+
+<p class="wp-block-paragraph">I find LLMs aren’t great at creating key queries that actually pull up useful information all that well, so if it’s not done right, it just adds more noise.</p>
+
+
+
+<h3 class="wp-block-heading">Adding a re-ranker</h3>
+
+
+
+<p class="wp-block-paragraph">We do get results back from the retrieval system, and some of these are good while others are irrelevant, so most retrieval systems will use a re-ranker of some sort.</p>
+
+
+
+<p class="wp-block-paragraph">A re-ranker takes in several chunks and gives each one a relevancy score based on the original user query. You have several choices here, including using something smaller, but I’ll use Cohere’s re-ranker.</p>
+
+
+
+<p class="wp-block-paragraph">We can test this re-ranker on the first question we used in the previous section: <em>“Why is everyone saying RAG doesn’t scale? How are people fixing that?”</em></p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-bash">[... optimizer... retrieval... fuse...]
+
+Rerank summary:
+- strategy=cohere
+- model=rerank-english-v3.0
+- candidates=32
+- eligible_above_threshold=4
+- kept=4 (reranker_threshold=0.35)
+
+Reranked Relevant (4/32 kept ≥ 0.35) top 4 for query: why is everyone saying RAG doesn't scale? how are people fixing that?
+
+[1] score=0.7920 doc=docs_ingestor/docs/arxiv/2507.07695.pdf chunk=S4::C08::251104135247
+  text: 1 Introduction Scalability: Naive implementations of Retrieval-Augmented Generation (RAG) often rely on 16-bit floating-point large language models (LLMs) for the generation component. However, this approach introduces significant scalability challenges due to the increased memory demands required to host the LLM as well as longer inference times due to using a higher precision number type. To enable more efficient scaling, it is crucial to integrate methods or techniques that reduce the memory footprint and inference times of generator models. Quantized models offer more scalable solutions due to less computational requirements, hence when developing RAG systems we should aim to use quantized LLMs for more cost effective deployment as compared to a full fine-tuned LLM whose performance might be good but is more expensive to deploy due to higher memory requirements. A quantized LLM's role in the RAG pipeline itself should be minimal and for means of rewriting retrieved information into a presentable fashion for the end users
+[2] score=0.4749 doc=docs_ingestor/docs/arxiv/2507.18910.pdf chunk=S22::C42::251104142800
+  text: 7 Challenges of RAG 7.5.5 Scalability Scalability challenges arise as knowledge corpora expand. Advanced indexing, distributed retrieval, and approximate nearest neighbor techniques facilitate efficient handling of large-scale knowledge bases [57]. Selective indexing and corpus curation, combined with infrastructure improvements like caching and parallel retrieval, allow RAG systems to scale to massive knowledge repositories. Research indicates that moderate-sized models augmented with large external corpora can outperform significantly larger standalone models, suggesting parameter efficiency advantages [10].
+[3] score=0.4304 doc=docs_ingestor/docs/arxiv/2507.18910.pdf chunk=S22::C05::251104142800
+  text: 7 Challenges of RAG 7.2.1 Scalability and Infrastructure Deploying RAG at scale requires substantial engineering to maintain large knowledge corpora and efficient retrieval indices. Systems must handle millions or billions of documents, demanding significant computational resources, efficient indexing, distributed computing infrastructure, and cost management strategies [21]. Efficient indexing methods, caching, and multi-tier retrieval approaches (such as cascaded retrieval) become essential at scale, especially in large deployments like web search engines.
+[4] score=0.3556 doc=docs_ingestor/docs/arxiv/2509.13772.pdf chunk=S11::C02::251104182521
+  text: 7. Discussion and Limitations Scalability of RAGOrigin: We extend our evaluation by scaling the NQ dataset's knowledge database to 16.7 million texts, combining entries from the knowledge database of NQ, HotpotQA, and MS-MARCO. Using the same user questions from NQ, we assess RAGOrigin's performance under larger data volumes. As shown in Table 16, RAGOrigin maintains consistent effectiveness and performance even on this significantly expanded database. These results demonstrate that RAGOrigin remains robust at scale, making it suitable for enterprise-level applications requiring large</code></pre>
+
+
+
+<p class="wp-block-paragraph">Remember, at this point, we’ve already transformed the user query, done semantic or hybrid search, and fused the results before passing the chunks to the re-ranker.</p>
+
+
+
+<p class="wp-block-paragraph">If you look at the results, we can clearly see that it’s able to identify a few relevant chunks that we can use as seeds.</p>
+
+
+
+<p class="wp-block-paragraph"><em>Remember it only has 150 docs to go on in the first place. </em></p>
+
+
+
+<p class="wp-block-paragraph">You can also see that it returns multiple chunks from the same document. We’ll set this up later in the context construction, but if you want unique documents fetched, you can add some custom logic here to set the limit for unique docs rather than chunks. </p>
+
+
+
+<p class="wp-block-paragraph">We can try this with another question: <em>“hallucinations in RAG vs normal LLMs and how to reduce them”</em></p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-bash">[... optimizer... retrieval... fuse...]
+
+Rerank summary:
+- strategy=cohere
+- model=rerank-english-v3.0
+- candidates=35
+- eligible_above_threshold=12
+- kept=5 (threshold=0.2)
+
+Reranked Relevant (5/35 kept ≥ 0.2) top 5 for query: hallucinations in rag vs normal llms and how to reduce them
+
+[1] score=0.9965 doc=docs_ingestor/docs/arxiv/2508.19614.pdf chunk=S7::C03::251104164901
+  text: 5 Related Work Hallucinations in LLMs Hallucinations in LLMs refer to instances where the model generates false or unsupported information not grounded in its reference data [42]. Existing mitigation strategies include multi-agent debating, where multiple LLM instances collaborate to detect inconsistencies through iterative debates [8, 14]; self-consistency verification, which aggregates and reconciles multiple reasoning paths to reduce individual errors [53]; and model editing, which directly modifies neural network weights to correct systematic factual errors [62, 19]. While RAG systems aim to ground responses in retrieved external knowledge, recent studies show that they still exhibit hallucinations, especially those that contradict the retrieved content [50]. To address this limitation, our work conducts an empirical study analyzing how LLMs internally process external knowledge
+[2] score=0.9342 doc=docs_ingestor/docs/arxiv/2508.05509.pdf chunk=S3::C01::251104160034
+  text: Introduction Large language models (LLMs), like Claude (Anthropic 2024), ChatGPT (OpenAI 2023) and the Deepseek series (Liu et al. 2024), have demonstrated remarkable capabilities in many real-world tasks (Chen et al. 2024b; Zhou et al. 2025), such as question answering (Allam and Haggag 2012), text comprehension (Wright and Cervetti 2017) and content generation (Kumar 2024). Despite the success, these models are often criticized for their tendency to produce hallucinations, generating incorrect statements on tasks beyond their knowledge and perception (Ji et al. 2023; Zhang et al. 2024). Recently, retrieval-augmented generation (RAG) (Gao et al. 2023; Lewis et al. 2020) has emerged as a promising solution to alleviate such hallucinations. By dynamically leveraging external knowledge from textual corpora, RAG enables LLMs to generate more accurate and reliable responses without costly retraining (Lewis et al. 2020; Figure 1: Comparison of three paradigms. LAG exhibits greater lightweight properties compared to GraphRAG while
+[3] score=0.9030 doc=docs_ingestor/docs/arxiv/2509.13702.pdf chunk=S3::C01::251104182000
+  text: ABSTRACT Hallucination remains a critical barrier to the reliable deployment of Large Language Models (LLMs) in high-stakes applications. Existing mitigation strategies, such as Retrieval-Augmented Generation (RAG) and post-hoc verification, are often reactive, inefficient, or fail to address the root cause within the generative process. Inspired by dual-process cognitive theory, we propose D ynamic S elfreinforcing C alibration for H allucination S uppression (DSCC-HS), a novel, proactive framework that intervenes directly during autoregressive decoding. DSCC-HS operates via a two-phase mechanism: (1) During training, a compact proxy model is iteratively aligned into two adversarial roles-a Factual Alignment Proxy (FAP) and a Hallucination Detection Proxy (HDP)-through contrastive logit-space optimization using augmented data and parameter-efficient LoRA adaptation. (2) During inference, these frozen proxies dynamically steer a large target model by injecting a real-time, vocabulary-aligned steering vector (computed as the 
+[4] score=0.9007 doc=docs_ingestor/docs/arxiv/2509.09360.pdf chunk=S2::C05::251104174859
+  text: 1 Introduction Figure 1. Standard Retrieval-Augmented Generation (RAG) workflow. A user query is encoded into a vector representation using an embedding model and queried against a vector database constructed from a document corpus. The most relevant document chunks are retrieved and appended to the original query, which is then provided as input to a large language model (LLM) to generate the final response. Corpus Retrieved_Chunks Vectpr DB Embedding model Query Response LLM Retrieval-Augmented Generation (RAG) [17] aims to mitigate hallucinations by grounding model outputs in retrieved, up-to-date documents, as illustrated in Figure 1. By injecting retrieved text from re- a
+[5] score=0.8986 doc=docs_ingestor/docs/arxiv/2508.04057.pdf chunk=S20::C02::251104155008
+  text: Parametric knowledge can generate accurate answers. Effects of LLM hallucinations. To assess the impact of hallucinations when large language models (LLMs) generate answers without retrieval, we conduct a controlled experiment based on a simple heuristic: if a generated answer contains numeric values, it is more likely to be affected by hallucination. This is because LLMs are generally less reliable when producing precise facts such as numbers, dates, or counts from parametric memory alone (Ji et al. 2023; Singh et al. 2025). We filter out all directly answered queries (DQs) whose generated answers contain numbers, and we then rerun our DPR-AIS for these queries (referred to Exclude num ). The results are reported in Tab. 5. Overall, excluding numeric DQs results in slightly improved performance. The average exact match (EM) increases from 35.03 to 35.12, and the average F1 score improves from 35.68 to 35.80. While these gains are modest, they come with an increase in the retriever activation (RA) ratio-from 75.5% to 78.1%.</code></pre>
+
+
+
+<p class="wp-block-paragraph">This query also performs well enough (if you look at the full chunks returned).</p>
+
+
+
+<p class="wp-block-paragraph">We can also test messier user queries, like: <em>“why is the llm lying and rag help with this?”</em></p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-bash">[... optimizer...]
+
+Original query:
+why is the llm lying and rag help with this?
+
+Generated queries:
+- semantic: explore reasons for LLM inaccuracies
+- hybrid: RAG techniques for LLM truthfulness
+
+[...retrieval... fuse...]
+
+Rerank summary:
+- strategy=cohere
+- model=rerank-english-v3.0
+- candidates=39
+- eligible_above_threshold=39
+- kept=6 (threshold=0)
+
+Reranked Relevant (6/39 kept ≥ 0) top 6 for query: why is the llm lying and rag help with this?
+
+[1] score=0.0293 doc=docs_ingestor/docs/arxiv/2507.05714.pdf chunk=S3::C01::251104134926
+  text: 1 Introduction Retrieval Augmentation Generation (hereafter referred to as RAG) helps large language models (LLMs) (OpenAI et al., 2024) reduce hallucinations (Zhang et al., 2023) and access real-time data 1 *Equal contribution.
+[2] score=0.0284 doc=docs_ingestor/docs/arxiv/2508.15437.pdf chunk=S3::C01::251104164223
+  text: 1 Introduction Large language models (LLMs) augmented with retrieval have become a dominant paradigm for knowledge-intensive NLP tasks. In a typical retrieval-augmented generation (RAG) setup, an LLM retrieves documents from an external corpus and conditions generation on the retrieved evidence (Lewis et al., 2020b; Izacard and Grave, 2021). This setup mitigates a key weakness of LLMs-hallucination-by grounding generation in externally sourced knowledge. RAG systems now power open-domain QA (Karpukhin et al., 2020), fact verification (V et al., 2024; Schlichtkrull et al., 2023), knowledge-grounded dialogue, and explanatory QA.
+[3] score=0.0277 doc=docs_ingestor/docs/arxiv/2509.09651.pdf chunk=S3::C01::251104180034
+  text: 1 Introduction Large Language Models (LLMs) have transformed natural language processing, achieving state-ofthe-art performance in summarization, translation, and question answering. However, despite their versatility, LLMs are prone to generating false or misleading content, a phenomenon commonly referred to as hallucination [9, 21]. While sometimes harmless in casual applications, such inaccuracies pose significant risks in domains that demand strict factual correctness, including medicine, law, and telecommunications. In these settings, misinformation can have severe consequences, ranging from financial losses to safety hazards and legal disputes.
+[4] score=0.0087 doc=docs_ingestor/docs/arxiv/2507.07695.pdf chunk=S4::C08::251104135247
+  text: 1 Introduction Scalability: Naive implementations of Retrieval-Augmented Generation (RAG) often rely on 16-bit floating-point large language models (LLMs) for the generation component. However, this approach introduces significant scalability challenges due to the increased memory demands required to host the LLM as well as longer inference times due to using a higher precision number type. To enable more efficient scaling, it is crucial to integrate methods or techniques that reduce the memory footprint and inference times of generator models. Quantized models offer more scalable solutions due to less computational requirements, hence when developing RAG systems we should aim to use quantized LLMs for more cost effective deployment as compared to a full fine-tuned LLM whose performance might be good but is more expensive to deploy due to higher memory requirements. A quantized LLM's role in the RAG pipeline itself should be minimal and for means of rewriting retrieved information into a presentable fashion for the end users</code></pre>
+
+
+
+<p class="wp-block-paragraph">Before we move on, I need to note that there are moments where this re-ranker doesn’t do that well, as you’ll see above from the scores.</p>
+
+
+
+<p class="wp-block-paragraph">At times it estimates that the chunks doesn’t answer the user’s question but it actually does, at least when we look at these chunks as seeds.</p>
+
+
+
+<p class="wp-block-paragraph">Usually for a re-ranker, the chunks should hint at the entire content, but we’re using these chunks as seeds, so in some cases it will rate results very low, but it’s enough for us to go on.</p>
+
+
+
+<p class="wp-block-paragraph">This is why I’ve kept the score threshold very low.</p>
+
+
+
+<p class="wp-block-paragraph">There may be better options here that you might want to explore, maybe building a custom re-ranker that understands what you’re looking for.</p>
+
+
+
+<p class="wp-block-paragraph">Nevertheless, now that we have a few relevant documents, we’ll use its metadata that we set before on ingestion to expand and fan out the chunks so the LLM will get enough context to understand how to answer the question.</p>
+
+
+
+<h3 class="wp-block-heading">Build the context</h3>
+
+
+
+<p class="wp-block-paragraph">Now that we have a few chunks as seeds, we’ll pull up more information from Redis, expand, and build the context.</p>
+
+
+
+<p class="wp-block-paragraph">This step is obviously a lot more complicated, as you need to build logic for which chunks to fetch and how (keys if they exist, or neighbors if there are any), fetch information in parallel, and then clean out the chunks further.</p>
+
+
+
+<p class="wp-block-paragraph">Once you have all the chunks (plus information on the documents themselves), you need to put them together, i.e. de-duping chunks, perhaps setting a limit on how far the system can expand, and highlighting which chunks were fetched and which were expanded.</p>
+
+
+
+<p class="wp-block-paragraph">The end result will look like something below:</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-markdown">Expanded context windows (Markdown ready):
+
+## Document #1 - Fusing Knowledge and Language: A Comparative Study of Knowledge Graph-Based Question Answering with LLMs
+- `doc_id`: `doc::6371023da29b4bbe8242ffc5caf4a8cd`
+- **Last Updated:** 2025-11-04T17:44:07.300967+00:00
+- **Context:** Comparative study on methodologies for integrating knowledge graphs in QA systems using LLMs.
+- **Content fetched inside document:**
+```text
+[start on page 4]
+    LLMs in QA
+    The advent of LLMs has steered in a transformative era in NLP, particularly within the domain of QA. These models, pre-trained on massive corpora of diverse text, exhibit sophisticated capabilities in both natural language understanding and generation. Their proficiency in producing coherent, contextually relevant, and human-like responses to a broad spectrum of prompts makes them exceptionally well-suited for QA tasks, where delivering precise and informative answers is paramount. Recent advancements by models such as BERT [57] and ChatGPT [58], have significantly propelled the field forward. LLMs have demonstrated strong performance in open-domain QA scenarios-such as commonsense reasoning[20]-owing to their extensive embedded knowledge of the world. Moreover, their ability to comprehend and articulate responses to abstract or contextually nuanced queries and reasoning tasks [22] underscores their utility in addressing complex QA challenges that require deep semantic understanding. Despite their strengths, LLMs also pose challenges: they can exhibit contextual ambiguity or overconfidence in their outputs ('hallucinations')[21], and their substantial computational and memory requirements complicate deployment in resource-constrained environments.
+    RAG, fine tuning in QA
+    ---------------------- this was the passage that we matched to the query -------------
+    LLMs also face problems when it comes to domain specific QA or tasks where they are needed to recall factual information accurately instead of just probabilistically generating whatever comes next. Research has also explored different prompting techniques, like chain-of-thought prompting[24], and sampling based methods[23] to reduce hallucinations. Contemporary research increasingly explores strategies such as fine-tuning and retrieval augmentation to enhance LLM-based QA systems. Fine-tuning on domain-specific corpora (e.g., BioBERT for biomedical text [17], SciBERT for scientific text [18]) has been shown to sharpen model focus, reducing irrelevant or generic responses in specialized settings such as medical or legal QA. Retrieval-augmented architectures such as RAG [19] combine LLMs with external knowledge bases, to try to further mitigate issues of factual inaccuracy and enable real-time incorporation of new information. Building on RAG's ability to bridge parametric and non-parametric knowledge, many modern QA pipelines introduce a lightweight re-ranking step [25] to sift through the retrieved contexts and promote passages that are most relevant to the query. However, RAG still faces several challenges. One key issue lies in the retrieval step itself-if the retriever fails to fetch relevant documents, the generator is left to hallucinate or provide incomplete answers. Moreover, integrating noisy or loosely relevant contexts can degrade response quality rather than enhance it, especially in high-stakes domains where precision is critical. RAG pipelines are also sensitive to the quality and domain alignment of the underlying knowledge base, and they often require extensive tuning to balance recall and precision effectively.
+    --------------------------------------------------------------------------------------
+[end on page 5]
+```
+
+## Document #2 - Each to Their Own: Exploring the Optimal Embedding in RAG
+- `doc_id`: `doc::3b9c43d010984d4cb11233b5de905555`
+- **Last Updated:** 2025-11-04T14:00:38.215399+00:00
+- **Context:** Enhancing Large Language Models using Retrieval-Augmented Generation techniques.
+- **Content fetched inside document:**
+```text
+[start on page 1]
+    1 Introduction
+    Large language models (LLMs) have recently accelerated the pace of transformation across multiple fields, including transportation (Lyu et al., 2025), arts (Zhao et al., 2025), and education (Gao et al., 2024), through various paradigms such as direct answer generation, training from scratch on different types of data, and fine-tuning on target domains. However, the hallucination problem (Henkel et al., 2024) associated with LLMs has confused people for a long time, stemming from multiple factors such as a lack of knowledge on the given prompt (Huang et al., 2025b) and a biased training process (Zhao, 2025).
+    Serving as a highly efficient solution, RetrievalAugmented Generation (RAG) has been widely employed in constructing foundation models (Chen et al., 2024) and practical agents (Arslan et al., 2024). Compared to training methods like fine-tuning and prompt-tuning, its plug-and-play feature makes RAG an efficient, simple, and costeffective approach. The main paradigm of RAG involves first calculating the similarities between a question and chunks in an external knowledge corpus, followed by incorporating the top K relevant chunks into the prompt to guide the LLMs (Lewis et al., 2020).
+    Despite the advantages of RAG, selecting the appropriate embedding models remains a crucial concern, as the quality of retrieved references directly influences the generation results of the LLM (Tu et al., 2025). Variations in training data and model architecture lead to different embedding models providing benefits across various domains. The differing similarity calculations across embedding models often leave researchers uncertain about how to choose the optimal one. Consequently, improving the accuracy of RAG from the perspective of embedding models continues to be an ongoing area of research.
+    ---------------------- this was the passage that we matched to the query -------------
+    To address this research gap, we propose two methods for improving RAG by combining the benefits of multiple embedding models. The first method is named Mixture-Embedding RAG, which sorts the retrieved materials from multiple embedding models based on normalized similarity and selects the top K materials as final references. The second method is named Confident RAG, where we first utilize vanilla RAG to generate answers multiple times, each time employing a different embedding model and recording the associated confidence metrics, and then select the answer with the highest confidence level as the final response. By validating our approach using multiple LLMs and embedding models, we illustrate the superior performance and generalization of Confident RAG, even though MixtureEmbedding RAG may lose to vanilla RAG. The main contributions of this paper can be summarized as follows:
+    We first point out that in RAG, different embedding models operate within their own prior domains. To leverage the strengths of various embedding models, we propose and test two novel RAG methods: MixtureEmbedding RAG and Confident RAG. These methods effectively utilize the retrieved results from different embedding models to their fullest extent.
+    --------------------------------------------------------------------------------------
+    While Mixture-Embedding RAG performs similarly to vanilla RAG, the Confident RAG method exhibits superior performance compared to both the vanilla LLM and vanilla RAG, with average improvements of 9.9% and 4.9%, respectively, when using the best confidence metric. Additionally, we discuss the optimal number of embedding models for the Confident RAG method based on the results.
+[...]</code></pre>
+
+
+
+<p class="wp-block-paragraph">The total context will contain a few documents and lands around 2–3k tokens. There is some waste here, but instead of deciding for the LLM, we send in more information so it can scan entire documents rather than isolated chunks.</p>
+
+
+
+<p class="wp-block-paragraph"><em>Remember you can take a look at the pipeline for five different queries <a href="https://github.com/ilsilfverskiold/Awesome-LLM-Resources-List/tree/main/guides/RAG/Custom" data-type="link" data-id="https://github.com/ilsilfverskiold/Awesome-LLM-Resources-List/tree/main/guides/RAG/Custom">here</a> to see how it works. </em></p>
+
+
+
+<p class="wp-block-paragraph">For the system you build, you can cache this context as well so the LLM can answer follow-up questions.</p>
+
+
+
+<h3 class="wp-block-heading">Add in the LLM to answer (the G in RAG)</h3>
+
+
+
+<p class="wp-block-paragraph">Let’s finish up with the last step, just to see how the LLM answers with the context it has been handed.</p>
+
+
+
+<p class="wp-block-paragraph">I did not plan on adding this part, as this article is primarily about the retrieval pipeline, but it’s good to test with an LLM to see if it can interpret the information into something coherent.</p>
+
+
+
+<p class="wp-block-paragraph">If you use a larger LLM here, you can expect the latency to go up quite a bit. At the same time, if you use a smaller model, it may not answer as intelligently.</p>
+
+
+
+<p class="wp-block-paragraph">I decided to test with GPT-5 (low reasoning), as it’s very cheap to use but also quite slow. You’ll see the result below with the messy user query: <em>“why is the llm lying and can rag help with this?”</em></p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-bash">[optimize query... retrieve... fuse... re-rank... expand... build context...]
+
+LLM Answers:
+
+LLMs sometimes "lie" because they generate the next likely words based on patterns, not on verified facts. Without grounding in sources, they can produce confident but false statements-known as hallucinations-and their built‑in knowledge can be outdated or incomplete [6][3]. This is risky in domains that demand strict accuracy (e.g., law or telecom regulations) where small errors have big consequences [3].
+RAG helps by having the model first retrieve relevant documents from an external corpus and then generate answers grounded in that evidence. This reduces hallucinations and brings in up‑to‑date information [2][6][1]. In practice, domain‑tailored RAG has raised accuracy substantially; for example, a radio‑regulations RAG pipeline boosted GPT‑4o accuracy by +11.9% over vanilla prompting and achieved up to 97% retrieval accuracy, supporting more reliable answers [3].
+However, RAG is only as good as its retrieval and how well the model uses the retrieved text. Static, off‑the‑shelf retrievers can be brittle for complex tasks (e.g., multihop questions or procedural queries) that need iterative lookups or query reformulation [2]. Naive RAG can also drown the model in long, noisy contexts or pull semantically similar but irrelevant chunks-the "needle‑in‑a‑haystack" problem-leading to wrong answers [4].
+Better RAG practices address this: instruction‑tuning for RAG that teaches filtering, combining multiple sources, and RAG‑specific reasoning with a "think before answering" approach (HIRAG) improves use of evidence [1]; adaptive, feedback‑driven retrieval decides when and how to retrieve and re‑rank evidence [2]; and pipeline designs that optimize chunking and retrieval raise answer accuracy [4].
+If hallucination still persists, techniques that steer decoding directly (beyond RAG) can further suppress it [5].
+
+cited documents:
+  [1] doc::b0610cc6134b401db0ea68a77096e883 - HIRAG: Hierarchical-Thought Instruction-Tuning Retrieval-Augmented Generation
+  [2] doc::53b521e646b84289b46e648c66dde56a - Test-time Corpus Feedback: From Retrieval to RAG
+  [3] doc::9694bd0124d0453c81ecb32dd75ab489 - Retrieval-Augmented Generation for Reliable Interpretation of Radio Regulations
+  [4] doc::6d7a7d88cfc04636b20931fdf22f1e61 - KeyKnowledgeRAG (K^2RAG): An Enhanced RAG method for improved LLM question-answering capabilities
+  [5] doc::3c9a1937ecbc454b8faff4f66bdf427f - DSCC-HS: A Dynamic Self-Reinforcing Framework for Hallucination Suppression in Large Language Models
+  [6] doc::688cfbc0abdc4520a73e219ac26aff41 - A Systematic Review of Key Retrieval-Augmented Generation (RAG) Systems: Progress, Gaps, and Future Directions</code></pre>
+
+
+
+<p class="wp-block-paragraph">You’ll see that it cites sources correctly and uses the information it has been handed, but as we’re using GPT-5, the latency is quite high with this large context.</p>
+
+
+
+<p class="wp-block-paragraph">It takes about 9 seconds to first token with GPT-5 (but it will depend on your environment). </p>
+
+
+
+<p class="wp-block-paragraph">If the entire retrieval pipeline takes about 4–5 seconds (and this is not optimized), this means the last part will take about 2–3 times longer.</p>
+
+
+
+<p class="wp-block-paragraph">Some people will argue that you need to send in less information in the context window to decrease latency for this part but that also defeats the purpose of what we’re trying to do.</p>
+
+
+
+<p class="wp-block-paragraph">Others will argue for using chain prompting, having one smaller LLM extract useful information and then letting another bigger LLM answer with an optimized context window but I’m not sure how much you save in terms of time or if it’s worth it.</p>
+
+
+
+<p class="wp-block-paragraph">Others will go as small as possible, sacrificing “intelligence” for speed and cost. But there is also a risk of using smaller with more than a 2k window as they can start to hallucinate.</p>
+
+
+
+<p class="wp-block-paragraph">Nevertheless, it’s up to you how you optimize the system. That is the hard part.</p>
+
+
+
+<p class="wp-block-paragraph">If you want to examine the entire pipeline for a few queries see <a href="https://github.com/ilsilfverskiold/Awesome-LLM-Resources-List/tree/main/guides/RAG/Custom" rel="noreferrer noopener" target="_blank">this</a> folder. </p>
+
+
+
+<h2 class="wp-block-heading">Let’s talk latency &amp; cost</h2>
+
+
+
+<p class="wp-block-paragraph">People talking about sending in entire docs into an LLM are probably not ruthlessly optimizing for latency in their systems. This is the part you’ll spend the most time with, users don’t want to wait.</p>
+
+
+
+<p class="wp-block-paragraph">Yes you can apply some UX tricks, but devs might think you’re lazy if your retrieval pipeline is slower than a few seconds.</p>
+
+
+
+<p class="wp-block-paragraph">This is also why it’s interesting that we see this shift into agentic search in the wild, it’s so much slower to add large context windows, LLM-based query transforms, auto “router” chains, sub-question decomposition and multi-step “agentic” query engines.</p>
+
+
+
+<p class="wp-block-paragraph">For this system here (mostly built with Codex and my instructions) we land at around 4–5 seconds for retrieval in a Serverless environment.</p>
+
+
+
+<figure class="wp-block-image"><img decoding="async" src="../Images/9d7efaf256c0e672f9daa0ba62cc7ca3.png" alt="" class="wp-image-630773" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/11/1olj0NjBZ6-JDbKs_XOYhHw.png"/></figure>
+
+
+
+<p class="wp-block-paragraph">This is kind of slow (but pretty cheap).</p>
+
+
+
+<p class="wp-block-paragraph">You can optimize each step here to bring that number down, keeping most things warm. However, using the APIs you can’t always control how fast they return a response.</p>
+
+
+
+<p class="wp-block-paragraph">Some people will argue to host your own smaller models for the optimizer and routers, but then you need to add in costs to host which can easily add a few hundred dollars per month.</p>
+
+
+
+<p class="wp-block-paragraph">With this pipeline here, each run (without caching) cost us 1.2 cents ($0.0121) so if you had your org ask 200 questions every day you would pay around $2.42 with GPT-5.</p>
+
+
+
+<p class="wp-block-paragraph">If you switch to GPT-5-mini for the main LLM, one pipeline run would drop to 0.0041 cents, and amount to about $0.82 per day for 200 runs.</p>
+
+
+
+<p class="wp-block-paragraph">As for embedding the documents, I paid around $0.5 for 200 PDF files using OpenAI’s large model. This cost will increase as you scale which is something to consider, then it can make sense with small or specialized fine-tuned model. </p>
+
+
+
+<h2 class="wp-block-heading">How to improve it</h2>
+
+
+
+<p class="wp-block-paragraph">As we’re only working with recent RAG papers, once you scale it, you can add some stuff to make it more robust.</p>
+
+
+
+<p class="wp-block-paragraph">I should first note though that you may not see most of the real issues until your docs start growing. Whatever feels solid with a few hundred docs will start to feel messy once you ingest tens of thousands.</p>
+
+
+
+<p class="wp-block-paragraph">You can have the optimizer set filters, perhaps using semantic matching for topics. You can also have it set the dates to keep the information fresh while introducing an authority signal in re-ranking that boosts certain sources.</p>
+
+
+
+<p class="wp-block-paragraph">Some teams take this a bit further and design their own scoring functions to decide what should surface and how to prioritize documents, but this depends entirely on what your corpus looks like.</p>
+
+
+
+<p class="wp-block-paragraph">If you need to ingest several thousand docs, it might make sense to skip the LLM during ingestion and instead use it in the retrieval pipeline, where it analyzes documents only when a query asks for it. You can then cache that result for next time.</p>
+
+
+
+<p class="wp-block-paragraph">Lastly, always remember to add proper evals to show retrieval quality and groundedness, especially if you’re switching models to optimize for cost. I’ll try to do some writing on this in the future.</p>
+
+
+
+<hr class="wp-block-separator has-alpha-channel-opacity is-style-dotted"/>
+
+
+
+<p class="wp-block-paragraph">If you’re still with me this far, a question you can ask yourself is whether it’s worth it to build a system like this or if it is too much work.</p>
+
+
+
+<p class="wp-block-paragraph">I might do something that will clearly compare the output quality for naive RAG vs better-chunked RAG with expansion/metadata in the future. </p>
+
+
+
+<p class="wp-block-paragraph">I’d also like to compare the same use case using knowledge graphs.</p>
+
+
+
+<p class="wp-block-paragraph">To check out more of my work and follow my future writing, connect with me on <a href="https://www.linkedin.com/in/ida-silfverskiold/" data-type="link" data-id="https://www.linkedin.com/in/ida-silfverskiold/">LinkedIn</a>, <a href="https://medium.com/@ilsilfverskiold" data-type="link" data-id="https://medium.com/@ilsilfverskiold">Medium</a>, <a href="https://howtouseai.substack.com/">Substack</a>, or check my <a href="https://www.ilsilfverskiold.com/" data-type="link" data-id="https://www.ilsilfverskiold.com/">website</a>.</p>
+
+
+
+<p class="wp-block-paragraph">❤</p>
+
+
+
+<p class="wp-block-paragraph">PS. I’m looking for some work in January. If you need someone who’s building in this space (and enjoys building weird, fun things while explaining difficult technical concepts), get in <a href="https://www.linkedin.com/in/ida-silfverskiold/">touch.</a></p>
+    
+</body>
+</html>

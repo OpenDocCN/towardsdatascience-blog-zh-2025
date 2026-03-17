@@ -1,0 +1,118 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.1//EN"
+  "http://www.w3.org/TR/xhtml11/DTD/xhtml11.dtd">
+
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+<title>Speed Up PyTorch With Custom Kernels. But It Gets Progressively Darker</title>
+<link href="../Styles/Style.css" type="text/css" rel="stylesheet"/>
+</head>
+<body>
+<h1>Speed Up PyTorch With Custom Kernels. But It Gets Progressively Darker</h1>
+<blockquote>原文：<a href="https://towardsdatascience.com/speed-up-pytorch-with-custom-kernels-but-it-gets-progressively-darker-e5a057796269/">https://towardsdatascience.com/speed-up-pytorch-with-custom-kernels-but-it-gets-progressively-darker-e5a057796269/</a></blockquote><h1 class="wp-block-heading">Speed Up PyTorch with Custom Kernels</h1>
+
+<blockquote class="wp-block-quote is-layout-flow wp-block-quote-is-layout-flow"><p>Read for free at <a href="https://alexdremov.me/speed-up-pytorch-with-custom-kernels-but-it-gets-progressively-darker?utm_source=medium">alexdremov.me</a></p></blockquote>
+<p class="wp-block-paragraph">PyTorch offers remarkable flexibility, allowing you to code complex GPU-accelerated operations in a matter of seconds. However, this convenience comes at a cost. PyTorch executes your code sequentially, resulting in suboptimal performance. This translates into slower model training, which impacts the iteration cycle of your experiments, the robustness of your team, the financial implications, and so on.</p>
+<p class="wp-block-paragraph">In this post, I’ll explore three strategies for accelerating your PyTorch operations. Each method uses <strong>softmax</strong> as our "Hello World" demonstration, but you can swap it with any function you like, and the discussed methods would still apply.</p>
+<p class="wp-block-paragraph">We’ll begin with <strong>torch.compile</strong>, move on to writing a custom Triton kernel, and finally dive into designing a CUDA kernel.</p>
+<p class="wp-block-paragraph">So, this post may get complicated, but bear with me.</p>
+<h2 class="wp-block-heading"><code>torch.compile</code> – A Quick Way to Boost Performance</h2>
+<blockquote class="wp-block-quote is-layout-flow wp-block-quote-is-layout-flow"><p>💥  <em>"Wait, you just turn on a single function call and it speeds up your code? That’s it? Sounds too good to be true."</em></p></blockquote>
+<ul class="wp-block-list">
+<li>Yes.</li>
+</ul>
+<p class="wp-block-paragraph">The <code>torch.compile</code> is a relatively new API in PyTorch that uses runtime graph capture and kernel fusion under the hood . With one decorator, you can often see speed improvements without significant changes to your code.</p>
+<p class="wp-block-paragraph">Speaking simply, for example, we can speed up calculations by merging operations into one GPU function, which removes overheads of separate GPU calls. Or even better, optimize a chain of operations by replacing them with one equivalent!</p>
+<p class="wp-block-paragraph">Such optimizations are not possible in the regular PyTorch execution mode (eager) as it executes operations just as they are called in the code.</p>
+<h3 class="wp-block-heading">Softmax Implementation with <code>torch.compile</code></h3>
+<p class="wp-block-paragraph">Below is a simple example showing how to implement and compile a softmax function using <code>torch.compile</code>. Replace it in your model’s forward pass, and your code (hopefully) runs faster.</p>
+<div class="wp-block-tds-gist-embed">
+	
+</div>
+
+<blockquote class="wp-block-quote is-layout-flow wp-block-quote-is-layout-flow"><p>❗ Note that you’ll have bigger speedups if you compile the whole model and not just one operation</p></blockquote>
+<p class="wp-block-paragraph"><strong>Pros</strong>:</p>
+<ul class="wp-block-list">
+<li>One line to enable the compiler.</li>
+<li>No black magic rituals needed (except for the dynamic shapes maybe).</li>
+</ul>
+<p class="wp-block-paragraph"><strong>Cons</strong>:</p>
+<ul class="wp-block-list">
+<li>The first pass can be slower while it compiles; afterwards, it picks up speed.</li>
+<li>Doesn’t always produce dramatic speed-ups for <em>all</em> models and can occasionally break if your code is too creative.</li>
+<li>Still has problems with handling dynamic shapes.</li>
+</ul>
+<blockquote class="wp-block-quote is-layout-flow wp-block-quote-is-layout-flow"><p>😡  Dynamic shapes compilation mode is needed when input shapes change and we don’t want to recompile the code for each specific size.</p></blockquote>
+<p class="wp-block-paragraph">The ways to debug this is a whole new article.</p>
+<h2 class="wp-block-heading">Triton Code – Write GPU Kernels With Python Breeze</h2>
+<h3 class="wp-block-heading">Why Use Triton?</h3>
+<p class="wp-block-paragraph"><strong>Triton</strong> is a language that compiles to efficient GPU kernels while letting you write Pythonic code. It’s used under the hood of PyTorch’s dynamo/inductor stack, but you can also write your own custom ops! For many matrix/tensor operations – like softmax – you can get huge speed-ups. Because <strong>why</strong> wait for official PyTorch kernels when you can write your own?</p>
+<h3 class="wp-block-heading">Softmax in Triton</h3>
+<p class="wp-block-paragraph">Here’s a minimal snippet that shows how we might do a naive softmax forward in Triton. I’ll keep it short and sweet for demonstration. In a real project, you’d likely do more advanced tiling and block management.</p>
+<blockquote class="wp-block-quote is-layout-flow wp-block-quote-is-layout-flow"><p>💥  This may look complicated, but you just need to get familiar with Triton, and it will start making sense.</p></blockquote>
+<p class="wp-block-paragraph">Check out <a href="https://triton-lang.org/main/index.html?ref=alexdremov.me">their guides</a></p>
+<div class="wp-block-tds-gist-embed">
+	
+</div>
+
+<p class="wp-block-paragraph">Indeed, it looks complicated. But the core of the algorithm is summarized in a few lines.</p>
+<div class="wp-block-tds-gist-embed">
+	
+</div>
+
+<p class="wp-block-paragraph">Everything else is just data management and side-hustle.</p>
+<p class="wp-block-paragraph">If we’ll conduct benchmarking for different data length, we’ll see that we match <code>torch.nn.functional.softmax</code> performance <strong>(which is highly optimized kernel!)</strong> and dramatically outperform naive torch implementation.</p>
+<figure class="wp-block-image size-large"><img data-dominant-color="faf9fa" data-has-transparency="true" style="--dominant-color: #faf9fa;" decoding="async" width="640" height="480" src="../Images/d21e8537aa4213b643533e5b6277382c.png" alt="Benchmarking | Image by the author" class="wp-image-596767 has-transparency" srcset="https://towardsdatascience.com/wp-content/uploads/2025/01/0LGv79TqMXbqaouDW.png 640w, https://towardsdatascience.com/wp-content/uploads/2025/01/0LGv79TqMXbqaouDW-300x225.png 300w" sizes="(max-width: 640px) 100vw, 640px" data-original-src="https://towardsdatascience.com/wp-content/uploads/2025/01/0LGv79TqMXbqaouDW.png"/><figcaption class="wp-element-caption">Benchmarking | Image by the author</figcaption></figure>
+<p class="wp-block-paragraph">You may find the full code for the kernel and benchmark in the following github file.</p>
+<blockquote class="wp-block-quote is-layout-flow wp-block-quote-is-layout-flow"><p><a href="https://github.com/alexdremov/kernels/blob/main/src/softmax/kernel.py?ref=medium.com"><strong>kernels/src/softmax/kernel.py at main · alexdremov/kernels</strong></a></p></blockquote>
+<p class="wp-block-paragraph"><strong>Pros</strong>:</p>
+<ul class="wp-block-list">
+<li>Potentially huge speed-ups by fusing ops and optimizing memory access patterns.</li>
+<li>More control than <code>torch.compile</code>.</li>
+<li>Easy to write efficient code (we matched torch implementation!)</li>
+<li>Easy to write inefficient code (if you don’t know what you’re doing).</li>
+</ul>
+<p class="wp-block-paragraph"><strong>Cons</strong>:</p>
+<ul class="wp-block-list">
+<li>You’re now the <em>kernel developer</em>, which means debugging if something goes sideways. Which is tough. Really.</li>
+<li>If you go further with custom backward passes, you might need a second coffee… or more. That’s because torch cannot use autograd for triton. So you will need to define backward yourself.</li>
+</ul>
+<h2 class="wp-block-heading">Pure CUDA (a.k.a. Going Hardcore)</h2>
+<p class="wp-block-paragraph">Sometimes even Triton won’t cut it, or you just enjoy living on the edge. In that case, you can write a custom CUDA kernel in C++, compile it, and tie it into PyTorch via a custom extension. Projects like <a href="https://github.com/fattorib/CudaSoftmax?ref=alexdremov.me">[this fused CUDA softmax reference]</a> show how people build specialized kernels for maximum speed.</p>
+<h3 class="wp-block-heading">Softmax in Custom CUDA</h3>
+<p class="wp-block-paragraph">You’ll typically have a <code>setup.py</code> that compiles a <code>.cu</code> or <code>.cpp</code> file and exposes a Python function as an extension.</p>
+<blockquote class="wp-block-quote is-layout-flow wp-block-quote-is-layout-flow"><p><a href="https://github.com/fattorib/CudaSoftmax?ref=alexdremov.me"><strong>GitHub – fattorib/CudaSoftmax: Softmax CUDA kernel 🙂</strong></a></p></blockquote>
+<p class="wp-block-paragraph">I will not provide the code for this method in this post, so this fact speaks for itself. This approach is quite complicated, requires good justification, and usually the last thing you should try doing.</p>
+<p class="wp-block-paragraph">It’s very easy to write inefficient, buggy, unsafe code.</p>
+<p class="wp-block-paragraph"><strong>Pros</strong>:</p>
+<ul class="wp-block-list">
+<li>Maximum control. "If you want something done right, do it yourself."</li>
+<li>Potential for the fastest possible kernel if well-optimized.</li>
+</ul>
+<p class="wp-block-paragraph"><strong>Cons</strong>:</p>
+<ul class="wp-block-list">
+<li>Requires deep CUDA understanding.</li>
+<li>Memory management, block sizes, shared memory – those are hard!</li>
+<li>Maintenance overhead can be <strong>extremely</strong> high.</li>
+</ul>
+<h2 class="wp-block-heading">Conclusion</h2>
+<p class="wp-block-paragraph">When it comes to speeding up PyTorch operations, you can choose from progressively more intricate methods:</p>
+<ol class="wp-block-list">
+<li><strong><code>torch.compile</code></strong>: Minimal code changes needed.</li>
+<li><strong>Triton Kernel</strong>: More control over kernel behaviour, still quite easy coding.</li>
+<li><strong>Pure CUDA</strong>: Maximum optimisation potential, but <strong>a lot higher</strong> complexity.</li>
+</ol>
+<p class="wp-block-paragraph">If you’re looking for the simplest improvement, start with <code>torch.compile</code>. If that’s insufficient, explore Triton. For advanced users, writing a custom CUDA kernel can yield further gains, though it demands deep GPU programming skills.</p>
+<p class="wp-block-paragraph">Subscribe to not miss posts about other optimisations and useful deep learning techniques!</p>
+<h2 class="wp-block-heading">References</h2>
+<ol class="wp-block-list">
+<li><a href="https://pytorch.org/tutorials/recipes/compiling_optimizer.html?ref=alexdremov.me">Compiling the optimizer with torch.compile (PyTorch Docs)</a></li>
+<li><a href="https://discuss.pytorch.org/t/how-should-i-use-torch-compile-properly/144598?ref=alexdremov.me">How should I use torch.compile properly? (PyTorch discussion)</a></li>
+<li><a href="https://pytorch.org/tutorials/recipes/torch_compile_user_defined_triton_kernel_tutorial.html?ref=alexdremov.me">Using User-Defined Triton Kernels with torch.compile (PyTorch Docs)</a></li>
+<li><a href="https://discuss.pytorch.org/t/torch-compile-with-custom-triton-kernel/192876?ref=alexdremov.me">Torch.compile with custom Triton kernel (PyTorch discussion)</a></li>
+<li><a href="https://github.com/fattorib/CudaSoftmax?ref=alexdremov.me">GitHub: fattorib/CudaSoftmax</a></li>
+</ol>
+<p class="wp-block-paragraph">Choose the path that fits your project’s needs and your comfort level. Good luck optimizing!</p>
+<blockquote class="wp-block-quote is-layout-flow wp-block-quote-is-layout-flow"><p>The story was originally published at <a href="https://alexdremov.me/speed-up-pytorch-with-custom-kernels-but-it-gets-progressively-darker?utm_source=medium">alexdremov.me</a></p></blockquote>    
+</body>
+</html>

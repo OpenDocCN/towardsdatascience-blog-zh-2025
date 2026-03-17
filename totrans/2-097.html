@@ -1,0 +1,653 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.1//EN"
+  "http://www.w3.org/TR/xhtml11/DTD/xhtml11.dtd">
+
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+<title>End-to-End AWS RDS Setup with Bastion Host Using Terraform</title>
+<link href="../Styles/Style.css" type="text/css" rel="stylesheet"/>
+</head>
+<body>
+<h1>End-to-End AWS RDS Setup with Bastion Host Using Terraform</h1>
+<blockquote>原文：<a href="https://towardsdatascience.com/end-to-end-aws-rds-setup-with-bastion-host-using-terraform/">https://towardsdatascience.com/end-to-end-aws-rds-setup-with-bastion-host-using-terraform/</a></blockquote>
+<h2 class="wp-block-heading">Introduction</h2>
+
+
+
+<p class="wp-block-paragraph"><mdspan datatext="el1753672648786" class="mdspan-comment">In</mdspan> any data pipeline, data sources — especially databases — are the backbone. To simulate a realistic pipeline, I needed a secure, reliable database environment to serve as the source of truth for downstream ETL jobs.</p>
+
+
+
+<p class="wp-block-paragraph">Rather than provisioning this manually, I chose to <strong>automate everything</strong> using <strong>Terraform</strong>, aligning with modern data engineering and DevOps best practices. This not only saved time but also ensured the environment could be easily recreated, scaled, or destroyed with a single command — just like in production. <strong>And if you’re working on the AWS Free Tier, this is even more important — automation ensures you can clean up everything without forgetting a resource that might generate costs.</strong></p>
+
+
+
+<h2 class="wp-block-heading">Prerequisites</h2>
+
+
+
+<p class="wp-block-paragraph">To follow along with this project, you’ll need the following tools and setup:</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item"><strong>Terraform</strong> installed  <a href="https://developer.hashicorp.com/terraform/install">https://developer.hashicorp.com/terraform/install</a></li>
+
+
+
+<li class="wp-block-list-item"><strong>AWS CLI &amp; IAM Setup</strong> 
+<ul class="wp-block-list">
+<li class="wp-block-list-item">Install the AWS CLI 
+<ul class="wp-block-list">
+<li class="wp-block-list-item">Follow the official guide here: <a href="https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html">https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html</a></li>
+</ul>
+</li>
+
+
+
+<li class="wp-block-list-item">Create an IAM user with programmatic access that has permission to:
+<ul class="wp-block-list">
+<li class="wp-block-list-item">Attach the policy <strong><code>AdministratorAccess</code></strong> (or create a custom policy with limited permissions to create all the resources included)</li>
+
+
+
+<li class="wp-block-list-item">Download the Access Key ID and Secret Access Key </li>
+</ul>
+</li>
+
+
+
+<li class="wp-block-list-item">Configure the AWS CLI</li>
+</ul>
+</li>
+
+
+
+<li class="wp-block-list-item"><strong>An AWS Key Pair</strong><br/>Required to SSH into the bastion host. You can create one in the AWS Console under EC2 &gt; Key Pairs.</li>
+
+
+
+<li class="wp-block-list-item"><strong>A Unix-based environment</strong> (Linux/macOS, or WSL for Windows)<br/>This ensures compatibility with the shell script and Terraform commands.</li>
+</ul>
+
+
+
+<h3 class="wp-block-heading">Getting Started: What We’re Building</h3>
+
+
+
+<p class="wp-block-paragraph">Let’s walk through how to build a <strong>secure and automated AWS database setup</strong> using Terraform.</p>
+
+
+
+<h2 class="wp-block-heading">Infrastructure Overview</h2>
+
+
+
+<p class="wp-block-paragraph">This project provisions a complete, production-style AWS environment using Terraform. The following resources will be created:</p>
+
+
+
+<h3 class="wp-block-heading">Networking</h3>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">A <strong>custom VPC</strong> with a CIDR block (<code>10.0.0.0/16</code>)</li>
+
+
+
+<li class="wp-block-list-item"><strong>Two private subnets</strong> in different Availability Zones (for the RDS instance)</li>
+
+
+
+<li class="wp-block-list-item"><strong>One public subnet</strong> (for the bastion host)</li>
+
+
+
+<li class="wp-block-list-item"><strong>Internet Gateway</strong> and <strong>Route Tables</strong> for public subnet routing</li>
+
+
+
+<li class="wp-block-list-item">A <strong>DB Subnet Group</strong> for multi-AZ RDS deployment</li>
+</ul>
+
+
+
+<h3 class="wp-block-heading">Compute</h3>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">A <strong>bastion EC2 instance</strong> in the public subnet
+<ul class="wp-block-list">
+<li class="wp-block-list-item">Used to SSH into the private subnets and access the database securely</li>
+
+
+
+<li class="wp-block-list-item">Provisioned with a custom security group allowing only port 22 (SSH) access</li>
+</ul>
+</li>
+</ul>
+
+
+
+<h3 class="wp-block-heading">Database</h3>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">A <strong>MySQL RDS instance</strong>
+<ul class="wp-block-list">
+<li class="wp-block-list-item">Deployed in private subnets (not accessible from the public internet)</li>
+
+
+
+<li class="wp-block-list-item">Configured with a dedicated security group that allows access only from the bastion host</li>
+</ul>
+</li>
+</ul>
+
+
+
+<h3 class="wp-block-heading">Security</h3>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item"><strong>Security groups</strong>:
+<ul class="wp-block-list">
+<li class="wp-block-list-item">Bastion SG: allows inbound SSH (port 22) from your IP</li>
+
+
+
+<li class="wp-block-list-item">RDS SG: allows inbound MySQL (port 3306) from the bastion’s SG</li>
+</ul>
+</li>
+</ul>
+
+
+
+<h3 class="wp-block-heading">Automation</h3>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">A <strong>setup script</strong> (<code>setup.sh</code>) that:
+<ul class="wp-block-list">
+<li class="wp-block-list-item">Exports Terraform variables</li>
+</ul>
+</li>
+</ul>
+
+
+
+<h2 class="wp-block-heading">Modular Design With Terraform</h2>
+
+
+
+<p class="wp-block-paragraph">I broke the infrastructure into modules like network, bastion and rds. This allows me to reuse, scale and test different components independently. </p>
+
+
+
+<p class="wp-block-paragraph">The following diagram illustrates how Terraform understands and structures the dependencies between different components of the infrastructure, where each node represents a resource or module.</p>
+
+
+
+<p class="wp-block-paragraph">This visualization helps verify that:</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">Resources are properly connected (e.g., the RDS instance depends on private subnets),</li>
+
+
+
+<li class="wp-block-list-item">Modules are isolated yet interoperable (e.g., <code>network</code>, <code>bastion</code>, and <code>rds</code>),</li>
+
+
+
+<li class="wp-block-list-item">There are no circular dependencies.</li>
+</ul>
+
+
+
+<figure class="wp-block-image size-large"><img decoding="async" src="../Images/a396d48e2147e621c066cae4b1ee669f.png" alt="" class="wp-image-612250" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/07/dependency-3-1024x405.png"/><figcaption class="wp-element-caption">Terraform Dependency Graph (Image by Author)</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">To maintain the above-mentioned modular configuration, I structured the project accordingly and provided explanations for each component to clarify their roles within the setup.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-bash">.
+├── data
+│   └── mysqlsampledatabase.sql       # Sample dataset to be imported into the RDS database
+├── scripts
+│   └── setup.sh                      # Bash script to export environment variables (TF_VAR_*), fetch dynamic values, and upload Glue scripts (optional)
+└── terraform
+    ├── modules                       # Reusable infrastructure modules
+    │   ├── bastion
+    │   │   ├── compute.tf            # Defines EC2 instance configuration for the Bastion host
+    │   │   ├── network.tf            # Uses data sources to reference existing public subnet and VPC (does not create them)
+    │   │   ├── outputs.tf            # Outputs Bastion host public IP address
+    │   │   └── variables.tf          # Input variables required by the Bastion module (AMI ID, key pair name, etc.)
+    │   ├── network
+    │   │   ├── network.tf            # Provisions VPC, public/private subnets, Internet gateway, and route tables
+    │   │   ├── outputs.tf            # Exposes VPC ID, subnet IDs, and route table IDs for downstream modules
+    │   │   └── variables.tf          # Input variables like CIDR blocks and availability zones
+    │   └── rds
+    │       ├── network.tf            # Defines DB subnet group using private subnet IDs
+    │       ├── outputs.tf            # Outputs RDS endpoint and security group for other modules to consume
+    │       ├── rds.tf                # Provisions a MySQL RDS instance inside private subnets
+    │       └── variables.tf          # Input variables such as DB name, username, password, and instance size
+    └── rds-bastion                   # Root Terraform configuration
+        ├── backend.tf                # Configures the Terraform backend (e.g., local or remote state file location)
+        ├── main.tf                   # Top-level orchestrator file that connects and wires up all modules
+        ├── outputs.tf                # Consolidates and re-exports outputs from the modules (e.g., Bastion IP, DB endpoint)
+        ├── provider.tf               # Defines the AWS provider and required version
+        └── variables.tf              # Project-wide variables passed to modules and referenced across files
+</code></pre>
+
+
+
+<p class="wp-block-paragraph">With the modular structure in place, the <code>main.tf</code> file is located in the <code>rds-bastion</code> directory acts as the <strong>orchestrator</strong>. It ties together the core components: the network, the RDS database, and the bastion host. Each module is invoked with required inputs, most of which are defined in <code>variables.tf</code> or passed via environment variables (<code>TF_VAR_*</code>).</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-hcl">module "network" {
+  source                = "../modules/network"
+  region                = var.region
+  project_name          = var.project_name
+  availability_zone_1   = var.availability_zone_1
+  availability_zone_2   = var.availability_zone_2
+  vpc_cidr              = var.vpc_cidr
+  public_subnet_cidr    = var.public_subnet_cidr
+  private_subnet_cidr_1 = var.private_subnet_cidr_1
+  private_subnet_cidr_2 = var.private_subnet_cidr_2
+}
+
+
+module "bastion" {
+  source = "../modules/bastion"
+  region              = var.region
+  vpc_id              = module.network.vpc_id
+  public_subnet_1     = module.network.public_subnet_id
+  availability_zone_1 = var.availability_zone_1
+  project_name        = var.project_name
+
+  instance_type = var.instance_type
+  key_name      = var.key_name
+  ami_id        = var.ami_id
+
+}
+
+
+module "rds" {
+  source              = "../modules/rds"
+  region              = var.region
+  project_name        = var.project_name
+  vpc_id              = module.network.vpc_id
+  private_subnet_1    = module.network.private_subnet_id_1
+  private_subnet_2    = module.network.private_subnet_id_2
+  availability_zone_1 = var.availability_zone_1
+  availability_zone_2 = var.availability_zone_2
+
+  db_name       = var.db_name
+  db_username   = var.db_username
+  db_password   = var.db_password
+  bastion_sg_id = module.bastion.bastion_sg_id
+}
+</code></pre>
+
+
+
+<p class="wp-block-paragraph">In this modular setup, each infrastructure component is loosely coupled but connected through well-defined <strong>inputs and outputs</strong>.</p>
+
+
+
+<p class="wp-block-paragraph">For example, after provisioning the <strong>VPC and subnets</strong> in the <code>network</code> module, I retrieve their IDs using its <strong>outputs</strong>, and pass them as <strong>input variables</strong> to other modules like <code>rds</code> and <code>bastion</code>. This avoids hardcoding and enables Terraform to dynamically <strong>resolve dependencies</strong> and <strong>build the dependency graph</strong> internally.</p>
+
+
+
+<p class="wp-block-paragraph">In some cases (such as within the <code>bastion</code> module), I also use <code>data</code> sources to <strong>reference existing resources</strong> created by previous modules, instead of recreating or duplicating them.</p>
+
+
+
+<p class="wp-block-paragraph">The <strong>dependency between modules</strong> relies on the correct <strong>definition and exposure of outputs</strong> from previously created modules. These outputs are then passed as input variables to dependent modules, enabling Terraform to build an internal dependency graph and orchestrate the correct creation order. </p>
+
+
+
+<p class="wp-block-paragraph">For example, the <code>network</code> module <strong>exposes</strong> the VPC ID and subnet IDs using <code>outputs.tf</code>. These values are then <strong>consumed</strong> by downstream modules like <code>rds</code> and <code>bastion</code> through the <code>main.tf</code> file of the root configuration.</p>
+
+
+
+<p class="wp-block-paragraph">Below is how this works in practice:</p>
+
+
+
+<p class="wp-block-paragraph">Inside <code>modules/network/outputs.tf</code>:</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-hcl">output "vpc_id" {
+  description = "ID of the VPC"
+  value       = aws_vpc.main.id
+}</code></pre>
+
+
+
+<p class="wp-block-paragraph">Inside <code>modules/bastion/variables.tf</code>:</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-hcl">variable "vpc_id" {
+  description = "ID of the VPC"
+  type        = string
+}</code></pre>
+
+
+
+<p class="wp-block-paragraph">Inside <code>modules/bastion/network.tf</code>:</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-hcl">data "aws_vpc" "main" {
+  id = var.vpc_id
+}</code></pre>
+
+
+
+<p class="wp-block-paragraph">To provision the RDS instance, I created <strong>two private subnets in different Availability Zones</strong>, as AWS requires <strong>at least two subnets in separate AZs</strong> to set up a DB subnet group.</p>
+
+
+
+<p class="wp-block-paragraph">Although I met this requirement for correct configuration, I <strong>disabled Multi-AZ deployment</strong> during RDS creation to <strong>stay within the AWS Free Tier limits</strong> and <strong>avoid additional costs</strong>. This setup still simulates a production-grade network layout while remaining cost-effective for development and testing.</p>
+
+
+
+<h2 class="wp-block-heading">Deployment Workflow</h2>
+
+
+
+<p class="wp-block-paragraph">With all the modules properly wired through inputs and outputs, and the infrastructure logic encapsulated in reusable blocks, the next step is to <strong>automate the provisioning process</strong>. Instead of manually passing variables each time, a helper script <code>setup.sh</code> is used to export necessary environment variables (<code>TF_VAR_*</code>).</p>
+
+
+
+<p class="wp-block-paragraph">Once the setup script is sourced, deploying the infrastructure becomes as simple as running a few Terraform commands.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-bash">source scripts/setup.sh
+cd terraform/rds-bastion
+terraform init
+terraform plan
+terraform apply</code></pre>
+
+
+
+<p class="wp-block-paragraph">To streamline the Terraform deployment process, I created a helper script (<code>setup.sh</code>) that automatically exports required environment variables using the <code>TF_VAR_</code> naming convention. Terraform automatically picks up variables prefixed with <code>TF_VAR_</code>, so this approach avoids hardcoding values in <code>.tf</code> files or requiring manual input every time.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-bash">#!/bin/bash
+set -e
+export de_project=""
+export AWS_DEFAULT_REGION=""
+
+# Define the variables to manage
+declare -A TF_VARS=(
+  ["TF_VAR_project_name"]="$de_project"
+  ["TF_VAR_region"]="$AWS_DEFAULT_REGION"
+  ["TF_VAR_availability_zone_1"]="us-east-1a"
+  ["TF_VAR_availability_zone_2"]="us-east-1b"
+
+  ["TF_VAR_ami_id"]=""
+  ["TF_VAR_key_name"]=""
+  ["TF_VAR_db_username"]=""
+  ["TF_VAR_db_password"]=""
+  ["TF_VAR_db_name"]=""
+)
+
+for var in "${!TF_VARS[@]}"; do
+    value="${TF_VARS[$var]}"
+    if grep -q "^export $var=" "$HOME/.bashrc"; then
+        sed -i "s|^export $var=.*|export $var=$value|" "$HOME/.bashrc"
+    else
+        echo "export $var=$value" &gt;&gt; "$HOME/.bashrc"
+    fi
+done
+
+# Source updated .bashrc to make changes available immediately in this shell
+source "$HOME/.bashrc"
+</code></pre>
+
+
+
+<p class="wp-block-paragraph">After running <code>terraform apply</code>, Terraform will provision all the defined resources—VPC, subnets, route tables, RDS instance, and Bastion host. Once the process completes successfully, you’ll see output values similar to the following:</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-bash">Apply complete! Resources: 12 added, 0 changed, 0 destroyed.
+
+Outputs:
+
+bastion_public_ip      = "&lt;Bastion EC2 Public IP&gt;"
+bastion_sg_id          = "&lt;Security Group ID for Bastion Host&gt;"
+db_endpoint            = "&lt;RDS Endpoint&gt;:3306"
+instance_public_dns    = "&lt;EC2 Public DNS&gt;"
+rds_db_name            = "&lt;Database Name&gt;"
+vpc_id                 = "&lt;VPC ID&gt;"
+vpc_name               = "&lt;VPC Name&gt;"</code></pre>
+
+
+
+<p class="wp-block-paragraph">These outputs are defined in the <code>outputs.tf</code> files of your modules and re-exported in the root module (<code>rds-bastion/outputs.tf</code>). They are crucial for:</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item"><strong>SSH-ing into the Bastion Host</strong></li>
+
+
+
+<li class="wp-block-list-item"><strong>Connecting securely to the private RDS instance</strong></li>
+
+
+
+<li class="wp-block-list-item"><strong>Validating resource creation</strong></li>
+</ul>
+
+
+
+<h2 class="wp-block-heading">Connecting to the RDS via Bastion Host and Seeding the Database</h2>
+
+
+
+<p class="wp-block-paragraph">Now that the infrastructure is provisioned, the next step is to <strong>seed the MySQL database hosted on the RDS instance</strong>. Since the database is inside a <strong>private subnet</strong>, we cannot access it directly from our local machine. Instead, we’ll use the <strong>Bastion EC2 instance</strong> as a jump host to:</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">Transfer the sample dataset (<code>mysqlsampledatabase.sql</code>) to the Bastion.</li>
+</ul>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">Connect from the Bastion to the RDS instance.</li>
+</ul>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">Import the SQL data to initialize the database.</li>
+</ul>
+
+
+
+<p class="wp-block-paragraph">You may move two directories up from the Terraform main directory and send the SQL content to the remote EC2 (Bastion) after reading the local SQL file inside data directory. </p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-bash">cd ../.. 
+cat data/mysqlsampledatabase.sql | ssh -i your-key.pem ec2-user@&lt;BASTION_PUBLIC_IP&gt; 'cat &gt; ~/mysqlsampledatabase.sql'
+</code></pre>
+
+
+
+<p class="wp-block-paragraph">Once the dataset is copied to the Bastion EC2 instance, the next step is to SSH into the remote machine and :</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-bash">ssh -i ~/.ssh/new-key.pem ec2-user@&lt;BASTION_PUBLIC_IP&gt;</code></pre>
+
+
+
+<p class="wp-block-paragraph">After connecting, you can use the MySQL client (already installed if you used <code>mariadb105</code> in your EC2 setup) to import the SQL file into your RDS database:</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-bash">mysql -h &lt;DATABASE_ENDPOINT&gt; -P 3306 -u &lt;DATABASE_USERNAME&gt; -p &lt; mysqlsampledatabase.sql </code></pre>
+
+
+
+<p class="wp-block-paragraph">Enter the password when prompted.</p>
+
+
+
+<p class="wp-block-paragraph">Once the import is complete, you can connect to the RDS MySQL database again to verify that the database and its tables have been successfully created.</p>
+
+
+
+<p class="wp-block-paragraph">Run the following command from within the Bastion host:</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-bash">mysql -h &lt;DATABASE_ENDPOINT&gt; -P 3306 -u &lt;DATABASE_USERNAME&gt; -p </code></pre>
+
+
+
+<p class="wp-block-paragraph">After entering your password, you can list the available databases and tables:</p>
+
+
+
+<figure class="wp-block-image aligncenter size-full is-resized"><img decoding="async" src="../Images/9e73f3012acb1d7afdea359c441b982e.png" alt="" class="wp-image-612349" style="width:316px;height:auto" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/07/list_databases-1.png"/><figcaption class="wp-element-caption">List of databases (Image by Author)</figcaption></figure>
+
+
+
+<figure class="wp-block-image aligncenter size-full is-resized"><img decoding="async" src="../Images/87d3fab58bdad546b99137b0db610146.png" alt="" class="wp-image-612350" style="width:346px;height:auto" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/07/list_tables.png"/><figcaption class="wp-element-caption">List of tables in the databases (Image by Author)</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">To ensure the dataset was properly imported into the RDS instance, I ran a simple query:</p>
+
+
+
+<figure class="wp-block-image size-large"><img decoding="async" src="../Images/a0e103bd9da52d927ed8e64adc373a0d.png" alt="" class="wp-image-612353" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/07/image-319-1024x239.png"/><figcaption class="wp-element-caption">Query results from the customers table (Image by Author)</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">This returned a row from the <code>customers</code> table, confirming that:</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">The database and tables were created successfully</li>
+
+
+
+<li class="wp-block-list-item">The sample dataset was seeded into the RDS instance</li>
+
+
+
+<li class="wp-block-list-item">The Bastion host and private RDS setup are working as intended</li>
+</ul>
+
+
+
+<p class="wp-block-paragraph">This completes the infrastructure setup and data import process.</p>
+
+
+
+<h2 class="wp-block-heading">Destroying the Infrastructure</h2>
+
+
+
+<p class="wp-block-paragraph">Once you’re done testing or demonstrating your setup, it’s important to destroy the AWS resources to <strong>avoid unnecessary charges</strong>.</p>
+
+
+
+<p class="wp-block-paragraph">Since everything was provisioned using Terraform, tearing down the entire infrastructure is just as simple as running one command after navigating to your root configuration directory:</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-bash">cd terraform/rds-bastion
+terraform destroy</code></pre>
+
+
+
+<h2 class="wp-block-heading">Conclusion</h2>
+
+
+
+<p class="wp-block-paragraph">In this project, I demonstrated how to provision a secure and production-like database infrastructure using <strong>Terraform</strong> on AWS. Rather than exposing the database to the public internet, I implemented best practices by placing the RDS instance in <strong>private subnets</strong>, accessible only via a <strong>bastion host</strong> in a public subnet.</p>
+
+
+
+<p class="wp-block-paragraph">By structuring the project with <strong>modular Terraform configurations</strong>, I ensured each component—network, database, and bastion host—was <strong>loosely coupled</strong>, reusable, and easy to manage. I also showcased how Terraform’s internal <strong>dependency graph</strong> handles the orchestration and sequencing of resource creation seamlessly.</p>
+
+
+
+<p class="wp-block-paragraph">Thanks to infrastructure as code (IaC), the entire environment can be brought up or torn down with a single command, making it ideal for <strong>ETL prototyping</strong>, <strong>data engineering practice</strong>, or <strong>proof-of-concept pipelines</strong>. Most importantly, this automation helps avoid unexpected costs by letting you destroy all resources cleanly once you’re done.</p>
+
+
+
+<p class="wp-block-paragraph">You can find the complete source code, Terraform configuration, and setup scripts in my GitHub repository:</p>
+
+
+
+<p class="wp-block-paragraph"><a href="https://github.com/YagmurGULEC/rds-ec2-terraform.git">https://github.com/YagmurGULEC/rds-ec2-terraform.git</a></p>
+
+
+
+<p class="wp-block-paragraph">Feel free to explore the code, clone the repo, and adapt it to your own AWS projects. Contributions, feedback, and stars are always welcome!</p>
+
+
+
+<h2 class="wp-block-heading">What’s Next?</h2>
+
+
+
+<p class="wp-block-paragraph">You can extend this setup by:</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">Connecting an AWS Glue job to the RDS instance for ETL processing.</li>
+
+
+
+<li class="wp-block-list-item">Adding monitoring for your RDS database and EC2 instance</li>
+</ul>
+
+
+
+<h2 class="wp-block-heading">References</h2>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">The SQL script used in this project (<code>mysqlsampledatabase.sql</code>) comes from the open-source MySQL Sample Database. <a href="https://www.mysqltutorial.org/getting-started-with-mysql/mysql-sample-database/">https://www.mysqltutorial.org/getting-started-with-mysql/mysql-sample-database</a></li>
+
+
+
+<li class="wp-block-list-item">Creating and connecting to a MySQL DB instance – <a href="https://docs.aws.amazon.com/AmazonRDS/latest/UserGuide/CHAP_GettingStarted.CreatingConnecting.MySQL.html#CHAP_GettingStarted.Creating.MySQL.EC2">https://docs.aws.amazon.com/AmazonRDS/latest/UserGuide/CHAP_GettingStarted.CreatingConnecting.MySQL.html#CHAP_GettingStarted.Creating.MySQL.EC2</a></li>
+</ul>
+
+
+
+<p class="wp-block-paragraph"/>
+    
+</body>
+</html>

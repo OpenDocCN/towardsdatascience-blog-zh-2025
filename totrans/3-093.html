@@ -1,0 +1,420 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.1//EN"
+  "http://www.w3.org/TR/xhtml11/DTD/xhtml11.dtd">
+
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+<title>An LLM-Based Workflow for Automated Tabular Data Validation</title>
+<link href="../Styles/Style.css" type="text/css" rel="stylesheet"/>
+</head>
+<body>
+<h1>An LLM-Based Workflow for Automated Tabular Data Validation</h1>
+<blockquote>原文：<a href="https://towardsdatascience.com/an-llm-based-workflow-for-automated-tabular-data-validation/">https://towardsdatascience.com/an-llm-based-workflow-for-automated-tabular-data-validation/</a></blockquote>
+<p class="has-text-align-left wp-block-paragraph"><mdspan datatext="el1744658426682" class="mdspan-comment">This article</mdspan> is part of a series of articles on automating data cleaning for any tabular dataset:</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item"><a href="https://towardsdatascience.com/effortless-spreadsheet-normalisation-with-llm/">Effortless Spreadsheet Normalisation With LLM</a></li>
+</ul>
+
+
+
+<p class="wp-block-paragraph">You can test the feature described in this article on your own dataset using the <a href="https://cleanmyexcel.io/">CleanMyExcel.io</a> service, which is free and requires no registration.</p>
+
+
+
+<h2 class="wp-block-heading">What is Data Validity?</h2>
+
+
+
+<p class="wp-block-paragraph">Data validity refers to data conformity to expected formats, types, and value ranges. This standardisation within a single column ensures the uniformity of data according to implicit or explicit requirements.</p>
+
+
+
+<p class="wp-block-paragraph">Common issues related to data validity include:</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">Inappropriate variable types: Column data types that are not suited to analytical needs, e.g., temperature values in text format.</li>
+
+
+
+<li class="wp-block-list-item">Columns with mixed data types: A single column containing both numerical and textual data.</li>
+
+
+
+<li class="wp-block-list-item">Non-conformity to expected formats: For instance, invalid email addresses or URLs.</li>
+
+
+
+<li class="wp-block-list-item">Out-of-range values: Column values that fall outside what is allowed or considered normal, e.g., negative age values or ages greater than 30 for high school students.</li>
+
+
+
+<li class="wp-block-list-item">Time zone and DateTime format issues: Inconsistent or heterogeneous date formats within the dataset.</li>
+
+
+
+<li class="wp-block-list-item">Lack of measurement standardisation or uniform scale: Variability in the units of measurement used for the same variable, e.g., mixing Celsius and Fahrenheit values for temperature.</li>
+
+
+
+<li class="wp-block-list-item">Special characters or whitespace in numeric fields: Numeric data contaminated by non-numeric elements.</li>
+</ul>
+
+
+
+<p class="wp-block-paragraph">And the list goes on.</p>
+
+
+
+<p class="wp-block-paragraph">Error types such as <strong>duplicated records or entities</strong> and <strong>missing values</strong> do not fall into this category.</p>
+
+
+
+<p class="wp-block-paragraph">But what is the typical strategy to identifying such data validity issues? </p>
+
+
+
+<h2 class="wp-block-heading">When data meets expectations</h2>
+
+
+
+<p class="wp-block-paragraph">Data cleaning, while it can be very complex, can generally be broken down into two key phases:</p>
+
+
+
+<p class="wp-block-paragraph">1. Detecting data errors  </p>
+
+
+
+<p class="wp-block-paragraph">2. Correcting these errors.</p>
+
+
+
+<p class="wp-block-paragraph">At its core, data cleaning revolves around identifying and resolving discrepancies in datasets—specifically, values that violate predefined constraints, which are from expectations about the data..</p>
+
+
+
+<p class="wp-block-paragraph">It’s important to acknowledge a fundamental fact: it’s almost impossible, in real-world scenarios, to be exhaustive in identifying all potential data errors—the sources of data issues are virtually infinite, ranging from human input mistakes to system failures—and thus impossible to predict entirely. However, what we <em>can</em> do is define what we consider reasonably regular patterns in our data, known as data expectations—reasonable assumptions about what “correct” data should look like. For example:</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">If working with a dataset of high school students, we might expect ages to fall between 14 and 18 years old.</li>
+
+
+
+<li class="wp-block-list-item">A customer database might require email addresses to follow a standard format (e.g., <a href="/cdn-cgi/l/email-protection" class="__cf_email__" data-cfemail="ee9b9d8b9cae8a81838f8780c08d8183">[email protected]</a>).</li>
+</ul>
+
+
+
+<p class="wp-block-paragraph">By establishing these expectations, we create a structured framework for detecting anomalies, making the data cleaning process both manageable and scalable.</p>
+
+
+
+<p class="wp-block-paragraph">These expectations are derived from both semantic and statistical analysis. We understand that the column name “age” refers to the well-known concept of time spent living. Other column names may be drawn from the lexical field of high school, and column statistics (e.g. minimum, maximum, mean, etc.) offer insights into the distribution and range of values. Taken together, this information helps determine our expectations for that column:</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">Age values should be integers</li>
+
+
+
+<li class="wp-block-list-item">Values should fall between 14 and 18</li>
+</ul>
+
+
+
+<p class="wp-block-paragraph">Expectations tend to be as accurate as the time spent analysing the dataset. Naturally, if a dataset is used regularly by a team daily, the likelihood of discovering subtle data issues — and therefore refining expectations — increases significantly. That said, even simple expectations are rarely checked systematically in most environments, often due to time constraints or simply because it’s not the most enjoyable or high-priority task on the to-do list.</p>
+
+
+
+<p class="wp-block-paragraph">Once we’ve defined our expectations, the next step is to check whether the data actually meets them. This means applying data constraints and looking for violations. For each expectation, one or more constraints can be defined. These data quality rules can be translated into programmatic functions that return a binary decision — a Boolean value indicating whether a given value violates the tested constraint.</p>
+
+
+
+<p class="wp-block-paragraph">This strategy is commonly implemented in many data quality management tools, which offer ways to detect all data errors in a dataset based on the defined constraints. An iterative process then begins to address each issue until all expectations are satisfied — i.e. no violations remain.</p>
+
+
+
+<p class="wp-block-paragraph">This strategy may seem straightforward and easy to implement in theory. However, that’s often not what we see in practice — data quality remains a major challenge and a time-consuming task in many organisations.</p>
+
+
+
+<h2 class="wp-block-heading">An LLM-based workflow to generate data expectations, detect violations, and resolve them</h2>
+
+
+
+<figure class="wp-block-image"><img decoding="async" src="../Images/b06cd39f6db11a324963f78ed21550f7.png" alt="" data-original-src="https://lh7-rt.googleusercontent.com/docsz/AD_4nXcbmlZVTjnXMlPtEaASw5SoQvLywnpCiBExtnE9pN45Ak-6gmsGzdjRo7Q9xdJdV2aOtK_4IzKZEI3cXEc8SwNuGawU96vSigGikFD2fu_B-apSShpe12hON0niWRiolLpSjqeJ?key=lABtwTjQ29DDn4nC3kBCGRmV"/></figure>
+
+
+
+<p class="wp-block-paragraph">This validation workflow is split into two main components: the validation of column data types and the compliance with expectations.</p>
+
+
+
+<p class="wp-block-paragraph">One might handle both simultaneously, but in our experiments, properly converting each column’s values in a data frame beforehand is a crucial preliminary step. It facilitates data cleaning by breaking down the entire process into a series of sequential actions, which improves performance, comprehension, and maintainability. This strategy is, of course, somewhat subjective, but it tends to avoid dealing with all data quality issues at once wherever possible.</p>
+
+
+
+<p class="wp-block-paragraph">To illustrate and understand each step of the whole process, we’ll consider this generated example:</p>
+
+
+
+<figure class="wp-block-image"><img decoding="async" src="../Images/8f194ecc1815d537f664f28f2f3b674f.png" alt="" data-original-src="https://lh7-rt.googleusercontent.com/docsz/AD_4nXeYpouorauXeJOAvIfWyvphJT3znXGnE3phvilOjpOo0be2Q0EVw0dUbelPo32h_vmiBCvPNFwI8uGkw5ESwre9Lnyyl3zrkZsZ5tBEiQgEsXH3Q221K3behCFNaMBUkQ6L2QPI?key=lABtwTjQ29DDn4nC3kBCGRmV"/></figure>
+
+
+
+<p class="wp-block-paragraph">Examples of data validity issues are spread across the table. Each row intentionally embeds one or more issues:</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item"><strong>Row 1:</strong> Uses a non‑standard date format and an invalid URL scheme (non‑conformity to expected formats).</li>
+
+
+
+<li class="wp-block-list-item"><strong>Row 2:</strong> Contains a price value as text (“twenty”) instead of a numeric value (inappropriate variable type).</li>
+
+
+
+<li class="wp-block-list-item"><strong>Row 3:</strong> Has a rating given as “4 stars” mixed with numeric ratings elsewhere (mixed data types).</li>
+
+
+
+<li class="wp-block-list-item"><strong>Row 4:</strong> Provides a rating value of “10”, which is out‑of‑range if ratings are expected to be between 1 and 5 (out‑of‑range value). Additionally, there is a typo in the word “Food”.</li>
+
+
+
+<li class="wp-block-list-item"><strong>Row 5:</strong> Uses a price with a currency symbol (“20€”) and a rating with extra whitespace (“5 ”), showing a lack of measurement standardisation and special characters/whitespace issues.</li>
+</ul>
+
+
+
+<h3 class="wp-block-heading">Validate Column Data Types</h3>
+
+
+
+<h4 class="wp-block-heading">Estimate column data types</h4>
+
+
+
+<p class="wp-block-paragraph">The task here is to determine the most appropriate data type for each column in a data frame, based on the column’s semantic meaning and statistical properties. The classification is limited to the following options: string, int, float, datetime, and boolean. These categories are generic enough to cover most data types commonly encountered.</p>
+
+
+
+<p class="wp-block-paragraph">There are multiple ways to perform this classification, including deterministic approaches. The method chosen here leverages a large language model (LLM), prompted with information about each column and the overall data frame context to guide its decision:</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">The list of <strong>column names</strong></li>
+
+
+
+<li class="wp-block-list-item"><strong>Representative rows</strong> from the dataset, randomly sampled</li>
+
+
+
+<li class="wp-block-list-item"><strong>Column statistics</strong> describing each column (e.g. number of unique values, proportion of top values, etc.)</li>
+</ul>
+
+
+
+<p class="wp-block-paragraph"><em>Example</em>:</p>
+
+
+
+<figure class="wp-block-table"><table class="has-fixed-layout"><tbody><tr><td>1. Column Name: date <br/>  Description: Represents the date and time information associated with each record. <br/>  Suggested Data Type: datetime<br/><br/>2. Column Name: category <br/>  Description: Contains the categorical label defining the type or classification of the item. <br/>  Suggested Data Type: string<br/><br/>3. Column Name: price <br/>  Description: Holds the numeric price value of an item expressed in monetary terms. <br/>  Suggested Data Type: float<br/><br/>4. Column Name: image_url <br/>  Description: Stores the web address (URL) pointing to the image of the item. <br/>  Suggested Data Type: string<br/><br/>5. Column Name: rating <br/>  Description: Represents the evaluation or rating of an item using a numeric score. <br/>  Suggested Data Type: int</td></tr></tbody></table></figure>
+
+
+
+<h4 class="wp-block-heading">Convert Column Values into the Estimated Data Type</h4>
+
+
+
+<p class="wp-block-paragraph">Once the data type of each column has been predicted, the conversion of values can begin. Depending on the table framework used, this step might differ slightly, but the underlying logic remains similar. For instance, in the <a href="https://cleanmyexcel.io/">CleanMyExcel.io</a> service, Pandas is used as the core data frame engine. However, other libraries like Polars or PySpark are equally capable within the Python ecosystem.<br/>All non-convertible values are set aside for further investigation.</p>
+
+
+
+<h4 class="wp-block-heading">Analyse Non-convertible Values and Propose Substitutes</h4>
+
+
+
+<p class="wp-block-paragraph">This step can be viewed as an imputation task. The previously flagged non-convertible values violate the column’s expected data type. Because the potential causes are so diverse, this step can be quite challenging. Once again, an LLM offers a helpful trade-off to interpret the conversion errors and suggest possible replacements.<br/>Sometimes, the correction is straightforward—for example, converting an age value of twenty into the integer 20. In many other cases, a substitute is not so obvious, and tagging the value with a sentinel (placeholder) value is a better choice. In Pandas, for instance, the special object pd.NA is suitable for such cases.</p>
+
+
+
+<p class="wp-block-paragraph"><em>Example</em>:</p>
+
+
+
+<figure class="wp-block-table"><table class="has-fixed-layout"><tbody><tr><td>{<br/>  “violations”: [<br/>    {<br/>      “index”: 2,<br/>      “column_name”: “rating”,<br/>      “value”: “4 stars”,<br/>      “violation”: “Contains non-numeric text in a numeric rating field.”,<br/>      “substitute”: “4”<br/>    },<br/>   {<br/>      “index”: 1,<br/>      “column_name”: “price”,<br/>      “value”: “twenty”,<br/>      “violation”: “Textual representation that cannot be directly converted to a number.”,<br/>      “substitute”: “20”<br/>    },<br/>    {<br/>      “index”: 4,<br/>      “column_name”: “price”,<br/>      “value”: “20€”,<br/>      “violation”: “Price value contains an extraneous currency symbol.”,<br/>      “substitute”: “20”<br/>    }<br/>  ]<br/>}</td></tr></tbody></table></figure>
+
+
+
+<h4 class="wp-block-heading">Replace Non-convertible Values</h4>
+
+
+
+<p class="wp-block-paragraph">At this point, a programmatic function is applied to replace the problematic values with the proposed substitutes. The column is then tested again to ensure all values can now be converted into the estimated data type. If successful, the workflow proceeds to the expectations module. Otherwise, the previous steps are repeated until the column is validated.</p>
+
+
+
+<h3 class="wp-block-heading">Validate Column Data Expectations</h3>
+
+
+
+<h4 class="wp-block-heading">Generate Expectations for All Columns</h4>
+
+
+
+<p class="wp-block-paragraph">The following elements are provided:</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item"><strong>Data dictionary</strong>: column name, a short description, and the expected data type</li>
+
+
+
+<li class="wp-block-list-item"><strong>Representative rows</strong> from the dataset, randomly sampled</li>
+
+
+
+<li class="wp-block-list-item"><strong>Column statistics</strong>, such as number of unique values and proportion of top values</li>
+</ul>
+
+
+
+<p class="wp-block-paragraph">Based on each column’s semantic meaning and statistical properties, the goal is to define validation rules and expectations that ensure data quality and integrity. These expectations should fall into one of the following categories related to standardisation:</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">Valid ranges or intervals</li>
+
+
+
+<li class="wp-block-list-item">Expected formats (e.g. for emails or phone numbers)</li>
+
+
+
+<li class="wp-block-list-item">Allowed values (e.g. for categorical fields)</li>
+
+
+
+<li class="wp-block-list-item">Column data standardisation (e.g. ‘Mr’, ‘Mister’, ‘Mrs’, ‘Mrs.’ becomes [‘Mr’, ‘Mrs’])</li>
+</ul>
+
+
+
+<p class="wp-block-paragraph"><em>Example</em>:</p>
+
+
+
+<figure class="wp-block-table"><table class="has-fixed-layout"><tbody><tr><td>Column name: date<br/><br/>• Expectation: Value must be a valid datetime.<br/> - Reasoning: The column represents date and time information so each entry should follow a standard datetime format (for example, ISO 8601). <br/>• Expectation: Datetime values should include timezone information (preferably UTC).<br/> - Reasoning: The provided sample timestamps include explicit UTC timezone information. This ensures consistency in time-based analyses.<br/><br/>──────────────────────────────<br/>Column name: category<br/><br/>• Expectation: Allowed values should be standardized to a predefined set.<br/> - Reasoning: Based on the semantic meaning, valid categories might include “Books”, “Electronics”, “Food”, “Clothing”, and “Furniture”. (Note: The sample includes “Fod”, which likely needs correcting to “Food”.) <br/>• Expectation: Entries should follow a standardized textual format (e.g., Title Case).<br/> - Reasoning: Consistent capitalization and spelling will improve downstream analyses and reduce data cleaning issues.<br/><br/>──────────────────────────────<br/>Column name: price<br/><br/>• Expectation: Value must be a numeric float.<br/> - Reasoning: Since the column holds monetary amounts, entries should be stored as numeric values (floats) for accurate calculations.<br/>• Expectation: Price values should fall within a valid non-negative numeric interval (e.g., price ≥ 0).<br/> - Reasoning: Negative prices generally do not make sense in a pricing context. Even if the minimum observed value in the sample is 9.99, allowing zero or positive values is more realistic for pricing data.<br/><br/>──────────────────────────────<br/>Column name: image_url<br/><br/>• Expectation: Value must be a valid URL with the expected format.<br/> - Reasoning: Since the column stores image web addresses, each URL should adhere to standard URL formatting patterns (e.g., including a proper protocol schema).<br/>• Expectation: The URL should start with “https://”.<br/> - Reasoning: The sample shows that one URL uses “htp://”, which is likely a typo. Enforcing a secure (https) URL standard improves data reliability and user security.<br/><br/>──────────────────────────────<br/>Column name: rating<br/><br/>• Expectation: Value must be an integer.<br/> - Reasoning: The evaluation score is numeric, and as seen in the sample the rating is stored as an integer.<br/>• Expectation: Rating values should fall within a valid interval, such as between 1 and 5.<br/> - Reasoning: In many contexts, ratings are typically on a scale of 1 to 5. Although the sample includes a value of 10, it is likely a data quality issue. Enforcing this range standardizes the evaluation scale.</td></tr></tbody></table></figure>
+
+
+
+<h4 class="wp-block-heading">Generate Validation Code</h4>
+
+
+
+<p class="wp-block-paragraph">Once expectations have been defined, the goal is to create a structured code that checks the data against these constraints. The code format may vary depending on the chosen validation library, such as <a href="https://pandera.readthedocs.io/">Pandera</a> (used in <a href="https://cleanmyexcel.io/">CleanMyExcel.io</a>), <a href="https://docs.pydantic.dev/latest/">Pydantic</a>, <a href="https://greatexpectations.io/">Great Expectations</a>, <a href="https://www.soda.io/">Soda</a>, etc.</p>
+
+
+
+<p class="wp-block-paragraph">To make debugging easier, the validation code should apply checks elementwise so that when a failure occurs, the row index and column name are clearly identified. This helps to pinpoint and resolve issues effectively.</p>
+
+
+
+<h4 class="wp-block-heading">Analyse Violations and Propose Substitutes</h4>
+
+
+
+<p class="wp-block-paragraph">When a violation is detected, it must be resolved. Each issue is flagged with a short explanation and a precise location (row index + column name). An LLM is used to estimate the best possible replacement value based on the violation’s description. Again, this proves useful due to the variety and unpredictability of data issues. If the appropriate substitute is unclear, a sentinel value is applied, depending on the data frame package in use.</p>
+
+
+
+<p class="wp-block-paragraph"><em>Example</em>:</p>
+
+
+
+<figure class="wp-block-table"><table class="has-fixed-layout"><tbody><tr><td>{<br/>  “violations”: [<br/>    {<br/>      “index”: 3,<br/>      “column_name”: “category”,<br/>      “value”: “Fod”,<br/>      “violation”: “category should be one of [‘Books’, ‘Electronics’, ‘Food’, ‘Clothing’, ‘Furniture’]”,<br/>      “substitute”: “Food”<br/>    },<br/>    {<br/>      “index”: 0,<br/>      “column_name”: “image_url”,<br/>      “value”: “htp://imageexample.com/pic.jpg”,<br/>      “violation”: “image_url should start with ‘https://’”,<br/>      “substitute”: “https://imageexample.com/pic.jpg”<br/>    },<br/>    {<br/>      “index”: 3,<br/>      “column_name”: “rating”,<br/>      “value”: “10”,<br/>      “violation”: “rating should be between 1 and 5”,<br/>      “substitute”: “5”<br/>    }<br/>  ]<br/>}</td></tr></tbody></table></figure>
+
+
+
+<p class="wp-block-paragraph">The remaining steps are similar to the iteration process used during the validation of column data types. Once all violations are resolved and no further issues are detected, the data frame is fully validated.</p>
+
+
+
+<figure class="wp-block-image"><img decoding="async" src="../Images/84c3caa95e2882650f42b6792a14063e.png" alt="" data-original-src="https://lh7-rt.googleusercontent.com/docsz/AD_4nXeimHu7_ZOMOLJy2Plhtqo3W6rQcy8m4WgLEK8FqLGVdtVA77VSeVK_p1hR8CzdyQe81hi2vORUZDSU42vEmZD4KPfnWcCWRbTAJx47tK6ZK_9_z5WvYVpCzcsIHY3DIrk07tHUqg?key=lABtwTjQ29DDn4nC3kBCGRmV"/></figure>
+
+
+
+<p class="wp-block-paragraph">You can test the feature described in this article on your own dataset using the <a href="https://cleanmyexcel.io/">CleanMyExcel.io</a> service, which is free and requires no registration.</p>
+
+
+
+<h2 class="wp-block-heading">Conclusion</h2>
+
+
+
+<p class="wp-block-paragraph">Expectations may sometimes lack domain expertise — integrating human input can help surface more diverse, specific, and reliable expectations.</p>
+
+
+
+<p class="wp-block-paragraph">A key challenge lies in automation during the resolution process. A human-in-the-loop approach could introduce more transparency, particularly in the selection of substitute or imputed values.</p>
+
+
+
+<p class="wp-block-paragraph">This article is part of a series of articles on automating data cleaning for any tabular dataset:</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item"><a href="https://towardsdatascience.com/effortless-spreadsheet-normalisation-with-llm/">Effortless Spreadsheet Normalisation With LLM</a></li>
+</ul>
+
+
+
+<p class="wp-block-paragraph">In upcoming articles, we’ll explore related topics already on the roadmap, including:</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">A detailed description of the spreadsheet encoder used in the article above.</li>
+
+
+
+<li class="wp-block-list-item">Data uniqueness: preventing duplicate entities within the dataset.</li>
+
+
+
+<li class="wp-block-list-item">Data completeness: handling missing values effectively.</li>
+
+
+
+<li class="wp-block-list-item">Evaluating data reshaping, validity, and other key aspects of data quality.</li>
+</ul>
+
+
+
+<p class="wp-block-paragraph">Stay tuned!</p>
+
+
+
+<p class="wp-block-paragraph">Thank you to Marc Hobballah for reviewing this article and providing feedback.</p>
+
+
+
+<p class="wp-block-paragraph">All images, unless otherwise noted, are by the author.</p>
+    
+</body>
+</html>

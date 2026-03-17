@@ -1,0 +1,971 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.1//EN"
+  "http://www.w3.org/TR/xhtml11/DTD/xhtml11.dtd">
+
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+<title>Let Hypothesis Break Your Python Code Before Your Users Do</title>
+<link href="../Styles/Style.css" type="text/css" rel="stylesheet"/>
+</head>
+<body>
+<h1>Let Hypothesis Break Your Python Code Before Your Users Do</h1>
+<blockquote>原文：<a href="https://towardsdatascience.com/let-hypothesis-break-your-python-code-before-your-users-do/">https://towardsdatascience.com/let-hypothesis-break-your-python-code-before-your-users-do/</a></blockquote>
+<p class="wp-block-paragraph"><mdspan datatext="el1761849745873" class="mdspan-comment">As a developer</mdspan>, you should take testing your code seriously. You might write unit tests with pytest, mock dependencies, and strive for high code coverage. If you’re like me, though, you might have a nagging question lingering at the back of your mind after you finish coding a test suite.</p>
+
+
+
+<p class="has-text-align-center wp-block-paragraph"><strong>“Have I thought of all the edge cases?”</strong></p>
+
+
+
+<p class="has-text-align-left wp-block-paragraph">You might test your inputs with positive numbers, negative numbers, zero, and empty strings. But what about weird Unicode characters? Or floating-point numbers that are NaN or infinity? What about a list of lists of empty strings or complex nested JSON? The space of possible inputs is huge, and it’s hard to think of the myriad different ways your code could break, especially if you’re under some time pressure.</p>
+
+
+
+<p class="wp-block-paragraph">Property-based testing flips that burden from <em>you</em> to the tooling. Instead of hand-picking examples, you state a <strong>property</strong> — a truth that must hold for <em>all</em> inputs. The Hypothesis library then <em>generates</em> inputs; several hundred if required, hunts for counterexamples, and — if it finds one — <em>shrinks</em> it to the simplest failing case.</p>
+
+
+
+<p class="wp-block-paragraph">In this article, I’ll introduce you to the powerful concept of property-based testing and its implementation in Hypothesis. We’ll go beyond simple functions and show you how to test complex data structures and stateful classes, as well as how to fine-tune Hypothesis for robust and efficient testing.</p>
+
+
+
+<h2 class="wp-block-heading">So, what exactly is property-based testing?</h2>
+
+
+
+<p class="wp-block-paragraph">Property-based testing is a methodology where, instead of writing tests for specific, hardcoded examples, you define the general “properties” or “invariants” of your code. A property is a high-level statement about the behaviour of your code that should hold for <strong><em>all</em></strong> valid inputs. You then use a testing framework, like Hypothesis, which intelligently generates a wide range of inputs and tries to find a “counter-example” — a specific input for which your stated property is false.</p>
+
+
+
+<p class="wp-block-paragraph">Some key aspects of property-based testing with Hypothesis include:</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item"><strong>Generative Testing.</strong> Hypothesis generates test cases for you, from the simple to the unusual, exploring edge cases you would likely miss.</li>
+
+
+
+<li class="wp-block-list-item"><strong>Property-Driven.</strong> It shifts your mindset from “what is the output for this specific input?” to “what are the universal truths about my function’s behaviour?”</li>
+
+
+
+<li class="wp-block-list-item"><strong>Shrinking.</strong> This is Hypothesis’s killer feature. When it finds a failing test case (which might be large and complex), it doesn’t just report it. It automatically “shrinks” the input down to the smallest and simplest possible example that still causes the failure, often making debugging dramatically easier.</li>
+
+
+
+<li class="wp-block-list-item"><strong>Stateful Testing.</strong> Hypothesis can test not just pure functions, but also the interactions and state changes of complex objects over a sequence of method calls.</li>
+
+
+
+<li class="wp-block-list-item"><strong>Extensible Strategies.</strong> Hypothesis provides a robust library of “strategies” for generating data, and allows you to compose them or build entirely new ones to match your application’s data models.</li>
+</ul>
+
+
+
+<h2 class="wp-block-heading">Why Hypothesis Matters / Common Use Cases</h2>
+
+
+
+<p class="wp-block-paragraph">The primary benefit of property-based testing is its ability to find subtle bugs and increase your confidence in the correctness of your code far beyond what’s possible with example-based testing alone. It forces you to think more deeply about your code’s contracts and assumptions.</p>
+
+
+
+<p class="wp-block-paragraph">Hypothesis is particularly effective for testing:</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item"><strong>Serialisation/Deserialisation.</strong> A classic property is that for any object x, decode(encode(x)) should be equal to x. This is perfect for testing functions that work with JSON or custom binary formats.</li>
+
+
+
+<li class="wp-block-list-item"><strong>Complex Business Logic.</strong> Any function with complex conditional logic is a great candidate. Hypothesis will explore paths through your code that you may not have considered.</li>
+
+
+
+<li class="wp-block-list-item"><strong>Stateful Systems.</strong> Testing classes and objects to ensure that no sequence of valid operations can put the object into a corrupted or invalid state.</li>
+
+
+
+<li class="wp-block-list-item"><strong>Testing against a reference implementation.</strong> You can state the property that your new, optimised function should always produce the same result as a more straightforward, known, exemplary reference implementation.</li>
+
+
+
+<li class="wp-block-list-item"><strong>Functions that accept complex data models.</strong> Testing functions that take Pydantic models, dataclasses, or other custom objects as input.</li>
+</ul>
+
+
+
+<h2 class="wp-block-heading">Setting up a development environment</h2>
+
+
+
+<p class="has-text-align-left wp-block-paragraph">All you need is Python and pip. We’ll install pytest as our test runner, hypothesis itself, and pydantic for one of our advanced examples.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">(base) tom@tpr-desktop:~$ python -m venv hyp-env
+(base) tom@tpr-desktop:~$ source hyp-env/bin/activate
+(hyp-env) (base) tom@tpr-desktop:~$
+
+# Install pytest, hypothesis, and pydantic
+(hyp-env) (base) tom@tpr-desktop:~$ pip install pytest hypothesis pydantic 
+
+# create a new folder to hold your python code
+(hyp-env) (base) tom@tpr-desktop:~$ mkdir hyp-project</code></pre>
+
+
+
+<p class="wp-block-paragraph">Hypothesis is best run by using an established test runner tool like pytest, so that’s what we’ll do here.</p>
+
+
+
+<h3 class="wp-block-heading">Code example 1 — A simple test</h3>
+
+
+
+<p class="wp-block-paragraph">In this simplest of examples, we have a function that calculates the area of a rectangle. It should take two integer parameters, both greater than zero, and return their product.</p>
+
+
+
+<p class="wp-block-paragraph">Hypothesis tests are defined using two things: the <strong>@given</strong> decorator and a<strong> strategy</strong>, which is passed to the decorator. Think of a strategy as the data types that Hypothesis will generate to test your function. Here’s a simple example. First, we define the function we want to test.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python"># my_geometry.py
+
+def calculate_rectangle_area(length: int, width: int) -&gt; int:
+  """
+  Calculates the area of a rectangle given its length and width.
+
+  This function raises a ValueError if either dimension is not a positive integer.
+  """
+  if not isinstance(length, int) or not isinstance(width, int):
+    raise TypeError("Length and width must be integers.")
+  
+  if length &lt;= 0 or width &lt;= 0:
+    raise ValueError("Length and width must be positive.")
+  
+  return length * width</code></pre>
+
+
+
+<p class="wp-block-paragraph">Next is the testing function.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python"># test_rectangle.py
+
+from my_geometry import calculate_rectangle_area
+from hypothesis import given, strategies as st
+import pytest
+
+# By using st.integers(min_value=1) for both arguments, we guarantee
+# that Hypothesis will only generate valid inputs for our function.
+@given(
+    length=st.integers(min_value=1), 
+    width=st.integers(min_value=1)
+)
+def test_rectangle_area_with_valid_inputs(length, width):
+    """
+    Property: For any positive integers length and width, the area
+    should be equal to their product.
+    
+    This test ensures the core multiplication logic is correct.
+    """
+    print(f"Testing with valid inputs: length={length}, width={width}")
+    
+    # The property we are checking is the mathematical definition of area.
+    assert calculate_rectangle_area(length, width) == length * width</code></pre>
+
+
+
+<p class="wp-block-paragraph">Adding the<strong> @given</strong> decorator to the function turns it into a Hypothesis test. Passing the strategy (st.integers) to the decorator says that Hypothesis should generate random integers for the argument<strong> n</strong> when testing, but we further constrain that by ensuring neither integer can be less than one.</p>
+
+
+
+<p class="wp-block-paragraph">We can run this test by calling it in this manner.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">(hyp-env) (base) tom@tpr-desktop:~/hypothesis_project$ pytest -s test_my_geometry.py
+
+=========================================== test session starts ============================================
+platform linux -- Python 3.11.10, pytest-8.4.0, pluggy-1.6.0
+rootdir: /home/tom/hypothesis_project
+plugins: hypothesis-6.135.9, anyio-4.9.0
+collected 1 item
+
+test_my_geometry.py Testing with valid inputs: length=1, width=1
+Testing with valid inputs: length=6541, width=1
+Testing with valid inputs: length=6541, width=28545
+Testing with valid inputs: length=1295885530, width=1
+Testing with valid inputs: length=1295885530, width=25191
+Testing with valid inputs: length=14538, width=1
+Testing with valid inputs: length=14538, width=15503
+Testing with valid inputs: length=7997, width=1
+...
+...
+
+Testing with valid inputs: length=19378, width=22512
+Testing with valid inputs: length=22512, width=22512
+Testing with valid inputs: length=3392, width=44
+Testing with valid inputs: length=44, width=44
+.
+
+============================================ 1 passed in 0.10s =============================================</code></pre>
+
+
+
+<p class="wp-block-paragraph">By default, Hypothesis will perform 100 tests on your function with different inputs. You can increase or decrease this by using the <strong>settings </strong>decorator. For example,</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">from hypothesis import given, strategies as st,settings
+...
+...
+@given(
+    length=st.integers(min_value=1), 
+    width=st.integers(min_value=1)
+)
+@settings(max_examples=3)
+def test_rectangle_area_with_valid_inputs(length, width):
+...
+...
+
+#
+# Outputs
+#
+(hyp-env) (base) tom@tpr-desktop:~/hypothesis_project$ pytest -s test_my_geometry.py
+=========================================== test session starts ============================================
+platform linux -- Python 3.11.10, pytest-8.4.0, pluggy-1.6.0
+rootdir: /home/tom/hypothesis_project
+plugins: hypothesis-6.135.9, anyio-4.9.0
+collected 1 item
+
+test_my_geometry.py 
+Testing with valid inputs: length=1, width=1
+Testing with valid inputs: length=1870, width=5773964720159522347
+Testing with valid inputs: length=61, width=25429
+.
+
+============================================ 1 passed in 0.06s =============================================</code></pre>
+
+
+
+<h3 class="wp-block-heading">Code Example 2 — Testing the Classic “Round-Trip” Property</h3>
+
+
+
+<p class="wp-block-paragraph">Let’s look at a classic property:- serialisation and deserialization should be reversible. In short, decode(encode(X)) should return X.</p>
+
+
+
+<p class="wp-block-paragraph">We’ll write a function that takes a dictionary and encodes it into a URL query string.</p>
+
+
+
+<p class="wp-block-paragraph">Create a file in your hyp-project folder named my_encoders.py.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python"># my_encoders.py
+import urllib.parse
+
+def encode_dict_to_querystring(data: dict) -&gt; str:
+    # A bug exists here: it doesn't handle nested structures well
+    return urllib.parse.urlencode(data)
+
+def decode_querystring_to_dict(qs: str) -&gt; dict:
+    return dict(urllib.parse.parse_qsl(qs))</code></pre>
+
+
+
+<p class="wp-block-paragraph">These are two elementary functions. What could go wrong with them? Now let’s test them in test_encoders.py:<br/># test_encoders.py</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python"># test_encoders.py
+
+from hypothesis import given, strategies as st
+
+# A strategy for generating dictionaries with simple text keys and values
+simple_dict_strategy = st.dictionaries(keys=st.text(), values=st.text())
+
+@given(data=simple_dict_strategy)
+def test_querystring_roundtrip(data):
+    """Property: decoding an encoded dict should yield the original dict."""
+    encoded = encode_dict_to_querystring(data)
+    decoded = decode_querystring_to_dict(encoded)
+    
+    # We have to be careful with types: parse_qsl returns string values
+    # So we convert our original values to strings for a fair comparison
+    original_as_str = {k: str(v) for k, v in data.items()}
+    
+    assert decoded == original_as_st</code></pre>
+
+
+
+<p class="wp-block-paragraph">Now we can run our test.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">(hyp-env) (base) tom@tpr-desktop:~/hypothesis_project$ pytest -s test_encoders.py
+=========================================== test session starts ============================================
+platform linux -- Python 3.11.10, pytest-8.4.0, pluggy-1.6.0
+rootdir: /home/tom/hypothesis_project
+plugins: hypothesis-6.135.9, anyio-4.9.0
+collected 1 item
+
+test_encoders.py F
+
+================================================= FAILURES =================================================
+_______________________________________ test_for_nesting_limitation ________________________________________
+
+    @given(data=st.recursive(
+&gt;       # Base case: A flat dictionary of text keys and simple values (text or integers).
+                   ^^^
+        st.dictionaries(st.text(), st.integers() | st.text()),
+        # Recursive step: Allow values to be dictionaries themselves.
+        lambda children: st.dictionaries(st.text(), children)
+    ))
+
+test_encoders.py:7:
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+data = {'': {}}
+
+    @given(data=st.recursive(
+        # Base case: A flat dictionary of text keys and simple values (text or integers).
+        st.dictionaries(st.text(), st.integers() | st.text()),
+        # Recursive step: Allow values to be dictionaries themselves.
+        lambda children: st.dictionaries(st.text(), children)
+    ))
+    def test_for_nesting_limitation(data):
+        """
+        This test asserts that the decoded data structure matches the original.
+        It will fail because urlencode flattens nested structures.
+        """
+        encoded = encode_dict_to_querystring(data)
+        decoded = decode_querystring_to_dict(encoded)
+
+        # This is a deliberately simple assertion. It will fail for nested
+        # dictionaries because the `decoded` version will have a stringified
+        # inner dict, while the `data` version will have a true inner dict.
+        # This is how we reveal the bug.
+&gt;       assert decoded == data
+E       AssertionError: assert {'': '{}'} == {'': {}}
+E
+E         Differing items:
+E         {'': '{}'} != {'': {}}
+E         Use -v to get more diff
+E       Falsifying example: test_for_nesting_limitation(
+E           data={'': {}},
+E       )
+
+test_encoders.py:24: AssertionError
+========================================= short test summary info ==========================================
+FAILED test_encoders.py::test_for_nesting_limitation - AssertionError: assert {'': '{}'} == {'': {}}</code></pre>
+
+
+
+<p class="wp-block-paragraph">Ok, that was unexpected. Let’s try to decipher what went wrong with this test. The TL;DR is that this test shows the encode/decode functions do not work correctly for nested dictionaries.</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item"><strong>The Falsifying Example.</strong> The most important clue is at the very bottom. Hypothesis is telling us the <em>exact input</em> that breaks the code.</li>
+</ul>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">test_for_nesting_limitation(
+    data={'': {}},
+)</code></pre>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">The input is a dictionary where the key is an empty string and the value is an empty dictionary. This is a classic edge case that a human might overlook.</li>
+
+
+
+<li class="wp-block-list-item"><strong>The Assertion Error:</strong> The test failed because of a failed assert statement:</li>
+</ul>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">AssertionError: assert {'': '{}'} == {'': {}}</code></pre>
+
+
+
+<p class="wp-block-paragraph">This is the core of the issue. The original data that went into the test was {‘’: {}}. The decoded result that came out of your functions was {‘’: ‘{}’}. This shows that for the key ‘’, the values are different:</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">In decoded, the value is the <strong>string</strong> ‘{}’.</li>
+
+
+
+<li class="wp-block-list-item">In data, the value is the <strong>dictionary</strong> {}.</li>
+</ul>
+
+
+
+<p class="wp-block-paragraph">A string is not equal to a dictionary, so the assertion <strong>assert decoded == data</strong> is <strong>False</strong>, and the test fails.</p>
+
+
+
+<h2 class="wp-block-heading">Tracing the Bug Step-by-Step</h2>
+
+
+
+<p class="wp-block-paragraph">Our encode_dict_to_querystring function uses urllib.parse.urlencode. When urlencode sees a value that is a dictionary (like {}), it doesn’t know how to handle it, so it just converts it to its string representation (‘{}’).</p>
+
+
+
+<p class="wp-block-paragraph">The information about the value’s original <em>type</em> (that it was a dict) is <strong>lost forever</strong>.</p>
+
+
+
+<p class="wp-block-paragraph">When the decode_querystring_to_dict function reads the data back, it correctly decodes the value as the string ‘{}’. It has no way of knowing it was initially a dictionary.</p>
+
+
+
+<h3 class="wp-block-heading">The Solution: Encode Nested Values as JSON Strings</h3>
+
+
+
+<p class="wp-block-paragraph">The solution is simple,</p>
+
+
+
+<ol class="wp-block-list">
+<li class="wp-block-list-item"><strong>Encode.</strong> Before URL-encoding, check each value in your dictionary. If a value is a dict or a list, convert it into a JSON string first.</li>
+
+
+
+<li class="wp-block-list-item"><strong>Decode.</strong> After URL-decoding, check each value. If a value looks like a JSON string (e.g., starts with { or [), parse it back into a Python object.</li>
+
+
+
+<li class="wp-block-list-item"><strong>Make our testing more comprehensive</strong>. Our <strong>given</strong> decorator is more complex. In simple terms, it tells Hypothesis to generate dictionaries that can contain other dictionaries as values, allowing for nested data structures of any depth. For example, </li>
+</ol>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">A simple, flat dictionary: {‘name’: ‘Alice’, ‘city’: ‘London’}</li>
+
+
+
+<li class="wp-block-list-item">A one-level nested dictionary: {‘user’: {‘id’: ‘123’, ‘name’: ‘Tom’}}</li>
+
+
+
+<li class="wp-block-list-item">A two-level nested dictionary: {‘config’: {‘database’: {‘host’: ‘localhost’}}}</li>
+
+
+
+<li class="wp-block-list-item">And so on…</li>
+</ul>
+
+
+
+<p class="wp-block-paragraph">Here is the fixed code.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python"># test_encoders.py
+
+from my_encoders import encode_dict_to_querystring, decode_querystring_to_dict
+from hypothesis import given, strategies as st
+
+# =========================================================================
+# TEST 1: This test proves that the NESTING logic is correct.
+# It uses a strategy that ONLY generates strings, so we don't have to
+# worry about type conversion. This test will PASS.
+# =========================================================================
+@given(data=st.recursive(
+    st.dictionaries(st.text(), st.text()),
+    lambda children: st.dictionaries(st.text(), children)
+))
+def test_roundtrip_preserves_nested_structure(data):
+    """Property: The encode/decode round-trip should preserve nested structures."""
+    encoded = encode_dict_to_querystring(data)
+    decoded = decode_querystring_to_dict(encoded)
+    assert decoded == data
+
+# =========================================================================
+# TEST 2: This test proves that the TYPE CONVERSION logic is correct
+# for simple, FLAT dictionaries. This test will also PASS.
+# =========================================================================
+@given(data=st.dictionaries(st.text(), st.integers() | st.text()))
+def test_roundtrip_stringifies_simple_values(data):
+    """
+    Property: The round-trip should convert simple values (like ints)
+    to strings.
+    """
+    encoded = encode_dict_to_querystring(data)
+    decoded = decode_querystring_to_dict(encoded)
+
+    # Create the model of what we expect: a dictionary with stringified values.
+    expected_data = {k: str(v) for k, v in data.items()}
+    assert decoded == expected_data</code></pre>
+
+
+
+<p class="wp-block-paragraph">Now, if we rerun our test, we get this,</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">(hyp-env) (base) tom@tpr-desktop:~/hypothesis_project$ pytest
+=========================================== test session starts ============================================
+platform linux -- Python 3.11.10, pytest-8.4.0, pluggy-1.6.0
+rootdir: /home/tom/hypothesis_project
+plugins: hypothesis-6.135.9, anyio-4.9.0
+collected 1 item
+
+test_encoders.py .                                                                                   [100%]
+
+============================================ 1 passed in 0.16s =============================================</code></pre>
+
+
+
+<p class="wp-block-paragraph">What we worked through there is a classic example showcasing how useful testing with Hypothesis can be. What we thought were two simple and error-free functions turned out not to be the case.</p>
+
+
+
+<h3 class="wp-block-heading">Code Example 3— Building a Custom Strategy for a Pydantic Model</h3>
+
+
+
+<p class="wp-block-paragraph">Many real-world functions don’t just take simple dictionaries; they take structured objects like Pydantic models. Hypothesis can build strategies for these custom types, too.</p>
+
+
+
+<p class="wp-block-paragraph">Let’s define a model in my_models.py.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python"># my_models.py
+from pydantic import BaseModel, Field
+from typing import List
+
+class Product(BaseModel):
+    id: int = Field(gt=0)
+    name: str = Field(min_length=1)
+    tags: List[str]
+def calculate_shipping_cost(product: Product, weight_kg: float) -&gt; float:
+    # A buggy shipping cost calculator
+    cost = 10.0 + (weight_kg * 1.5)
+    if "fragile" in product.tags:
+        cost *= 1.5 # Extra cost for fragile items
+    if weight_kg &gt; 10:
+        cost += 20 # Surcharge for heavy items
+    # Bug: what if cost is negative?
+    return cost</code></pre>
+
+
+
+<p class="wp-block-paragraph">Now, in test_shipping.py, we’ll build a strategy to generate Product instances and test our buggy function.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python"># test_shipping.py
+from my_models import Product, calculate_shipping_cost
+from hypothesis import given, strategies as st
+
+# Build a strategy for our Product model
+product_strategy = st.builds(
+    Product,
+    id=st.integers(min_value=1),
+    name=st.text(min_size=1),
+    tags=st.lists(st.sampled_from(["electronics", "books", "fragile", "clothing"]))
+)
+@given(
+    product=product_strategy,
+    weight_kg=st.floats(min_value=-10, max_value=100, allow_nan=False, allow_infinity=False)
+)
+def test_shipping_cost_is_always_positive(product, weight_kg):
+    """Property: The shipping cost should never be negative."""
+    cost = calculate_shipping_cost(product, weight_kg)
+    assert cost &gt;= 0</code></pre>
+
+
+
+<p class="wp-block-paragraph">And the test output?</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">(hyp-env) (base) tom@tpr-desktop:~/hypothesis_project$ pytest -s test_shipping.py
+========================================================= test session starts ==========================================================
+platform linux -- Python 3.11.10, pytest-8.4.0, pluggy-1.6.0
+rootdir: /home/tom/hypothesis_project
+plugins: hypothesis-6.135.9, anyio-4.9.0
+collected 1 item
+
+test_shipping.py F
+
+=============================================================== FAILURES ===============================================================
+________________________________________________ test_shipping_cost_is_always_positive _________________________________________________
+
+    @given(
+&gt;       product=product_strategy,
+                   ^^^
+        weight_kg=st.floats(min_value=-10, max_value=100, allow_nan=False, allow_infinity=False)
+    )
+
+test_shipping.py:13:
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+product = Product(id=1, name='0', tags=[]), weight_kg = -7.0
+
+    @given(
+        product=product_strategy,
+        weight_kg=st.floats(min_value=-10, max_value=100, allow_nan=False, allow_infinity=False)
+    )
+    def test_shipping_cost_is_always_positive(product, weight_kg):
+        """Property: The shipping cost should never be negative."""
+        cost = calculate_shipping_cost(product, weight_kg)
+&gt;       assert cost &gt;= 0
+E       assert -0.5 &gt;= 0
+E       Falsifying example: test_shipping_cost_is_always_positive(
+E           product=Product(id=1, name='0', tags=[]),
+E           weight_kg=-7.0,
+E       )
+
+test_shipping.py:19: AssertionError
+======================================================= short test summary info ========================================================
+FAILED test_shipping.py::test_shipping_cost_is_always_positive - assert -0.5 &gt;= 0
+========================================================== 1 failed in 0.12s ===========================================================</code></pre>
+
+
+
+<p class="wp-block-paragraph">When you run this with pytest, Hypothesis will quickly find a falsifying example: a product with a negative weight_kg can result in a negative shipping cost. This is an edge case we might not have considered, but Hypothesis found it automatically.</p>
+
+
+
+<h3 class="wp-block-heading">Code Example 4— Testing Stateful Classes</h3>
+
+
+
+<p class="wp-block-paragraph">Hypothesis can do more than test pure functions. It can test classes with internal state by generating sequences of method calls to try to break them. Let’s test a simple custom LimitedCache class.</p>
+
+
+
+<p class="wp-block-paragraph">my_cache.py</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python"># my_cache.py
+class LimitedCache:
+    def __init__(self, capacity: int):
+        if capacity &lt;= 0:
+            raise ValueError("Capacity must be positive")
+        self._cache = {}
+        self._capacity = capacity
+        # Bug: This should probably be a deque or ordered dict for proper LRU
+        self._keys_in_order = []
+
+    def put(self, key, value):
+        if key not in self._cache and len(self._cache) &gt;= self._capacity:
+            # Evict the oldest item
+            key_to_evict = self._keys_in_order.pop(0)
+            del self._cache[key_to_evict]
+        
+        if key not in self._keys_in_order:
+            self._keys_in_order.append(key)
+        self._cache[key] = value
+
+    def get(self, key):
+        return self._cache.get(key)
+   
+    @property
+    def size(self):
+        return len(self._cache)</code></pre>
+
+
+
+<p class="wp-block-paragraph">This cache has several potential bugs related to its eviction policy. Let’s test it using a Hypothesis Rule-Based State Machine, which is designed for testing objects with internal state by generating random sequences of method calls to identify bugs that only appear after specific interactions.</p>
+
+
+
+<p class="wp-block-paragraph">Create the file test_cache.py.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">from hypothesis import strategies as st
+from hypothesis.stateful import RuleBasedStateMachine, rule, precondition
+from my_cache import LimitedCache
+
+class CacheMachine(RuleBasedStateMachine):
+    def __init__(self):
+        super().__init__()
+        self.cache = LimitedCache(capacity=3)
+
+    # This rule adds 3 initial items to fill the cache
+    @rule(
+        k1=st.just('a'), k2=st.just('b'), k3=st.just('c'),
+        v1=st.integers(), v2=st.integers(), v3=st.integers()
+    )
+    def fill_cache(self, k1, v1, k2, v2, k3, v3):
+        self.cache.put(k1, v1)
+        self.cache.put(k2, v2)
+        self.cache.put(k3, v3)
+
+    # This rule can only run AFTER the cache has been filled.
+    # It tests the core logic of LRU vs FIFO.
+    @precondition(lambda self: self.cache.size == 3)
+    @rule()
+    def test_update_behavior(self):
+        """
+        Property: Updating the oldest item ('a') should make it the newest,
+        so the next eviction should remove the second-oldest item ('b').
+        Our buggy FIFO cache will incorrectly remove 'a' anyway.
+        """
+        # At this point, keys_in_order is ['a', 'b', 'c'].
+        # 'a' is the oldest.
+        
+        # We "use" 'a' again by updating it. In a proper LRU cache,
+        # this would make 'a' the most recently used item.
+        self.cache.put('a', 999) 
+        
+        # Now, we add a new key, which should force an eviction.
+        self.cache.put('d', 4)
+
+        # A correct LRU cache would evict 'b'.
+        # Our buggy FIFO cache will evict 'a'.
+        # This assertion checks the state of 'a'.
+        # In our buggy cache, get('a') will be None, so this will fail.
+        assert self.cache.get('a') is not None, "Item 'a' was incorrectly evicted"
+        
+# This tells pytest to run the state machine test
+TestCache = CacheMachine.TestCase</code></pre>
+
+
+
+<p class="wp-block-paragraph">Hypothesis will generate long sequences of puts and gets. It will quickly identify a sequence of puts that causes the cache’s size to exceed its capacity or for its eviction to behave differently from our model, thereby revealing bugs in our implementation.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">(hyp-env) (base) tom@tpr-desktop:~/hypothesis_project$ pytest -s test_cache.py
+========================================================= test session starts ==========================================================
+platform linux -- Python 3.11.10, pytest-8.4.0, pluggy-1.6.0
+rootdir: /home/tom/hypothesis_project
+plugins: hypothesis-6.135.9, anyio-4.9.0
+collected 1 item
+
+test_cache.py F
+
+=============================================================== FAILURES ===============================================================
+__________________________________________________________ TestCache.runTest ___________________________________________________________
+
+self = &lt;hypothesis.stateful.CacheMachine.TestCase testMethod=runTest&gt;
+
+    def runTest(self):
+&gt;       run_state_machine_as_test(cls, settings=self.settings)
+
+../hyp-env/lib/python3.11/site-packages/hypothesis/stateful.py:476:
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+../hyp-env/lib/python3.11/site-packages/hypothesis/stateful.py:258: in run_state_machine_as_test
+    state_machine_test(state_machine_factory)
+../hyp-env/lib/python3.11/site-packages/hypothesis/stateful.py:115: in run_state_machine
+    @given(st.data())
+               ^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+self = CacheMachine({})
+
+    @precondition(lambda self: self.cache.size == 3)
+    @rule()
+    def test_update_behavior(self):
+        """
+        Property: Updating the oldest item ('a') should make it the newest,
+        so the next eviction should remove the second-oldest item ('b').
+        Our buggy FIFO cache will incorrectly remove 'a' anyway.
+        """
+        # At this point, keys_in_order is ['a', 'b', 'c'].
+        # 'a' is the oldest.
+
+        # We "use" 'a' again by updating it. In a proper LRU cache,
+        # this would make 'a' the most recently used item.
+        self.cache.put('a', 999)
+
+        # Now, we add a new key, which should force an eviction.
+        self.cache.put('d', 4)
+
+        # A correct LRU cache would evict 'b'.
+        # Our buggy FIFO cache will evict 'a'.
+        # This assertion checks the state of 'a'.
+        # In our buggy cache, get('a') will be None, so this will fail.
+&gt;       assert self.cache.get('a') is not None, "Item 'a' was incorrectly evicted"
+E       AssertionError: Item 'a' was incorrectly evicted
+E       assert None is not None
+E        +  where None = get('a')
+E        +    where get = &lt;my_cache.LimitedCache object at 0x7f0debd1da90&gt;.get
+E        +      where &lt;my_cache.LimitedCache object at 0x7f0debd1da90&gt; = CacheMachine({}).cache
+E       Falsifying example:
+E       state = CacheMachine()
+E       state.fill_cache(k1='a', k2='b', k3='c', v1=0, v2=0, v3=0)
+E       state.test_update_behavior()
+E       state.teardown()
+
+test_cache.py:44: AssertionError
+======================================================= short test summary info ========================================================
+FAILED test_cache.py::TestCache::runTest - AssertionError: Item 'a' was incorrectly evicted
+========================================================== 1 failed in 0.20s ===========================================================</code></pre>
+
+
+
+<p class="wp-block-paragraph">The above output highlights a bug in the code. In simple terms, this output shows that the cache is<strong> </strong>not a proper<strong> “Least Recently Used” (LRU) </strong>cache<strong>.</strong> It has the following significant flaw,</p>
+
+
+
+<blockquote class="wp-block-quote is-layout-flow wp-block-quote-is-layout-flow">
+<p class="wp-block-paragraph"><em>When you update an item that is already in the cache, the cache fails to remember that it’s now the “newest” item. It still treats it as the oldest, so it gets kicked out (evicted) from the cache prematurely.</em></p>
+</blockquote>
+
+
+
+<h3 class="wp-block-heading">Code Example 5 — Testing Against a Simpler, Reference Implementation</h3>
+
+
+
+<p class="wp-block-paragraph">For our final example, we’ll look at a typical situation. Often, coders write functions that are supposed to replace older, slower, but otherwise perfectly correct, functions. Your new function must have the same outputs as the old function for the same inputs. Hypothesis can make your testing in this regard much easier.</p>
+
+
+
+<p class="wp-block-paragraph">Let’s say we have a simple function, sum_list_simple, and a new, <strong>“optimised”</strong> sum_list_fast that has a bug.</p>
+
+
+
+<p class="wp-block-paragraph"><strong>my_sums.py</strong></p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python"># my_sums.py
+def sum_list_simple(data: list[int]) -&gt; int:
+    # This is our simple, correct reference implementation
+    return sum(data)
+
+def sum_list_fast(data: list[int]) -&gt; int:
+    # A new "fast" implementation with a bug (e.g., integer overflow for large numbers)
+    # or in this case, a simple mistake.
+    total = 0
+    for x in data:
+        # Bug: This should be +=
+        total = x
+    return total</code></pre>
+
+
+
+<p class="wp-block-paragraph"><strong>test_sums.py</strong></p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python"># test_sums.py
+from my_sums import sum_list_simple, sum_list_fast
+from hypothesis import given, strategies as st
+
+@given(st.lists(st.integers()))
+def test_fast_sum_matches_simple_sum(data):
+    """
+    Property: The result of the new, fast function should always match
+    the result of the simple, reference function.
+    """
+    assert sum_list_fast(data) == sum_list_simple(data)</code></pre>
+
+
+
+<p class="wp-block-paragraph">Hypothesis will quickly find that for any list with more than one element, the new function fails. Let’s check it out.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">(hyp-env) (base) tom@tpr-desktop:~/hypothesis_project$ pytest -s test_my_sums.py
+=========================================== test session starts ============================================
+platform linux -- Python 3.11.10, pytest-8.4.0, pluggy-1.6.0
+rootdir: /home/tom/hypothesis_project
+plugins: hypothesis-6.135.9, anyio-4.9.0
+collected 1 item
+
+test_my_sums.py F
+
+================================================= FAILURES =================================================
+_____________________________________ test_fast_sum_matches_simple_sum _____________________________________
+
+    @given(st.lists(st.integers()))
+&gt;   def test_fast_sum_matches_simple_sum(data):
+                   ^^^
+
+test_my_sums.py:6:
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+data = [1, 0]
+
+    @given(st.lists(st.integers()))
+    def test_fast_sum_matches_simple_sum(data):
+        """
+        Property: The result of the new, fast function should always match
+        the result of the simple, reference function.
+        """
+&gt;       assert sum_list_fast(data) == sum_list_simple(data)
+E       assert 0 == 1
+E        +  where 0 = sum_list_fast([1, 0])
+E        +  and   1 = sum_list_simple([1, 0])
+E       Falsifying example: test_fast_sum_matches_simple_sum(
+E           data=[1, 0],
+E       )
+
+test_my_sums.py:11: AssertionError
+========================================= short test summary info ==========================================
+FAILED test_my_sums.py::test_fast_sum_matches_simple_sum - assert 0 == 1
+============================================ 1 failed in 0.17s =============================================</code></pre>
+
+
+
+<p class="wp-block-paragraph">So, the test failed because the <strong>“fast”</strong> sum function gave the wrong answer (0) for the input list [1, 0], while the correct answer, provided by the <strong>“simple”</strong> sum function, was 1. Now that you know the issue, you can take steps to fix it.</p>
+
+
+
+<h2 class="wp-block-heading">Summary</h2>
+
+
+
+<p class="wp-block-paragraph">In this article, we took a deep dive into the world of property-based testing with Hypothesis, moving beyond simple examples to show how it can be applied to real-world testing challenges. We saw that by defining the invariants of our code, we can uncover subtle bugs that traditional testing would likely miss. We learned how to:</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">Test the “round-trip” property and see how more complex data strategies can reveal limitations in our code.</li>
+
+
+
+<li class="wp-block-list-item">Build custom strategies to generate instances of complex Pydantic models for testing business logic.</li>
+
+
+
+<li class="wp-block-list-item">Use a RuleBasedStateMachine to test the behaviour of stateful classes by generating sequences of method calls.</li>
+
+
+
+<li class="wp-block-list-item">Validate a complex, optimised function by testing it against a more straightforward, known-good reference implementation.</li>
+</ul>
+
+
+
+<p class="wp-block-paragraph">Adding property-based tests to your toolkit won’t replace all your existing tests. Still, it will profoundly augment them, forcing you to think more clearly about your code’s contracts and giving you a much higher degree of confidence in its correctness. I encourage you to pick a function or class in your codebase, think about its fundamental properties, and let Hypothesis try its best to prove you wrong. You’ll be a better developer for it.</p>
+
+
+
+<p class="wp-block-paragraph">I’ve only scratched the surface of what Hypothesis can do for your testing. For more information, refer to their official documentation, available via the link below.</p>
+
+
+
+<p class="has-text-align-center wp-block-paragraph"><a href="https://hypothesis.readthedocs.io/en/latest">https://hypothesis.readthedocs.io/en/latest</a></p>
+    
+</body>
+</html>

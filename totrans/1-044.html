@@ -1,0 +1,266 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.1//EN"
+  "http://www.w3.org/TR/xhtml11/DTD/xhtml11.dtd">
+
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+<title>Training Objective That Makes LLM Inference 3X Faster</title>
+<link href="../Styles/Style.css" type="text/css" rel="stylesheet"/>
+</head>
+<body>
+<h1>Training Objective That Makes LLM Inference 3X Faster</h1>
+<blockquote>原文：<a href="https://towardsdatascience.com/why-weve-been-optimizing-the-wrong-thing-in-llms-for-years/">https://towardsdatascience.com/why-weve-been-optimizing-the-wrong-thing-in-llms-for-years/</a></blockquote>
+<h2 class="wp-block-heading"><mdspan datatext="el1764223597300" class="mdspan-comment">Introduction</mdspan></h2>
+
+
+
+<p class="wp-block-paragraph">Standard Large Language Models (LLMs) are trained on a simple objective: Next-Token Prediction (NTP). By maximizing the probability of the immediate subsequent token <em>x<sub>t+1</sub></em>, given the previous context, models have achieved remarkable fluency and reasoning capabilities.</p>
+
+
+
+<p class="wp-block-paragraph">However, this approach is really inefficient as the model has to spend the same amount of compute in predicting filler words (eg, “the”, “and”, “have”) as information-carrying words (eg, “red”, “apple”, “lazy”). This is exacerbated by the fact that more than 50% of the words you see in the English language are filler (Nordquist, 2024)<sup>3</sup>. This raises a practical question: Do all words need a full inference cycle to be predicted, or do models already have the filler words in their hidden states long before they are predicted?</p>
+
+
+
+<h2 class="wp-block-heading">Motivation For MTP</h2>
+
+
+
+<p class="wp-block-paragraph">The idea that transformers are capable of processing more than just the immediate next step is supported by recent empirical research. (Pal et al., 2023)<sup>1</sup> demonstrated that the internal representations of transformer models often encode trajectories of future text long before they are generated.</p>
+
+
+
+<p class="wp-block-paragraph">To illustrate, the researchers performed a “transplantation” experiment. They extracted the hidden states from a model processing the sentence “Madison Square Garden is located in…”— just before it was about to predict the next word as “New.” They then placed this vector into a model processing a completely unrelated context, such as “Tell me something about…” Despite the unrelated prompt, the model autoregressively completed the sentence as “Tell me something about New York City.” This confirmed that the model did not just encode solely for the next token, but for the entire future sequence.</p>
+
+
+
+<p class="wp-block-paragraph">To capitalize on this latent capacity of LLMs, researchers at Meta FAIR (Gloeckle et al., 2024)<sup>2</sup> propose a novel approach. Instead of treating this foresight as an emergent byproduct, they explicitly use it as a training objective. By tasking the model with predicting “<em>n</em>” future tokens simultaneously at each position instead of just one, they were effectively able to make the model look ahead. The authors demonstrate that the Multi-Token Prediction (MTP) paradigm yields significantly stronger performance on various benchmarks while boosting inference speeds to up to 3 times faster than the baseline.</p>
+
+
+
+<h2 class="wp-block-heading">The MTP Architecture: Parallelizing Prediction</h2>
+
+
+
+<p class="wp-block-paragraph">If the information for the next few tokens is already embedded in the current hidden states of LLMs, the question then becomes architectural: How do we extract this information in advance, without increasing the compute requirements compared to standard NTP?</p>
+
+
+
+<p class="wp-block-paragraph">The architecture proposed by the authors aims to modify the existing transformer backbone to predict <em>n</em> future tokens simultaneously. Unlike the standard NTP paradigm, where the cross-entropy loss is minimized for the immediate next token (<em>x<sub>t+1</sub></em>) only, Multi-Token Prediction (MTP) minimizes the average loss over <em>n</em> different output heads:</p>
+
+
+
+<figure class="wp-block-image aligncenter size-full is-resized"><img decoding="async" src="../Images/a3f3d0249d2e83bf14931a593841151a.png" alt="" class="wp-image-632490" style="width:437px;height:auto" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/11/CodeCogsEqn.png"/><figcaption class="wp-element-caption">(Source: Author)<br/>x<sub>t+i</sub>: Represents future “i” tokens<br/>x<sub>1:t</sub>: Represents the prompt context<br/>P<img decoding="async" src="../Images/2ae2cc6f0544e8fcceb52fb6a599a7ea.png"/><sub>θ</sub>: Represents the entire Model as a function</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">To implement this, the authors divide the model into two components:</p>
+
+
+
+<ol class="wp-block-list">
+<li class="wp-block-list-item"><strong>A Shared Trunk (<em>f<sub>s</sub></em>):</strong> The bulk of the model is a standard transformer backbone, whose job is to process the prompted context <em>x<sub>1:t</sub>​</em> into an information-dense global representation <em>z<sub>t</sub></em>​, which will be used for all subsequent predictions.</li>
+
+
+
+<li class="wp-block-list-item"><strong>Independent Heads (<em>f<sub>h_i</sub></em>​​):</strong> The output of the trunk is fed to <em>n</em> independent heads. Each head has its own transformer layer and is responsible for predicting a future offset token (e.g., head 1 predicts <em>t+1</em>, head 2 predicts <em>t+2</em>, etc.).</li>
+</ol>
+
+
+
+<p class="wp-block-paragraph">Ultimately, the output of each individual head is passed to the shared un-embedding layer, which is implemented as a simple linear projection from the model’s hidden dimension to the length of the vocabulary. The diagram below serves to sum up the most important aspects of the MTP architecture:</p>
+
+
+
+<figure class="wp-block-image size-full"><img decoding="async" src="../Images/3da43e0e0a62dd436f4cde181bde1d77.png" alt="" class="wp-image-632558" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/11/MTP.png"/><figcaption class="wp-element-caption">(Source: Author)<br/>The model processes the shared trunk only once. Then, it activates each head sequentially. For steps 4-6, it activates the first head, calculates its logits, and then backpropagates the changes in steps 6-8. Head 2 is activated in a similar fashion, followed by heads 3 and 4.</figcaption></figure>
+
+
+
+<h2 class="wp-block-heading">Overcoming the Memory Bottleneck</h2>
+
+
+
+<p class="wp-block-paragraph">The architecture described above presents a significant engineering hurdle: GPU memory utilization.</p>
+
+
+
+<p class="wp-block-paragraph">The vocabulary size (V) of Large Language Models is typically in the realm of 32k-256k, which is astronomically big. This makes the raw prediction scores for every word in the vocabulary, aka the output logits, also very big. In a standard NTP setup, the model needs to materialize these logits only once per step, making it tractable. However, in the MTP setup, <em>n</em> different sets of these massive logits are produced simultaneously, which can easily overwhelm the GPU memory. This makes the MTP method impractical for researchers, unless they drastically reduce batch sizes, slowing down the entire training process.</p>
+
+
+
+<p class="wp-block-paragraph">The authors circumvent this bottleneck with a sequential forward/backward pass strategy. Rather than computing the loss for all <em>n</em> heads at once, the training loop iterates through them sequentially:</p>
+
+
+
+<ol class="wp-block-list">
+<li class="wp-block-list-item">The shared trunk computes the latent state <em>z<sub>t</sub></em>​.</li>
+
+
+
+<li class="wp-block-list-item">The model computes the logits for head 1, calculates the loss, backpropagates gradients throughout the entire model, and immediately discards the logits from memory.</li>
+
+
+
+<li class="wp-block-list-item">It then repeats this process for head 2, head 3, and so on.</li>
+</ol>
+
+
+
+<p class="wp-block-paragraph">By deleting these massive logit vectors from memory after each head computation, the peak memory usage of the training process remains O(V) instead of O(nV). This allows the MTP models to be trained in similar batch sizes as the standard models.</p>
+
+
+
+<h2 class="wp-block-heading">Critical Design Choices</h2>
+
+
+
+<p class="wp-block-paragraph">Beyond memory optimization, the authors also made two specific design decisions that are important to understand the performance metrics and scientific validity of MTP.</p>
+
+
+
+<p class="wp-block-paragraph"><strong>1. The Parameter Parity Constraint</strong><br/>In an MTP model with <code>n=4</code> heads, the four additional head layers with transformer backbones lead to an increase in parameters. To compensate for this increase, the authors removed an equivalent number of layers from the model’s trunk, making it shallower. This is done so that any performance changes in the MTP with respect to the baseline can be solely credited to the MTP architecture itself, and not to the increase in parameters of the model.</p>
+
+
+
+<p class="wp-block-paragraph">The fact that MTP still outperforms standard NTP-based models despite having a shallower trunk only goes on to show the merits of the architecture.</p>
+
+
+
+<p class="wp-block-paragraph"><strong>2. Head Topology: Parallel vs. Causal</strong><br/>The authors also experimented with the arrangement of the heads themselves, specifically comparing two approaches:</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item"><strong>Parallel Heads:</strong> This is the standard MTP design described above. In this design, every head predicts its specific future token based only on the shared state <em>z<sub>t</sub></em>​, without seeing the predictions of other heads.</li>
+
+
+
+<li class="wp-block-list-item"><strong>Causal Heads:</strong> In this setup, head 2 (predicting <em>t+2</em>) would receive the output of head 1 as input. This creates a “mini-autoregressive” chain at the end of the model, which allows each head to look at the state of the previous head. The architecture of MTP with n=4 causal heads is given below:</li>
+</ul>
+
+
+
+<figure class="wp-block-image aligncenter size-full"><img decoding="async" src="../Images/dec902ffdb33214f0d0e9c109ab1f525.png" alt="" class="wp-image-632577" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/11/image-265.png"/><figcaption class="wp-element-caption">(Source: Author)<br/>In the causal design, heads are arranged in a sequential order. This is done so that each head knows what the head preceding it predicted.</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">Surprisingly, the Parallel design performed better. The authors hypothesize that in the design with causal heads, the shared trunk “got lazy,” relying on the heads to figure out the sequential information. But by forcing the heads to act independently, the trunk was effectively coerced into learning a global representation, which could satisfy all heads at once. This is the exact property that also manifests itself as the model’s ability to plan into the future, which is essential in reasoning tasks.</p>
+
+
+
+<h2 class="wp-block-heading">Experimental Results: The Scale of Improvement</h2>
+
+
+
+<p class="wp-block-paragraph">The authors conducted extensive evaluations comparing MTP models against standard Next-Token Prediction (NTP) baselines across model sizes ranging from 300M to 13B parameters.<br/><br/><strong>1. The “Scaling Law” of Multi-Token Prediction</strong><br/>Arguably, the most interesting finding is that the model’s performance scales with its size. For smaller models from 300M-1.3B parameters, the difference between MTP and NTP is negligible (oftentimes MTP performs worse). But as the size increases, MTP starts to perform significantly better than the baseline. As illustrated below, MTP outperforms NTP by 17% on the MBPP benchmark and 12% on the HumanEval benchmark.</p>
+
+
+
+<figure class="wp-block-image aligncenter size-full is-resized"><img decoding="async" src="../Images/1932633c24da5178991caedea3b2bad2.png" alt="" class="wp-image-632619" style="width:467px;height:auto" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/11/image-268.png"/><figcaption class="wp-element-caption">(Source: Adapted from Gloeckle et al. (2024b), Figure 3)<br/>Note: These graphs depict the absolute point changes compared to the baseline. For example, in the top left graph, the 13B NTP model scored 26% on the MBPP benchmark while MTP scored 30.5%, which is a 4.5% point increase in absolute terms and 17% increase in relative terms.</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">A possible reason behind this disparity could stem from the fact that larger models, with their larger parameter counts, can afford to allocate more capacity to future planning than smaller models can. This allows the bigger models to take advantage of the multi-token objective to develop superior reasoning.<br/><br/><strong>2. Three-Fold Inference Speedup via Self-Speculation</strong><br/>Apart from performance metrics, MTP also solves one of the most persistent bottlenecks in LLM operations: inference latency.</p>
+
+
+
+<p class="wp-block-paragraph">To fully appreciate this contribution, we must first understand what Speculative Decoding is. In standard inference, the model has to iteratively generate tokens. It has to wait for <em>x<sub>t</sub></em> to be generated before computing <em>x<sub>t+1</sub></em>. Speculative decoding speeds this process up by using a smaller, faster draft model (usually of the same family as the main model but with many fewer parameters), which takes in the hidden state from the main model and predicts the next few tokens. The main model is then tasked to verify all of these tokens in a single forward pass, ensuring it agrees with the predictions of the smaller model. Since a single forward pass is faster than generating tokens through numerous iterations, this results in a net speedup. <em>(<a href="https://medium.com/ai-science/speculative-decoding-make-llm-inference-faster-c004501af120">Read more about Speculative Decoding</a>)</em></p>
+
+
+
+<p class="wp-block-paragraph">Speculative decoding generally requires a smaller model to be loaded into memory, which can be memory-intensive. However, the authors propose that the extra MTP heads—usually discarded after training—can be used to serve the role of a built-in draft model. As these heads share the same trunk, these heads are highly accurate drafters. By using up to four heads to draft a subsequence and then verifying it in parallel, MTP achieves a 3x speedup in inference with zero loss in performance accuracy. <br/><br/><strong>4. Faster Formation of “Induction Heads”</strong><br/>The authors also analyze the emergence of induction capabilities in MTP. Induction heads are circuits in transformers that are mainly responsible for pattern-matching abilities (e.g., recognizing that [A]…[B]…[A] is likely followed by [B]). The graph below shows that for smaller model sizes, MTP shows a greater induction ability than similarly sized NTP models. This indicates that by forcing the model to predict the consequences of the immediate next token, it creates a gradient signal that is conducive to the emergence of pattern recognition and in-context learning.</p>
+
+
+
+<figure class="wp-block-image aligncenter size-full is-resized"><img decoding="async" src="../Images/d9e367ce28211c572cfd126390aae941.png" alt="" class="wp-image-632755" style="width:546px;height:auto" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/11/image-269.png"/><figcaption class="wp-element-caption">(Source: Adapted from Gloeckle et al. (2024b), Figure 7)<br/>The authors took 100 children’s stories and replaced the names of characters with names that span two tokens. The induction success plotted on the y-axis is the accuracy with which the model correctly predicts the second token of the two-token names, given that the name has been shown to the model at least once before.</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph"><strong>5. Unlocking Byte-Level Training</strong><br/>In a more radical experiment, the authors applied MTP to byte-level models, which predict a sequence of bytes instead of token representations. Historically, byte-level models have always performed poorly because contextual information among bytes is weak, and byte sequences tend to become very large. However, as demonstrated in the table below, with <em><code>n=8</code></em> heads (predicting 8 bytes at once), the MTP model significantly outperforms the baseline NTP with <em><code>n=1</code></em> head, consistently across all three benchmarks. This suggests that the MTP model can efficiently navigate the byte-realm, allowing models to process raw data natively without any compromises in performance.</p>
+
+
+
+<figure class="wp-block-image size-full"><img decoding="async" src="../Images/9b8eda1117a65ee61d15590aaf8a7f3e.png" alt="" class="wp-image-632764" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/11/image-271.png"/><figcaption class="wp-element-caption">(Source: Adapted from Gloeckle et al. (2024b), Table 1)<br/>This table presents the Pass@k accuracies of the MTP and NTP models on different benchmarks. For example, the column @10 measures the probability that at least one of the top 10 solutions generated by the model is correct.</figcaption></figure>
+
+
+
+<h2 class="wp-block-heading">The Price of Foresight: Shortcomings and Trade-offs</h2>
+
+
+
+<p class="wp-block-paragraph">While Multi-Token Prediction offers a compelling alternative to the standard paradigm, the paper’s results clarify that it is not a universal “silver bullet.” The architecture introduces specific trade-offs that engineers must consider.</p>
+
+
+
+<p class="wp-block-paragraph"><strong>1. Regression on Knowledge-Intensive Task</strong><br/>While MTP improves reasoning (how to structure an answer), it appears to hurt retrieval (knowing a specific fact).<br/>As shown below, MTP models dominate in code generation and reasoning benchmarks, but actually underperform the baseline on standard NLP tasks, including benchmarks like MMLU, TriviaQA, and ARC Challenge (which test fact retrieval and world knowledge).</p>
+
+
+
+<figure class="wp-block-image aligncenter size-full is-resized"><img decoding="async" src="../Images/1b732b21f10e3de2dbc4d36f04fcddce.png" alt="" class="wp-image-632785" style="width:402px;height:auto" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/11/image-272.png"/><figcaption class="wp-element-caption">(Source: Adapted from Gloeckle et al. (2024b), Figure 7)<br/>The average accuracy across 7 benchmarks, namely arc challenge, copa, hellaswag, nq, piqa, siqa, and tqa, is plotted on the y-axis against the training steps on the x-axis.</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">A possible explanation can be that answering recall-based questions like “What is the capital of France?” requires a precise focus on the word “Paris”. By forcing the model to predict multiple tokens at once, as in “Paris is a city in…,” it might dilute the overall signal from the most critical token, tanking the model’s performance on the overall benchmark. If your aim is to build a RAG (Retrieval Augmented Generation) system or a Trivia bot, MTP might actually be detrimental.</p>
+
+
+
+<p class="wp-block-paragraph"><strong>2. The “Goldilocks” Sensitivity of <em>n</em></strong><br/>There is no “more is better” rule here. The authors found that performance is highly sensitive to the number of heads (<em>n</em>).</p>
+
+
+
+<p class="wp-block-paragraph">The authors also concluded that the number of heads (<em>n</em>) doesn’t scale linearly with MTP performance. There exists a “sweet spot” where the model can most efficiently exploit the MTP paradigm:</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">Too few (<em>n=2</em>): Negligible gain, as the model does not receive enough incentive to develop any foresight.</li>
+
+
+
+<li class="wp-block-list-item">Too many (<em>n=8</em>): Performance degrades rapidly, as the information for all 8 heads starts to overcrowd the hidden state of the shared trunk.</li>
+
+
+
+<li class="wp-block-list-item">Just right (<em>n=4</em>): Best performance</li>
+</ul>
+
+
+
+<p class="wp-block-paragraph">This introduces a new hyperparameter that must be tuned. Unlike Next-Token Prediction, which just “works,” MTP requires finding the specific horizon that matches the complexity of your data.</p>
+
+
+
+<h2 class="wp-block-heading">Conclusion</h2>
+
+
+
+<p class="wp-block-paragraph">With its demonstrated ability to improve coding performance and inference speedups, one obvious question remains: <em>If MTP is so revolutionary, why haven’t any major AI labs used it yet?</em></p>
+
+
+
+<p class="wp-block-paragraph">The answer to it is actually DeepSeek-V3.</p>
+
+
+
+<p class="wp-block-paragraph">In their technical report (Liu et al., 2024)<sup>4</sup>, the DeepSeek team revealed that MTP was a core component during training of the model. Similar to Meta, they performed vigorous ablation studies comparing standard NTP models against MTP at both the 15.7B and 228.7B parameter scales. Using a configuration of <code>&lt;em&gt;n&lt;/em&gt;=2</code> during training (predicting one extra future token), they found that MTP-trained models consistently outperformed their NTP counterparts across all datasets, like MMLU, PILE-test, HumanEval, MBPP, etc. Moreover, by keeping that second prediction head during inference for speculative decoding as described earlier, DeepSeek achieved an<strong> </strong>inference speedup of up to 1.8x.</p>
+
+
+
+<p class="wp-block-paragraph">This successful deployment by DeepSeek serves as practical validation for MTP to be widely used as a training objective in Large Language Models, as it demonstrates a clear path to improving the reasoning capabilities and inference efficiency of the model with minimal associated drawbacks.</p>
+
+
+
+<blockquote class="wp-block-quote is-layout-flow wp-block-quote-is-layout-flow">
+<p class="wp-block-paragraph"><em><em>If you like these kinds of breakdowns, I share more insights, notes, and explainers here: <a href="https://steadysurfdom.substack.com/">https://steadysurfdom.substack.com/</a></em></em></p>
+</blockquote>
+
+
+
+<h2 class="wp-block-heading">References</h2>
+
+
+
+<p class="wp-block-paragraph">[1] Pal, Koyena, et al. “<a href="https://arxiv.org/abs/2311.04897">Future lens: Anticipating subsequent tokens from a single hidden state.</a>” <em>arXiv preprint arXiv:2311.04897</em> (2023).<br/>[2] Gloeckle, Fabian, et al. “<a href="https://arxiv.org/abs/2404.19737">Better &amp; faster large language models via multi-token prediction.</a>” <em>arXiv preprint arXiv:2404.19737</em> (2024).<br/>[3] Nordquist, R. (2024, July 20). <a href="https://www.thoughtco.com/function-word-grammar-1690876#:~:text=According%20to%20social%20psychologist%20James,is%20and%20how%20it%20works"><em>Definition and examples of function words in English</em>. ThoughtCo.</a><br/>[4] Liu, Aixin, et al. “<a href="https://arxiv.org/abs/2412.19437">Deepseek-v3 technical report.</a>” <em>arXiv preprint arXiv:2412.19437</em> (2024).</p>
+    
+</body>
+</html>

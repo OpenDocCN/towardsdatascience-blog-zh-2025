@@ -1,0 +1,630 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.1//EN"
+  "http://www.w3.org/TR/xhtml11/DTD/xhtml11.dtd">
+
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+<title>SENet Paper Walkthrough: The Channel-Wise Attention</title>
+<link href="../Styles/Style.css" type="text/css" rel="stylesheet"/>
+</head>
+<body>
+<h1>SENet Paper Walkthrough: The Channel-Wise Attention</h1>
+<blockquote>原文：<a href="https://towardsdatascience.com/the-channel-wise-attention/">https://towardsdatascience.com/the-channel-wise-attention/</a></blockquote>
+<h2 class="wp-block-heading"><mdspan datatext="el1754434926679" class="mdspan-comment">Introduction</mdspan></h2>
+
+
+
+<p class="wp-block-paragraph">When we talk about attention in computer vision, one thing that probably comes to your mind first is the one used in the Vision Transformer (ViT) architecture. In fact, that’s not the only attention mechanism we have for image data. There is actually another one called Squeeze and Excitation Network (SENet). If the attention in ViT operates spatially, i.e., assigning weights to different patches of an image, the attention mechanism proposed in SENet operates in channel-wise manner, i.e., assigning weights to different channels. — In this article, we are going to discuss how the Squeeze and Excitation architecture works, how to implement it from scratch, and how to integrate the network into the ResNeXt model.</p>
+
+
+
+<hr class="wp-block-separator has-alpha-channel-opacity is-style-dotted"/>
+
+
+
+<h2 class="wp-block-heading">The Squeeze and Excitation Module</h2>
+
+
+
+<p class="wp-block-paragraph">SENet, which was first proposed in a paper titled “<em>Squeeze-and-Excitation Networks</em>” by Hu <em>et al. </em>[1], is not a standalone network like VGG, Inception, or ResNet. Instead, it is actually a building block to be placed on an existing network. In CNN-based models, we assume that pixels spatially close to each other have high correlations, which is the reason that we employ small-sized kernels to capture these correlations. This kind of assumption is basically the <em>inductive bias</em> of CNN. On the other hand, SENet introduces a new inductive bias, where the authors assume that every image channel contributes differently to predicting a specific class. By applying SE modules to a CNN, the model not only relies on spatial patterns but also captures the importance of each channel. To better illustrate this, we can think of an image of fire, where the red channel would theoretically give a higher contribution to the final prediction than the blue and green channels.</p>
+
+
+
+<p class="wp-block-paragraph">The structure of the SE module itself is shown in Figure 1. As the name of the network suggests, there are two main steps done in this module: <em>squeeze</em> and <em>excitation</em>. The <em>squeeze</em> part corresponds to the operation denoted as <em>F_sq</em>, while the <em>excitation</em> part includes both <em>F_ex</em> and <em>F_scale</em>. On the other hand, the <em>F_tr</em> operation, is actually not the part of the SE module. Rather, it represents a transformation function that originally belongs to the model where the SE module is applied. For example, if we were to place this SE module on ResNet, the <em>F_tr</em> operation refers to the stack of convolution layers within the bottleneck block.</p>
+
+
+
+<figure class="wp-block-image alignwide"><img decoding="async" src="../Images/6f3707c370be15b9612d05c980e2a15f.png" alt="" class="wp-image-614292" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/08/1y028apFGDw8zyEtv7FwBjw.png"/><figcaption class="wp-element-caption">Figure 1. The structure of the Squeeze and Excitation module [1].</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">Talking more specifically about the <em>F_sq</em> operation, it essentially works by utilizing global average pooling mechanism, where it is used to capture the information from the entire spatial dimension of each channel. By doing so, every channel of the input tensor is going to be represented by a single number, which is basically just the average value of the corresponding channel. The authors refer to this operation as <em>global information embedding</em>. Mathematically speaking, this can formally be written in the equation shown in Figure 2, where we basically sum all values across the height <em>H</em> and width <em>W</em> before eventually dividing it with the number of pixels within that channel (<em>H×W</em>).</p>
+
+
+
+<figure class="wp-block-image aligncenter"><img decoding="async" src="../Images/8bba73d8e9294418e34b497dc3066c45.png" alt="" class="wp-image-614291" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/08/1DrSp88UaiXusNZVlQQ1G0g.png"/><figcaption class="wp-element-caption">Figure 2. The mathematical expression of the global average pooling mechanism in SE module [1].</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">Meanwhile, both excitation and scaling operations are referred to as <em>adaptive recalibration</em> since what they essentially do is to dynamically adjust the weightings of each channel in the input tensor according to its importance. In fact, the diagram in Figure 1 does not completely depict the entire SENet architecture. You can see in the figure that <em>F_ex</em> appears to be a single operation, yet it actually consists of two linear layers each followed by an activation function. See the Figure 3 below for the details.</p>
+
+
+
+<figure class="wp-block-image aligncenter"><img decoding="async" src="../Images/97fd36e02969b2300d21ba47484c8679.png" alt="" class="wp-image-614293" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/08/1sWSvZ4V97F2i4Udkb9EBAg.png"/><figcaption class="wp-element-caption">Figure 3. The mathematical formulation of the <strong><em>F_ex</em></strong> operation [1].</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">The two linear layers are denoted as <em>W_1</em> and <em>W_2</em>, whereas <em>δ</em> and <em>σ</em> represent ReLU and sigmoid activation functions, respectively. So, based on this mathematical definition, what we basically need to do later in the implementation is to pass tensor <em>z</em> (the average-pooled tensor) through the first linear layer, followed by the ReLU activation function, the second linear layer, and lastly the sigmoid activation function. Remember that the sigmoid function normalizes input values to be within the range of 0 to 1. In this case, we will perceive the resulting output as the weight of each channel, where a value close to 1 indicates that the corresponding channel contains important information, hence we allow the model to pay more attention to that channel. Otherwise, if the resulting number is close to 0, it indicates that the corresponding channel does not contribute that much to the output.</p>
+
+
+
+<p class="wp-block-paragraph">In order to utilize these channel weights, we can perform the <em>F_scale</em> operation, which is basically just a multiplication of the original tensor <em>u</em> and the weight tensor <em>s</em>, as shown in Figure 4 below. By doing this, we essentially retain the values within the important channels while at the same time suppressing the values of the unimportant ones.</p>
+
+
+
+<figure class="wp-block-image aligncenter"><img decoding="async" src="../Images/fe20e2d621bb99fd8990aab72b9a4fa5.png" alt="" class="wp-image-614290" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/08/1xbswm8kSGIp83kgMaQhUng.png"/><figcaption class="wp-element-caption">Figure 4. The scaling process is just a multiplication of the original and the weight tensors [1].</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">By the way sorry for getting a bit too mathy here, lol. But I believe this will help you understand the code later in the implementation section.</p>
+
+
+
+<h3 class="wp-block-heading">Where to Put the SE Module</h3>
+
+
+
+<p class="wp-block-paragraph">Applying the SE module on a plain CNN model like VGG is easy, as we can simply place it right after each convolution layer. However, it might not be straightforward in the case of Inception or ResNet thanks to the presence of parallel branches in these two networks. To address this confusion, authors provide a guide to implement the SE module specifically on the two models as shown in Figure 5 below.</p>
+
+
+
+<figure class="wp-block-image alignwide"><img decoding="async" src="../Images/b9c3bfb0d861ec84df2d92d7589d7f41.png" alt="" class="wp-image-614294" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/08/1-ss7zP8Yv3yGAu_EsgufYw.png"/><figcaption class="wp-element-caption">Figure 5. Where SE module is placed in Inception and ResNet [1].</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">For the Inception model, instead of placing SE module right after each convolution layer, we pass the input tensor through the entire Inception block (including all the branches inside) and then attach the SE module afterwards. The same approach also works for ResNet, but keep in mind that the summation between the tensor in skip connection and the main flow happens after the main tensor has been processed by the SE module.</p>
+
+
+
+<p class="wp-block-paragraph">As I mentioned earlier, the excitation stage essentially consists of two linear layers. If we take a closer look at the above structure, we can see that the output shape of the first linear layer is 1×1×C/<em>r</em>. The variable <em>r</em> is called <em>reduction ratio</em> which reduces the dimensionality of the weight tensor before eventually projecting it back to 1×1×C through the second linear layer. The dimensionality reduction done by the first layer acts as a <em>bottleneck</em> operation, which is useful to limit model complexity and to improve generalization. Authors conducted experiments on different <em>r</em> values, and they found that <em>r </em>= 16 produces the best balance between accuracy and complexity.</p>
+
+
+
+<figure class="wp-block-image alignwide"><img decoding="async" src="../Images/77a6a6596efa7e9fdb69cb85f7d695ca.png" alt="" class="wp-image-614297" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/08/18KLGG9TZBZdHwSoWkaZo0g.png"/><figcaption class="wp-element-caption">Figure 6. Several ways possible to be used to attach SE module in ResNet [1].</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">In addition to implementing the SE module in ResNet, it is seen in Figure 6 that there are actually several ways we can follow to do so. According to the experimental results in Figure 7, it looks like the standard SE, SE-PRE, and SE-Identity blocks obtained similar results, while at the same time all of them outperformed SE-POST by a significant margin. This suggests that the placement of the SE module affects model performance in terms of accuracy. Based on these findings, the authors argue that we are going to obtain good results as long as we apply the SE module before the element-wise summation operation. Later in the coding section, I am going to demonstrate how to implement the standard SE block.</p>
+
+
+
+<figure class="wp-block-image aligncenter"><img decoding="async" src="../Images/a64873b8293e9fd408a81069a0343623.png" alt="" class="wp-image-614296" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/08/1OYd78VKEMTTSLK1U64BFtA.png"/><figcaption class="wp-element-caption">Figure 7. Experimental results on different SE module integration strategies [1].</figcaption></figure>
+
+
+
+<h3 class="wp-block-heading">More Experimental Results</h3>
+
+
+
+<p class="wp-block-paragraph">There are actually a lot more experimental results discussed in the paper. One of them is a table displaying accuracy score improvements when SE module is applied to existing CNN-based models. The table I am referring to is displayed in Figure 8 below.</p>
+
+
+
+<figure class="wp-block-image alignwide"><img decoding="async" src="../Images/8d99583bb113d860dc379dfc524d0554.png" alt="" class="wp-image-614295" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/08/1Kab-T4PKcE7Ly1OdprDPrQ.png"/><figcaption class="wp-element-caption">Figure 8. Experimental results on applying SE module on different models [1][2].</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">The columns highlighted in blue represent the error rates of each model and the ones in pink indicate the computational complexity measured in GFLOPs. The <em>re-implementation</em> column refers to the plain model that the authors implemented themselves, whereas the <em>SENet</em> column represents the same model equipped with SE module. The table clearly shows that both top-1 and top-5 errors decrease when the SE module is applied. It is important to know that although adding the SE module causes the GFLOPs to get higher, yet this increase is considerably marginal compared to the reduction in error rate.</p>
+
+
+
+<p class="wp-block-paragraph">Next, we can actually reveal interesting insights by printing out the values contained in the SE modules during the inference phase. Let’s take a look at the charts in Figure 9 below to better illustrate this. The <em>x</em> axis of these charts denotes the channel numbers, the <em>y</em> axis represents how much weight does each channel have according to its importance, and the color of the lines indicates the class being predicted.</p>
+
+
+
+<figure class="wp-block-image alignwide"><img decoding="async" src="../Images/abd2c5f964c605eeced22cf8a53688fe.png" alt="" class="wp-image-614298" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/08/1pVpxfk3W-U8YUZsvxb4EJw.png"/><figcaption class="wp-element-caption">Figure 9. What the activation of SE modules looks like in different network depth [1].</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">In shallower layers, the features captured by SE module are <em>class-agnostic</em>, which basically means that it captures generic information required to predict all classes. The charts referred to as (a) and (b), which are the SE modules from ResNet stage 2 and 3, show that there is not much difference in channel activity from one class to another, indicating that these two modules do not capture information regarding a specific class. The case is actually different from the SE modules in deeper layers, i.e., the ones in stage 4 (c) and stage 5 (d). We can see that these two modules adjust channel weights differently depending on the class being predicted. This is essentially the reason that the SE modules in deeper layers are said to be <em>class-specific</em>. However, the authors acknowledge that there might be unusual behavior happening in some of the SE modules which happens in the 2nd block of stage 5 (e). Here the SE module does not show meaningful channel recalibration behavior, indicating that it does not contribute as much as the ones we discussed earlier.</p>
+
+
+
+<h3 class="wp-block-heading">The Detailed Architecture</h3>
+
+
+
+<p class="wp-block-paragraph">In this article we are going to implement the <em>SE-ResNeXt-50 (32×4d)</em> model, which in Figure 10 it corresponds to the one in the rightmost column. The ResNeXt model itself is similar to ResNet, except that the group parameter of the second convolution layer within each block is set to 32. If you’re familiar with ResNeXt, this is essentially the simplest yet effective way to implement the so-called <em>cardinality</em>. I recommend you read my previous article about ResNeXt if you are not yet familiar with it, which the link is provided at reference number [3] at the end of this article.</p>
+
+
+
+<p class="wp-block-paragraph">Taking a closer look at the architecture, what differentiates <em>SE-ResNet-50</em> from <em>ResNet-50</em> is solely the presence of SE modules. The same also applies to <em>SE-ResNeXt-50 (32×4d)</em> compared to <em>ResNeXt-50 (32×4d)</em> (not displayed in the table). Notice in the figure below that the models with SE modules have an <em>fc</em> layer attached after the last convolution layer within each block, which the corresponding two numbers indicate the first and second fully-connected layers inside the SE module.</p>
+
+
+
+<figure class="wp-block-image alignwide"><img decoding="async" src="../Images/be2ce08efb4941d6185632f05da70418.png" alt="" class="wp-image-614299" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/08/1p9IGCKUudAEXj8znFK3aZw.png"/><figcaption class="wp-element-caption">Figure 10. The complete architecture of ResNet-50, SE-ResNet-50 and SE-ResNeXt-50 (32×4d) [1].</figcaption></figure>
+
+
+
+<hr class="wp-block-separator has-alpha-channel-opacity is-style-dotted"/>
+
+
+
+<h2 class="wp-block-heading">From Scratch Implementation</h2>
+
+
+
+<p class="wp-block-paragraph">Remember that here we are about to integrate the SE module on ResNeXt, so we need to implement both of them from scratch. Technically speaking, it is actually possible to take the ResNeXt architecture directly from PyTorch, then manually attach the SE module on it. However, here I decided to use the ResNeXt implementation from my previous article instead since I feel like it is a lot easier to understand than the one from PyTorch. Note that here I will focus on constructing the SE module and how to attach it to the ResNeXt model rather than explaining the ResNeXt itself since I’ve already covered it in that article [3].</p>
+
+
+
+<p class="wp-block-paragraph">Now let’s start the code by importing the required modules.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python"># Codeblock 1
+import torch
+import torch.nn as nn</code></pre>
+
+
+
+<h3 class="wp-block-heading">Squeeze and Excitation Module</h3>
+
+
+
+<p class="wp-block-paragraph">The following SE module implementation follows the diagram shown in Figure 5 (right). It is worth noting that the <code>SEModule</code> class below does not include the skip-connection (curved arrow), as the entire SE module is applied after the initial branching but before the merging (summation).</p>
+
+
+
+<p class="wp-block-paragraph">The <code>__init__()</code> method of this class accepts two parameters: <code>num_channels</code> and <code>r</code>, as shown at line <code>#(1)</code> in Codeblock 2a. We definitely want this SE module to be usable throughout the entire network. So, we need to set the <code>num_channels</code> parameter to be adjustable because the number of output channels varies across ResNeXt blocks at different stages, as shown back in Figure 10. Meanwhile, even though we typically use the same reduction ratio <em>r</em> in the SE modules within the entire network, but it is technically possible for us to use different <code>r</code> for different stage, which might probably be an interesting thing to experiment with. So, this is essentially the reason that I also set the <code>r</code> parameter to be adjustable.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python"># Codeblock 2a
+class SEModule(nn.Module):
+    def __init__(self, num_channels, r):                     #(1)
+        super().__init__()
+        
+        self.global_pooling = nn.AdaptiveAvgPool2d(output_size=(1,1))  #(2)
+        self.fc0 = nn.Linear(in_features=num_channels,       #(3)
+                             out_features=num_channels//r, 
+                             bias=False)
+        self.relu = nn.ReLU()                                #(4)
+        self.fc1 = nn.Linear(in_features=num_channels//r,    #(5)
+                             out_features=num_channels, 
+                             bias=False)
+        self.sigmoid = nn.Sigmoid()                          #(6)</code></pre>
+
+
+
+<p class="wp-block-paragraph">There are 5 layers we need to initialize inside the <code>__init__()</code> method. I write them down according to the sequence given in Figure 5, i.e., global average pooling layer (<code>#(2)</code>), linear layer (<code>#(3)</code>), ReLU activation function (<code>#(4)</code>), another linear layer (<code>#(5)</code>), and sigmoid activation function (<code>#(6)</code>). Here you can see that the first linear layer is responsible to perform dimensionality reduction by shrinking the number of channels from <code>num_channels</code> to <code>num_channels//r</code>, which will then be expanded back to <code>num_channels</code> by the second linear layer. Note that we set the bias term of both linear layers to <code>False</code>, which essentially means that we will only utilize the weight tensors. The absence of bias terms in the two layers forces the SE module to learn the correlation between one channel to the others rather than just adding fixed adjustments.</p>
+
+
+
+<p class="wp-block-paragraph">Still with the <code>SEModule</code> class, let’s now move on to the <code>forward()</code> method to define the flow of the network. You can see at line <code>#(1)</code> in Codeblock 2b that we start from a single input <code>x</code>, which in the case of ResNeXt it is essentially a tensor produced by the third convolution layer within the same ResNeXt block. As shown in Figure 5, what we need to do next is to branch out the network. Here we directly process the branch using the <code>global_pooling</code> layer, which I name the resulting tensor <code>squeezed</code> (<code>#(2)</code>). The original input tensor <code>x</code> itself will be left as is since we are not going to perform any operation on it until the scaling phase. Next, we need to drop the spatial dimension of the <code>squeezed</code> tensor using <code>torch.flatten()</code> (<code>#(3)</code>). This is basically done because we want to process it further with the linear layers at line <code>#(4)</code> and <code>#(5)</code>, which can only work with a single-dimensional tensor. The spatial dimension is then introduced again at line <code>#(6)</code>, allowing us to perform multiplication between <code>x</code> (the original tensor) and <code>excited</code> (the channel weights) at line <code>#(7)</code>. This entire process produces a recalibrated version of <code>x</code> which we refer to as <code>scaled</code>. Here I print out the tensor dimension after each step so that you can better understand the flow of this SE module.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python"># Codeblock 2b
+    def forward(self, x):                                  #(1)
+        print(f'original\t\t: {x.size()}')
+        
+        squeezed = self.global_pooling(x)                  #(2)
+        print(f'after avgpool\t\t: {squeezed.size()}')
+        
+        squeezed = torch.flatten(squeezed, 1)              #(3)
+        print(f'after flatten\t\t: {squeezed.size()}')
+        
+        excited = self.relu(self.fc0(squeezed))            #(4)
+        print(f'after fc0-relu\t\t: {excited.size()}')
+        
+        excited = self.sigmoid(self.fc1(excited))          #(5)
+        print(f'after fc1-sigmoid\t: {excited.size()}')
+        
+        excited = excited[:, :, None, None]                #(6)
+        print(f'after reshape\t\t: {excited.size()}')
+        
+        scaled = x * excited                               #(7)
+        print(f'after scaling\t\t: {scaled.size()}')
+        
+        return scaled</code></pre>
+
+
+
+<p class="wp-block-paragraph">Now we are going to see if we have implemented the network correctly by passing a dummy tensor through it. In Codeblock 3 below, I initialize an SE module and configure it to accept an image tensor of 512 channels and has a reduction ratio of 16 (<code>#(1)</code>). If you take a look at the SE-ResNeXt architecture in Figure 10, this SE module basically corresponds to the one in the third stage (which the output size is 28×28). Thus, at line <code>#(2)</code> we need to adjust the shape of the dummy tensor accordingly. We then feed this tensor into the network using the code at line <code>#(3)</code>.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python"># Codeblock 3
+semodule = SEModule(num_channels=512, r=16)    #(1)
+x = torch.randn(1, 512, 28, 28)                #(2)
+
+out = semodule(x)      #(3)</code></pre>
+
+
+
+<p class="wp-block-paragraph">And below is what the print functions give us.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-markup"># Codeblock 3 Output
+original          : torch.Size([1, 512, 28, 28])    #(1)
+after avgpool     : torch.Size([1, 512, 1, 1])      #(2)
+after flatten     : torch.Size([1, 512])            #(3)
+after fc0-relu    : torch.Size([1, 32])             #(4)
+after fc1-sigmoid : torch.Size([1, 512])            #(5)
+after reshape     : torch.Size([1, 512, 1, 1])      #(6)
+after scaling     : torch.Size([1, 512, 28, 28])    #(7)</code></pre>
+
+
+
+<p class="wp-block-paragraph">You can see that the original tensor shape matches exactly with our dummy tensor, i.e., 1×512×28×28 (<code>#(1)</code>). By the way we can ignore the number 1 in the 0th axis since it essentially denotes the batch size, which in this case I assume that we only got a single image in a batch. After being pooled, the spatial dimension collapses to 1×1 since now each channel is represented by a single number (<code>#(2)</code>). The purpose of the flatten operation I explained earlier is to drop the two empty axes (<code>#(3)</code>) since the subsequent linear layers can only work with single-dimensional tensor. Here you can see that the first linear layer reduces the tensor dimension to 32 thanks to the reduction ratio which we previously set to 16 (<code>#(4)</code>). The length of this tensor is then expanded back to 512 by the second linear layer (<code>#(5)</code>). Next, we unsqueeze the tensor so that we get our 1×1 spatial dimension back (<code>#(6)</code>), allowing us to multiply it with the input tensor (<code>#(7)</code>). Based on this detailed flow, you can see that an SE module basically preserves the original tensor dimension, proving that this module can be attached to any CNN-based model without disrupting the original flow of the network.</p>
+
+
+
+<h4 class="wp-block-heading">ResNeXt</h4>
+
+
+
+<p class="wp-block-paragraph">As we have understood how to implement SE module from scratch, now that I am going to show you how we can attach it on a ResNeXt model. Before doing so, we need to initialize the parameters required to implement the ResNeXt architecture. In the Codeblock 4 below the first four variables are determined according to the <em>ResNeXt-50 (32×4d)</em> variant, whereas the last one (<code>R</code>) represents the reduction ratio for the SE modules.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python"># Codeblock 4
+CARDINALITY  = 32
+NUM_CHANNELS = [3, 64, 256, 512, 1024, 2048]
+NUM_BLOCKS   = [3, 4, 6, 3]
+NUM_CLASSES  = 1000
+R = 16</code></pre>
+
+
+
+<p class="wp-block-paragraph">The <code>Block</code> class defined in Codeblock 5a and 5b is the ResNeXt block from my previous article. There are actually lots of things we do inside the <code>__init__()</code> method, but the general idea is that we initialize three convolution layers referred to as <code>conv0</code> (<code>#(1)</code>), <code>conv1</code> (<code>#(2)</code>), and <code>conv2</code> (<code>#(3)</code>) before initializing the SE module at line <code>#(4)</code>. We will later configure these layers according to the SE-ResNeXt architecture shown back in Figure 10.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python"># Codeblock 5a
+class Block(nn.Module):
+    def __init__(self, 
+                 in_channels,
+                 add_channel=False,
+                 channel_multiplier=2,
+                 downsample=False):
+        super().__init__()
+
+        self.add_channel = add_channel
+        self.channel_multiplier = channel_multiplier
+        self.downsample = downsample
+        
+        
+        if self.add_channel:
+            out_channels = in_channels*self.channel_multiplier
+        else:
+            out_channels = in_channels
+        
+        mid_channels = out_channels//2
+        
+        
+        if self.downsample:
+            stride = 2
+        else:
+            stride = 1
+            
+
+        if self.add_channel or self.downsample:
+            self.projection = nn.Conv2d(in_channels=in_channels,
+                                        out_channels=out_channels, 
+                                        kernel_size=1, 
+                                        stride=stride, 
+                                        padding=0, 
+                                        bias=False)
+            nn.init.kaiming_normal_(self.projection.weight, nonlinearity='relu')
+            self.bn_proj = nn.BatchNorm2d(num_features=out_channels)
+
+        self.conv0 = nn.Conv2d(in_channels=in_channels,       #(1)
+                               out_channels=mid_channels,
+                               kernel_size=1, 
+                               stride=1, 
+                               padding=0, 
+                               bias=False)
+        nn.init.kaiming_normal_(self.conv0.weight, nonlinearity='relu')
+        self.bn0 = nn.BatchNorm2d(num_features=mid_channels)
+
+        self.conv1 = nn.Conv2d(in_channels=mid_channels,      #(2)
+                               out_channels=mid_channels, 
+                               kernel_size=3, 
+                               stride=stride,
+                               padding=1, 
+                               bias=False, 
+                               groups=CARDINALITY)
+        nn.init.kaiming_normal_(self.conv1.weight, nonlinearity='relu')
+        self.bn1 = nn.BatchNorm2d(num_features=mid_channels)
+
+        self.conv2 = nn.Conv2d(in_channels=mid_channels,      #(3)
+                               out_channels=out_channels,
+                               kernel_size=1, 
+                               stride=1, 
+                               padding=0, 
+                               bias=False)
+        nn.init.kaiming_normal_(self.conv2.weight, nonlinearity='relu')
+        self.bn2 = nn.BatchNorm2d(num_features=out_channels)
+        
+        self.relu = nn.ReLU()
+        
+        self.semodule = SEModule(num_channels=out_channels, r=R)    #(4)</code></pre>
+
+
+
+<p class="wp-block-paragraph">The <code>forward()</code> method itself is generally also the same as the original ResNeXt model, except that here we need to put the SE module right before the element-wise summation as shown at line <code>#(1)</code> in the Codeblock 5b below. Remember that this implementation follows the standard SE block architecture in Figure 6 (b).</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python"># Codeblock 5b
+    def forward(self, x):
+        print(f'original\t\t: {x.size()}')
+        
+        if self.add_channel or self.downsample:
+            residual = self.bn_proj(self.projection(x))
+            print(f'after projection\t: {residual.size()}')
+        else:
+            residual = x
+            print(f'no projection\t\t: {residual.size()}')
+        
+        x = self.conv0(x)
+        x = self.bn0(x)
+        x = self.relu(x)
+        print(f'after conv0-bn0-relu\t: {x.size()}')
+
+        x = self.conv1(x)
+        x = self.bn1(x)
+        x = self.relu(x)
+        print(f'after conv1-bn1-relu\t: {x.size()}')
+        
+        x = self.conv2(x)
+        x = self.bn2(x)
+        print(f'after conv2-bn2\t\t: {x.size()}')
+        
+        x = self.semodule(x)      #(1)
+        print(f'after semodule\t\t: {x.size()}')
+        
+        x = x + residual
+        x = self.relu(x)
+        print(f'after summation\t\t: {x.size()}')
+        
+        return x</code></pre>
+
+
+
+<p class="wp-block-paragraph">With the above implementation, every time we instantiate a <code>Block</code> object we will have a ResNeXt block which is already equipped with an SE module. Now we are going to test the above class to see if we have implemented it correctly. Here I am going to simulate a ResNeXt block within the third stage. The <code>add_channel</code> and <code>downsample</code> parameters are set to <code>False</code> since we want to preserve both the number of channels and the spatial dimension of the input tensor.<br/></p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python"># Codeblock 6
+block = Block(in_channels=512, add_channel=False, downsample=False)
+x = torch.randn(1, 512, 28, 28)
+
+out = block(x)</code></pre>
+
+
+
+<p class="wp-block-paragraph">Below is what the output looks like. Here you can see that our first convolution layer successfully reduced the number of channels from 512 to 256 (<code>#(1)</code>), which is then expanded back to its original dimension by the third convolution layer (<code>#(2)</code>). Afterwards, the tensor goes through the SE block which the resulting output size is the same as its input, just like what we saw earlier in Codeblock 3 (<code>#(3)</code>). As the processing with SE module is done, we can finally perform the element-wise summation between the tensor from the main branch and the one from the skip-connection (<code>#(4)</code>).</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-markup">original             : torch.Size([1, 512, 28, 28])
+no projection        : torch.Size([1, 512, 28, 28])
+after conv0-bn0-relu : torch.Size([1, 256, 28, 28])    #(1)
+after conv1-bn1-relu : torch.Size([1, 256, 28, 28])
+after conv2-bn2      : torch.Size([1, 512, 28, 28])    #(2)
+after semodule       : torch.Size([1, 512, 28, 28])    #(3)
+after summation      : torch.Size([1, 512, 28, 28])    #(4)</code></pre>
+
+
+
+<p class="wp-block-paragraph">And below is how I implement the entire architecture. What we essentially need to do is just to stack multiple SE-ResNeXt blocks according to the architecture in Figure 10. In fact, the <code>SEResNeXt</code> class in Codeblock 7 is exactly the same as the <code>ResNeXt</code> class in my previous article [3] (I literally copy-pasted it) since what makes SE-ResNeXt different from the original ResNeXt is only the presence of SE module within the <code>Block</code> class we discussed earlier.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python"># Codeblock 7
+class SEResNeXt(nn.Module):
+    def __init__(self):
+        super().__init__()
+
+        # conv1 stage
+        self.resnext_conv1 = nn.Conv2d(in_channels=NUM_CHANNELS[0],
+                                       out_channels=NUM_CHANNELS[1],
+                                       kernel_size=7,
+                                       stride=2,
+                                       padding=3, 
+                                       bias=False)
+        nn.init.kaiming_normal_(self.resnext_conv1.weight, 
+                                nonlinearity='relu')
+        self.resnext_bn1 = nn.BatchNorm2d(num_features=NUM_CHANNELS[1])
+        self.relu = nn.ReLU()
+        self.resnext_maxpool1 = nn.MaxPool2d(kernel_size=3,
+                                             stride=2, 
+                                             padding=1)
+
+        # conv2 stage
+        self.resnext_conv2 = nn.ModuleList([
+            Block(in_channels=NUM_CHANNELS[1],
+                  add_channel=True,
+                  channel_multiplier=4,
+                  downsample=False)
+        ])
+        for _ in range(NUM_BLOCKS[0]-1):
+            self.resnext_conv2.append(Block(in_channels=NUM_CHANNELS[2]))
+
+        # conv3 stage
+        self.resnext_conv3 = nn.ModuleList([Block(in_channels=NUM_CHANNELS[2],
+                                                  add_channel=True, 
+                                                  downsample=True)])
+        for _ in range(NUM_BLOCKS[1]-1):
+            self.resnext_conv3.append(Block(in_channels=NUM_CHANNELS[3]))
+            
+            
+        # conv4 stage
+        self.resnext_conv4 = nn.ModuleList([Block(in_channels=NUM_CHANNELS[3],
+                                                  add_channel=True, 
+                                                  downsample=True)])
+        
+        for _ in range(NUM_BLOCKS[2]-1):
+            self.resnext_conv4.append(Block(in_channels=NUM_CHANNELS[4]))
+            
+            
+        # conv5 stage
+        self.resnext_conv5 = nn.ModuleList([Block(in_channels=NUM_CHANNELS[4],
+                                                  add_channel=True, 
+                                                  downsample=True)])
+        
+        for _ in range(NUM_BLOCKS[3]-1):
+            self.resnext_conv5.append(Block(in_channels=NUM_CHANNELS[5]))
+ 
+       
+        self.avgpool = nn.AdaptiveAvgPool2d(output_size=(1,1))
+
+        self.fc = nn.Linear(in_features=NUM_CHANNELS[5],
+                            out_features=NUM_CLASSES)
+        
+
+    def forward(self, x):
+        print(f'original\t\t: {x.size()}')
+        
+        x = self.relu(self.resnext_bn1(self.resnext_conv1(x)))
+        print(f'after resnext_conv1\t: {x.size()}')
+        
+        x = self.resnext_maxpool1(x)
+        print(f'after resnext_maxpool1\t: {x.size()}')
+        
+        for i, block in enumerate(self.resnext_conv2):
+            x = block(x)
+            print(f'after resnext_conv2 #{i}\t: {x.size()}')
+            
+        for i, block in enumerate(self.resnext_conv3):
+            x = block(x)
+            print(f'after resnext_conv3 #{i}\t: {x.size()}')
+            
+        for i, block in enumerate(self.resnext_conv4):
+            x = block(x)
+            print(f'after resnext_conv4 #{i}\t: {x.size()}')
+            
+        for i, block in enumerate(self.resnext_conv5):
+            x = block(x)
+            print(f'after resnext_conv5 #{i}\t: {x.size()}')
+        
+        x = self.avgpool(x)
+        print(f'after avgpool\t\t: {x.size()}')
+        
+        x = torch.flatten(x, start_dim=1)
+        print(f'after flatten\t\t: {x.size()}')
+        
+        x = self.fc(x)
+        print(f'after fc\t\t: {x.size()}')
+        
+        return x</code></pre>
+
+
+
+<p class="wp-block-paragraph">As the entire <em>SE-ResNeXt-50 (32×4d)</em> architecture is completed, now that we are going to test it by passing through a tensor of size 1×3×224×224 through the network, simulating a single RGB image of size 224×224. You can see in the output of the Codeblock 8 below that it seems like model works properly since the tensor successfully passed through all layers within the <code>seresnext</code> model without returning any error. Thus, I believe this model is now ready to be trained. By the way don’t forget to change the number of neurons in the output channel according to the number of classes in your dataset if you want to actually train this model.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python"># Codeblock 8
+seresnext = SEResNeXt()
+x = torch.randn(1, 3, 224, 224)
+
+out = seresnext(x)</code></pre>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-markup"># Codeblock 8 Output
+original               : torch.Size([1, 3, 224, 224])
+after resnext_conv1    : torch.Size([1, 64, 112, 112])
+after resnext_maxpool1 : torch.Size([1, 64, 56, 56])
+after resnext_conv2 #0 : torch.Size([1, 256, 56, 56])
+after resnext_conv2 #1 : torch.Size([1, 256, 56, 56])
+after resnext_conv2 #2 : torch.Size([1, 256, 56, 56])
+after resnext_conv3 #0 : torch.Size([1, 512, 28, 28])
+after resnext_conv3 #1 : torch.Size([1, 512, 28, 28])
+after resnext_conv3 #2 : torch.Size([1, 512, 28, 28])
+after resnext_conv3 #3 : torch.Size([1, 512, 28, 28])
+after resnext_conv4 #0 : torch.Size([1, 1024, 14, 14])
+after resnext_conv4 #1 : torch.Size([1, 1024, 14, 14])
+after resnext_conv4 #2 : torch.Size([1, 1024, 14, 14])
+after resnext_conv4 #3 : torch.Size([1, 1024, 14, 14])
+after resnext_conv4 #4 : torch.Size([1, 1024, 14, 14])
+after resnext_conv4 #5 : torch.Size([1, 1024, 14, 14])
+after resnext_conv5 #0 : torch.Size([1, 2048, 7, 7])
+after resnext_conv5 #1 : torch.Size([1, 2048, 7, 7])
+after resnext_conv5 #2 : torch.Size([1, 2048, 7, 7])
+after avgpool          : torch.Size([1, 2048, 1, 1])
+after flatten          : torch.Size([1, 2048])
+after fc               : torch.Size([1, 1000])</code></pre>
+
+
+
+<p class="wp-block-paragraph">Additionally, we can also print out the number of parameters this model has using the following code. Here you can see that the codeblock returns 27,543,848. This number of parameters is slightly higher than the original ResNeXt model counterpart, which only has 25,028,904 parameters as mentioned in my previous article as well as the official PyTorch documentation [4]. Such an increase in the model size definitely makes sense since the ResNeXt blocks throughout the entire network now have more layers thanks to the presence of SE modules.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python"># Codeblock 9
+def count_parameters(model):
+    return sum([params.numel() for params in model.parameters()])
+
+count_parameters(seresnext)</code></pre>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-markup"># Codeblock 9 Output
+27543848</code></pre>
+
+
+
+<hr class="wp-block-separator has-alpha-channel-opacity is-style-dotted"/>
+
+
+
+<h2 class="wp-block-heading">Ending</h2>
+
+
+
+<p class="wp-block-paragraph">And that’s pretty much everything about the Squeeze and Excitation module. I do encourage you to explore from here by training this model on your own dataset so that you will see whether the findings presented in the paper also apply to your case. Not only that, I think it would also be interesting if you try to implement SE module on other neural network architectures like VGG or Inception by yourself.</p>
+
+
+
+<p class="wp-block-paragraph">I hope you learn something new today. Thanks for reading!</p>
+
+
+
+<p class="wp-block-paragraph"><em>By the way you can also find the code used in this article in my GitHub repo [5].</em></p>
+
+
+
+<hr class="wp-block-separator has-alpha-channel-opacity is-style-dotted"/>
+
+
+
+<p class="wp-block-paragraph">[1] Jie Hu <em>et al.</em> Squeeze and Excitation Networks. Arxiv. <a href="https://arxiv.org/abs/1709.01507" rel="noreferrer noopener" target="_blank">https://arxiv.org/abs/1709.01507</a> [Accessed March 17, 2025].</p>
+
+
+
+<p class="wp-block-paragraph">[2] Image originally created by author.</p>
+
+
+
+<p class="wp-block-paragraph">[3] Taking ResNet to the Next Level. Towards Data Science. <a href="https://towardsdatascience.com/taking-resnet-to-the-next-level/">https://towardsdatascience.com/taking-resnet-to-the-next-level/</a> [Accessed July 22, 2025].</p>
+
+
+
+<p class="wp-block-paragraph">[4] Resnext50_32x4d. PyTorch. <a href="https://pytorch.org/vision/main/models/generated/torchvision.models.resnext50_32x4d.html#torchvision.models.resnext50_32x4d" rel="noreferrer noopener" target="_blank">https://pytorch.org/vision/main/models/generated/torchvision.models.resnext50_32x4d.html#torchvision.models.resnext50_32x4d</a> [Accessed March 17, 2025].</p>
+
+
+
+<p class="wp-block-paragraph">[5] MuhammadArdiPutra. The Channel-Wise Attention — Squeeze and Excitation. GitHub. <a href="https://github.com/MuhammadArdiPutra/medium_articles/blob/main/The%20Channel-Wise%20Attention%20-%20Squeeze%20and%20Excitation.ipynb" rel="noreferrer noopener" target="_blank">https://github.com/MuhammadArdiPutra/medium_articles/blob/main/The%20Channel-Wise%20Attention%20-%20Squeeze%20and%20Excitation.ipynb</a> [Accessed April 7, 2025].</p>
+
+
+
+<p class="wp-block-paragraph"/>
+    
+</body>
+</html>

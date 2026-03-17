@@ -1,0 +1,625 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.1//EN"
+  "http://www.w3.org/TR/xhtml11/DTD/xhtml11.dtd">
+
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+<title>Run Python Up to 150× Faster with C</title>
+<link href="../Styles/Style.css" type="text/css" rel="stylesheet"/>
+</head>
+<body>
+<h1>Run Python Up to 150× Faster with C</h1>
+<blockquote>原文：<a href="https://towardsdatascience.com/make-python-up-to-150x-faster-with-c/">https://towardsdatascience.com/make-python-up-to-150x-faster-with-c/</a></blockquote>
+<p class="wp-block-paragraph"><mdspan datatext="el1762803060797" class="mdspan-comment">If you are a Python programmer</mdspan>, sooner or later, you’re going to hit a block when it comes to your code execution speed. If you’ve ever written a computationally heavy algorithm in Python, such as string distance, matrix math, or cryptographic hashing, you’ll know what I mean.</p>
+
+
+
+<p class="wp-block-paragraph">Sure, there are times when external libraries like NumPy can come to your rescue, but what happens when the algorithm is <em>inherently sequential</em>? That was precisely my problem when I wanted to benchmark a particular algorithm, which determines the number of edits required to transform one string into another.</p>
+
+
+
+<p class="wp-block-paragraph">I tried Python. I tried NumPy. And then I turned to C, a language I first learned at college decades ago but hadn’t used in anger for about 15 years. That’s where things got interesting.</p>
+
+
+
+<p class="wp-block-paragraph">I first had to answer the question, “Can you call C from Python?”. After some research, it quickly became clear that the answer was indeed <strong>yes</strong>. In fact, it turns out you can do it in several ways, and in this article, I’ll look at three of the most common ways of doing so. </p>
+
+
+
+<p class="wp-block-paragraph">From easiest to most complex, we’ll look at using,</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">a subprocess</li>
+
+
+
+<li class="wp-block-list-item">ctypes</li>
+
+
+
+<li class="wp-block-list-item">Python C extensions</li>
+</ul>
+
+
+
+<p class="wp-block-paragraph">The algorithm that we’ll be testing with is called the <strong>Levenshtein Distance (LD) </strong>algorithm. The Levenshtein distance between two words is the minimum number of single-character edits (insertions, deletions or substitutions) required to change one word into the other. It is named after Soviet mathematician Vladimir Levenshtein, who defined the metric in 1965. It has applications in various tools, such as spell checkers and optical character recognition systems.</p>
+
+
+
+<p class="wp-block-paragraph">To give you a clearer picture of what we’re talking about, here are a couple of examples. </p>
+
+
+
+<p class="wp-block-paragraph">Calculate the LD between the words “book” and “black”.</p>
+
+
+
+<ol class="wp-block-list">
+<li class="wp-block-list-item">book → baok (substitution of “a” for “o”),</li>
+
+
+
+<li class="wp-block-list-item">baok → back (substitution of “c” for “o”)</li>
+
+
+
+<li class="wp-block-list-item">back → black (add the letter “l”)</li>
+</ol>
+
+
+
+<p class="wp-block-paragraph">So, the LD in this case is three.</p>
+
+
+
+<p class="wp-block-paragraph">Calculate the LD between the words “superb” and “super”.</p>
+
+
+
+<ol class="wp-block-list">
+<li class="wp-block-list-item">superb → super (remove letter “b”)</li>
+</ol>
+
+
+
+<p class="wp-block-paragraph">The LD in this case is simply one.</p>
+
+
+
+<p class="wp-block-paragraph">We’ll code up the LD algorithm in Python and C, then set up benchmarks to test how long it takes to run it using pure Python code versus the time it takes to run it in C code called from Python. </p>
+
+
+
+<h2 class="wp-block-heading">Prerequisites</h2>
+
+
+
+<p class="wp-block-paragraph">As I was running this on MS Windows, I needed a way of compiling C programs. The easiest way I found to do this was to download the Visual Studio Build tools for 2022. This allows you to compile C programs on the command line.</p>
+
+
+
+<p class="wp-block-paragraph">To install, first go to the main <a href="https://visualstudio.microsoft.com/downloads/" rel="noreferrer noopener" target="_blank">Visual Studio downloads page</a>. On the second screen, you’ll see a search box. Type <strong>“Build Tools” </strong>into the search field and click Search. The search should return a screen that looks like this,</p>
+
+
+
+<figure class="wp-block-image alignwide size-large"><img decoding="async" src="../Images/9d052e3c0ba1797214cdf1d34b7e6a97.png" alt="" class="wp-image-620972" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/09/image-186-1024x383.png"/><figcaption class="wp-element-caption">Image by Author</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">Click the Download button and follow any installation instructions. Once it’s been installed, in a DOS terminal window, when you click on the little plus button to open a new terminal, you should see an option to open a “Developer command prompt for VS 2022”. </p>
+
+
+
+<figure class="wp-block-image size-full"><img decoding="async" src="../Images/1b0be3037c381a7043ee5d98337c60bc.png" alt="" class="wp-image-620973" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/09/image-187.png"/><figcaption class="wp-element-caption">Image by Author</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">Most of my Python code will be running on a Jupyter Notebook, so you should set up a new development environment and install Jupyter. Do that now if you want to follow along. I’m using the UV tool for this part, but feel free to use whichever method you’re most comfortable with.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">c:\&gt; uv init pythonc
+c:\&gt; cd pythonc
+c:\&gt; uv venv pythonc
+c:\&gt; source pythonc/bin/activate
+(pythonc) c:\&gt; uv pip install jupyter</code></pre>
+
+
+
+<h2 class="wp-block-heading">The LD algorithm in C</h2>
+
+
+
+<p class="wp-block-paragraph">We need slightly different versions of the LD algorithm in C, depending on the method used to call it. This is the version for our first example, where we use subprocessing to call a C executable.</p>
+
+
+
+<p class="wp-block-paragraph"><strong>1/ subprocessing: lev_sub.c</strong></p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-c">#include &lt;stdio.h&gt;
+#include &lt;stdlib.h&gt;
+#include &lt;string.h&gt;
+
+static int levenshtein(const char* a, const char* b) {
+    size_t n = strlen(a), m = strlen(b);
+    if (n == 0) return (int)m;
+    if (m == 0) return (int)n;
+    int* prev = (int*)malloc((m + 1) * sizeof(int));
+    int* curr = (int*)malloc((m + 1) * sizeof(int));
+    if (!prev || !curr) { free(prev); free(curr); return -1; }
+    for (size_t j = 0; j &lt;= m; ++j) prev[j] = (int)j;
+    for (size_t i = 1; i &lt;= n; ++i) {
+        curr[0] = (int)i; char ca = a[i - 1];
+        for (size_t j = 1; j &lt;= m; ++j) {
+            int cost = (ca == b[j - 1]) ? 0 : 1;
+            int del = prev[j] + 1, ins = curr[j - 1] + 1, sub = prev[j - 1] + cost;
+            int d = del &lt; ins ? del : ins; curr[j] = d &lt; sub ? d : sub;
+        }
+        int* tmp = prev; prev = curr; curr = tmp;
+    }
+    int ans = prev[m]; free(prev); free(curr); return ans;
+}
+
+int main(int argc, char** argv) {
+    if (argc != 3) { fprintf(stderr, "usage: %s &lt;s1&gt; &lt;s2&gt;\n", argv[0]); return 2; }
+    int d = levenshtein(argv[1], argv[2]);
+    if (d &lt; 0) return 1;
+    printf("%d\n", d);
+    return 0;
+}</code></pre>
+
+
+
+<p class="wp-block-paragraph">To compile this, start a new Developer Command Prompt for VS Code 2022 and type the following to ensure we are optimising the compilation for 64-bit architecture.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">(pythonc) c:\&gt; "%VSINSTALLDIR%VC\Auxiliary\Build\vcvarsall.bat" x64</code></pre>
+
+
+
+<p class="wp-block-paragraph">Next, we can compile our C code using this command.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">(pythonc) c:\&gt; cl /O2 /Fe:lev_sub.exe lev_sub.c</code></pre>
+
+
+
+<p class="wp-block-paragraph">That will create an executable file.</p>
+
+
+
+<h2 class="wp-block-heading">Benchmarking the subprocessing code</h2>
+
+
+
+<p class="wp-block-paragraph">In a Jupyter notebook, type in the following code, which will be common to all our benchmarking. It generates random lowercase strings of length N and calculates the number of edits required to transform string1 into string2.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python"># Sub-process benchmark
+import time, random, string, subprocess
+import numpy as np
+
+EXE = r"lev_sub.exe"  
+
+def rnd_ascii(n):
+    return ''.join(random.choice(string.ascii_lowercase) for _ in range(n))
+
+def lev_py(a: str, b: str) -&gt; int:
+    n, m = len(a), len(b)
+    if n == 0: return m
+    if m == 0: return n
+    prev = list(range(m+1))
+    curr = [0]*(m+1)
+    for i, ca in enumerate(a, 1):
+        curr[0] = i
+        for j, cb in enumerate(b, 1):
+            cost = 0 if ca == cb else 1
+            curr[j] = min(prev[j] + 1, curr[j-1] + 1, prev[j-1] + cost)
+        prev, curr = curr, prev
+    return prev[m]</code></pre>
+
+
+
+<p class="wp-block-paragraph">Next is the actual benchmarking code and run results. To run the C part of the code, we spawn a subprocess that executes the compiled C code file we previously created and measures the time it takes to run, comparing it with the pure Python method. We run each method against a 2000 and a 4000 set of random words three times and take the fastest of those times.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">def lev_subprocess(a: str, b: str) -&gt; int:
+    out = subprocess.check_output([EXE, a, b], text=True)
+    return int(out.strip())
+
+def bench(fn, *args, repeat=3, warmup=1):
+    for _ in range(warmup): fn(*args)
+    best = float("inf"); out_best = None
+    for _ in range(repeat):
+        t0 = time.perf_counter(); out = fn(*args); dt = time.perf_counter() - t0
+        if dt &lt; best: best, out_best = dt, out
+    return out_best, best
+
+if __name__ == "__main__":
+    cases = [(2000,2000),(4000, 4000)]
+    print("Benchmark: Pythonvs C (subprocess)\n")
+    for n, m in cases:
+        a, b = rnd_ascii(n), rnd_ascii(m)
+        py_out, py_t = bench(lev_py, a, b, repeat=3)
+        sp_out, sp_t = bench(lev_subprocess, a, b, repeat=3)
+        print(f"n={n} m={m}")
+        print(f"  Python   : {py_t:.3f}s -&gt; {py_out}")
+        print(f"  Subproc  : {sp_t:.3f}s -&gt; {sp_out}\n")</code></pre>
+
+
+
+<p class="wp-block-paragraph"> Here are the results.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">Benchmark: Python vs C (subprocess)
+
+n=2000 m=2000 
+  Python   : 1.276s -&gt; 1768
+  Subproc  : 0.024s -&gt; 1768
+
+n=4000 m=4000 
+  Python   : 5.015s -&gt; 3519
+  Subproc  : 0.050s -&gt; 3519</code></pre>
+
+
+
+<p class="wp-block-paragraph">That’s a pretty significant improvement in the run-time of C over Python.</p>
+
+
+
+<p class="wp-block-paragraph"><strong>2. ctypes: lev.c</strong></p>
+
+
+
+<p class="wp-block-paragraph">ctypes is a <strong>foreign function interface (FFI)</strong> library built right into Python’s standard library. It lets you load and call functions from shared libraries written in C (DLLs on Windows, <code>.so</code> files on Linux, <code>.dylib</code> on macOS) <strong>directly from Python</strong>, without needing to write a complete extension module in C.</p>
+
+
+
+<p class="wp-block-paragraph">First, here is our C version of the LD algorithm, utilising ctypes. It’s almost identical to our subprocess C function, with the addition of a line that enables us to use Python to call the DLL after it has been compiled.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-c">/* 
+ * lev.c
+*/
+
+#include &lt;stdlib.h&gt;
+#include &lt;string.h&gt;
+
+/* below line includes this function in the 
+ * DLL's export table so other programs can use it.
+ */
+__declspec(dllexport)
+
+int levenshtein(const char* a, const char* b) {
+    size_t n = strlen(a), m = strlen(b);
+    if (n == 0) return (int)m;
+    if (m == 0) return (int)n;
+
+    int* prev = (int*)malloc((m + 1) * sizeof(int));
+    int* curr = (int*)malloc((m + 1) * sizeof(int));
+    if (!prev || !curr) { free(prev); free(curr); return -1; }
+
+    for (size_t j = 0; j &lt;= m; ++j) prev[j] = (int)j;
+
+    for (size_t i = 1; i &lt;= n; ++i) {
+        curr[0] = (int)i;
+        char ca = a[i - 1];
+        for (size_t j = 1; j &lt;= m; ++j) {
+            int cost = (ca == b[j - 1]) ? 0 : 1;
+            int del = prev[j] + 1;
+            int ins = curr[j - 1] + 1;
+            int sub = prev[j - 1] + cost;
+            int d = del &lt; ins ? del : ins;
+            curr[j] = d &lt; sub ? d : sub;
+        }
+        int* tmp = prev; prev = curr; curr = tmp;
+    }
+    int ans = prev[m];
+    free(prev); free(curr);
+    return ans;
+}</code></pre>
+
+
+
+<p class="wp-block-paragraph">When using ctypes to call C in Python, we need to convert our C code into a dynamic link library (DLL) rather than an executable. Here is the build command you need for that.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">(pythonc) c:\&gt; cl /O2 /LD lev.c /Fe:lev.dll</code></pre>
+
+
+
+<h2 class="wp-block-heading">Benchmarking the ctypes code</h2>
+
+
+
+<p class="wp-block-paragraph">I’m omitting the <strong>lev_py</strong> and <strong>rnd_ascii</strong> Python functions in this code snippet, as they are identical to those in the previous example. Type this into your notebook.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">#ctypes benchmark
+
+import time, random, string, ctypes
+import numpy as np
+
+DLL = r"lev.dll"  
+
+levdll = ctypes.CDLL(DLL)
+levdll.levenshtein.argtypes = [ctypes.c_char_p, ctypes.c_char_p]
+levdll.levenshtein.restype  = ctypes.c_int
+
+def lev_ctypes(a: str, b: str) -&gt; int:
+    return int(levdll.levenshtein(a.encode('utf-8'), b.encode('utf-8')))
+
+def bench(fn, *args, repeat=3, warmup=1):
+    for _ in range(warmup): fn(*args)
+    best = float("inf"); out_best = None
+    for _ in range(repeat):
+        t0 = time.perf_counter(); out = fn(*args); dt = time.perf_counter() - t0
+        if dt &lt; best: best, out_best = dt, out
+    return out_best, best
+
+if __name__ == "__main__":
+    cases = [(2000,2000),(4000, 4000)]
+    print("Benchmark: Python vs NumPy vs C (ctypes)\n")
+    for n, m in cases:
+        a, b = rnd_ascii(n), rnd_ascii(m)
+        py_out, py_t = bench(lev_py, a, b, repeat=3)
+        ct_out, ct_t = bench(lev_ctypes, a, b, repeat=3)
+        print(f"n={n} m={m}")
+        print(f"  Python   : {py_t:.3f}s -&gt; {py_out}")
+        print(f"  ctypes   : {ct_t:.3f}s -&gt; {ct_out}\n")</code></pre>
+
+
+
+<p class="wp-block-paragraph">And the results?</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">Benchmark: Python vs C (ctypes)
+
+n=2000 m=2000  
+  Python   : 1.258s -&gt; 1769
+  ctypes   : 0.019s -&gt; 1769
+
+n=4000 m=4000 
+  Python   : 5.138s -&gt; 3521
+  ctypes   : 0.035s -&gt; 3521</code></pre>
+
+
+
+<p class="wp-block-paragraph">We have very similar results to the first example.</p>
+
+
+
+<p class="wp-block-paragraph"><strong>3/ Python C extensions: lev_cext.c</strong></p>
+
+
+
+<p class="wp-block-paragraph">When using Python C extensions, there’s slightly more work involved. First, let’s examine the C code. The basic algorithm is unchanged. It’s just that we need to add a bit more scaffolding to enable the code to be called from Python. It uses CPython’s API (<code>Python.h</code>) to parse Python arguments, run the C code, and return the result as a Python integer.</p>
+
+
+
+<p class="wp-block-paragraph">The function <strong>levext_lev</strong> acts as a wrapper. It parses two string arguments from Python (PyArg_ParseTuple), calls the C function <strong>lev_impl</strong> to compute the distance, handles memory errors, and returns the result as a Python integer (PyLong_FromLong). The Methods table registers this function under the name “levenshtein”, so it can be called from Python code. Finally, PyInit_levext defines and initialises the module <strong>levext</strong>, making it importable in Python with the import levext command.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-c">#include &lt;Python.h&gt;
+#include &lt;string.h&gt;
+#include &lt;stdlib.h&gt;
+
+static int lev_impl(const char* a, const char* b) {
+    size_t n = strlen(a), m = strlen(b);
+    if (n == 0) return (int)m;
+    if (m == 0) return (int)n;
+    int* prev = (int*)malloc((m + 1) * sizeof(int));
+    int* curr = (int*)malloc((m + 1) * sizeof(int));
+    if (!prev || !curr) { free(prev); free(curr); return -1; }
+    for (size_t j = 0; j &lt;= m; ++j) prev[j] = (int)j;
+    for (size_t i = 1; i &lt;= n; ++i) {
+        curr[0] = (int)i; char ca = a[i - 1];
+        for (size_t j = 1; j &lt;= m; ++j) {
+            int cost = (ca == b[j - 1]) ? 0 : 1;
+            int del = prev[j] + 1, ins = curr[j - 1] + 1, sub = prev[j - 1] + cost;
+            int d = del &lt; ins ? del : ins; curr[j] = d &lt; sub ? d : sub;
+        }
+        int* tmp = prev; prev = curr; curr = tmp;
+    }
+    int ans = prev[m]; free(prev); free(curr); return ans;
+}
+
+static PyObject* levext_lev(PyObject* self, PyObject* args) {
+    const char *a, *b;
+    if (!PyArg_ParseTuple(args, "ss", &amp;a, &amp;b)) return NULL;
+    int d = lev_impl(a, b);
+    if (d &lt; 0) { PyErr_SetString(PyExc_MemoryError, "alloc failed"); return NULL; }
+    return PyLong_FromLong(d);
+}
+
+static PyMethodDef Methods[] = {
+    {"levenshtein", levext_lev, METH_VARARGS, "Levenshtein distance"},
+    {NULL, NULL, 0, NULL}
+};
+
+static struct PyModuleDef mod = { PyModuleDef_HEAD_INIT, "levext", NULL, -1, Methods };
+PyMODINIT_FUNC PyInit_levext(void) { return PyModule_Create(&amp;mod); }</code></pre>
+
+
+
+<p class="wp-block-paragraph">Because we aren’t just building an executable this time but a native Python extension module, we have to build the C code differently.</p>
+
+
+
+<p class="wp-block-paragraph">This type of module must be compiled against Python’s headers and appropriately linked to Python’s runtime so it behaves like a built-in Python module. </p>
+
+
+
+<p class="wp-block-paragraph">To achieve this, we create a Python module called setup.py, which imports the setuptools library to facilitate this process. It automates:</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">Finding the right include paths for Python.h</li>
+
+
+
+<li class="wp-block-list-item">Passing the correct compiler and linker flags</li>
+
+
+
+<li class="wp-block-list-item">Producing a .pyd file with the right naming convention for your Python version and platform</li>
+</ul>
+
+
+
+<p class="wp-block-paragraph">Doing this by hand with the <strong>cl</strong> compiler command would be tedious and error-prone, because you’d have to specify all of those paths and flags manually.</p>
+
+
+
+<p class="wp-block-paragraph">Here is the code we need.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">from setuptools import setup, Extension
+setup(
+    name="levext",
+    version="0.1.0",
+    ext_modules=[Extension("levext", ["lev_cext.c"], extra_compile_args=["/O2"])],
+)</code></pre>
+
+
+
+<p class="wp-block-paragraph">We run it using regular Python on the command line, as shown here.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">(pythonc) c:\&gt; python setup.py build_ext --inplace
+
+#output
+running build_ext
+copying build\lib.win-amd64-cpython-312\levext.cp312-win_amd64.pyd -&gt;</code></pre>
+
+
+
+<h2 class="wp-block-heading">Benchmarking the Python C extensions code</h2>
+
+
+
+<p class="wp-block-paragraph">Now, here is the Python code to call our C. Again, I have omitted the two Python helper functions that are unchanged from the previous examples.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python"># c-ext benchmark
+
+import time, random, string
+import numpy as np
+import levext  # make sure levext.cp312-win_amd64.pyd is built &amp; importable
+
+def lev_extension(a: str, b: str) -&gt; int:
+    return levext.levenshtein(a, b)
+
+def bench(fn, *args, repeat=3, warmup=1):
+    for _ in range(warmup): fn(*args)
+    best = float("inf"); out_best = None
+    for _ in range(repeat):
+        t0 = time.perf_counter(); out = fn(*args); dt = time.perf_counter() - t0
+        if dt &lt; best: best, out_best = dt, out
+    return out_best, best
+
+if __name__ == "__main__":
+    cases = [(2000, 2000), (4000, 4000)]
+    print("Benchmark: Python vs NumPy vs C (C extension)\n")
+    for n, m in cases:
+        a, b = rnd_ascii(n), rnd_ascii(m)
+        py_out, py_t = bench(lev_py, a, b, repeat=3)
+        ex_out, ex_t = bench(lev_extension, a, b, repeat=3)
+        print(f"n={n} m={m} ")
+        print(f"  Python   : {py_t:.3f}s -&gt; {py_out}")
+        print(f"  C ext    : {ex_t:.3f}s -&gt; {ex_out}\n")</code></pre>
+
+
+
+<p class="wp-block-paragraph">Here is the output.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">Benchmark: Python vs C (C extension)
+
+n=2000 m=2000  
+  Python   : 1.204s -&gt; 1768
+  C ext    : 0.010s -&gt; 1768
+
+n=4000 m=4000  
+  Python   : 5.039s -&gt; 3526
+  C ext    : 0.033s -&gt; 3526</code></pre>
+
+
+
+<p class="wp-block-paragraph">So this gave the fastest results. The C version is showing up as over 150 times faster than pure Python in the second test case above. </p>
+
+
+
+<p class="wp-block-paragraph">Not too shabby.</p>
+
+
+
+<h2 class="wp-block-heading">But what about NumPy?</h2>
+
+
+
+<p class="wp-block-paragraph">Some of you may be wondering why NumPy wasn’t used. Well, NumPy is fantastic for vectorised numeric array operations, such as dot products, but not all algorithms map cleanly to vectorisation. Calculating Levenshtein distances is an inherently sequential process, so NumPy doesn’t provide much help. In those cases, dropping into C via <strong>subprocess</strong>, <strong>ctypes</strong>, or a <strong>native C extension</strong> provides real runtime speedups while still being callable from Python.</p>
+
+
+
+<blockquote class="wp-block-quote is-layout-flow wp-block-quote-is-layout-flow">
+<p class="wp-block-paragraph"><em>PS. I ran some additional tests using code that was amenable to using NumPy, and it was no surprise that NumPy was as fast as the called C code. That’s to be expected as NumPy uses C under the hood and has many years of development and optimisation behind it.</em></p>
+</blockquote>
+
+
+
+<h2 class="wp-block-heading">Summary</h2>
+
+
+
+<p class="wp-block-paragraph">The article explores how Python developers can overcome performance bottlenecks in computationally intensive tasks, such as calculating the <strong>Levenshtein distance</strong> — a string similarity algorithm —by integrating C code into Python. While libraries like NumPy accelerate vectorised operations, sequential algorithms like Levenshtein often remain impervious to NumPy’s optimisations.</p>
+
+
+
+<p class="wp-block-paragraph">To address this, I demonstrated <strong>three integration patterns</strong>, ranging from simplest to most advanced, that allow you to call fast C code from Python.</p>
+
+
+
+<p class="wp-block-paragraph"><strong>Subprocess. </strong>Compile the C code into an executable (e.g., with gcc or Visual Studio Build Tools) and run it from Python using the subprocess module. This is easy to set up and already shows a huge speedup compared to pure Python.</p>
+
+
+
+<p class="wp-block-paragraph"><strong>ctypes. </strong>Using ctypes lets Python directly load and call functions from C shared libraries without needing to write a full Python extension module. This makes it much simpler and faster to integrate performance-critical C code into Python, avoiding the overhead of running external processes while still keeping your code mostly in Python.</p>
+
+
+
+<p class="wp-block-paragraph"><strong>Python C Extensions</strong>. Write a full Python extension in C using the CPython API (python.h). This requires more setup but offers the fastest performance and smoothest integration, allowing you to call C functions as if they were native Python functions.</p>
+
+
+
+<p class="wp-block-paragraph">The benchmarks show that C implementations of the Levenshtein algorithm run <strong>over 100× faster</strong> than pure Python. While an external library such as <strong>NumPy</strong> excels at vectorised numeric operations, it doesn’t significantly improve performance for inherently sequential algorithms like Levenshtein, making C integration a better choice in such cases.</p>
+
+
+
+<p class="wp-block-paragraph">If you hit performance limits in Python, offloading heavy computation to C can provide massive speed improvements and is worth considering. You can start simple with subprocess, then move to ctypes or full C extensions for tighter integration and better performance.</p>
+
+
+
+<p class="wp-block-paragraph">I’ve only outlined three of the most popular ways to integrate C code with Python, but there are a few other methods which I recommend you read up on if this topic interests you.</p>
+    
+</body>
+</html>

@@ -1,0 +1,285 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.1//EN"
+  "http://www.w3.org/TR/xhtml11/DTD/xhtml11.dtd">
+
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+<title>Building a Geospatial Lakehouse with Open Source and Databricks</title>
+<link href="../Styles/Style.css" type="text/css" rel="stylesheet"/>
+</head>
+<body>
+<h1>Building a Geospatial Lakehouse with Open Source and Databricks</h1>
+<blockquote>原文：<a href="https://towardsdatascience.com/building-a-geospatial-lakehouse-with-open-source-and-databricks-2/">https://towardsdatascience.com/building-a-geospatial-lakehouse-with-open-source-and-databricks-2/</a></blockquote>
+<h2 class="wp-block-heading"><mdspan datatext="el1761325882442" class="mdspan-comment">Introduction</mdspan></h2>
+
+
+
+<p class="wp-block-paragraph">Most data that relates to a measurable process in the real world has a geospatial aspect to it. Organisations that manage assets over a wide geographical area, or have a business process which requires them to consider many layers of geographical attributes that require mapping, will have more complicated geospatial analytics requirements, when they start to use this data to answer strategic questions or optimise. These geospatially focussed organisations might ask these sorts of questions of their data:</p>
+
+
+
+<blockquote class="wp-block-quote is-layout-flow wp-block-quote-is-layout-flow">
+<p class="wp-block-paragraph"><em>How many of my assets fall within a geographical boundary?</em></p>
+
+
+
+<p class="wp-block-paragraph"><em>How long does it take my customers to get to a site on foot or by car?</em></p>
+
+
+
+<p class="wp-block-paragraph"><em>What is the density of footfall I should expect per unit area?</em></p>
+</blockquote>
+
+
+
+<p class="wp-block-paragraph">All of these are valuable geospatial queries, requiring that a number of data entities be integrated in a common storage layer, and that geospatial joins such as point-in-polygon operations and geospatial indexing be scaled to handle the inputs involved. This article will discuss approaches to scaling geospatial analytics using the features of Databricks, and open-source tools taking advantage of Spark implementations, the common Delta table storage format and Unity Catalog [1], focussing on batch analytics on vector geospatial data.</p>
+
+
+
+<h2 class="wp-block-heading">Solution Overview</h2>
+
+
+
+<p class="wp-block-paragraph">The diagram below summarises an open-source approach to building a geospatial Lakehouse in Databricks. Through a variety of ingestion modes (though often through public APIs) geospatial datasets are landed into cloud storage in a variety of formats; with Databricks this could be a volume within a Unity Catalog catalog and schema. Geospatial data formats mainly include vector formats (GeoJSONs, .csv and Shapefiles .shp) which represent Latitude/Longitude points, lines or polygons and attributes, and raster formats (GeoTIFF, HDF5) for imaging data. Using GeoPandas [2] or Spark-based geospatial tools such as Mosaic [3] or H3 Databricks SQL functions [4] we can prepare vector files in memory and save them in a unified bronze layer in Delta format, using Well Known Text (WKT) as a string representation of any points or geometries.</p>
+
+
+
+<figure class="wp-block-image size-full"><img decoding="async" src="../Images/05dd08398cef9e20d64ee41590b15e3e.png" alt="" class="wp-image-626831" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/10/geospatial_lakehouse-3-1-scaled.png"/><figcaption class="wp-element-caption"><em>Overview of a geospatial analytics workflow built using Unity Catalog and open-source in Databricks. Image by author.</em></figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">While the landing to bronze layer represents an audit log of ingested data, the bronze to silver layer is where data preparation and any geospatial joins common to all upstream use-cases can be applied. The finished silver layer should represent a single geospatial view and may integrate with other non-geospatial datasets as part of an enterprise data model; it also offers an opportunity to consolidate multiple tables from bronze into core geospatial datasets which may have multiple attributes and geometries, at a base level of grain required for aggregations upstream. The gold layer is then the geospatial presentation layer where the output of geospatial analytics such as journey time or density calculations can be stored. For use in dashboarding tools such as Power BI, outputs may be materialised as star schemas, whilst cloud GIS tools such as ESRI Online, will prefer GeoJSON files for specific mapping applications.</p>
+
+
+
+<h2 class="wp-block-heading">Geospatial Data Preparation</h2>
+
+
+
+<p class="wp-block-paragraph">In addition to the typical data quality challenges faced when unifying many individual data sources in a data lake architecture (missing data, variable recording practices etc), geospatial data has unique data quality and preparation challenges. In order to make vectorised geospatial datasets interoperable and easily visualised upstream, it’s best to choose a geospatial co-ordinate system such as WGS 84 (the widely used international GPS standard). In the UK many public geospatial datasets will use other co-ordinate systems such as OSGB 36, which is an optimisation for mapping geographical features in the UK with increased accuracy (this format is often written in Eastings and Northings rather than the more typical Latitude and Longitude pairs) and a transformation to WGS 84 is needed for the these datasets to avoid inaccuracies in the downstream mapping as outlined in the Figure below.</p>
+
+
+
+<figure class="wp-block-image size-full"><img decoding="async" src="../Images/3ea33d8e7865bc7288effc24ad95ad87.png" alt="" class="wp-image-626833" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/10/coord_sys.png"/><figcaption class="wp-element-caption"><em>Overview of geospatial co-ordinate systems a) and overlay of WGS 84 and OSGB 36 for the UK b). Images adapted from [5]</em> with permission from author. Copyright (c) Ordnance Survey 2018.</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">Most geospatial libraries such as GeoPandas, Mosaic and others have built-in functions to handle these conversions, for example from the Mosaic documentation:</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">df = (
+  spark.createDataFrame([{'wkt': 'MULTIPOINT ((10 40), (40 30), (20 20), (30 10))'}])
+  .withColumn('geom', st_setsrid(st_geomfromwkt('wkt'), lit(4326)))
+)
+df.select(st_astext(st_transform('geom', lit(3857)))).show(1, False)
++---------------------------------------------------------------------------------------------------------------------------------------------------------------------
+|MULTIPOINT ((1113194.9079327357 4865942.279503176), (4452779.631730943 3503549.843504374), (2226389.8158654715 2273030.926987689), (3339584.723798207 1118889.9748579597))|
++--------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
+</code></pre>
+
+
+
+<p class="wp-block-paragraph">Converts a multi-point geometry from WGS84 to Web Mercator projection format. </p>
+
+
+
+<p class="wp-block-paragraph">Another data quality issue unique to vector geospatial data, is the concept of invalid geometries outlined in the Figure below. These invalid geometries will break upstream GeoJSON files or analyses, so it is best to fix them or delete them if necessary. Most geospatial libraries offer functions to find or attempt to fix invalid geometries.</p>
+
+
+
+<figure class="wp-block-image size-full"><img decoding="async" src="../Images/19940221a2c3dbfd8eae6843795bb185.png" alt="" class="wp-image-626835" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/10/geom_invalid-1-scaled.png"/><figcaption class="wp-element-caption"><em>Examples of types of invalid geometries. Image taken from [6] with permission from author</em>. Copyright (c) 2024 Christoph Rieke.</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">These data quality and preparation steps should be implemented early on in the Lakehouse layers; I’ve done them in the bronze to silver step in the past, along with any reusable geospatial joins and other transformations.</p>
+
+
+
+<h2 class="wp-block-heading">Scaling Geospatial Joins and Analytics</h2>
+
+
+
+<p class="wp-block-paragraph">The geospatial aspect of the silver/enterprise layer should ideally represent a single geospatial view that feeds all upstream aggregations, analytics, ML modelling and AI. In addition to data quality checks and remediation, it’s sometimes beneficial to consolidate many geospatial datasets with aggregations or unions to simplify the data model, simplify upstream queries and prevent the need to redo expensive geospatial joins. Geospatial joins are often very computationally expensive due to the large number of bits required to represent sometimes complex multi-polygon geometries and the need for many pair-wise comparisons.</p>
+
+
+
+<p class="wp-block-paragraph">A few strategies exist to make these joins more efficient. You can, for example, simplify complex geometries, effectively reducing the number of lat lon pairs required to represent them; different approaches are available for doing this that might be geared towards different desired outputs (e.g., preserving area, or removing redundant points) and these can be implemented in the libraries, for example in Mosaic:</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">df = spark.createDataFrame([{'wkt': 'LINESTRING (0 1, 1 2, 2 1, 3 0)'}])
+df.select(st_simplify('wkt', 1.0)).show()
++----------------------------+
+| st_simplify(wkt, 1.0)      |
++----------------------------+
+| LINESTRING (0 1, 1 2, 3 0) |
++----------------------------+
+</code></pre>
+
+
+
+<p class="wp-block-paragraph">Another approach to scaling geospatial queries is to use a geospatial indexing system as outlined in the Figure below. By aggregating point or polygon geometry data to a geospatial indexing system such as H3, an approximation of the same information can be represented in a highly compressed form represented by a short string identifier, which maps to a set of fixed polygons (with visualisable lat/lon pairs) which cover the globe, over a range of hexagon/pentagon areas at different resolutions, that can be rolled up/down in a hierarchy.</p>
+
+
+
+<figure class="wp-block-image size-full"><img decoding="async" src="../Images/f66810b09f33a9f8812c93b2ff9ad667.png" alt="" class="wp-image-626836" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/10/h3_index_motiv.png"/><figcaption class="wp-element-caption"><em>Motivation for geospatial indexing systems (compression) [7] and visualisation of the H3 index from Uber [8]. Images adapted with permission from authors.</em> Copyright (c) CARTO 2023. Copyright (c) Uber 2018.</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">In Databricks the H3 indexing system is also optimised for use with its Spark SQL engine, so you can write queries such as this point in polygon join, as approximations in H3, first converting the points and polygons to H3 indexes at the desired resolution (res. 7 which is ~ 5km^2)  and then using the H3 index fields as keys to join on:</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">WITH locations_h3 AS (
+    SELECT
+        id,
+        lat,
+        lon,
+        h3_pointash3(
+            CONCAT('POINT(', lon, ' ', lat, ')'),
+            7
+        ) AS h3_index
+    FROM locations
+),
+regions_h3 AS (
+    SELECT
+        name,
+        explode(
+            h3_polyfillash3(
+                wkt,
+                7
+            )
+        ) AS h3_index
+    FROM regions
+)
+SELECT
+    l.id AS point_id,
+    r.name AS region_name,
+    l.lat,
+    l.lon,
+    r.h3_index,
+    h3_boundaryaswkt(r.h3_index) AS h3_polygon_wkt  
+FROM locations_h3 l
+JOIN regions_h3 r
+  ON l.h3_index = r.h3_index;
+</code></pre>
+
+
+
+<p class="wp-block-paragraph">GeoPandas and Mosaic will also allow you to do geospatial joins without any approximations if required, but often the use of H3 is a sufficiently accurate approximation for joins and analytics such as density calculations. With a cloud analytics platform you can also make use of APIs, to bring in live traffic data and journey time calculations using services such as Open Route Service [9], or enrich geospatial data with additional attributes (e.g., transport hubs or retail locations) using tools such as the Overpass API for Open Street Map [10].</p>
+
+
+
+<h2 class="wp-block-heading">Geospatial Presentation Layers</h2>
+
+
+
+<p class="wp-block-paragraph">Now that some geospatial queries and aggregations have been done and analytics are ready to visualise downstream, the presentation layer of a geospatial lakehouse can be structured according to the downstream tools used for consuming the maps or analytics derived from the data. The Figure below outlines two typical approaches.</p>
+
+
+
+<figure class="wp-block-image size-full"><img decoding="async" src="../Images/5ed5babcd808f1580c76bf04f2356ab5.png" alt="" class="wp-image-626837" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/10/geo_pres.png"/><figcaption class="wp-element-caption"><em>Comparison of GeoJSON Feature Collection a) vs dimensionally modelled star schema b) as data structures for geospatial presentation layer outputs. Image by author.</em></figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">When serving a cloud geospatial information system (GIS) such as ESRI Online or other web application with mapping tools, GeoJSON files stored in a gold/presentation layer volume, containing all of the necessary data for the map or dashboard to be created, can constitute the presentation layer. Using the FeatureCollection GeoJSON type you can create a nested JSON containing multiple geometries and associated attributes (“features”) which may be points, linestrings or polygons. If the downstream dashboarding tool is Power BI, a star schema might be preferred, where the geometries and attributes can be modelled as facts and dimensions to make the most of its cross filtering and measure support, with outputs materialised as Delta tables in the presentation layer.</p>
+
+
+
+<h2 class="wp-block-heading">Platform Architecture and Integrations</h2>
+
+
+
+<p class="wp-block-paragraph">Geospatial data will normally represent one part of a wider enterprise data model and portfolio of analytics and ML/AI use-cases and these will require (ideally) a cloud data platform, with a series of upstream and downstream integrations to deploy, orchestrate and actually see that the analytics prove valuable to an organisation. The Figure below shows a high-level architecture for the kind of Azure data platform I have worked with geospatial data on in the past.</p>
+
+
+
+<figure class="wp-block-image size-full"><img decoding="async" src="../Images/2352402d36c00b589c2ecc8dc2f93a38.png" alt="" class="wp-image-626839" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/10/hld-1-scaled.png"/><figcaption class="wp-element-caption"><em>High-level architecture of a geospatial Lakehouse in Azure</em>. Image by author.</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">Data is landed using a variety of ETL tools (if possible Databricks itself is sufficient). Within the workspace(s) a medallion pattern of raw (bronze), enterprise (silver), and presentation (gold) layers are maintained, using the hierarchy of Unity Catalog catalog.schema.table/volume to generate per use-case layer separation (particularly of permissions) if needed. When presentable outputs are ready to share, there are a variety of options for data sharing, app building and dashboarding and GIS integration options.</p>
+
+
+
+<p class="wp-block-paragraph">For example with ESRI cloud, an ADLSG2 storage account connector within ESRI allows data written to an external Unity Catalog volume (i.e., GeoJSON files) to be pulled through into the ESRI platform for integration into maps and dashboards. Some organisations may prefer that geospatial outputs be written to downstream systems such as CRMs or other geospatial databases. Curated geospatial data and its aggregations are also frequently used as input features to ML models and this works seamlessly with geospatial Delta tables. Databricks are developing various AI analytics features built into the workspace (e.g., AI BI Genie [11] and Agent Bricks [12]), that give the ability to query data in Unity Catalog using English and the likely long-term vision is for any geospatial data to work with these AI tools in the same way as any other tabular data, only one of the visualise outputs will be maps.</p>
+
+
+
+<h2 class="wp-block-heading">In Closing</h2>
+
+
+
+<p class="wp-block-paragraph">At the end of the day, it’s all about making cool maps that are useful for decision making. The figure below shows a couple of geospatial analytics outputs I’ve generated over the last few years. Geospatial analytics boils down to knowing things like where people or events or assets cluster, how long it typically takes to get from A to B, and what the landscape looks like in terms of the distribution of some attribute of interest (might be habitats, deprivation, or some risk factor). All important things to know for strategic planning (e.g., where do I put a fire station?), knowing your customer base (e.g., who is within 30 min of my location?) or operational decision support (e.g., this Friday which locations are likely to require additional capacity?).</p>
+
+
+
+<figure class="wp-block-image size-full"><img decoding="async" src="../Images/dd901e9533e4aa3c2dc072312129328c.png" alt="" class="wp-image-626840" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/10/geo_maps.png"/><figcaption class="wp-element-caption"><em>Examples of some geospatial analytics. a) Journey time analysis b) Hotspot finding with H3 c) Hotspot clustering with ML</em>.  Image by author.</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">Thanks for reading and if you’re interested in discussing or reading further, please get in touch or check out some of the references below.</p>
+
+
+
+<p class="wp-block-paragraph"><a href="https://www.linkedin.com/in/robert-constable-38b80b151/">https://www.linkedin.com/in/robert-constable-38b80b151/</a></p>
+
+
+
+<h2 class="wp-block-heading">References</h2>
+
+
+
+<p class="wp-block-paragraph">[1] <a href="https://learn.microsoft.com/en-us/azure/databricks/data-governance/unity-catalog/">https://learn.microsoft.com/en-us/azure/databricks/data-governance/unity-catalog/</a></p>
+
+
+
+<p class="wp-block-paragraph">[2] <a href="https://geopandas.org/en/stable/">https://geopandas.org/en/stable/</a></p>
+
+
+
+<p class="wp-block-paragraph">[3] <a href="https://databrickslabs.github.io/mosaic/">https://databrickslabs.github.io/mosaic/</a></p>
+
+
+
+<p class="wp-block-paragraph">[4] <a href="https://learn.microsoft.com/en-us/azure/databricks/sql/language-manual/sql-ref-h3-geospatial-functions">https://learn.microsoft.com/en-us/azure/databricks/sql/language-manual/sql-ref-h3-geospatial-functions</a></p>
+
+
+
+<p class="wp-block-paragraph">[5] <a href="https://www.ordnancesurvey.co.uk/documents/resources/guide-coordinate-systems-great-britain.pdf">https://www.ordnancesurvey.co.uk/documents/resources/guide-coordinate-systems-great-britain.pdf</a></p>
+
+
+
+<p class="wp-block-paragraph">[6] <a href="https://github.com/chrieke/geojson-invalid-geometry">https://github.com/chrieke/geojson-invalid-geometry</a></p>
+
+
+
+<p class="wp-block-paragraph">[7] <a href="https://carto.com/blog/h3-spatial-indexes-10-use-cases">https://carto.com/blog/h3-spatial-indexes-10-use-cases</a></p>
+
+
+
+<p class="wp-block-paragraph">[8] <a href="https://www.uber.com/en-GB/blog/h3/">https://www.uber.com/en-GB/blog/h3/</a></p>
+
+
+
+<p class="wp-block-paragraph">[9] <a href="https://openrouteservice.org/dev/#/api-docs">https://openrouteservice.org/dev/#/api-docs</a></p>
+
+
+
+<p class="wp-block-paragraph">[10] <a href="https://wiki.openstreetmap.org/wiki/Overpass_API">https://wiki.openstreetmap.org/wiki/Overpass_API</a> </p>
+
+
+
+<p class="wp-block-paragraph">[11] <a href="https://www.databricks.com/blog/aibi-genie-now-generally-available">https://www.databricks.com/blog/aibi-genie-now-generally-available</a></p>
+
+
+
+<p class="wp-block-paragraph">[12] <a href="https://www.databricks.com/blog/introducing-agent-bricks">https://www.databricks.com/blog/introducing-agent-bricks</a></p>
+
+
+
+<p class="wp-block-paragraph"/>
+    
+</body>
+</html>

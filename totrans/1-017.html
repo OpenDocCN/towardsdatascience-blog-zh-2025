@@ -1,0 +1,552 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.1//EN"
+  "http://www.w3.org/TR/xhtml11/DTD/xhtml11.dtd">
+
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+<title>YOLOv1 Paper Walkthrough: The Day YOLO First Saw the World</title>
+<link href="../Styles/Style.css" type="text/css" rel="stylesheet"/>
+</head>
+<body>
+<h1>YOLOv1 Paper Walkthrough: The Day YOLO First Saw the World</h1>
+<blockquote>原文：<a href="https://towardsdatascience.com/yolov1-paper-walkthrough-the-day-yolo-first-saw-the-world/">https://towardsdatascience.com/yolov1-paper-walkthrough-the-day-yolo-first-saw-the-world/</a></blockquote>
+<h2 class="wp-block-heading"><mdspan datatext="el1764722956521" class="mdspan-comment">Introduction</mdspan></h2>
+
+
+
+<p class="wp-block-paragraph">If we talk about object detection, one model that likely comes to our mind first is YOLO — well, at least for me, thanks to its popularity in the field of computer vision.</p>
+
+
+
+<p class="wp-block-paragraph">The very first version of this model, referred to as YOLOv1, was released back in 2015 in the research paper titled “<em>You Only Look Once: Unified, Real-Time Object Detection”</em> [1]. Before YOLOv1 was invented, one of the state-of-the-art algorithms for performing object detection was R-CNN (Region-based Convolutional Neural Network), in which it uses multi-stage mechanism to do the task. It initially employs selective search algorithm to create region proposal, then uses CNN-based model to extract the features within all these regions, and finally classifies the detected objects using SVM [2]. Here you can clearly imagine how long the process is just to perform object detection on a single image.</p>
+
+
+
+<p class="wp-block-paragraph">The motivation of YOLO in the first place was to improve speed. In fact, not only achieving low computational complexity, but the authors proved that their proposed deep learning model was also able to achieve high accuracy. As this article is written, YOLOv13 has just published several days ago [3]. But let’s just talk about its very first ancestor for now so that you can see the beauty of this model starting from the time it first came out. This article is going to discuss how YOLOv1 works and how to build this neural network architecture from scratch with PyTorch.</p>
+
+
+
+<hr class="wp-block-separator has-alpha-channel-opacity is-style-dotted"/>
+
+
+
+<h2 class="wp-block-heading">The Underlying Theory Behind YOLOv1</h2>
+
+
+
+<p class="wp-block-paragraph">Before we get into the architecture, it would be better if we understand the idea behind YOLOv1 in advance. Let’s start with an example. Suppose we have a picture of a cat, and we are about to use it as a training sample of a YOLOv1 model. And so, we need to create a ground truth for that. It is mentioned in the original paper that we need to define the parameter <em>S</em>, which denotes the number of grid cells we are going to divide our image into along each spatial dimension. By default, this parameter is set to 7, so we will have 7×7=49 cells in total. Take a look at Figure 1 below to better understand this idea.</p>
+
+
+
+<figure class="wp-block-image aligncenter"><img decoding="async" src="../Images/ab6d65bc897d0a9d891e9ebce8d7abbd.png" alt="" data-original-src="https://cdn-images-1.medium.com/max/720/1*BlKApVlI4KWQayl4MHAlfQ.png"/><figcaption class="wp-element-caption">Figure 1. What the image looks like after being divided into uniform-sized grid cells. The cell (3, 3) is responsible to store the information about the cat [4].</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">Next, we need to determine which cell corresponds to the midpoint of the object. In the above case, the cat is located almost exactly at the center of the image, hence the midpoint must lie at cell (3, 3). Later in the inference phase, we can think of this cell as the one responsible to predict the cat. Now taking a closer look at the cell, we need to determine the exact position of the midpoint. Here you can see that along the vertical axis it is located exactly in the middle, but in the horizontal axis it is slightly shifted to the left from the middle. So, if I were to approximate, the coordinate would be (0.4, 0.5). This coordinate value is relative to the cell and is normalized to the range of 0 to 1. It might be worth noting that the (<em>x</em>, <em>y</em>) coordinate of the midpoint should neither be less than 0 nor greater than 1, since a value outside this range would mean the midpoint lies in another cell. Meanwhile, the width <em>w</em> and the height <em>h</em> of the bounding box are approximately 2.4 and 3.2, respectively. These numbers are relative to the cell size, meaning that if the object is bigger than the cell, then the value will be greater than 1. Later on, if we were to create a ground truth for an image, we need to store all these <em>x</em>, <em>y</em>, <em>w</em> and <em>h</em> information in the so-called <em>target vector</em>.</p>
+
+
+
+<h3 class="wp-block-heading">Target Vector</h3>
+
+
+
+<p class="wp-block-paragraph">The length of the target vector itself is 25 for each cell, in which the first 20 elements (index 0 to 19) store the class of the object in form of one-hot encoding. This is essentially because YOLOv1 was originally trained on PASCAL VOC dataset which has that number of classes. Next, index 20 is used to store the confidence of the bounding box prediction, which in the training phase this is set to 1 whenever there is an object midpoint within the cell. Lastly, the (<em>x</em>, <em>y</em>) coordinate of the midpoint are placed at indices 21 and 22, whereas <em>w</em> and <em>h</em> are stored at indices 23 and 24. The illustration in Figure 2 below displays what the target vector for cell (3, 3) looks like.</p>
+
+
+
+<figure class="wp-block-image alignwide"><img decoding="async" src="../Images/84cc2b6282bbf1aa3f854f2473c872a0.png" alt="" data-original-src="https://cdn-images-1.medium.com/max/1080/1*JdBZ0LjYrOKrkhfhvwPKyg.png"/><figcaption class="wp-element-caption">Figure 2. The target vector for cell (3, 3) of the image in Figure 1 [5].</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">Again, remember that the above target vector only corresponds to a single cell. To create the ground truth for the entire image, we need to have a bunch of similar vectors concatenated, forming the so-called <em>target tensor </em>as shown in Figure 3. Note that the class probabilities as well as the bounding box confidences, locations, and sizes from all other cells are set to zero because there is no other object appearing within the image.</p>
+
+
+
+<figure class="wp-block-image alignwide"><img decoding="async" src="../Images/38d0466674642c3967b4c5be543b8c8f.png" alt="" data-original-src="https://cdn-images-1.medium.com/max/1080/1*M8HXIW8SODPiU4H4r73J7g.png"/><figcaption class="wp-element-caption">Figure 3. How all target vectors from each cell are concatenated. This entire tensor will act as the ground truth of a single image [5].</figcaption></figure>
+
+
+
+<h3 class="wp-block-heading">Prediction Vector</h3>
+
+
+
+<p class="wp-block-paragraph">The <em>prediction vector</em> is quite a bit different. If the target vector consists of 25 elements, the prediction vector consists of 30. This is because by default YOLOv1 predicts two bounding boxes for the same object during inference. Thus, we need 5 additional elements to store the information about the second bounding box generated by the model. Despite predicting two bounding boxes, later we will only take the one that has greater confidence.</p>
+
+
+
+<figure class="wp-block-image alignwide"><img decoding="async" src="../Images/19c4cf0336b91ba0083474cd39db9cdd.png" alt="" data-original-src="https://cdn-images-1.medium.com/max/1080/1*b4wFnP5aq5k7fOJbPXtP7A.png"/><figcaption class="wp-element-caption">Figure 4. The prediction vector has 5 additional elements dedicated for the second bounding box (highlighted in orange) [5].</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">This unique target and prediction vector dimensions required the authors to rethink the loss function. For regression problems, we typically use MAE, MSE or RMSE, whereas for classification tasks we usually use cross entropy loss. But YOLOv1 is more than just a regression and classification problem, considering that we have both continuous (bounding box) and discrete (class) values in the vector representation. Thanks to this reason, the authors created a new loss function specialized for this model as shown in Figure 5. This loss function is quite complex (you see, right?), so I decided to write it in a separate article because there are lots of things to explain about it — stay tuned, I’ll publish it very soon.</p>
+
+
+
+<figure class="wp-block-image"><img decoding="async" src="../Images/8edfa7d1228c33f4847535d4e0cb93ec.png" alt="" data-original-src="https://cdn-images-1.medium.com/max/720/1*nxd4oYiWWu6eo74XtFvH7A.png"/><figcaption class="wp-element-caption">Figure 5. The loss function of YOLOv1 [1].</figcaption></figure>
+
+
+
+<hr class="wp-block-separator has-alpha-channel-opacity is-style-dotted"/>
+
+
+
+<h2 class="wp-block-heading">The YOLOv1 Architecture</h2>
+
+
+
+<p class="wp-block-paragraph">Just like typical earlier computer vision models, YOLOv1 uses CNN-based architecture as the backbone of the model. It comprises 24 convolution layers stacked according to the structure in Figure 6. If you take a closer look at the figure, you will notice that the output layer produces a tensor of shape 30×7×7. This dimension indicates that every single cell has its corresponding prediction vector of length 30 containing the class and the bounding box information of the detected object, in which this matches exactly with our previous discussion.</p>
+
+
+
+<figure class="wp-block-image alignwide"><img decoding="async" src="../Images/7b6f8a46e0a180ea3041caff85fbf742.png" alt="" data-original-src="https://cdn-images-1.medium.com/max/1080/1*Et86F61LL_WvZE_S3FeFAA.png"/><figcaption class="wp-element-caption">Figure 6. The architecture of YOLOv1 [1].</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">Well, I think I’ve covered all the fundamentals of YOLOv1, so now let’s start implementing the architecture from scratch with PyTorch. Before doing anything, what we need to do first is to import the required modules and initialize the parameters <em>S</em>, <em>B</em>, and <em>C</em>. See Codeblock 1 below.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python"># Codeblock 1
+import torch
+import torch.nn as nn
+
+S = 7
+B = 2
+C = 20</code></pre>
+
+
+
+<p class="wp-block-paragraph">The three parameters I initialized above are the default values given in the paper, in which <code>S</code> represents the number of grid cells along the horizontal and vertical axes, <code>B</code> denotes the number of bounding boxes generated by each cell, and <code>C</code> is the number of classes available in the dataset. Since we use <code>S=7</code> and <code>B=2</code>, our YOLOv1 will produce7×7×2=98 bounding boxes in total for each image.</p>
+
+
+
+<h3 class="wp-block-heading">The Building Block</h3>
+
+
+
+<p class="wp-block-paragraph">Next, we are going to create the <code>ConvBlock</code> class, in which it contains a single convolution layer (line <code>#(1)</code>), a leaky ReLU activation function (<code>#(2)</code>), and an optional maxpooling layer (<code>#(3)</code>) as shown in Codeblock 2.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python"># Codeblock 2
+class ConvBlock(nn.Module):
+    def __init__(self, 
+                 in_channels, 
+                 out_channels, 
+                 kernel_size, 
+                 stride, 
+                 padding, 
+                 maxpool_flag=False):
+        super().__init__()
+        self.maxpool_flag = maxpool_flag
+        
+        self.conv = nn.Conv2d(in_channels=in_channels,       #(1)
+                              out_channels=out_channels, 
+                              kernel_size=kernel_size, 
+                              stride=stride, 
+                              padding=padding)
+        self.leaky_relu = nn.LeakyReLU(negative_slope=0.1)   #(2)
+        
+        if self.maxpool_flag:
+            self.maxpool = nn.MaxPool2d(kernel_size=2,       #(3)
+                                        stride=2)
+            
+    def forward(self, x):
+        print(f'original\t: {x.size()}')
+
+        x = self.conv(x)
+        print(f'after conv\t: {x.size()}')
+        
+        x = self.leaky_relu(x)
+        print(f'after leaky relu: {x.size()}')
+        
+        if self.maxpool_flag:
+            x = self.maxpool(x)
+            print(f'after maxpool\t: {x.size()}')
+        
+        return x</code></pre>
+
+
+
+<p class="wp-block-paragraph">In modern architectures, we normally use the <em>Conv-BN-ReLU</em> structure, but at the time YOLOv1 was created, it seems like batch normalization layer was not quite popular just yet, as it came out only several months before YOLOv1. So, I guess this is probably the reason that the authors did not utilize this normalization layer. Instead, it only uses a stack of convolutions and leaky ReLUs throughout the entire network.</p>
+
+
+
+<p class="wp-block-paragraph">Just a quick refresher, leaky ReLU is an activation function similar to the standard ReLU, except that the negative values are multiplied with a small number instead of being zeroed out. In the case of YOLOv1, we set the multiplier to 0.1 (<code>#(2)</code>) so that it can still preserve a little bit amount of information contained in the negative input numbers.</p>
+
+
+
+<figure class="wp-block-image aligncenter"><img decoding="async" src="../Images/8c131e3981a660c22224ce943e14c287.png" alt="" data-original-src="https://cdn-images-1.medium.com/max/720/1*ebaH01k-zvWy9JLIF6BRjQ.png"/><figcaption class="wp-element-caption">Figure 7. ReLU vs Leaky ReLU activation functions [6].</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">As the <code>ConvBlock</code> class has been defined, now I am going to test it just to check if it works properly. In Codeblock 3 below I try to implement the very first layer in the network and pass a dummy tensor through it. You can see in the codeblock that <code>in_channels</code> is set to 3 (<code>#(1)</code>) and <code>out_channels</code> is set to 64 (<code>#(2)</code>) because we want this initial layer to accept an RGB image as the input and return a 64-channel image. The size of the kernel is 7×7 (<code>#(3)</code>), hence we need to set the padding to 3 (<code>#(5)</code>). Normally, this configuration allows us to preserve the spatial dimension of the image, but since we use <code>stride=2</code> (<code>#(4)</code>), this padding size ensures that the image is exactly halved. Next, if you go back to Figure 6, you will notice that some conv layers are followed by a maxpooling layer and some others are not. Since the first convolution utilizes a maxpooling layer, we need to set the <code>maxpool_flag</code> parameter to <code>True</code> (<code>#(6)</code>).</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python"># Codeblock 3
+convblock = ConvBlock(in_channels=3,       #(1)
+                      out_channels=64,     #(2)
+                      kernel_size=7,       #(3)
+                      stride=2,            #(4)
+                      padding=3,           #(5)
+                      maxpool_flag=True)   #(6)
+x = torch.randn(1, 3, 448, 448)            #(7)
+out = convblock(x)</code></pre>
+
+
+
+<p class="wp-block-paragraph">Afterwards, we can simply generate a tensor of random values with the dimension of 1×3×448×448 (<code>#(7)</code>) which simulates a batch of a single RGB image of size 448×448 and then pass it through the network. You can see in the resulting output below that our convolution layer successfully increased the number of channels to 64 and halved the spatial dimension to 224×224. The halving was done once again all the way to 112×112 thanks to the maxpooling layer.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-markup"># Codeblock 3 Output
+original         : torch.Size([1, 3, 448, 448])
+after conv       : torch.Size([1, 64, 224, 224])
+after leaky relu : torch.Size([1, 64, 224, 224])
+after maxpool    : torch.Size([1, 64, 112, 112])</code></pre>
+
+
+
+<h3 class="wp-block-heading">The Backbone</h3>
+
+
+
+<p class="wp-block-paragraph">The next thing we are going to do is to create a sequence of <code>ConvBlocks</code> to build the entire backbone of the network. In case you’re still not familiar with the term <em>backbone</em>, in this case it is essentially everything before the two fully-connected layers (refer to Figure 6). Now look at the Codeblock 4a and 4b below to see how I define the <code>Backbone</code> class.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python"># Codeblock 4a
+class Backbone(nn.Module):
+    def __init__(self):
+        super().__init__()
+        # in_channels, out_channels, kernel_size, stride, padding, maxpool_flag
+        self.stage0 = ConvBlock(3, 64, 7, 2, 3, maxpool_flag=True)      #(1)
+        self.stage1 = ConvBlock(64, 192, 3, 1, 1, maxpool_flag=True)    #(2)
+        
+        self.stage2 = nn.ModuleList([
+            ConvBlock(192, 128, 1, 1, 0), 
+            ConvBlock(128, 256, 3, 1, 1), 
+            ConvBlock(256, 256, 1, 1, 0),
+            ConvBlock(256, 512, 3, 1, 1, maxpool_flag=True)      #(3)
+        ])
+        
+        
+        self.stage3 = nn.ModuleList([])
+        for _ in range(4):
+            self.stage3.append(ConvBlock(512, 256, 1, 1, 0))
+            self.stage3.append(ConvBlock(256, 512, 3, 1, 1))
+            
+        self.stage3.append(ConvBlock(512, 512, 1, 1, 0))
+        self.stage3.append(ConvBlock(512, 1024, 3, 1, 1, maxpool_flag=True))  #(4)
+        
+        
+        self.stage4 = nn.ModuleList([])
+        for _ in range(2):
+            self.stage4.append(ConvBlock(1024, 512, 1, 1, 0))
+            self.stage4.append(ConvBlock(512, 1024, 3, 1, 1))
+        
+        self.stage4.append(ConvBlock(1024, 1024, 3, 1, 1))
+        self.stage4.append(ConvBlock(1024, 1024, 3, 2, 1))    #(5)
+        
+        
+        self.stage5 = nn.ModuleList([])
+        self.stage5.append(ConvBlock(1024, 1024, 3, 1, 1))
+        self.stage5.append(ConvBlock(1024, 1024, 3, 1, 1))</code></pre>
+
+
+
+<p class="wp-block-paragraph">What we do in the above codeblock is to instantiate <code>ConvBlock</code> instances according to the architecture given in the paper. There are several things I want to emphasize here. First, the term <em>stage</em> I use in the code is not explicitly mentioned in the paper. However, I decided to use that word to describe the six groups of convolutional layers in Figure 6. Second, notice that we need to set the <code>maxpool_flag</code> to <code>True</code> for the last <code>ConvBlock</code> in the first four groups to perform spatial downsampling (<code>#(1–4)</code>). For the fifth group, the downsampling is done by setting the stride of the last convolution layer to 2 (<code>#(5)</code>). Third, Figure 6 does not mention the padding size of the convolution layers, so we need to calculate them manually. There is indeed a specific formula to find padding size based on the given kernel size. However, I feel like it is much easier to memorize it. Just keep in mind that if we use kernel of size 7×7, then we need to set the padding to 3 to preserve the spatial dimension. Meanwhile, for 5×5, 3×3 and 1×1 kernels, the padding should be set to 2, 1, and 0, respectively.</p>
+
+
+
+<p class="wp-block-paragraph">As all layers in the backbone have been instantiated, we can now connect them all using the <code>forward()</code> method below. I don’t think I need to explain anything here since it basically only works by passing the input tensor <code>x</code> through the layers sequentially.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python"># Codeblock 4b
+    def forward(self, x):
+        print(f'original\t: {x.size()}\n')
+        
+        x = self.stage0(x)
+        print(f'after stage0\t: {x.size()}\n')
+        
+        x = self.stage1(x)
+        print(f'after stage1\t: {x.size()}\n')
+        
+        for i in range(len(self.stage2)):
+            x = self.stage2[i](x)
+            print(f'after stage2 #{i}\t: {x.size()}')
+        
+        print()
+        for i in range(len(self.stage3)):
+            x = self.stage3[i](x)
+            print(f'after stage3 #{i}\t: {x.size()}')
+        
+        print()
+        for i in range(len(self.stage4)):
+            x = self.stage4[i](x)
+            print(f'after stage4 #{i}\t: {x.size()}')
+        
+        print()
+        for i in range(len(self.stage5)):
+            x = self.stage5[i](x)
+            print(f'after stage5 #{i}\t: {x.size()}')
+            
+        return x</code></pre>
+
+
+
+<p class="wp-block-paragraph">Now let’s verify if our implementation is correct by running the following testing code.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python"># Codeblock 5
+backbone = Backbone()
+x = torch.randn(1, 3, 448, 448)
+out = backbone(x)</code></pre>
+
+
+
+<p class="wp-block-paragraph">If you try to run the above codeblock, the following output should appear on your screen. Here you can see that the spatial dimension of the image correctly got reduced after the last <code>ConvBlock</code> of each stage. This process continued all the way to the last stage until eventually we obtained a tensor of size 1024×7×7, in which this matches exactly with the illustration in Figure 6.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-markup"># Codeblock 5 Output
+original        : torch.Size([1, 3, 448, 448])
+
+after stage0    : torch.Size([1, 64, 112, 112])
+
+after stage1    : torch.Size([1, 192, 56, 56])
+
+after stage2 #0 : torch.Size([1, 128, 56, 56])
+after stage2 #1 : torch.Size([1, 256, 56, 56])
+after stage2 #2 : torch.Size([1, 256, 56, 56])
+after stage2 #3 : torch.Size([1, 512, 28, 28])
+
+after stage3 #0 : torch.Size([1, 256, 28, 28])
+after stage3 #1 : torch.Size([1, 512, 28, 28])
+after stage3 #2 : torch.Size([1, 256, 28, 28])
+after stage3 #3 : torch.Size([1, 512, 28, 28])
+after stage3 #4 : torch.Size([1, 256, 28, 28])
+after stage3 #5 : torch.Size([1, 512, 28, 28])
+after stage3 #6 : torch.Size([1, 256, 28, 28])
+after stage3 #7 : torch.Size([1, 512, 28, 28])
+after stage3 #8 : torch.Size([1, 512, 28, 28])
+after stage3 #9 : torch.Size([1, 1024, 14, 14])
+
+after stage4 #0 : torch.Size([1, 512, 14, 14])
+after stage4 #1 : torch.Size([1, 1024, 14, 14])
+after stage4 #2 : torch.Size([1, 512, 14, 14])
+after stage4 #3 : torch.Size([1, 1024, 14, 14])
+after stage4 #4 : torch.Size([1, 1024, 14, 14])
+after stage4 #5 : torch.Size([1, 1024, 7, 7])
+
+after stage5 #0 : torch.Size([1, 1024, 7, 7])
+after stage5 #1 : torch.Size([1, 1024, 7, 7])</code></pre>
+
+
+
+<h3 class="wp-block-heading">The Fully-Connected Layers</h3>
+
+
+
+<p class="wp-block-paragraph">After the backbone is done, we can now move on to the fully-connected part, which I write in Codeblock 6 below. This part of the network is very simple as it mainly only consists of two linear layers. Speaking of the details, it is mentioned in the paper that the authors apply a dropout layer with the rate of 0.5 (<code>#(3)</code>) between the first (<code>#(1)</code>) and the second (<code>#(4)</code>) linear layers. It is important to note that the leaky ReLU activation function is still used (<code>#(2)</code>) but only after the first linear layer. This is because the second one acts as the output layer, hence it does not require any activation applied to it.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python"># Codeblock 6
+class FullyConnected(nn.Module):
+    def __init__(self):
+        super().__init__()
+        
+        self.linear0 = nn.Linear(in_features=1024*7*7, out_features=4096)   #(1)
+        self.leaky_relu = nn.LeakyReLU(negative_slope=0.1)                  #(2)
+        self.dropout = nn.Dropout(p=0.5)                                    #(3)
+        self.linear1 = nn.Linear(in_features=4096, out_features=(C+B*5)*S*S)#(4)
+    
+    def forward(self, x):
+        print(f'original\t: {x.size()}')
+        
+        x = self.linear0(x)
+        print(f'after linear0\t: {x.size()}')
+        
+        x = self.leaky_relu(x)
+        x = self.dropout(x)
+        
+        x = self.linear1(x)
+        print(f'after linear1\t: {x.size()}')
+        
+        return x</code></pre>
+
+
+
+<p class="wp-block-paragraph">Run the Codeblock 7 below to see how the tensor transforms as it is processed by the stack of linear layers.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python"># Codeblock 7
+fc = FullyConnected()
+x = torch.randn(1, 1024*7*7)
+out = fc(x)</code></pre>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-markup"># Codeblock 7 Output
+original      : torch.Size([1, 50176])
+after linear0 : torch.Size([1, 4096])
+after linear1 : torch.Size([1, 1470])</code></pre>
+
+
+
+<p class="wp-block-paragraph">We can see in the above output that the <code>fc</code> block takes an input of shape 50176, which is essentially the flattened 1024×7×7 tensor. The <code>linear0</code> layer works by mapping this input into 4096-dimensional vector, and then the <code>linear1</code> layer eventually maps it further to 1470. Later in the post-processing stage we need to reshape it to 30×7×7 so that we can take the bounding box and the object classification results easily. Technically speaking, this reshaping process can be done either internally by the model or outside the model. For the sake of simplicity, I decided to leave the output flattened, meaning the reshaping will be handled externally.</p>
+
+
+
+<h3 class="wp-block-heading">Connecting the FC Part to the Backbone</h3>
+
+
+
+<p class="wp-block-paragraph">At this point we already have our backbone and the fully-connected layers done. Thus, they are now ready to be assembled to construct the entire YOLOv1 architecture. There is not much thing I can explain regarding the following code, as what we do here is only instantiating both parts and connect them in the <code>forward()</code> method. Just don’t forget to flatten (<code>#(1)</code>) the output of <code>backbone</code> to make it compatible with the input of the <code>fc</code> block.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python"># Codeblock 8
+class YOLOv1(nn.Module):
+    def __init__(self):
+        super().__init__()
+        
+        self.backbone = Backbone()
+        self.fc = FullyConnected()
+        
+    def forward(self, x):
+        x = self.backbone(x)
+        x = torch.flatten(x, start_dim=1)    #(1)
+        x = self.fc(x)
+        
+        return x</code></pre>
+
+
+
+<p class="wp-block-paragraph">In order to test our model, we can simply instantiate the <code>YOLOv1</code> model and pass a dummy tensor that simulates an RGB image of size 448×448 (<code>#(1)</code>). After feeding the tensor into the network (<code>#(2)</code>), I also try to simulate the post-processing step by reshaping the output tensor to 30×7×7 as shown at line <code>#(3)</code>.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python"># Codeblock 9
+yolov1 = YOLOv1()
+x = torch.randn(1, 3, 448, 448)      #(1)
+
+out = yolov1(x)                      #(2)
+out = out.reshape(-1, C+B*5, S, S)   #(3)</code></pre>
+
+
+
+<p class="wp-block-paragraph">And below is what the output looks like after the code above is run. Here you can see that our input tensor successfully flows through all layers within the entire network, indicating that our YOLOv1 model works properly and thus is ready to train.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-markup"># Codeblock 9 Output
+original        : torch.Size([1, 3, 448, 448])
+
+after stage0    : torch.Size([1, 64, 112, 112])
+
+after stage1    : torch.Size([1, 192, 56, 56])
+
+after stage2 #0 : torch.Size([1, 128, 56, 56])
+after stage2 #1 : torch.Size([1, 256, 56, 56])
+after stage2 #2 : torch.Size([1, 256, 56, 56])
+after stage2 #3 : torch.Size([1, 512, 28, 28])
+
+after stage3 #0 : torch.Size([1, 256, 28, 28])
+after stage3 #1 : torch.Size([1, 512, 28, 28])
+after stage3 #2 : torch.Size([1, 256, 28, 28])
+after stage3 #3 : torch.Size([1, 512, 28, 28])
+after stage3 #4 : torch.Size([1, 256, 28, 28])
+after stage3 #5 : torch.Size([1, 512, 28, 28])
+after stage3 #6 : torch.Size([1, 256, 28, 28])
+after stage3 #7 : torch.Size([1, 512, 28, 28])
+after stage3 #8 : torch.Size([1, 512, 28, 28])
+after stage3 #9 : torch.Size([1, 1024, 14, 14])
+
+after stage4 #0 : torch.Size([1, 512, 14, 14])
+after stage4 #1 : torch.Size([1, 1024, 14, 14])
+after stage4 #2 : torch.Size([1, 512, 14, 14])
+after stage4 #3 : torch.Size([1, 1024, 14, 14])
+after stage4 #4 : torch.Size([1, 1024, 14, 14])
+after stage4 #5 : torch.Size([1, 1024, 7, 7])
+
+after stage5 #0 : torch.Size([1, 1024, 7, 7])
+after stage5 #1 : torch.Size([1, 1024, 7, 7])
+
+original        : torch.Size([1, 50176])
+after linear0   : torch.Size([1, 4096])
+after linear1   : torch.Size([1, 1470])
+
+torch.Size([1, 30, 7, 7])</code></pre>
+
+
+
+<hr class="wp-block-separator has-alpha-channel-opacity is-style-dotted"/>
+
+
+
+<h2 class="wp-block-heading">Ending</h2>
+
+
+
+<p class="wp-block-paragraph">It might be worth noting that all the codes I show you throughout this entire article is for the base YOLOv1 architecture. It is mentioned in the paper that the authors also proposed the lite version of this model which they refer to as <em>Fast YOLO</em>. This smaller YOLOv1 version offers faster computation time as it only consists of 9 convolution layers instead of 24. Unfortunately, the paper does not provide the implementation details, so I cannot demonstrate you how to implement that one.</p>
+
+
+
+<p class="wp-block-paragraph">Here I encourage you to play around with the above code. In theory, it is possible to replace the CNN-based backbone with other deep learning models, such as ResNet, ResNeXt, ViT, etc. All you need to do is just to match the output shape of the backbone with the input shape of the fully-connected part. Not only that, I also want you to try training this model from scratch. But if you decided to do so, you might probably want to make this model smaller by reducing the depth (no of convolution layers) or the width (no of kernels) of the model. This is essentially because the authors mentioned that they required around a week just to do the pretraining on ImageNet dataset, not to mention the time for fine tuning on the object detection task.</p>
+
+
+
+<p class="wp-block-paragraph">And well, I think that’s pretty much everything I can explain you about how YOLOv1 works and its architecture. Please let me know if you spot any mistake in this article. Thank you!</p>
+
+
+
+<p class="wp-block-paragraph"><em>By the way, the code used in this article is also available on my GitHub repo [7].</em></p>
+
+
+
+<hr class="wp-block-separator has-alpha-channel-opacity is-style-dotted"/>
+
+
+
+<h2 class="wp-block-heading">References</h2>
+
+
+
+<p class="wp-block-paragraph">[1] Joseph Redmon <em>et al.</em> You Only Look Once: Unified, Real-Time Object Detection. Arxiv. <a href="https://arxiv.org/pdf/1506.02640" rel="noreferrer noopener" target="_blank">https://arxiv.org/pdf/1506.02640</a> [Accessed July 5, 2025].</p>
+
+
+
+<p class="wp-block-paragraph">[2] Ross Girshick <em>et al.</em> Rich feature hierarchies for accurate object detection and semantic segmentation. Arxiv. <a href="https://arxiv.org/pdf/1311.2524" rel="noreferrer noopener" target="_blank">https://arxiv.org/pdf/1311.2524</a> [Accessed July 5, 2025].</p>
+
+
+
+<p class="wp-block-paragraph">[3] Mengqi Lei <em>et al.</em> YOLOv13: Real-Time Object Detection with Hypergraph-Enhanced Adaptive Visual Perception. Arxiv. <a href="https://arxiv.org/abs/2506.17733" rel="noreferrer noopener" target="_blank">https://arxiv.org/abs/2506.17733</a> [Accessed July 5, 2025].</p>
+
+
+
+<p class="wp-block-paragraph">[4] Image generated by author with Gemini, edited by author.</p>
+
+
+
+<p class="wp-block-paragraph">[5] Image originally created by author.</p>
+
+
+
+<p class="wp-block-paragraph">[6] Bing Xu <em>et al.</em> Empirical Evaluation of Rectified Activations in Convolutional Network. Arxiv. <a href="https://arxiv.org/pdf/1505.00853" rel="noreferrer noopener" target="_blank">https://arxiv.org/pdf/1505.00853</a> [Accessed July 5, 2025].</p>
+
+
+
+<p class="wp-block-paragraph">[7] MuhammadArdiPutra. The Day YOLO First Saw the World — YOLOv1. GitHub. <a href="https://github.com/MuhammadArdiPutra/medium_articles/blob/main/The%20Day%20YOLO%20First%20Saw%20the%20World%20-%20YOLOv1.ipynb" rel="noreferrer noopener" target="_blank">https://github.com/MuhammadArdiPutra/medium_articles/blob/main/The%20Day%20YOLO%20First%20Saw%20the%20World%20-%20YOLOv1.ipynb</a> [Accessed July 7, 2025].</p>
+
+
+
+<p class="wp-block-paragraph"/>
+    
+</body>
+</html>

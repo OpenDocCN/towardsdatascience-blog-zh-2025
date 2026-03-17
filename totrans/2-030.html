@@ -1,0 +1,694 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.1//EN"
+  "http://www.w3.org/TR/xhtml11/DTD/xhtml11.dtd">
+
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+<title>Capturing and Deploying PyTorch Models with torch.export</title>
+<link href="../Styles/Style.css" type="text/css" rel="stylesheet"/>
+</head>
+<body>
+<h1>Capturing and Deploying PyTorch Models with torch.export</h1>
+<blockquote>原文：<a href="https://towardsdatascience.com/capturing-and-deploying-pytorch-models-with-torch-export/">https://towardsdatascience.com/capturing-and-deploying-pytorch-models-with-torch-export/</a></blockquote>
+<p class="wp-block-paragraph"><mdspan datatext="el1755606794973" class="mdspan-comment">When</mdspan> we think of <mdspan datatext="el1755651919677" class="mdspan-comment">starting a new AI/ML</mdspan> model project, most of our attention tends to focus on the big problems, such as: creating and curating datasets, designing the best ML architecture, acquiring appropriately large GPU clusters for training, and building an inference solution that meets target quality-of-service (QOS) requirements. However, it’s often the small details that become our <em>Achilles’ heel</em>, leading to unanticipated bugs and significant production delays.</p>
+
+
+
+<p class="wp-block-paragraph" id="bf42">One detail that’s often overlooked is the handoff of a trained model to the inference environment. While this handoff may seem trivial, it can easily become the source of a great deal of frustration. The training and inference environments are rarely identical, with differences varying from runtime libraries to hardware targets. To navigate these differences, the AI/ML model developer must ensure:</p>
+
+
+
+<ol class="wp-block-list">
+<li class="wp-block-list-item">that the model definition, along with its trained weights, is loaded properly into the inference environment, and</li>
+
+
+
+<li class="wp-block-list-item">that the model’s behavior does not change.</li>
+</ol>
+
+
+
+<p class="wp-block-paragraph" id="a2e1">This post will focus on the first challenge — reliable restoration of the model definition and state in an inference environment. We will survey some of the legacy options and their shortcomings. We will then introduce the new <a href="https://docs.pytorch.org/docs/stable/export.html" rel="noreferrer noopener" target="_blank">torch.export</a> API and demonstrate it in action on a toy model built with <a href="https://huggingface.co/" rel="noreferrer noopener" target="_blank">HuggingFace’s</a> <a href="https://huggingface.co/docs/transformers/en/index" rel="noreferrer noopener" target="_blank">transformers</a> library (version 4.54.0). For our experiments, we will use an <a href="https://aws.amazon.com/ec2/instance-types/g5/" rel="noreferrer noopener" target="_blank">Amazon EC2 g5.xlarge</a> instance (containing an NVIDIA A10G GPU and 4 vCPUs) running a <a href="https://docs.aws.amazon.com/dlami/latest/devguide/aws-deep-learning-ami-gpu-pytorch-2.7-ubuntu-22-04.html" rel="noreferrer noopener" target="_blank">PyTorch (2.7) Deep Learning AMI (DLAMI)</a>.</p>
+
+
+
+<p class="wp-block-paragraph" id="5a0d">One of the technologies underlying <a href="https://docs.pytorch.org/docs/stable/export.html" rel="noreferrer noopener" target="_blank">torch.export</a> is <a href="https://docs.pytorch.org/docs/stable/torch.compiler_dynamo_overview.html" rel="noreferrer noopener" target="_blank">Torch Dynamo</a>, a key component of PyTorch’s graph compilation solution, <a href="https://docs.pytorch.org/tutorials/intermediate/torch_compile_tutorial.html" rel="noreferrer noopener" target="_blank">torch.compile</a>. In a <a href="https://towardsdatascience.com/maximizing-ai-ml-model-performance-with-pytorch-compilation/" rel="noreferrer noopener" target="_blank">recent post</a> we demonstrated the power of <a href="https://docs.pytorch.org/tutorials/intermediate/torch_compile_tutorial.html" rel="noreferrer noopener" target="_blank">torch.compile</a> and its importance in optimizing the runtime performance of AI/ML models. In some ways this post can be viewed as a sequel: we will revisit some of the key concepts — particularly graph-breaks, we will reuse the same toy model, and we will demonstrate the use of torch.compile for just-in-time (JIT) compilation in our inference environment. While we recommend reading the <a href="https://towardsdatascience.com/maximizing-ai-ml-model-performance-with-pytorch-compilation/" rel="noreferrer noopener" target="_blank">previous post</a>, it is not a prerequisite for this one.</p>
+
+
+
+<h3 class="wp-block-heading" id="0161">Disclaimers:</h3>
+
+
+
+<p class="wp-block-paragraph" id="726c">As of the time of this writing (PyTorch 2.8.0), <a href="https://docs.pytorch.org/docs/stable/export.html" rel="noreferrer noopener" target="_blank">torch.export</a> is a “prototype” feature. While the behaviors discussed in this post are likely to mostly remain, the API definitions could change. Be sure to align your use of <a href="https://docs.pytorch.org/docs/stable/export.html" rel="noreferrer noopener" target="_blank">torch.export</a> to the latest API versions.</p>
+
+
+
+<p class="wp-block-paragraph" id="ab81">This post will cover only a subset of torch.export’s features and behaviors. It should not be viewed as an alternative to the official PyTorch <a href="https://docs.pytorch.org/tutorials/intermediate/torch_export_tutorial.html" rel="noreferrer noopener" target="_blank">documentation</a>. There are a number of pages covering the export feature, including an <a href="https://docs.pytorch.org/tutorials/intermediate/torch_export_tutorial.html" rel="noreferrer noopener" target="_blank">introductory tutorial</a>, an <a href="https://docs.pytorch.org/docs/2.8/export.programming_model.html" rel="noreferrer noopener" target="_blank">overview of the programming model</a>, and a <a href="https://docs.pytorch.org/tutorials/recipes/torch_export_challenges_solutions.html" rel="noreferrer noopener" target="_blank">guide to solving export challenges</a>.</p>
+
+
+
+<p class="wp-block-paragraph" id="20bc">While we will demonstrate its functionality on a toy example, torch.export depends heavily on the model’s details and may exhibit very different behavior in your own project.</p>
+
+
+
+<p class="wp-block-paragraph" id="116b">The code we will share is for demonstration purposes only and should not be relied on for correctness or optimality. Please do not interpret our choice of platform, framework, or any other tool or library as an endorsement for its use.</p>
+
+
+
+<h2 class="wp-block-heading" id="be31">A Toy HuggingFace Model</h2>
+
+
+
+<p class="wp-block-paragraph">To facilitate our discussion, we define a simple image-to-text generative model using the HuggingFace <a href="https://huggingface.co/docs/transformers/en/index" rel="noreferrer noopener" target="_blank">transformers</a> library. For simplicity, we skip the training phase and assume that the default constructor returns a pretrained model.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">import torch
+
+NUM_TOKENS = 1024
+MAX_SEQ_LEN = 256
+PAD_ID = 0
+START_ID = 1
+END_ID = 2
+
+# Set up an image-to-text model.
+def get_model():
+
+    # import transformers utilities
+    from transformers import (
+        VisionEncoderDecoderModel,
+        VisionEncoderDecoderConfig,
+        AutoConfig
+    )
+
+    config = VisionEncoderDecoderConfig.from_encoder_decoder_configs(
+        encoder_config=AutoConfig.for_model("vit"),  # vit encoder
+        decoder_config=AutoConfig.for_model("gpt2")  # gpt2 decoder
+    )
+    config.decoder.vocab_size = NUM_TOKENS
+    config.decoder.use_cache = False
+    config.decoder_start_token_id = START_ID
+    config.pad_token_id = PAD_ID
+    config.eos_token_id = END_ID
+    config.max_length = MAX_SEQ_LEN
+
+    model = VisionEncoderDecoderModel(config=config)
+    model.encoder.pooler = None  # remove unused pooler
+    model.eval() # prepare the model for evaluation
+    return model</code></pre>
+
+
+
+<p class="wp-block-paragraph">We define an auto-regressive image-to-text generator that uses the encoder and decoder components of the model to produce a caption for the input image. For simplicity, we use a basic implementation, leaving out common optimization techniques, such as <a href="https://huggingface.co/blog/not-lain/kv-caching" target="_blank" rel="noreferrer noopener"><em>KV caching</em></a>.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python"># generate the next token
+def generate_token(decoder, encoder_hidden_states, sequence):
+    outputs = decoder(
+        sequence,
+        encoder_hidden_states
+    )
+    logits = outputs[0][:, -1, :]
+    return torch.argmax(logits, dim=-1, keepdim=True)
+
+# simple auto-regressive sequence generator
+def image_to_text_generator(encoder, decoder, image):
+    # run encoder
+    encoder_hidden_states = encoder(image)[0]
+
+    # initialize sequence
+    generated_ids = torch.ones(
+        (image.shape[0], 1),
+        dtype=torch.long,
+        device=image.device
+    ) * START_ID
+
+    for _ in range(MAX_SEQ_LEN):
+        # generate next token
+        next_token = generate_token(
+            decoder,
+            encoder_hidden_states,
+            generated_ids
+        )
+        generated_ids = torch.cat([generated_ids, next_token], dim=-1)
+        if (next_token == END_ID).all():
+            break
+
+    return generated_ids</code></pre>
+
+
+
+<p class="wp-block-paragraph">The following code block demonstrates the use of our generator on a batch of random input images.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">import os, time, random, torch
+
+torch.manual_seed(42)
+random.seed(42)
+
+BATCH_SIZE = 64
+EXPORT_PATH = '/tmp/export/'
+
+def test_inference(model_path=EXPORT_PATH, mode=None, compile=False):
+    device = 'cuda' if torch.cuda.is_available() else 'cpu'
+    rnd_image = torch.randn(BATCH_SIZE, 3, 224, 224).to(device)
+    encoder, decoder = load_model(model_path, mode)
+    encoder = encoder.to(device)
+    decoder = decoder.to(device)
+
+    if compile:
+        encoder = torch.compile(encoder, mode="reduce-overhead")
+        decoder = torch.compile(decoder, dynamic=True)
+        # run a few warmup rounds
+        for i in range(10):
+            image_to_text_generator(encoder, decoder, random_image)
+
+    t0 = time.perf_counter()
+    
+    # optionally enable mixed precision
+    with torch.amp.autocast(device, dtype=torch.bfloat16, enabled=True):
+        with torch.no_grad():
+            caption = image_to_text_generator(encoder, decoder, rnd_image)
+
+    total_time = time.perf_counter() - t0
+    print(f'batched inference total time: {total_time}')</code></pre>
+
+
+
+<p class="wp-block-paragraph" id="ec19">The encoder and decoder models are loaded via a <em>load_model</em> utility. We define an initial implementation and amend it later based on our choice of model capturing strategy.</p>
+
+
+
+<p class="wp-block-paragraph" id="9e4c">To prepare our model for the export process, we define a pass-through wrapper class for the decoder. This wrapper ensures the model can be traced using positional (rather than keyword) arguments, which is a current requirement of torch.export.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">class DecoderWrapper(torch.nn.Module):
+    def __init__(self, decoder_model):
+        super().__init__()
+        self.decoder = decoder_model
+
+    def forward(self, input_ids, encoder_hidden_states):
+        return self.decoder(
+            input_ids=input_ids,
+            encoder_hidden_states=encoder_hidden_states,
+            use_cache=False,
+            output_attentions=False,
+            output_hidden_states=False,
+            return_dict=False
+        )
+
+def load_model(path=EXPORT_PATH, mode=None):
+    model = get_model()
+    encoder = model.encoder
+    decoder = model.decoder
+    return encoder, DecoderWrapper(decoder)</code></pre>
+
+
+
+<p class="wp-block-paragraph" id="2dc0">Now that we have defined our toy model, let’s explore different strategies for capturing and deploying it to an inference environment.</p>
+
+
+
+<h2 class="wp-block-heading" id="421b">Model Capturing and Deployment Strategies</h2>
+
+
+
+<p class="wp-block-paragraph" id="b267">In this section, we’ll review two common methods for capturing and deploying an AI/ML model’s state: <em>weights-only capture</em> and conversion to a serializable intermediate graph-representation using <em>TorchScript</em>.</p>
+
+
+
+<h3 class="wp-block-heading" id="9aef">Weights Only Capture</h3>
+
+
+
+<p class="wp-block-paragraph" id="20ed">The first option is to use <a href="https://docs.pytorch.org/tutorials/beginner/saving_loading_models.html" rel="noreferrer noopener" target="_blank">torch.save</a> to capture only the model weights, not the model definition. This requires you to explicitly redefine the PyTorch model in the inference environment. There are several ways to carryg over the code definition including: copy-pasting (which is very error-prone), pulling from a shared code repository, or using Python packages. If the model definition relies on specific Python package dependencies, you will need to make sure that those packages exist in the inference environment and that their versions match the training environment.</p>
+
+
+
+<p class="wp-block-paragraph" id="1917">The following code block demonstrates capturing and loading the model weights for our toy model:</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">def capture_model(model, path=EXPORT_PATH):
+    # weights only
+    weights_path = os.path.join(EXPORT_PATH, "weights.pth")
+    torch.save(model.state_dict(), weights_path)
+
+def load_model(path=EXPORT_PATH, mode=None):
+    if mode == 'weights':
+        model = get_model()
+        weights_path = os.path.join(path,"weights.pth")
+        state_dict = torch.load(weights_path, map_location="cpu")
+        model.load_state_dict(state_dict)
+        return model.encoder, DecoderWrapper(model.decoder)
+    else:
+        model = get_model()
+        return model.encoder, DecoderWrapper(model.decoder)</code></pre>
+
+
+
+<p class="wp-block-paragraph" id="6b42">One advantage of this method is that it provides maximum flexibility for tuning the model’s configuration to the inference environment. For example, you can apply machine-specific optimizations that increase the throughput of the inference workload. This freedom is especially important for very large models that require advanced sharding techniques for model execution.</p>
+
+
+
+<p class="wp-block-paragraph" id="736e">However, this method assumes you can easily design and configure the inference environment as desired — which cannot be taken for granted. Some inference environments are extremely constrained — with limited control over the runtime libraries and package installations.</p>
+
+
+
+<p class="wp-block-paragraph" id="14f7">The separation between the model definition and the model weights also can be the source of all sorts of ugly bugs. Ensuring appropriate alignment between the source code and the model weights requires disciplined version management. A preferred approach would be to bundle the model definition and weights into a single archive.</p>
+
+
+
+<h3 class="wp-block-heading" id="f93c">TorchScript Variants</h3>
+
+
+
+<p class="wp-block-paragraph" id="43d4">For many years, the primary method for capturing a PyTorch model along with its weights was <a href="https://docs.pytorch.org/docs/stable/jit.html" rel="noreferrer noopener" target="_blank">TorchScript</a>. And despite its recent deprecation, it remains widely popular. TorchScript encapsulates two different capturing solutions, <a href="https://docs.pytorch.org/docs/stable/generated/torch.jit.script.html" rel="noreferrer noopener" target="_blank">torch.jit.script</a> and <a href="https://docs.pytorch.org/docs/stable/generated/torch.jit.trace.html" rel="noreferrer noopener" target="_blank">torch.jit.trace</a>, both of which convert PyTorch models into serializable graph representations. This graph can be loaded into another environment and run as a standalone PyTorch program, with minimal runtime dependencies.</p>
+
+
+
+<p class="wp-block-paragraph" id="7ce9">The <a href="https://docs.pytorch.org/docs/stable/generated/torch.jit.script.html" rel="noreferrer noopener" target="_blank">scripting</a> and <a href="https://docs.pytorch.org/docs/stable/generated/torch.jit.trace.html" rel="noreferrer noopener" target="_blank">tracing</a> functionalities are complementary. <a href="https://docs.pytorch.org/docs/stable/generated/torch.jit.script.html" rel="noreferrer noopener" target="_blank">Scripting</a> performs <em>ahead-of-time</em> (AOT) static analysis of the source code, whereas <a href="https://docs.pytorch.org/docs/stable/generated/torch.jit.trace.html" rel="noreferrer noopener" target="_blank">tracing</a> traces the actual execution of the model on a sample input. Scripting is able to capture more complexity in the graph, such as conditional control-flow and dynamic shapes. This is contrary to tracing that captures just the execution path and tensor shapes dictated by the input sample it runs on. On the other hand, torch.jit.trace supports more operations than torch.jit.script (e.g., see <a href="https://docs.pytorch.org/docs/stable/jit_language_reference.html" rel="noreferrer noopener" target="_blank">here</a>). Often, scripting will succeed where tracing will fail and vice versa. Sometimes, some form of <a href="https://docs.pytorch.org/docs/stable/jit.html#mixing-tracing-and-scripting" rel="noreferrer noopener" target="_blank">combination of both</a> methods is required.</p>
+
+
+
+<p class="wp-block-paragraph" id="62d8">Let’s now attempt to convert our toy model to TorchScript. Since the sequence generator makes separate calls to the encoder (once) and the decoder (iteratively) separately, we’ll capture them as separate graphs. The encoder takes fixed-shape inputs and has no input-dependent conditional logic, so we can apply the more flexible tracing option. However, the sequence that we input to the decoder increases in size each time a token is generated, so we have no choice but to use the scripting option.</p>
+
+
+
+<p class="wp-block-paragraph" id="2b01">HuggingFace supports TorchScript via a dedicated configuration. See the <a href="https://huggingface.co/docs/transformers/en/torchscript" rel="noreferrer noopener" target="_blank">HuggingFace documentation</a> for more details.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">config.decoder.torchscript = True
+config.encoder.torchscript = True</code></pre>
+
+
+
+<p class="wp-block-paragraph">In the code block below, we extend our capture and loading utilities with TorchScript support. Note the inclusion of the <a href="https://docs.pytorch.org/docs/stable/generated/torch.jit.freeze.html" target="_blank" rel="noreferrer noopener">torch.jit.freeze</a> optimization during capture and the use the <a href="https://docs.pytorch.org/docs/stable/generated/torch.jit.optimize_for_inference.html" target="_blank" rel="noreferrer noopener">torch.jit.optimize_for_inference</a> optimization on the target device.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">def capture_model(model, path=EXPORT_PATH):
+    # weights only
+    weights_path = os.path.join(EXPORT_PATH, "weights.pth")
+    torch.save(model.state_dict(), weights_path)
+
+    encoder = model.encoder
+    decoder = DecoderWrapper(model.decoder)
+
+    # torchscript encoder using trace
+    example = torch.randn(1, 3, 224, 224)
+    encoder_jit = torch.jit.trace(encoder, example)
+    # optionally apply jit.freeze optimization
+    encoder_jit = torch.jit.freeze(encoder_jit)
+    encoder_path = os.path.join(path, "encoder.pt")
+    torch.jit.save(encoder_jit, encoder_path)
+
+    try:
+        # torchscript decoder using scripting
+        decoder_jit = torch.jit.script(decoder)
+        # optionally apply jit.freeze optimization
+        decoder_jit = torch.jit.freeze(decoder_jit)
+        decoder_path = os.path.join(path, "decoder.pt")
+        torch.jit.save(decoder_jit, decoder_path)
+    except Exception as e:
+        print(f'torch.jit.script(model.decoder) failed\n{e}')
+
+def load_model(path=EXPORT_PATH, mode=None):
+    if mode == 'weights':
+        model = get_model()
+        weights_path = os.path.join(path,"weights.pth")
+        state_dict = torch.load(weights_path, map_location="cpu")
+        model.load_state_dict(state_dict)
+        return model.encoder, DecoderWrapper(model.decoder)
+    elif mode == 'torchscript':
+        encoder_path = os.path.join(path, "encoder.pt")
+        decoder_path = os.path.join(path, "decoder.pt")
+        encoder = torch.jit.load(encoder_path)
+        decoder = torch.jit.load(decoder_path)
+        # optionally apply target-device optimization 
+        encoder = torch.jit.optimize_for_inference(encoder)
+        decoder = torch.jit.optimize_for_inference(decoder)
+        return encoder, decoder
+    else:
+        model = get_model()
+        return model.encoder, DecoderWrapper(model.decoder)</code></pre>
+
+
+
+<p class="wp-block-paragraph" id="4e37">Unfortunately, our capture utility fails when trying to script the decoder model. A common problem with TorchScript is that it often fails on complex models. While many issues can be bypassed by using <a href="https://docs.pytorch.org/docs/stable/generated/torch.jit.trace.html" rel="noreferrer noopener" target="_blank">torch.jit.trace</a>, it cannot be applied to models with dynamic shapes or conditional logic, such as our decoder. It is often possible to rewrite the model implementation to be script-compliant, but it can require a lot of painstaking (and ugly) work. In the case of our decoder model, it would require a lot of intrusive patchwork to the transformers library source code.</p>
+
+
+
+<p class="wp-block-paragraph" id="a5ff">For more on the topic of TorchScript, please see the official <a href="https://docs.pytorch.org/docs/stable/jit.html" rel="noreferrer noopener" target="_blank">documentation</a>.</p>
+
+
+
+<h2 class="wp-block-heading" id="6855">Model Capturing with torch.export</h2>
+
+
+
+<p class="wp-block-paragraph" id="b44f">The new way of capturing a model for deployment is <a href="https://docs.pytorch.org/docs/main/export.html" rel="noreferrer noopener" target="_blank">torch.export</a>. Similar to <a href="https://docs.pytorch.org/docs/stable/generated/torch.jit.trace.html" rel="noreferrer noopener" target="_blank">torch.jit.trace</a>, export works by <a href="https://docs.pytorch.org/docs/stable/export.programming_model.html#basics-of-tracing" rel="noreferrer noopener" target="_blank">tracing</a> the model’s execution on input samples. However, unlike <a href="https://docs.pytorch.org/docs/stable/generated/torch.jit.trace.html" rel="noreferrer noopener" target="_blank">torch.jit.trace</a>, export includes support for <a href="https://docs.pytorch.org/docs/main/export.html#expressing-dynamism" rel="noreferrer noopener" target="_blank">dynamism</a> and <a href="https://docs.pytorch.org/docs/main/cond.html" rel="noreferrer noopener" target="_blank">conditional control flow</a>. The output of the export utility is an intermediate graph representation called <a href="https://docs.pytorch.org/docs/stable/export.ir_spec.html" rel="noreferrer noopener" target="_blank">Export IR</a>, which can be loaded and executed in a clean inference environment. One of the advantages of our exported model is that, contrary to TorchScript models, they can be optimized for the inference environment using <a href="https://docs.pytorch.org/tutorials/intermediate/torch_compile_tutorial.html" rel="noreferrer noopener" target="_blank">torch.compile</a>. On the other hand, optimizations that require source code changes (e.g., configuring the <a href="https://huggingface.co/docs/transformers/en/main_classes/model#transformers.PreTrainedModel.from_pretrained.attn_implementation" rel="noreferrer noopener" target="_blank">attn_implementation</a>) cannot be applied.</p>
+
+
+
+<h3 class="wp-block-heading" id="1f2a">Overcoming Graph Breaks</h3>
+
+
+
+<p class="wp-block-paragraph" id="7792">A <em>graph break</em> occurs when the export function encounters an “untraceable” portion of Python code (e.g., see <a href="https://docs.pytorch.org/docs/stable/generated/exportdb/index.html#not-supported-yet" rel="noreferrer noopener" target="_blank">here</a> for unsupported operations). We encountered the concept of <em>graph breaks</em> in our <a href="https://towardsdatascience.com/maximizing-ai-ml-model-performance-with-pytorch-compilation/" rel="noreferrer noopener" target="_blank">previous post</a> on <a href="https://docs.pytorch.org/tutorials/intermediate/torch_compile_tutorial.html" rel="noreferrer noopener" target="_blank">graph compilation</a>. However, contrary to model compilation where PyTorch will simply fall back to eager mode, torch.export forbids the presence of <em>graph breaks</em>. If export fails on your model due to a graph break, you will have to rewrite your code to bypass it.</p>
+
+
+
+<p class="wp-block-paragraph" id="7dba">There are several resources at your disposal for overcoming graph breaks, including the <a href="https://docs.pytorch.org/docs/2.8/draft_export.html" rel="noreferrer noopener" target="_blank">Draft Export</a> utility, which generates a detailed report of export issues, <a href="https://docs.pytorch.org/docs/stable/generated/exportdb/index.html" rel="noreferrer noopener" target="_blank">ExportDB</a>, which maintains a list of supported and unsupported export cases, and a <a href="https://docs.pytorch.org/tutorials/recipes/torch_export_challenges_solutions.html" rel="noreferrer noopener" target="_blank">tutorial</a> on overcoming common export issues.</p>
+
+
+
+<h3 class="wp-block-heading" id="34ed">Debugging an Exported Graph</h3>
+
+
+
+<p class="wp-block-paragraph" id="9609">On some occasions, you may succeed in exporting a graph only to find that running it on the target device either fails with an error or returns incorrect output. A common cause of such errors is that some of the variables from the export environment are treated as constants and baked into the exported graph.</p>
+
+
+
+<p class="wp-block-paragraph" id="df53">Unfortunately, (as of the time of this writing) the tools for debugging <a href="https://docs.pytorch.org/docs/stable/export.ir_spec.html" rel="noreferrer noopener" target="_blank">Export IR</a> graphs are somewhat limited. Although the exported model is a <a href="https://docs.pytorch.org/docs/stable/generated/torch.nn.Module.html" rel="noreferrer noopener" target="_blank">torch.nn.Module</a> with a <a href="https://docs.pytorch.org/docs/stable/generated/torch.nn.Module.html#torch.nn.Module.forward" rel="noreferrer noopener" target="_blank">forward</a> function, you cannot use a debugger to step into it to find the source of the errors.</p>
+
+
+
+<p class="wp-block-paragraph" id="fc90">We can, however, inspect the contents of the generated graph using <a href="https://docs.pytorch.org/docs/stable/fx.html#torch.fx.GraphModule.print_readable" rel="noreferrer noopener" target="_blank">GraphModule.print_readable</a>. This will print out all of the graph operations along with comments that point to the source code from which they were generated. Sometimes, this, combined with the output error information, is enough to find the source of the errors and tweak the source code accordingly. See below for an example.</p>
+
+
+
+<h3 class="wp-block-heading" id="8af5">Exporting a HuggingFace Model</h3>
+
+
+
+<p class="wp-block-paragraph" id="622a">To apply <a href="https://docs.pytorch.org/docs/stable/export.html" rel="noreferrer noopener" target="_blank">torch.export</a> to our toy model, we first make sure to update the PyTorch library to the latest version (2.8.0 at the time of this writing). The export utility is under rapid development and we want to make sure to get the most up-do-date feature support.</p>
+
+
+
+<p class="wp-block-paragraph" id="36b9">In the code block below we revise our capture and load utility functions to support <a href="https://docs.pytorch.org/docs/stable/export.html" rel="noreferrer noopener" target="_blank">torch.export</a>. Note our use of <a href="https://docs.pytorch.org/docs/stable/export.html#expressing-dynamism" rel="noreferrer noopener" target="_blank">torch.export.Dim</a> to specify dynamic dimensions:</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">def capture_model(model, path=EXPORT_PATH):
+    encoder = model.encoder
+    decoder = DecoderWrapper(model.decoder)
+
+    # define dynamic dimensions
+    batch = torch.export.Dim("batch")
+    seq_len = torch.export.Dim("seq_len", min=2, max=MAX_SEQ_LEN)
+
+    # export encoder
+    # sample input
+    example = torch.randn(4, 3, 224, 224)
+    encoder_export = torch.export.export(
+        encoder,
+        (example,),
+        dynamic_shapes=((batch,
+                         torch.export.Dim.STATIC,
+                         torch.export.Dim.STATIC,
+                         torch.export.Dim.STATIC),
+                        )
+    )
+    torch.export.save(encoder_export, os.path.join(path, "encoder.pt2"))
+
+
+    # export decoder
+    # get sample input for decoder
+    encoder_hidden_states = encoder_export.module()(example)[0]
+    decoder_input_ids = torch.ones((4, MAX_SEQ_LEN),
+                                   dtype=torch.long)*START_ID
+
+
+    decoder_export = torch.export.export(
+        decoder,
+        (decoder_input_ids, encoder_hidden_states),
+        dynamic_shapes={
+                  'input_ids': (batch,seq_len),
+                  'encoder_hidden_states': (batch,
+                                            torch.export.Dim.STATIC,
+                                            torch.export.Dim.STATIC)
+                       }
+    )
+    torch.export.save(decoder_export, os.path.join(path, "decoder.pt2"))
+
+
+def load_model(path=EXPORT_PATH, mode=None):
+    if mode == 'weights':
+        model = get_model()
+        weights_path = os.path.join(path,"weights.pth")
+        state_dict = torch.load(weights_path, map_location="cpu")
+        model.load_state_dict(state_dict)
+        return model.encoder, DecoderWrapper(model.decoder)
+   elif mode == 'export':
+        encoder_path = os.path.join(path, "encoder.pt2")
+        decoder_path = os.path.join(path, "decoder.pt2")
+        encoder = load(encoder_path).module()
+        decoder = load(decoder_path).module()
+        return encoder, decoder
+    else:
+        model = get_model()
+        return model.encoder, DecoderWrapper(model.decoder)</code></pre>
+
+
+
+<p class="wp-block-paragraph" id="27f1">Contrary to TorchScript, <a href="https://docs.pytorch.org/docs/stable/export.html" rel="noreferrer noopener" target="_blank">torch.export</a> had no issues capturing our decoder and encoder models. In particular, no graph breaks were encountered during tracing.</p>
+
+
+
+<h2 class="wp-block-heading" id="2b7d">Deploying an Exported Model</h2>
+
+
+
+<p class="wp-block-paragraph" id="f961">To complete our demonstration, we’ll test our exported model in a clean inference environment. For this experiment, we’ll use an <a href="https://aws.amazon.com/ec2/instance-types/g5/" rel="noreferrer noopener" target="_blank">Amazon EC2 g5.xlarge</a> instance (containing an NVIDIA A10G GPU and 4 vCPUs) running a <a href="https://docs.aws.amazon.com/dlami/latest/devguide/aws-deep-learning-ami-gpu-pytorch-2.7-ubuntu-22-04.html" rel="noreferrer noopener" target="_blank">PyTorch (2.7) Deep Learning AMI (DLAMI)</a>. We’ll update to the latest PyTorch version but intentionally won’t install the transformers package</p>
+
+
+
+<p class="wp-block-paragraph" id="c06f">Unfortunately, our excitement at the success of exporting our model was premature, as running the exported decoder on the GPU results in a runtime error, a portion of which we’ve pasted below:</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-shell-session">File "&lt;eval_with_key&gt;.24", line 306, in forward
+
+File "/opt/pytorch/lib/python3.12/site-packages/torch/_ops.py", line 829, in __call__
+
+  return self._op(*args, **kwargs)
+
+         ^^^^^^^^^^^^^^^^^^^^^^^^^
+
+RuntimeError: Expected all tensors to be on the same device, but got index is on cpu, different from other tensors on cuda:0 (when checking argument in method wrapper_CUDA__index_select)</code></pre>
+
+
+
+<p class="wp-block-paragraph" id="fd27">The error indicates during the execution the exported graph, some of the tensors reside on the CPU when they are expected to be on the GPU. Since we explicitly copy the input tensors onto the GPU, we can conclude that these refer to tensors that the graph is creating internally. Since the graph was exported on a CPU device, the use of <em>device</em>=<em>”cpu”</em> was baked into the graph creation, resulting in a runtime error when running on a GPU.</p>
+
+
+
+<p class="wp-block-paragraph" id="cc18">Although the error message points to the faulty line of code (<em>File “&lt;eval_with_key&gt;.24”, line 306, in forward</em>), there is no actual file that we can add a breakpoint to and debug. We can, however, inspect the contents of the decoder graph and search for places where the use of the CPU device has been inadvertently baked in:</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">decoder_export.module().print_readable()</code></pre>
+
+
+
+<p class="wp-block-paragraph" id="92fa">Analyzing the output (searching for “cpu” references) and cross-referencing the source code using the embedded comments, we discover four locations where the <em>transformers</em> library (<a href="https://github.com/huggingface/transformers/blob/v4.54.0/src/transformers/models/gpt2/modeling_gpt2.py" rel="noreferrer noopener" target="_blank"><em>modeling_gpt2.py</em></a> file) creates tensors on the CPU:</p>
+
+
+
+<ol class="wp-block-list">
+<li class="wp-block-list-item">If not specified, the <a href="https://github.com/huggingface/transformers/blob/v4.54.0/src/transformers/models/gpt2/modeling_gpt2.py#L685" target="_blank" rel="noreferrer noopener">GPT2 model</a> <a href="https://github.com/huggingface/transformers/blob/v4.54.0/src/transformers/models/gpt2/modeling_gpt2.py#L854" target="_blank" rel="noreferrer noopener">creates of a <em>cache_position</em></a> tensor on the baked-in CPU device using <a href="https://docs.pytorch.org/docs/stable/generated/torch.arange.html" target="_blank" rel="noreferrer noopener">torch.arange</a>. This can be fixed by passing in a user-defined value for <em>cache_position</em>.</li>
+
+
+
+<li class="wp-block-list-item">On line <a href="https://github.com/huggingface/transformers/blob/v4.54.0/src/transformers/models/gpt2/modeling_gpt2.py#L861" target="_blank" rel="noreferrer noopener">861</a>, a <a href="https://docs.pytorch.org/docs/stable/generated/torch.Tensor.to.html" target="_blank" rel="noreferrer noopener">torch.Tensor.to</a> operation is performed to ensure proper placement of the <em>position_embeds</em> tensor. While this may be required in a case of <a href="https://huggingface.co/docs/transformers/v4.13.0/en/parallelism" target="_blank" rel="noreferrer noopener">model parallelism</a>, we do not require it.</li>
+
+
+
+<li class="wp-block-list-item">If not specified, the model <a href="https://github.com/huggingface/transformers/blob/v4.54.0/src/transformers/models/gpt2/modeling_gpt2.py#L867" target="_blank" rel="noreferrer noopener">creates a causal mask</a> using tensors that it creates on the baked-in CPU device. We could bypass this by passing in a user-defined causal mask, but we are perfectly happy keeping this <em>None</em> and relying on the use of the <em>is_causal</em> flag of the <a href="https://docs.pytorch.org/docs/stable/generated/torch.nn.functional.scaled_dot_product_attention.html" target="_blank" rel="noreferrer noopener">sdpa attention function</a>.</li>
+
+
+
+<li class="wp-block-list-item">If not specified, the model <a href="https://github.com/huggingface/transformers/blob/v4.54.0/src/transformers/models/gpt2/modeling_gpt2.py#L878" target="_blank" rel="noreferrer noopener">creates an <em>ecnoder_attention_mask</em></a> tensor on the baked-in CPU. Once again, we could specify a value for this tensor, but since the mask would be all <em>True</em>, setting it <em>None </em>achieves the same purpose.</li>
+</ol>
+
+
+
+<p class="wp-block-paragraph" id="275b">The following patch summarizes the changes we performed on the <a href="https://github.com/huggingface/transformers/blob/v4.54.0/src/transformers/models/gpt2/modeling_gpt2.py" rel="noreferrer noopener" target="_blank"><em>modeling_gpt2.py</em></a> file. Importantly, these changes were specific to our toy model and will not generalize to all use cases. This kind of <em>monkey-patching</em> is ill-advised and requires extensive testing before being used in a production setting.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-diff">@@ -861 +861 @@
+-        hidden_states = inputs_embeds + position_embeds.to(inputs_embeds.device)
++        hidden_states = inputs_embeds + position_embeds
+@@ -867,3 +867 @@
+-        causal_mask = self._update_causal_mask(
+-            attention_mask, inputs_embeds, cache_position, past_key_values, output_attentions
+-        )
++        causal_mask = None
+@@ -877 +875 @@
+-            if encoder_attention_mask is None:
++            if not _use_sdpa and encoder_attention_mask is None:
+@@ -880,3 +878 @@
+-                encoder_attention_mask = _prepare_4d_attention_mask_for_sdpa(
+-                    mask=encoder_attention_mask, dtype=inputs_embeds.dtype, tgt_len=input_shape[-1]
+-                )
++                pass</code></pre>
+
+
+
+<p class="wp-block-paragraph">In the following code block, we extend the <em>decoder </em>definitions and export implementation with an explicit value for <em>cache_position</em>.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">def generate_token(decoder, encoder_hidden_states, sequence):
+    outputs = decoder(
+        sequence,
+        encoder_hidden_states,
+        torch.arange(sequence.shape[1], device=sequence.device)
+    )
+    logits = outputs[0][:, -1, :]
+    return torch.argmax(logits, dim=-1, keepdim=True)
+
+class DecoderWrapper(torch.nn.Module):
+    def __init__(self, decoder_model):
+        super().__init__()
+        self.decoder = decoder_model
+
+    def forward(self, input_ids, encoder_hidden_states, cache_position):
+        return self.decoder(
+            input_ids=input_ids,
+            cache_position=cache_position,
+            encoder_hidden_states=encoder_hidden_states,
+            use_cache=False,
+            output_attentions=False,
+            output_hidden_states=False,
+            return_dict=False
+        )
+
+def capture_model(model, path=EXPORT_PATH):
+    encoder = model.encoder
+    decoder = DecoderWrapper(model.decoder)
+
+    # define dynamic dimensions
+    batch = torch.export.Dim("batch")
+    seq_len = torch.export.Dim("seq_len", min=2, max=MAX_SEQ_LEN)
+
+    # export encoder
+    # sample tensor
+    example = torch.randn(4, 3, 224, 224)
+    encoder_export = torch.export.export(
+        encoder,
+        (example,),
+        dynamic_shapes=((batch,
+                         torch.export.Dim.STATIC,
+                         torch.export.Dim.STATIC,
+                         torch.export.Dim.STATIC),
+                        )
+    )
+    torch.export.save(encoder_export, os.path.join(path, "encoder.pt2"))
+
+    # export decoder
+    # get sample input for decoder
+    encoder_hidden_states = encoder_export.module()(example)[0]
+    decoder_input_ids = torch.ones((4, MAX_SEQ_LEN), 
+                                    dtype=torch.long)*START_ID
+
+    decoder_args = (
+        decoder_input_ids,
+        encoder_hidden_states,
+        torch.arange(MAX_SEQ_LEN)
+    )
+
+    dynamic_shapes = {
+        'input_ids': (batch,seq_len),
+        'encoder_hidden_states': (batch,
+                                  torch.export.Dim.STATIC,
+                                  torch.export.Dim.STATIC),
+        'cache_position': (seq_len,),
+    }
+
+    decoder_export = torch.export.export(
+        decoder,
+        decoder_args,
+        dynamic_shapes=dynamic_shapes
+    )
+    torch.export.save(decoder_export, os.path.join(path, "decoder.pt2"))</code></pre>
+
+
+
+<p class="wp-block-paragraph" id="a745">Following these change, the exported decoder succeeds in generating sequences on the GPU device. We hope (and expect) that as the torch.export feature evolves, these kinds of issues will be handled automatically by the internal tracing mechanism.</p>
+
+
+
+<p class="wp-block-paragraph" id="82f2">We further test the potential for machine-specific optimizations by applying graph compilation. For details on our choice of compilation parameters, see our <a href="https://towardsdatascience.com/maximizing-ai-ml-model-performance-with-pytorch-compilation/" rel="noreferrer noopener" target="_blank">previous post</a>.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">encoder = torch.compile(encoder, mode="reduce-overhead")
+decoder = torch.compile(decoder, dynamic=True)</code></pre>
+
+
+
+<p class="wp-block-paragraph">The table below captures the execution time of our model on a batch of random images, with and without torch.compile. (Note, that running the original model requires installation of the transformers library, version 4.54.0).</p>
+
+
+
+<figure class="wp-block-image size-full is-resized"><img decoding="async" src="../Images/e6095412de21d365422e6bbcb871a2e8.png" alt="" class="wp-image-615793" style="width:655px;height:auto" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/08/2-1.webp"/><figcaption class="wp-element-caption">Runtime Results (by Author)</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph" id="6df3">We can see that exporting the model to graph representation results in a speed-up of 10.7%. The model compilation, however, had the opposite effect, significantly increasing the execution time. It is likely that this could be fixed through appropriate tuning.</p>
+
+
+
+<h2 class="wp-block-heading" id="03fc">Summary</h2>
+
+
+
+<p class="wp-block-paragraph" id="ec69">In this post we explored the new torch.export utility and demonstrated its use in capturing and deploying a toy HuggingFace model. We found that is has a number of powerful and compelling properties, including:</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item"><strong>Support for complex models</strong>: torch.export succeeded in capturing models that failed with TorchScript.</li>
+
+
+
+<li class="wp-block-list-item"><strong>Portability</strong>: Exported models can be loaded and executed as standalone programs without specific package dependencies.</li>
+
+
+
+<li class="wp-block-list-item"><strong>Machine-specific optimizations</strong>: exported models are compatible with graph compilation, enabling the application of machine-specific optimizations.</li>
+</ul>
+
+
+
+<p class="wp-block-paragraph" id="45db">We also encountered some of torch.export’s limitations:</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item"><strong>Unintended consequences of graph creation:</strong> If we are not careful about how we design our model, values from the export environment can be inadvertently baked into the resulting graph, breaking its compatibility with the inference environment.</li>
+
+
+
+<li class="wp-block-list-item"><strong>Limited debugging tools:</strong> As of this writing, the tools for debugging the execution of exported graphs are limited.</li>
+</ul>
+
+
+
+<p class="wp-block-paragraph" id="73b4">Although it still requires some refinement, torch.export is already a huge improvement over previous capturing solutions like TorchScript. We look forward to seeing it continue to evolve and improve.</p>
+
+
+
+<p class="wp-block-paragraph" id="24c5">For more details on capturing AI/ML models using PyTorch Export and to keep track of API changes, please see the <a href="https://docs.pytorch.org/docs/stable/export.html" target="_blank" rel="noreferrer noopener">torch.export</a> documentation. If you’re running inference on an edge device, also see the <a href="https://docs.pytorch.org/executorch/stable/index.html" target="_blank" rel="noreferrer noopener">ExecuTorch</a> solution for model deployment, which is based on <a href="https://docs.pytorch.org/docs/stable/export.html" target="_blank" rel="noreferrer noopener">torch.export</a>.<a href="https://medium.com/tag/pytorch?source=post_page-----480f0d9ea8fd---------------------------------------"/></p>
+    
+</body>
+</html>

@@ -1,0 +1,511 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.1//EN"
+  "http://www.w3.org/TR/xhtml11/DTD/xhtml11.dtd">
+
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+<title>Debugging the Dreaded NaN</title>
+<link href="../Styles/Style.css" type="text/css" rel="stylesheet"/>
+</head>
+<body>
+<h1>Debugging the Dreaded NaN</h1>
+<blockquote>原文：<a href="https://towardsdatascience.com/debugging-the-dreaded-nan/">https://towardsdatascience.com/debugging-the-dreaded-nan/</a></blockquote>
+<p class="wp-block-paragraph" id="b483">You are training your latest AI model, anxiously watching as the loss steadily decreases when suddenly — boom! Your logs are flooded with NaNs (Not a Number) — your model is irreparably corrupted and you’re left staring at your screen in despair. To make matters worse, the NaNs don’t appear consistently. Sometimes your model trains just fine; other times, it fails inexplicably. Sometimes it will crash immediately, sometimes after many days of training.</p>
+
+
+
+<p class="wp-block-paragraph" id="ede5">NaNs in deep learning workloads are amongst the most frustrating issues to encounter. And because they often appear sporadically — triggered by a specific combination of model state, input data, and stochastic factors — they can be incredibly difficult to reproduce and debug.</p>
+
+
+
+<p class="wp-block-paragraph" id="860d">Given the considerable cost of training AI models and the potential waste caused by NaN failures, it is recommended to have dedicated tools for capturing and analyzing NaN occurrences. In a <a href="https://contributor.insightmediagroup.io/capturing-a-training-state-in-tensorflow-7d643e3fb20b/" rel="noreferrer noopener" target="_blank">previous post</a>, we discussed the challenge of debugging NaNs in a TensorFlow training workload. We proposed an efficient scheme for capturing and reproducing NaNs and shared a sample TensorFlow implementation. In this post, we adopt and demonstrate a similar mechanism for debugging NaNs in PyTorch workloads. The general scheme is as follows:</p>
+
+
+
+<p class="wp-block-paragraph" id="9495">On each training step:</p>
+
+
+
+<ol class="wp-block-list">
+<li class="wp-block-list-item">Save a copy of the training input batch.</li>
+
+
+
+<li class="wp-block-list-item">Check the gradients for NaN values. If any appear, save a checkpoint with the current model weights before the model is corrupted. Also, save the input batch and, if necessary, the stochastic state. Discontinue the training job.</li>
+
+
+
+<li class="wp-block-list-item">Reproduce and debug the NaN occurrence by loading the saved experiment state.</li>
+</ol>
+
+
+
+<p class="wp-block-paragraph" id="7939">Although this scheme can be easily implemented in native PyTorch, we will take the opportunity to demonstrate some of the conveniences of <a href="https://github.com/Lightning-AI/pytorch-lightning" target="_blank" rel="noreferrer noopener">PyTorch Lightning</a> — a powerful open-source framework designed to streamline the development of machine learning (ML) models. Built on PyTorch, Lightning abstracts away many of the boiler-plate components of an ML experiment, such as training loops, data distribution, logging, and more, enabling developers to focus on the core logic of their models.</p>
+
+
+
+<p class="wp-block-paragraph" id="bf51">To implement our NaN capturing scheme, we will use <a href="https://lightning.ai/docs/pytorch/stable/extensions/callbacks.html" rel="noreferrer noopener" target="_blank">Lightning’s callback</a> interface — a dedicated structure that enables inserting custom logic at specific points during the flow of execution.</p>
+
+
+
+<p class="wp-block-paragraph" id="6ea8">Importantly, please do not view our choice of Lightning or any other tool or technique that we mention as an endorsement of its use. The code that we will share is intended for demonstrative purposes — please do not rely on its correctness or optimality.</p>
+
+
+
+<p class="wp-block-paragraph" id="c589">Many thanks to <a href="https://www.linkedin.com/in/rom-maltser/?originalSubdomain=il" rel="noreferrer noopener" target="_blank">Rom Maltser</a> for his contributions to this post.</p>
+
+
+
+<h2 class="wp-block-heading" id="6503">NaNCapture Callback</h2>
+
+
+
+<p class="wp-block-paragraph" id="c365">To implement our NaN capturing solution, we create a NaNCapture Lightning callback. The constructor receives a directory path for storing/loading checkpoints and sets up the NaNCapture state. We also define utilities for checking for NaNs, storing checkpoints, and halting the training job.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-javascript"> import os
+import torch
+from copy import deepcopy
+import lightning.pytorch as pl
+
+class NaNCapture(pl.Callback):
+
+    def __init__(self, dirpath: str):
+        # path to checkpoint
+        self.dirpath = dirpath
+        
+        # update to True when Nan is identified
+        self.nan_captured = False
+        
+        # stores a copy of the last batch
+        self.last_batch = None
+        self.batch_idx = None
+
+    @staticmethod
+    def contains_nan(tensor):
+        return torch.isnan(tensor).any().item()
+        # alternatively check for finite
+        # return not torch.isfinite(tensor).item()
+
+    @staticmethod
+    def halt_training(trainer):
+        trainer.should_stop = True
+        # communicate stop command to all other ranks
+        trainer.strategy.reduce_boolean_decision(trainer.should_stop,
+                                                 all=False)
+
+    def save_ckpt(self, trainer):
+        os.makedirs(self.dirpath, exist_ok=True)
+        # include trainer.global_rank to avoid conflict
+        filename = f"nan_checkpoint_rank_{trainer.global_rank}.ckpt"
+        full_path = os.path.join(self.dirpath, filename)
+        print(f"saving ckpt to {full_path}")
+        trainer.save_checkpoint(full_path, False)</code></pre>
+
+
+
+<h3 class="wp-block-heading" id="b85d">Callback Function: on_train_batch_start</h3>
+
+
+
+<p class="wp-block-paragraph" id="a1e5">We begin by implementing the <a href="https://lightning.ai/docs/pytorch/stable/extensions/callbacks.html#on-train-batch-start" rel="noreferrer noopener" target="_blank">on_train_batch_start</a> hook to store a copy of each input batch. In case of a NaN event, this batch will be stored in the checkpoint.</p>
+
+
+
+<h3 class="wp-block-heading" id="5d2c">Callback Function: on_before_optimizer_step</h3>
+
+
+
+<p class="wp-block-paragraph" id="0540">Next we implement the <a href="https://lightning.ai/docs/pytorch/stable/extensions/callbacks.html#on-before-optimizer-step" target="_blank" rel="noreferrer noopener">on_before_optimizer_step</a> hook. Here, we check for NaN entries in all of the gradient tensors. If found, we store a checkpoint with the uncorrupted model weights and halt the training.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">    def on_before_optimizer_step(self, trainer, pl_module, optimizer):
+        if not self.nan_captured:
+            # Check if gradients contain NaN
+            grads = [p.grad.view(-1) for p in pl_module.parameters()
+                     if p.grad is not None]
+            all_grads = torch.cat(grads)
+            if self.contains_nan(all_grads):
+                self.nan_captured = True
+                print("nan found")
+                self.save_ckpt(trainer)
+                self.halt_training(trainer)
+</code></pre>
+
+
+
+<h3 class="wp-block-heading" id="1542">Capturing the Training State</h3>
+
+
+
+<p class="wp-block-paragraph" id="6243">To enable reproducibility, we include the NaNCapture state in the checkpoint by appending it to the training state dictionary. Lightning provides dedicated utilities for saving and loading a <a href="https://lightning.ai/docs/pytorch/stable/extensions/callbacks.html#save-callback-state" target="_blank" rel="noreferrer noopener">callback state</a>:</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">def state_dict(self):
+        d = {"nan_captured": self.nan_captured}
+        if self.nan_captured:
+            d["last_batch"] = self.last_batch
+        return d
+
+
+    def load_state_dict(self, state_dict):
+        self.nan_captured = state_dict.get("nan_captured", False)
+        if self.nan_captured:
+            self.last_batch = state_dict["last_batch"]</code></pre>
+
+
+
+<h2 class="wp-block-heading" id="1067">Reproducing the NaN Occurrence</h2>
+
+
+
+<p class="wp-block-paragraph" id="c64a">We have described how our NaNCapture callback can be used to store the training state that resulted in a NaN, but how do we reload this state in order to reproduce the issue and debug it? To accomplish this, we leverage Lightning’s dedicated data loading class, <a href="https://lightning.ai/docs/pytorch/stable/data/datamodule.html" rel="noreferrer noopener" target="_blank">LightningDataModule</a>.</p>
+
+
+
+<h3 class="wp-block-heading" id="159e">DataModule Function: on_before_batch_transfer</h3>
+
+
+
+<p class="wp-block-paragraph" id="485f">In the code block below, we extend the <a href="https://lightning.ai/docs/pytorch/stable/data/datamodule.html" target="_blank" rel="noreferrer noopener">LightningDataModule</a> class to allow injecting a fixed training input batch. This is achieved by overriding the <a href="https://lightning.ai/docs/pytorch/stable/data/datamodule.html#on-before-batch-transfer" target="_blank" rel="noreferrer noopener">on_before_batch_transfer</a> hook, as shown below:</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">from lightning.pytorch import LightningDataModule
+
+class InjectableDataModule(LightningDataModule):
+
+    def __init__(self):
+        super().__init__()
+        self.cached_batch = None
+
+    def set_custom_batch(self, batch):
+        self.cached_batch = batch
+
+    def on_before_batch_transfer(self, batch, dataloader_idx):
+        if self.cached_batch:
+            return self.cached_batch
+        return batch</code></pre>
+
+
+
+<h3 class="wp-block-heading" id="8ce0">Callback Function: on_train_start</h3>
+
+
+
+<p class="wp-block-paragraph" id="40de">The final step is modifying the <a href="https://lightning.ai/docs/pytorch/stable/extensions/callbacks.html#on-train-start" target="_blank" rel="noreferrer noopener">on_train_start</a> hook of our NaNCapture callback to inject the stored training batch into the <a href="https://lightning.ai/docs/pytorch/stable/data/datamodule.html" target="_blank" rel="noreferrer noopener">LightningDataModule</a>.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">    def on_train_start(self, trainer, pl_module):
+        if self.nan_captured:
+            datamodule = trainer.datamodule
+            datamodule.set_custom_batch(self.last_batch)</code></pre>
+
+
+
+<p class="wp-block-paragraph" id="e17d">In the next section we will demonstrate the end-to-end solution using a toy example.</p>
+
+
+
+<h2 class="wp-block-heading" id="5c9e">Toy Example</h2>
+
+
+
+<p class="wp-block-paragraph" id="aa3a">To test our new callback, we create a <a href="https://pytorch.org/vision/main/models/generated/torchvision.models.resnet50" rel="noreferrer noopener" target="_blank">resnet50</a>-based image classification model with a loss function deliberately designed to trigger NaN occurrences.</p>
+
+
+
+<p class="wp-block-paragraph" id="8728">Instead of using the standard <a href="https://pytorch.org/docs/stable/generated/torch.nn.CrossEntropyLoss.html" rel="noreferrer noopener" target="_blank">CrossEntropy</a> loss, we compute <a href="https://pytorch.org/docs/stable/generated/torch.nn.functional.binary_cross_entropy_with_logits.html" rel="noreferrer noopener" target="_blank">binary_cross_entropy_with_logits</a> for each class independently and divide the result by the number of samples belonging to that class. Inevitably, we will encounter a batch in which one or more classes are missing, leading to a divide-by-zero operation, resulting in NaN values and corrupting the model.</p>
+
+
+
+<p class="wp-block-paragraph" id="891a">The implementation below follows Lightning’s <a href="https://lightning.ai/docs/pytorch/stable/starter/introduction.html" target="_blank" rel="noreferrer noopener">introductory tutorial</a>.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">import lightning.pytorch as pl
+import torch
+import torchvision
+import torch.nn.functional as F
+
+num_classes = 20
+
+
+# define a lightning module
+class ResnetModel(pl.LightningModule):
+    def __init__(self):
+        """Initializes a new instance of the MNISTModel class."""
+        super().__init__()
+        self.model = torchvision.models.resnet50(num_classes=num_classes)
+
+    def forward(self, x):
+        return self.model(x)
+
+    def training_step(self, batch, batch_nb):
+        x, y = batch
+        outputs = self(x)
+        # uncomment for default loss
+        # return F.cross_entropy(outputs, y)
+        
+        # calculate binary_cross_entropy for each class individually
+        losses = []
+        for c in range(num_classes):
+            count = torch.count_nonzero(y==c)
+            masked = torch.where(y==c, 1., 0.)
+            loss = F.binary_cross_entropy_with_logits(
+                outputs[..., c],
+                masked,
+                reduction='sum'
+            )
+            mean_loss = loss/count # could result in NaN
+            losses.append(mean_loss)
+        total_loss = torch.stack(losses).mean()
+        return total_loss
+
+    def configure_optimizers(self):
+        return torch.optim.Adam(self.parameters(), lr=0.02)</code></pre>
+
+
+
+<p class="wp-block-paragraph" id="0ff8">We define a synthetic dataset and encapsulate it in our <code>InjectableDataModule</code> class:</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">import os
+import random
+from torch.utils.data import Dataset, DataLoader
+
+batch_size = 128
+num_steps = 800
+
+# A dataset with random images and labels
+class FakeDataset(Dataset):
+    def __len__(self):
+        return batch_size*num_steps
+
+    def __getitem__(self, index):
+        rand_image = torch.randn([3, 224, 224], dtype=torch.float32)
+        label = torch.tensor(random.randint(0, num_classes-1),
+                             dtype=torch.int64)
+        return rand_image, label
+
+
+
+# define a lightning datamodule
+class FakeDataModule(InjectableDataModule):
+
+    def train_dataloader(self):
+        dataset = FakeDataset()
+        return DataLoader(
+            dataset,
+            batch_size=batch_size,
+            num_workers=os.cpu_count(),
+            pin_memory=True
+        )</code></pre>
+
+
+
+<p class="wp-block-paragraph" id="4584">Finally, we initialize a Lightning <a href="https://lightning.ai/docs/pytorch/stable/common/trainer.html" target="_blank" rel="noreferrer noopener">Trainer</a> with our NaNCapture callback and call trainer.fit with our Lightning module and Lightning DataModule.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">import time
+
+if __name__ == "__main__":
+
+    # Initialize a lightning module
+    lit_module = ResnetModel()
+
+    # Initialize a DataModule
+    mnist_data = FakeDataModule()
+
+    # Train the model
+    ckpt_dir = "./ckpt_dir"
+    trainer = pl.Trainer(
+        max_epochs=1,
+        callbacks=[NaNCapture(ckpt_dir)]
+    )
+
+    ckpt_path = None
+    
+    # check is nan ckpt exists
+    if os.path.isdir(ckpt_dir):
+
+    # check if nan ckpt exists
+    if os.path.isdir(ckpt_dir):
+        dir_contents = [os.path.join(ckpt_dir, f)
+                        for f in os.listdir(ckpt_dir)]
+        ckpts = [f for f in dir_contents
+                 if os.path.isfile(f) and f.endswith('.ckpt')]
+        if ckpts:
+            ckpt_path = ckpts[0]
+
+    t0 = time.perf_counter()
+    trainer.fit(lit_module, mnist_data, ckpt_path=ckpt_path)
+    print(f"total runtime: {time.perf_counter() - t0}")</code></pre>
+
+
+
+<p class="wp-block-paragraph" id="a3fc">After a number of training steps, a NaN event will occur. At this point a checkpoint is saved with the full training state and the training is halted.</p>
+
+
+
+<p class="wp-block-paragraph" id="4ddd">When the script is run again the exact state that caused the NaN will be reloaded allowing us to easily reproduce the issue and debug its root cause.</p>
+
+
+
+<h2 class="wp-block-heading" id="07f6">Performance Overhead</h2>
+
+
+
+<p class="wp-block-paragraph" id="720a">To assess the impact of our NaNCapture callback on runtime performance, we modified our experiment to use <a href="https://pytorch.org/docs/stable/generated/torch.nn.CrossEntropyLoss.html" rel="noreferrer noopener" target="_blank">CrossEntropyLoss</a> (to avoid NaNs) and measured the average throughput when running with and without NaNCapture callback. The experiments were conducted on an <a href="https://www.nvidia.com/en-eu/data-center/l40s/" rel="noreferrer noopener" target="_blank">NVIDIA L40S GPU</a>, with a <a href="https://hub.docker.com/layers/pytorch/pytorch/2.5.1-cuda12.4-cudnn9-devel/images/sha256-14611869895df612b7b07227d5925f30ec3cd6673bad58ce3d84ed107950e014" rel="noreferrer noopener" target="_blank">PyTorch 2.5.1 Docker</a> image.</p>
+
+
+
+<figure class="wp-block-image size-full"><img data-dominant-color="f1f1f1" data-has-transparency="false" style="--dominant-color: #f1f1f1;" decoding="async" width="738" height="106" src="../Images/074229c165b441d786daf55b0ca11c0b.png" alt="" class="wp-image-598517 not-transparent" srcset="https://towardsdatascience.com/wp-content/uploads/2025/02/image-19.png 738w, https://towardsdatascience.com/wp-content/uploads/2025/02/image-19-300x43.png 300w" sizes="(max-width: 738px) 100vw, 738px" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/02/image-19.png"/><figcaption class="wp-element-caption">Overhead of NaNCapture Callback (by Author)</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph" id="7df4">For our toy model, the NaNCapture callback adds a minimal 1.5% overhead to the runtime performance — a small price to pay for the valuable debugging capabilities it provides.</p>
+
+
+
+<p class="wp-block-paragraph" id="6555">Naturally, the actual overhead will depend on the specifics of the model and runtime environment.</p>
+
+
+
+<h2 class="wp-block-heading" id="6222">How to Handle Stochasticity</h2>
+
+
+
+<p class="wp-block-paragraph" id="4212">The solution we have described henceforth will succeed in reproducing the training state provided that the model does not include any randomness. However, introducing stochasticity into the model definition is often critical for convergence. A common example of a stochastic layer is <a href="https://pytorch.org/docs/stable/generated/torch.nn.Dropout.html" rel="noreferrer noopener" target="_blank">torch.nn.Dropout</a>.</p>
+
+
+
+<p class="wp-block-paragraph" id="561c">You may find that your NaN event depends on the precise state of randomness when the failure occurred. Consequently, we would like to enhance our NaNCapture callback to capture and restore the random state at the point of failure. The random state is determined by a number of libraries. In the code block below, we attempt to capture the full state of randomness:</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">import os
+import torch
+import random
+import numpy as np
+from copy import deepcopy
+import lightning.pytorch as pl
+
+class NaNCapture(pl.Callback):
+
+    def __init__(self, dirpath: str):
+        # path to checkpoint
+        self.dirpath = dirpath
+        
+        # update to True when Nan is identified
+        self.nan_captured = False
+        
+        # stores a copy of the last batch
+        self.last_batch = None
+        self.batch_idx = None
+
+        # rng state
+        self.rng_state = {
+            "torch": None,
+            "torch_cuda": None,
+            "numpy": None,
+            "random": None
+        }
+
+    @staticmethod
+    def contains_nan(tensor):
+        return torch.isnan(tensor).any().item()
+        # alternatively check for finite
+        # return not torch.isfinite(tensor).item()
+
+    @staticmethod
+    def halt_training(trainer):
+        trainer.should_stop = True
+        trainer.strategy.reduce_boolean_decision(trainer.should_stop,
+                                                 all=False)
+
+    def save_ckpt(self, trainer):
+        os.makedirs(self.dirpath, exist_ok=True)
+        # include trainer.global_rank to avoid conflict
+        filename = f"nan_checkpoint_rank_{trainer.global_rank}.ckpt"
+        full_path = os.path.join(self.dirpath, filename)
+        print(f"saving ckpt to {full_path}")
+        trainer.save_checkpoint(full_path, False)
+
+    def on_train_start(self, trainer, pl_module):
+        if self.nan_captured:
+            # inject batch
+            datamodule = trainer.datamodule
+            datamodule.set_custom_batch(self.last_batch)
+
+    def on_train_batch_start(self, trainer, pl_module, batch, batch_idx):
+       if self.nan_captured:
+            # restore random state
+            torch.random.set_rng_state(self.rng_state["torch"])
+            torch.cuda.set_rng_state_all(self.rng_state["torch_cuda"])
+            np.random.set_state(self.rng_state["numpy"])
+            random.setstate(self.rng_state["random"])
+        else:
+            # capture current batch
+            self.last_batch= deepcopy(batch)
+            self.batch_idx = batch_idx
+    
+            # capture current random state
+            self.rng_state["torch"] = torch.random.get_rng_state()
+            self.rng_state["torch_cuda"] = torch.cuda.get_rng_state_all()
+            self.rng_state["numpy"] = np.random.get_state()
+            self.rng_state["random"] = random.getstate()
+    
+    def on_before_optimizer_step(self, trainer, pl_module, optimizer):
+        if not self.nan_captured:
+            # Check if gradients contain NaN
+            grads = [p.grad.view(-1) for p in pl_module.parameters()
+                     if p.grad is not None]
+            all_grads = torch.cat(grads)
+            if self.contains_nan(all_grads):
+                print("nan found")
+                self.nan_captured = True
+                self.save_ckpt(trainer)
+                self.halt_training(trainer)
+
+    def state_dict(self):
+        d = {"nan_captured": self.nan_captured}
+        if self.nan_captured:
+            d["last_batch"] = self.last_batch
+            d["rng_state"] = self.rng_state
+        return d
+
+    def load_state_dict(self, state_dict):
+        self.nan_captured = state_dict.get("nan_captured", False)
+        if self.nan_captured:
+            self.last_batch = state_dict["last_batch"]
+            self.rng_state = state_dict["rng_state"]</code></pre>
+
+
+
+<p class="wp-block-paragraph" id="5d67">Importantly, setting the random state may not guarantee full <a href="https://pytorch.org/docs/stable/notes/randomness.html#reproducibility" rel="noreferrer noopener" target="_blank">reproducibility</a>. The GPU owes its power to its massive parallelism. In some GPU operations, multiple threads may read or write concurrently to the same memory locations resulting in nondeterminism. PyTorch allows for some control over this via its <a href="https://pytorch.org/docs/stable/generated/torch.use_deterministic_algorithms.html" rel="noreferrer noopener" target="_blank">use_deterministic_algorithms</a>, but this may impact the runtime performance. Additionally, there is a possibility that the NaN event will not reproduced once this configuration setting is changed. Please see the PyTorch documentation on <a href="https://pytorch.org/docs/stable/notes/randomness.html#reproducibility" rel="noreferrer noopener" target="_blank">reproducibility</a> for more details.</p>
+
+
+
+<h2 class="wp-block-heading" id="39e0">Summary</h2>
+
+
+
+<p class="wp-block-paragraph" id="f512">Encountering NaN failures is one of the most discouraging events that can happen in machine learning development. These errors not only waste valuable computation and development resources, but often indicate fundamental issues in the model architecture or experiment design. Due to their sporadic, sometimes elusive nature, debugging NaN failures can be a nightmare.</p>
+
+
+
+<p class="wp-block-paragraph" id="4248">This post introduced a proactive approach for capturing and reproducing NaN errors using a dedicated Lightning callback. The solution we shared is a proposal which can be modified and extended for your specific use case.</p>
+
+
+
+<p class="wp-block-paragraph" id="300a">While this solution may not address every possible NaN scenario, it significantly reduces debugging time when applicable, potentially saving developers countless hours of frustration and wasted effort.</p>
+    
+</body>
+</html>

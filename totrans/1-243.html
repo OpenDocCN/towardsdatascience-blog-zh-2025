@@ -1,0 +1,892 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.1//EN"
+  "http://www.w3.org/TR/xhtml11/DTD/xhtml11.dtd">
+
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+<title>Why MissForest Fails in Prediction Tasks: A Key Limitation You Need to Keep in Mind</title>
+<link href="../Styles/Style.css" type="text/css" rel="stylesheet"/>
+</head>
+<body>
+<h1>Why MissForest Fails in Prediction Tasks: A Key Limitation You Need to Keep in Mind</h1>
+<blockquote>原文：<a href="https://towardsdatascience.com/why-missforest-fails-in-prediction-tasks-a-key-limitation-you-need-to-know/">https://towardsdatascience.com/why-missforest-fails-in-prediction-tasks-a-key-limitation-you-need-to-know/</a></blockquote>
+<blockquote class="wp-block-quote is-layout-flow wp-block-quote-is-layout-flow">
+<p class="wp-block-paragraph">The <mdspan datatext="el1758825777078" class="mdspan-comment">objective</mdspan> of this article is to explain that, in predictive settings, imputations must always be estimated on the <strong>training set</strong> and <strong>the resulting parameters or models saved</strong>. These should then be applied unchanged to the test, out-of-time, or application data, in order to avoid data leakage and ensure an unbiased assessment of generalization performance.</p>
+
+
+
+<p class="wp-block-paragraph">I want to thank everyone who took the time to read and engage with my article. Your support and feedback are greatly appreciated.</p>
+</blockquote>
+
+
+
+<p class="wp-block-paragraph">In practice, most real-world datasets contain missing values, making missing data one of the most common challenges in statistical modeling. If it is not handled properly, it can lead to biased coefficient estimates, reduced statistical power, and ultimately incorrect conclusions (Van Buuren, 2018). In predictive modeling, ignoring missing data by performing complete case analysis or by excluding predictor variables with missing values can limit the applicability of the model and result in biased or suboptimal performance.</p>
+
+
+
+<h2 class="wp-block-heading">The Three Missing-Data Mechanisms</h2>
+
+
+
+<p class="wp-block-paragraph">To address this issue, statisticians classify missing data into three mechanisms that describe how and why values go missing. <strong>MCAR</strong> (Missing Completely at Random) refers to cases where the missingness occurs entirely at random and is independent of both observed and unobserved variables. <strong>MAR</strong> (Missing at Random) means that the probability of missingness depends on the observed variables but not on the missing value itself. <strong>MNAR</strong> (Missing Not at Random) describes the most complex case, in which the probability of missingness depends on the unobserved value itself.</p>
+
+
+
+<h3 class="wp-block-heading">Classical Approaches and Their Limits to deal with missing data</h3>
+
+
+
+<p class="wp-block-paragraph">Under the MAR assumption, it is possible to use the information contained in the observed variables to predict the missing values. Classical approaches based on this idea include regression-based imputation, k-nearest neighbors (kNN) imputation, and multiple imputation by chained equations (MICE). These methods are considered multivariate because they explicitly condition the imputation on the observed variables.These approaches explicitly condition the imputation on the observed data, but have a significant limitation: they do not handle mixed databases (continuous + categorical) well and have difficulty capturing nonlinear relationships and complex interactions.</p>
+
+
+
+<h3 class="wp-block-heading">The Rise of MissForest implemented in R</h3>
+
+
+
+<p class="wp-block-paragraph">It is to overcome these limitations that MissForest (Stekhoven &amp; Bühlmann, 2012) has established itself as a benchmark method. Based on random forests, MissForest can capture nonlinear relationships and complex interactions between variables, often outperforming traditional imputation techniques. However, when working on a project that required a generalizable modeling process — with a proper train/test split and out-of-time validation — we encountered a significant limitation. The R implementation of the <code>missForest</code> package does not store the imputation model parameters once fitted.</p>
+
+
+
+<h3 class="wp-block-heading">A Critical Limitation of MissForest in Prediction Settings</h3>
+
+
+
+<p class="wp-block-paragraph">This creates a practical challenge: it is impossible to train the imputation model on the training set and then apply the exact same parameters to the test set. This limitation introduces a risk of information leakage during model evaluation or a degradation in the quality and consistency of imputations.</p>
+
+
+
+<h3 class="wp-block-heading">Existing solutions and Their Risks</h3>
+
+
+
+<p class="wp-block-paragraph">While looking for an alternative solution that would allow consistent imputation in a predictive modeling setting, we asked ourselves a simple but critical question:</p>
+
+
+
+<blockquote class="wp-block-quote is-layout-flow wp-block-quote-is-layout-flow">
+<p class="wp-block-paragraph">How can we impute the test data in a way that remains fully consistent with the imputations learned on the training data?</p>
+</blockquote>
+
+
+
+<p class="wp-block-paragraph">Exploring this question led us to a discussion on <a href="https://stats.stackexchange.com/questions/483222/how-to-use-missforest-in-r-for-test-data-imputation">CrossValidated</a>, where another user was facing the exact same issue and asked:</p>
+
+
+
+<blockquote class="wp-block-quote is-layout-flow wp-block-quote-is-layout-flow">
+<p class="wp-block-paragraph"><em>“How to use missForest in R for test data imputation?”</em></p>
+</blockquote>
+
+
+
+<p class="wp-block-paragraph">Two main solutions were suggested to overcome this limitation. The first consists of merging the training and test data before running the imputation. This approach often improves the quality of the imputations because the algorithm has more data to learn from, but it introduces <strong>data leakage</strong>, since the test set influences the imputation model. The second approach imputes the test set separately from the training set, which prevents information leakage but forces the algorithm to build an entirely new imputation model using only the test data, which is often much smaller. This can lead to <strong>less stable imputations</strong> and a potential drop in predictive performance.</p>
+
+
+
+<p class="wp-block-paragraph">Even the well-known tutorial by <a href="https://rpubs.com/lmorgan95/MissForest">Liam Morgan</a> arrives at a similar workaround. His proposed solution involves imputing the training set, fitting a predictive model, then combining the training and test data for a final imputation step:</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-r"># 1) Impute the training set
+imp_train_X &lt;- missForest(train_X)$ximp
+
+# 2) Build the predictive model
+rf &lt;- randomForest(x = imp_train_X, y = train$creditability)
+
+# 3) Combine train and test, then re-impute
+train_test_X &lt;- rbind(test_X, imp_train_X)
+imp_test_X &lt;- missForest(train_test_X)$ximp[1:nrow(test_X), ]
+</code></pre>
+
+
+
+<p class="wp-block-paragraph">Although this approach often may improves imputation quality, it suffers from the same weakness as Method 1: the test data indirectly participate in the learning process, which may inflate model performance metrics and creates an overly optimistic estimate of generalization.</p>
+
+
+
+<p class="wp-block-paragraph">These examples highlight a fundamental dilemma:</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">How do we impute missing values without biasing model evaluation?</li>
+
+
+
+<li class="wp-block-list-item">How do we ensure that the imputations applied to the test set are consistent with those learned on the training set?</li>
+</ul>
+
+
+
+<h2 class="wp-block-heading">Research Question and Motivation</h2>
+
+
+
+<p class="wp-block-paragraph">These questions motivated our exploration of a more robust solution that preserves generalization, avoids data leakage, and produces stable imputations suitable for predictive modeling pipelines.</p>
+
+
+
+<p class="wp-block-paragraph">This paper is organized into four main sections:</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item"><strong>Section 1</strong> introduces the process of identifying and characterizing missing values, including how to detect, quantify, and describe them.</li>
+
+
+
+<li class="wp-block-list-item"><strong>Section 2</strong> discusses the MCAR (Missing Completely at Random) mechanism and presents methods for handling missing data under this assumption.</li>
+
+
+
+<li class="wp-block-list-item"><strong>Section 3</strong> focuses on the MAR (Missing at Random) mechanism, outlining appropriate imputation strategies and addressing the critical question: <em>Why does the MissForest implementation in R fail in prediction settings?</em></li>
+
+
+
+<li class="wp-block-list-item"><strong>Section 4</strong> examines the MNAR (Missing Not at Random) mechanism and explores strategies for dealing with missing data when the mechanism depends on the unobserved values themselves.</li>
+</ul>
+
+
+
+<h2 class="wp-block-heading">1. Identification and Characterization of Missing Values</h2>
+
+
+
+<p class="wp-block-paragraph">This step is critical and should be carried out in close collaboration with all stakeholders: model developers, domain experts, and future users of the model. The goal is to identify all missing values and mark them.</p>
+
+
+
+<p class="wp-block-paragraph">In Python, and particularly when using libraries such as <strong>Pandas</strong>, <strong>NumPy</strong>, and <strong>Scikit-Learn</strong>, missing values are represented as <code>NaN</code>. Values marked as <code>NaN</code> are ignored by many operations such as <code>sum()</code> and <code>count()</code>. You can mark missing values using the <code>replace()</code> function on the relevant subset of columns in a Pandas DataFrame.</p>
+
+
+
+<p class="wp-block-paragraph">Once the missing values have been marked, the next step is to evaluate their distribution for each variable. The <code>isnull()</code> function can be used to identify all <code>NaN</code> values as <code>True</code>, and combined with <code>sum()</code> to count the number of missing values per column.</p>
+
+
+
+<p class="wp-block-paragraph">Understanding the distribution of missing values is crucial. With this information, stakeholders can assess whether the patterns of missingness are reasonable. It also allows you to define acceptable thresholds of missingness depending on the nature of each variable. For instance, you might decide that up to 10% missing values is acceptable for continuous variables, while the threshold for categorical variables should remain at 0%.</p>
+
+
+
+<p class="wp-block-paragraph">After selecting the relevant variables for modeling, including those containing missing values when they are important for prediction, it is essential to split the dataset into three samples:</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item"><strong>Training set</strong> to estimate parameters and train the models,</li>
+
+
+
+<li class="wp-block-list-item"><strong>Test set</strong> to evaluate model performance on unseen data,</li>
+
+
+
+<li class="wp-block-list-item"><strong>Out-of-Time (OOT) set</strong> to validate the temporal robustness of the model.</li>
+</ul>
+
+
+
+<p class="wp-block-paragraph">This split should be performed to preserve the statistical <a href="https://towardsdatascience.com/assessment-of-representativeness-between-two-populations-to-ensure-valid-performance-2/">representativeness</a> of each subsample — for example, by using stratified sampling if the target variable is imbalanced.</p>
+
+
+
+<p class="wp-block-paragraph">The analysis of missing values should then be conducted exclusively on the training set:</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">Identify their mechanism (MCAR, MAR, MNAR) using statistical tests,</li>
+
+
+
+<li class="wp-block-list-item">Select the appropriate imputation method,</li>
+
+
+
+<li class="wp-block-list-item">Train the imputation models on the training set.</li>
+</ul>
+
+
+
+<p class="wp-block-paragraph">The imputation parameters and models obtained in this step must then be applied <em>as is</em> to the test set and to the Out-of-Time set. This step is essential to avoid information leakage and to ensure a correct evaluation of the model’s generalization performance.</p>
+
+
+
+<p class="wp-block-paragraph">In the next section, we will examine the MCAR mechanism in detail and present the imputation methods that are best suited for this type of missing data.</p>
+
+
+
+<h2 class="wp-block-heading">2. Understanding MCAR and Choosing the Right Imputation Methods</h2>
+
+
+
+<p class="wp-block-paragraph">In simple terms, MCAR (Missing Completely at Random) describes a situation where the fact that a value is missing is entirely unrelated to either the value itself or any other variables in the dataset. In mathematical terms, this means that the probability of a data point being missing does not depend on the variable’s value nor on the values of any other variables: the missingness is completely random. </p>
+
+
+
+<p class="wp-block-paragraph">Before formally defining the MCAR mechanism, let us introduce the notations that will be used in this section and throughout the article:</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">Consider an independent and identically distributed sample of n observations:</li>
+</ul>
+
+
+
+<p class="has-text-align-center wp-block-paragraph"><strong>y<sub>i</sub> = (y<sub>i1</sub>, . . ., y<sub>ip</sub>)<sup>T</sup>, i = 1, 2, . . ., n</strong></p>
+
+
+
+<p class="wp-block-paragraph"> where p is the number of variables with missing values and n is the sample size.</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item"><strong>Y </strong>∈ <strong>R</strong><sup>nxp</sup> represents the variables that may contain missing values. This is the set on which we wish to perform imputation.</li>
+</ul>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">We denote the observed entries and missing entries of <strong>Y</strong> as <strong>Y<sub>o</sub></strong> and <strong>Y<sub>m</sub></strong>,</li>
+</ul>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item"><strong>X </strong>∈ <strong>R</strong><sup>nxq</sup> represents the fully observed variables, meaning they contain no missing values.</li>
+
+
+
+<li class="wp-block-list-item">To indicate which components of <strong>y<sub>i</sub></strong> are observed or missing, we define the indicator vector:</li>
+</ul>
+
+
+
+<p class="has-text-align-center wp-block-paragraph"><strong>r<sub>i</sub> = (r<sub>i1</sub>, . . ., r<sub>ip</sub>)<sup>T</sup>, i = 1, 2, . . ., n</strong><br/></p>
+
+
+
+<p class="wp-block-paragraph">with <strong>r<sub>ik</sub> </strong>= 1 if <strong>y<sub>ik</sub></strong> is observed, and 0 otherwise.</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">Stacking these vectors yields the complete matrix of presence/absence indicators:</li>
+</ul>
+
+
+
+<p class="has-text-align-center wp-block-paragraph"><strong>R = (r<sub>1</sub>, . . ., r<sub>n</sub>)</strong><sup>T</sup></p>
+
+
+
+<p class="wp-block-paragraph">Then the <strong>MCAR assumption</strong> is defined as :</p>
+
+
+
+<p class="has-text-align-center wp-block-paragraph"><strong>Pr(R|Y<sub>m</sub> ,Y<sub>o</sub>, X) = Pr(R).</strong>        (1)</p>
+
+
+
+<p class="wp-block-paragraph">which implies that the missing indicators are completely independent of both the missing data, Ym, and the observed data, <strong>Y<sub>o</sub></strong>. Note that here R is also independent of covariates <strong>X</strong>. Before presenting methods for handling missing values under the MCAR assumption, we will first introduce a few simple techniques to assess whether the MCAR assumption is likely to hold.</p>
+
+
+
+<h3 class="wp-block-heading">2.1 Assessing the MCAR Assumption</h3>
+
+
+
+<p class="wp-block-paragraph">In this section, we will simulate a dataset with 10,000 observations and four variables under the MCAR assumption:</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item"><strong>One continuous variable</strong> containing 20% missing values and <strong>one categorical variable</strong> with two levels (0 and 1) containing 10% missing values.</li>
+
+
+
+<li class="wp-block-list-item"><strong>One continuous variable</strong> and <strong>one categorical variable</strong> that are fully observed, with no missing values.</li>
+
+
+
+<li class="wp-block-list-item">Finally, a <strong>binary target variable</strong> named <code>target</code>, taking values 0 and 1.</li>
+</ul>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">import numpy as np
+import pandas as pd
+
+# --- Reproducibility ---
+np.random.seed(42)
+
+# --- Parameters ---
+n = 10000
+
+# --- Utility Functions ---
+def generate_continuous(mean, std, size, missing_rate=0.0):
+    """Generate a continuous variable with optional MCAR missingness."""
+    values = np.random.normal(loc=mean, scale=std, size=size)
+    if missing_rate &gt; 0:
+        mask = np.random.rand(size) &lt; missing_rate
+        values[mask] = np.nan
+    return values
+
+def generate_categorical(levels, probs, size, missing_rate=0.0):
+    """Generate a categorical variable with optional MCAR missingness."""
+    values = np.random.choice(levels, size=size, p=probs).astype(float)
+    if missing_rate &gt; 0:
+        mask = np.random.rand(size) &lt; missing_rate
+        values[mask] = np.nan
+    return values
+
+# --- Variable Generation ---
+variables = {
+    "cont_mcar": generate_continuous(mean=100, std=20, size=n, missing_rate=0.20),
+    "cat_mcar": generate_categorical(levels=[0, 1], probs=[0.7, 0.3], size=n, missing_rate=0.10),
+    "cont_full": generate_continuous(mean=50, std=10, size=n),
+    "cat_full": generate_categorical(levels=[0, 1], probs=[0.6, 0.4], size=n),
+    "target": np.random.choice([0, 1], size=n, p=[0.5, 0.5])
+}
+
+# --- Build DataFrame ---
+df = pd.DataFrame(variables)
+
+# --- Display Summary ---
+print(df.head())
+print("\nMissing value counts:")
+print(df.isnull().sum())</code></pre>
+
+
+
+<p class="wp-block-paragraph">Before performing any analysis, it is essential to split the dataset into two parts: a training set and a test set.</p>
+
+
+
+<h4 class="wp-block-heading">2.1.1 Preparing Train and Test Data for Analysis the MCAR</h4>
+
+
+
+<p class="wp-block-paragraph">It is essential to split the dataset into training and test sets while ensuring representativeness. This guarantees that both the model and the imputation methods are learned exclusively on the training set and then evaluated on the test set. Doing so prevents data leakage and provides an unbiased estimate of the model’s ability to generalize to unseen data.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">from sklearn.model_selection import train_test_split
+import pandas as pd
+
+def stratified_split(df, strat_vars, test_size=0.3, random_state=None):
+    """
+    Split a DataFrame into train and test sets with stratification
+    based on one or multiple variables.
+
+    Parameters
+    ----------
+    df : pandas.DataFrame
+        The input dataset.
+    strat_vars : list or str
+        Column name(s) used for stratification.
+    test_size : float, default=0.3
+        Proportion of the dataset to include in the test split.
+    random_state : int, optional
+        Random seed for reproducibility.
+
+    Returns
+    -------
+    train_df : pandas.DataFrame
+        Training set.
+    test_df : pandas.DataFrame
+        Test set.
+    """
+    # Ensure strat_vars is a list
+    if isinstance(strat_vars, str):
+        strat_vars = [strat_vars]
+
+    # Create a combined stratification key
+    strat_key = df[strat_vars].astype(str).fillna("MISSING").agg("_".join, axis=1)
+
+    # Perform stratified split
+    train_df, test_df = train_test_split(
+        df,
+        test_size=test_size,
+        stratify=strat_key,
+        random_state=random_state
+    )
+
+    return train_df, test_df
+
+
+# --- Application ---
+# Stratification sur cat_mcar, cat_full et target
+train_df, test_df = stratified_split(df, strat_vars=["cat_mcar", "cat_full", "target"], test_size=0.3, random_state=42)
+
+print(f"Train size: {train_df.shape[0]}  ({len(train_df)/len(df):.1%})")
+print(f"Test size:  {test_df.shape[0]}  ({len(test_df)/len(df):.1%})")</code></pre>
+
+
+
+<h4 class="wp-block-heading">2.1.1  Analysis MCAR Assumption for continuous variables with missing values</h4>
+
+
+
+<p class="wp-block-paragraph">The first step is to create a binary indicator R (where 1 indicates an observed value and 0 indicates a missing value) and compare the distributions of Yo​, Ym​, and X across the two groups (observed vs. missing).</p>
+
+
+
+<p class="wp-block-paragraph">Let us illustrate this process using the variable <code>cont_mcar</code> as an example. We will compare the distribution of <code>cont_full</code> between observations where <code>cont_mcar</code> is missing and where it is observed, using both a boxplot and a Kolmogorov–Smirnov test. We will then perform a similar analysis for the categorical variable <code>cat_full</code>, comparing proportions across the two groups with a bar plot and a chi-squared test.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">import matplotlib.pyplot as plt
+import seaborn as sns
+
+# --- Step 1: Train/Test Split with Stratification ---
+train_df, test_df = stratified_split(
+    df,
+    strat_vars=["cat_mcar", "cat_full", "target"],
+    test_size=0.3,
+    random_state=42
+)
+
+# --- Step 2: Create the R indicator on the training set ---
+train_df = train_df.copy()
+train_df["R_cont_mcar"] = np.where(train_df["cont_mcar"].isnull(), 0, 1)
+
+# --- Step 3: Prepare the data for comparison ---
+df_obs = pd.DataFrame({
+    "cont_full": train_df.loc[train_df["R_cont_mcar"] == 1, "cont_full"],
+    "Group": "Observed (R=1)"
+})
+
+df_miss = pd.DataFrame({
+    "cont_full": train_df.loc[train_df["R_cont_mcar"] == 0, "cont_full"],
+    "Group": "Missing (R=0)"
+})
+
+df_all = pd.concat([df_obs, df_miss])
+
+# --- Step 4: KS Test before plotting ---
+from scipy.stats import ks_2samp
+stat, p_value = ks_2samp(
+    train_df.loc[train_df["R_cont_mcar"] == 1, "cont_full"],
+    train_df.loc[train_df["R_cont_mcar"] == 0, "cont_full"]
+)
+
+# --- Step 5: Visualization with KS result ---
+plt.figure(figsize=(8, 6))
+sns.boxplot(
+    x="Group", 
+    y="cont_full", 
+    data=df_all,
+    palette="Set2",
+    width=0.6,
+    fliersize=3
+)
+
+# Add red diamonds for means
+means = df_all.groupby("Group")["cont_full"].mean()
+for i, m in enumerate(means):
+    plt.scatter(i, m, color="red", marker="D", s=50, zorder=3, label="Mean" if i == 0 else "")
+
+# Title and KS test result
+plt.title("Distribution of cont_full by Missingness of cont_mcar (Train Set)",
+          fontsize=14, weight="bold")
+
+# Add KS result as text box
+textstr = f"KS Statistic = {stat:.3f}\nP-value = {p_value:.3f}"
+plt.gca().text(
+    0.05, 0.95, textstr,
+    transform=plt.gca().transAxes,
+    fontsize=10,
+    verticalalignment='top',
+    bbox=dict(boxstyle="round,pad=0.3", facecolor="white", alpha=0.8)
+)
+
+plt.ylabel("cont_full", fontsize=12)
+plt.xlabel("")
+sns.despine()
+plt.legend()
+plt.show()</code></pre>
+
+
+
+<figure class="wp-block-image size-full"><img decoding="async" src="../Images/60eb82bb2b328de79980b44a07418875.png" alt="" class="wp-image-622296" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/09/image-329.png"/></figure>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">import seaborn as sns
+import matplotlib.pyplot as plt
+from scipy.stats import chi2_contingency
+
+# --- Step 1: Build contingency table on the TRAIN set ---
+contingency_table = pd.crosstab(train_df["R_cont_mcar"], train_df["cat_full"])
+chi2, p_value, dof, expected = chi2_contingency(contingency_table)
+
+# --- Step 2: Compute proportions for each group ---
+# --- Recompute proportions but flip the axes ---
+props = contingency_table.div(contingency_table.sum(axis=1), axis=0)
+
+# Transform for plotting: Group (R) on x-axis, Category as hue
+df_props = props.reset_index().melt(
+    id_vars="R_cont_mcar",
+    var_name="Category",
+    value_name="Proportion"
+)
+
+# Map R values to clear labels
+df_props["Group"] = df_props["R_cont_mcar"].map({1: "Observed (R=1)", 0: "Missing (R=0)"})
+
+# --- Plot: Group on x-axis, bars show proportions of each category ---
+sns.set_theme(style="whitegrid")
+plt.figure(figsize=(8,6))
+
+sns.barplot(
+    x="Group", y="Proportion", hue="Category",
+    data=df_props, palette="Set2"
+)
+
+# Title and Chi² result
+plt.title("Proportion of cat_full by Observed/Missing Status of cont_mcar (Train Set)",
+          fontsize=14, weight="bold")
+
+# Add Chi² result as a text box
+textstr = f"Chi² = {chi2:.3f}, p = {p_value:.3f}"
+plt.gca().text(
+    0.05, 0.95, textstr,
+    transform=plt.gca().transAxes,
+    fontsize=10,
+    verticalalignment='top',
+    bbox=dict(boxstyle="round,pad=0.3", facecolor="white", alpha=0.8)
+)
+
+plt.xlabel("Observed / Missing Group (R)")
+plt.ylabel("Proportion")
+plt.legend(title="cat_full Category")
+sns.despine()
+plt.show()</code></pre>
+
+
+
+<figure class="wp-block-image size-full"><img decoding="async" src="../Images/8d13ffefdd1aa28877e02b151cc26a59.png" alt="" class="wp-image-622297" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/09/image-330.png"/></figure>
+
+
+
+<p class="wp-block-paragraph">The two figures above show that, under the MCAR assumption, the distribution of 𝑌​, 𝑌ₘ​, and 𝑋 remains unchanged regardless of the value of R (1 = observed, 0 = missing). These results are further supported by the Kolmogorov–Smirnov and Chi-squared tests, which confirm the absence of significant differences between the observed and missing groups.</p>
+
+
+
+<p class="wp-block-paragraph">For categorical variables, the same analyses can be performed as described above. While these univariate checks can be time-consuming, they are useful when the number of variables is small, as they provide a quick and intuitive first look at the missing data mechanism. For larger datasets, however, multivariate methods should be considered.</p>
+
+
+
+<h4 class="wp-block-heading">2.1.3 Multivariate Analysis of the MCAR Assumption</h4>
+
+
+
+<p class="wp-block-paragraph">To the best of my knowledge, only one multivariate statistical test is widely used to assess the MCAR assumption at the dataset level: <strong>Little’s chi2 for test MCAR assumption called mcartest.</strong> This test, developed in R language, compares the distributions of observed variables across different missing-data patterns and computes a global test statistic that follows a Chi-squared distribution.</p>
+
+
+
+<p class="wp-block-paragraph"><strong>However, its main limitation is that it is not well suited for categorical variables</strong>, as it relies on the strong assumption that the variables are normally distributed. We now turn to the methods for imputing missing values under the MCAR assumption.</p>
+
+
+
+<h3 class="wp-block-heading">2.2 Methods to deal with missing data under MCAR.</h3>
+
+
+
+<p class="wp-block-paragraph">Under the MCAR assumption, the missingness indicators R are independent of Y<sub>o</sub>, Y<sub>m</sub>, and X. Since the data are missing completely at random, dropping incomplete observations does not introduce bias. However, this approach becomes inefficient when the proportion of missing values is high.</p>
+
+
+
+<p class="wp-block-paragraph">In such cases, simple imputation methods, replacing missing values with the mean, median, or most frequent category, are often preferred. They are easy to implement, require little computational effort, and can be managed over time without adding complexity for modelers. While these methods do not create bias, they tend to underestimate variance and may distort relationships between variables.</p>
+
+
+
+<p class="wp-block-paragraph">By contrast, advanced methods such as regression-based imputation, kNN, or multiple imputation can improve statistical efficiency and help preserve information when the proportion of missing data is substantial. Their main drawback lies in their algorithmic complexity, higher computational cost, and the greater effort required to maintain them in production settings.</p>
+
+
+
+<p class="wp-block-paragraph">To impute missing values under the MCAR assumption for prediction purposes, proceed as follows:</p>
+
+
+
+<ol class="wp-block-list">
+<li class="wp-block-list-item"><strong>Learn imputation values</strong> from the training set only, using the mean for continuous variables and the most frequent category for categorical variables.</li>
+
+
+
+<li class="wp-block-list-item"><strong>Apply these values</strong> to replace missing data in both the training and the test sets.</li>
+
+
+
+<li class="wp-block-list-item"><strong>Evaluate the model</strong> on the test set, ensuring that no information from the test set was used during the imputation process.</li>
+</ol>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">import pandas as pd
+
+def compute_impute_values(df, cont_vars, cat_vars):
+    """
+    Compute imputation values (mean for continuous, mode for categorical)
+    from the training set only.
+    """
+    impute_values = {}
+    for col in cont_vars:
+        impute_values[col] = df[col].mean()
+    for col in cat_vars:
+        impute_values[col] = df[col].mode().iloc[0]
+    return impute_values
+
+def apply_imputation(train_df, test_df, impute_values, vars_to_impute):
+    """
+    Apply the learned imputation values to both train and test sets.
+    """
+    train_df[vars_to_impute] = train_df[vars_to_impute].fillna(value=impute_values)
+    test_df[vars_to_impute] = test_df[vars_to_impute].fillna(value=impute_values)
+    return train_df, test_df
+
+# --- Example usage ---
+train_df, test_df = stratified_split(
+    df,
+    strat_vars=["cat_mcar", "cat_full", "target"],
+    test_size=0.3,
+    random_state=42
+)
+
+# Variables to impute
+cont_vars = ["cont_mcar"]
+cat_vars = ["cat_mcar"]
+vars_to_impute = cont_vars + cat_vars
+
+# 1. Learn imputation values on TRAIN
+impute_values = compute_impute_values(train_df, cont_vars, cat_vars)
+print("Imputation values learned from train:", impute_values)
+
+# 2. Apply them consistently to TRAIN and TEST
+train_df, test_df = apply_imputation(train_df, test_df, impute_values, vars_to_impute)
+
+# 3. Check
+print("Remaining missing values in train:\n", train_df[vars_to_impute].isnull().sum())
+print("Remaining missing values in test:\n", test_df[vars_to_impute].isnull().sum())
+</code></pre>
+
+
+
+<p class="wp-block-paragraph">This section on understanding MCAR and selecting the appropriate imputation method provides a clear foundation for approaching similar strategies under the MAR assumption.</p>
+
+
+
+<h2 class="wp-block-heading">3. Understanding MAR and Choosing the Right Imputation Methods</h2>
+
+
+
+<p class="wp-block-paragraph">The MAR assumption is defined as :</p>
+
+
+
+<p class="has-text-align-center wp-block-paragraph"><strong>Pr(R|Y<sub>m</sub> ,Y<sub>o</sub>, X) = Pr(R|Y<sub>o</sub>, X)</strong>     (2)</p>
+
+
+
+<p class="wp-block-paragraph">In other words, the distribution of the missing indicators depends only on the observed data. Even in the case where R depends only on the covariates X,</p>
+
+
+
+<p class="has-text-align-center wp-block-paragraph"><strong>Pr(R|Y<sub>m</sub> ,Y<sub>o</sub>, X) = Pr(R|X)</strong>    (3)</p>
+
+
+
+<p class="wp-block-paragraph">This still falls under the MAR assumption.</p>
+
+
+
+<h3 class="wp-block-heading">3.1 Analysis MAR Assumption for variables with missing values</h3>
+
+
+
+<p class="wp-block-paragraph"><strong>Under the MAR assumption, the missingness indicators 𝑅 depend only on the observed variables Y<sub>o</sub> and X, but not on the missing data 𝑌.</strong><br/>To indirectly assess the plausibility of this assumption, common statistical tests (Student’s <em>t</em>-test, Kolmogorov–Smirnov, Chi-squared, etc.) can be applied by comparing the distributions of observed variables between groups with and without missing values.</p>
+
+
+
+<p class="wp-block-paragraph">For multivariate analysis, one may also use the <strong>mcartest</strong> implemented in R, which extends Little’s test of MCAR to evaluate assumption (3), namely  <strong>Pr(R|Y<sub>m</sub> ,Y<sub>o</sub>, X) = Pr(R|X)</strong>, under the assumption of multivariate normality of the variables.</p>
+
+
+
+<p class="wp-block-paragraph">If this test is not rejected, the missing-data mechanism can reasonably be considered MAR (assumption 3) given the auxiliary variables X .</p>
+
+
+
+<p class="wp-block-paragraph">We can now turn to the question of how to impute this type of missing data.</p>
+
+
+
+<h3 class="wp-block-heading">3.2 Methods to deal with missing data under MAR.</h3>
+
+
+
+<p class="wp-block-paragraph">Under the MAR assumption, the probability of missingness R depends only on the observed variables Y<sub>o</sub>​ and covariates X. In this setting, variables Y<sup>k</sup> with missing values can be explained using the other available variables Y<sub>o </sub>and X, which motivates the use of advanced imputation methods based on supervised learning.</p>
+
+
+
+<p class="wp-block-paragraph">These approaches involve building a predictive model in which the incomplete variable Y<sup>k</sup> serves as the target, and the other observed variables Y<sub>o</sub> and X act as predictors. The model is trained on complete cases ([Y<sup>k</sup>]<sub>o</sub> of Y) and then applied to estimate the missing values [Y<sup>k</sup>​]<sub>m</sub> of Y<sup>k</sup>.</p>
+
+
+
+<p class="wp-block-paragraph">The most commonly used imputation methods in the literature include:</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item"><strong>k-nearest neighbors (KNNimpute, Troyanskaya et al., 2001)</strong>, primarily applied to continuous data;</li>
+
+
+
+<li class="wp-block-list-item"><strong>the saturated multinomial model (Schafer, 1997)</strong>, designed for categorical data;</li>
+
+
+
+<li class="wp-block-list-item"><strong>multivariate imputation by chained equations (MICE, Van Buuren &amp; Oudshoorn, 1999)</strong>, suitable for mixed datasets but dependent on tuning parameters and the specification of a parametric model.</li>
+</ul>
+
+
+
+<p class="wp-block-paragraph">All of these approaches rely on assumptions about the underlying data distribution or on the ability of the chosen model to adequately capture relationships between variables.</p>
+
+
+
+<p class="wp-block-paragraph">More recently, <strong>MissForest (Stekhoven &amp; Bühlmann, 2012)</strong> has emerged as a nonparametric alternative based on random forests, well-suited to mixed data types and robust to both interactions and nonlinear relationships.</p>
+
+
+
+<p class="wp-block-paragraph">The <strong>MissForest algorithm</strong> relies on random forests (RF) to impute missing values. The authors propose the following procedure:</p>
+
+
+
+<figure class="wp-block-image size-large"><img decoding="async" src="../Images/a88f225c44dc38704264e3fb22d91293.png" alt="" class="wp-image-622649" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/09/image-349-1024x756.png"/><figcaption class="wp-element-caption"><strong>MissForest algorithm</strong><br/><strong>Source: [2] Stekhoven et al.(2012)</strong></figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">As defined, the MissForest algorithm cannot be used directly for prediction purposes. For each variable, between steps 6 and 7, <strong>the random forest model M<sub>s</sub>​</strong> used to predict y<sub>mis</sub>(s)​ from x<sub>mis</sub>(s)​is not saved. Consequently, it is neither likely nor desirable for practitioners to rely on MissForest as a predictive model in production.</p>
+
+
+
+<p class="wp-block-paragraph">The absence of stored models <strong>M<sub>s</sub></strong>​ or <strong>imputation parameters</strong> (here on the training set) makes it difficult to evaluate generalization performance on new data. Although some have attempted to work around this issue by following <a href="https://rpubs.com/lmorgan95/MissForest">Liam Morgan</a>‘s approach, the challenge remains unresolved.</p>
+
+
+
+<p class="wp-block-paragraph">Furthermore, this limitation increases algorithmic complexity and computational cost, since the entire algorithm must be rerun from scratch for each new dataset (for instance, when working with separate training and test sets).</p>
+
+
+
+<p class="wp-block-paragraph">What should be done? Should the MissForest algorithm still be used?</p>
+
+
+
+<p class="wp-block-paragraph">If the goal is to develop a model for classification or analysis solely on the available dataset, with no intention of applying it to new data, then MissForest is strongly recommended, as it offers high accuracy and robustness.</p>
+
+
+
+<p class="wp-block-paragraph">However, if the aim is to build a predictive model that will be applied to new datasets, MissForest should be avoided for the reasons discussed above. In such cases, it is preferable to use an algorithm that explicitly stores the imputation models or the parameters estimated from the training set.</p>
+
+
+
+<p class="wp-block-paragraph">Fortunately, an adapted version now exists: <strong>MissForestPredict</strong>, available since 2024 in both R and Python, specifically designed for predictive tasks. For further details, we refer the reader to <a href="https://arxiv.org/pdf/2407.03379" data-type="link" data-id="https://arxiv.org/pdf/2407.03379"><strong>Albu, Elena, et al. (2024)</strong>.</a></p>
+
+
+
+<p class="wp-block-paragraph">The use of the MissForestPredict algorithm for prediction consists of applying the standard MissForest procedure to the training data. Unlike the original MissForest, however, this version returns and stores the individual models M<sub>s</sub> associated with each variable, which makes it possible to reuse them for imputing missing values in new datasets.</p>
+
+
+
+<figure class="wp-block-image size-large"><img decoding="async" src="../Images/0a4534301f8f327e6b0b2d0b37e408eb.png" alt="" class="wp-image-622736" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/09/image-350-1024x650.png"/><figcaption class="wp-element-caption"><strong>MissForestPredict Based Imputation with Model Saving </strong><br/><strong>Source: [4] Albu et al. (2024).</strong></figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">The algorithm below illustrates how to apply <strong>MissForestPredict</strong> to new observations, whether they come from the <strong>test set</strong>, an <strong>out-of-time sample</strong>, or an <strong>application dataset</strong>.</p>
+
+
+
+<figure class="wp-block-image size-full"><img decoding="async" src="../Images/f5d197e7f78dc13279eacdf1b36e4495.png" alt="" class="wp-image-622740" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/09/image-351.png"/><figcaption class="wp-element-caption"><strong>Illustration of MissForestPredict Applied to a New Observation</strong><br/><em><strong>Source: [4] Albu et al. (2024).</strong></em></figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">We now have all the elements needed to address the issues raised in the introduction. Let us turn to the final mechanism, <strong>MNAR</strong>, before moving on to the conclusion.</p>
+
+
+
+<h2 class="wp-block-heading">4. Understanding MNAR</h2>
+
+
+
+<p class="wp-block-paragraph">Missing Not At Random (MNAR) occurs when the missing data mechanism depends directly on the unobserved values themselves. In other words, if a variable Y contains missing values, then the indicator variable R (with R=1 if Y is observed and R=0 otherwise) depends only on the missing component Y<sub>m</sub>.</p>
+
+
+
+<p class="wp-block-paragraph">There is no universal statistical method to handle this type of mechanism, since the information needed to model the dependency is precisely what is missing. In such cases, the recommended approach is to rely on domain expertise to understand the reasons behind the nonresponse and to define context-specific strategies for analyzing and addressing the missing values.</p>
+
+
+
+<p class="wp-block-paragraph"><strong>It is important to emphasize, however, that MAR and MNAR cannot generally be distinguished empirically based on the observed data alone.</strong></p>
+
+
+
+<h2 class="wp-block-heading">Conclusion</h2>
+
+
+
+<p class="wp-block-paragraph">The objective of this article was to show how to impute missing values for predictive purposes without biasing the evaluation of model performance. To this end, we presented the main mechanisms that generate missing data (MCAR, MAR, MNAR), the statistical tests used to assess their plausibility, and the imputation methods best suited to each.</p>
+
+
+
+<p class="wp-block-paragraph">Our analysis highlights that, under MCAR, simple imputation methods are generally preferable, as they provide substantial time savings without introducing bias. In practice, however, missing data mechanisms are most often MAR. In this setting, advanced imputation approaches such as MissForest, based on machine learning models, are particularly appropriate.</p>
+
+
+
+<p class="wp-block-paragraph">Nevertheless, when the goal is to build predictive models, it is essential to use methods that store the imputation parameters or models learned from the training data and then replicate them consistently on the test, out-of-time, or application datasets. This is precisely the contribution of <strong>MissForestPredict</strong> (introduced in 2024 and available in both R and Python), which addresses the limitation of the original MissForest (2012), a method not originally designed for predictive tasks.</p>
+
+
+
+<p class="wp-block-paragraph">Using MissForest for prediction without adaptation may therefore lead to biased results, unless corrective measures are implemented. It would be highly valuable for practitioners who have deployed MissForest in production to share the strategies they developed to overcome this limitation.</p>
+
+
+
+<h2 class="wp-block-heading">References</h2>
+
+
+
+<p class="wp-block-paragraph">[1] Audigier, V., White, I. R., Jolani, S., Debray, T. P., Quartagno, M., Carpenter, J., … &amp; Resche-Rigon, M. (2018). Multiple imputation for multilevel data with continuous and binary variables.</p>
+
+
+
+<p class="wp-block-paragraph">[2] Stekhoven, D. J., &amp; Bühlmann, P. (2012). MissForest—non-parametric missing value imputation for mixed-type data. <em>Bioinformatics</em>, <em>28</em>(1), 112-118.</p>
+
+
+
+<p class="wp-block-paragraph">[3] Li, C. (2013). Little’s test of missing completely at random. <em>The Stata Journal</em>, <em>13</em>(4), 795-809.</p>
+
+
+
+<p class="wp-block-paragraph">[4] Albu, E., Gao, S., Wynants, L., &amp; Van Calster, B. (2024). missForestPredict–Missing data imputation for prediction settings. <em>arXiv preprint arXiv:2407.03379</em>.</p>
+
+
+
+<h3 class="wp-block-heading">Image Credits</h3>
+
+
+
+<p class="wp-block-paragraph">All images and visualizations in this article were created by the author using Python (pandas, matplotlib, seaborn, and plotly) and excel, unless otherwise stated.</p>
+
+
+
+<h3 class="wp-block-heading">Disclaimer</h3>
+
+
+
+<p class="wp-block-paragraph"><em>I write to learn so mistakes are the norm, even though I try my best. Please, when you spot them, let me know. I also appreciate suggestions on new topics!</em></p>
+    
+</body>
+</html>

@@ -1,0 +1,605 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.1//EN"
+  "http://www.w3.org/TR/xhtml11/DTD/xhtml11.dtd">
+
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+<title>How to Spot and Prevent Model Drift Before it Impacts Your Business</title>
+<link href="../Styles/Style.css" type="text/css" rel="stylesheet"/>
+</head>
+<body>
+<h1>How to Spot and Prevent Model Drift Before it Impacts Your Business</h1>
+<blockquote>原文：<a href="https://towardsdatascience.com/how-to-spot-and-prevent-model-drift-before-it-impacts-your-business/">https://towardsdatascience.com/how-to-spot-and-prevent-model-drift-before-it-impacts-your-business/</a></blockquote>
+<p class="wp-block-paragraph">Despite the AI hype, many tech companies still rely heavily on machine learning to power critical applications, from personalized recommendations to fraud detection. </p>
+
+
+
+<p class="wp-block-paragraph">I’ve seen firsthand how undetected drifts can result in significant costs — missed fraud detection, lost revenue, and suboptimal business outcomes, just to name a few. So, it’s crucial to have robust monitoring in place if your company has deployed or plans to deploy machine learning models into production.</p>
+
+
+
+<p class="wp-block-paragraph">Undetected model drift can lead to significant financial losses, operational inefficiencies, and even damage to a company’s reputation. To mitigate these risks, it’s important to have effective model monitoring, which involves:</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">Tracking model performance</li>
+
+
+
+<li class="wp-block-list-item">Monitoring feature distributions</li>
+
+
+
+<li class="wp-block-list-item">Detecting both univariate and multivariate drifts</li>
+</ul>
+
+
+
+<p class="wp-block-paragraph">A well-implemented monitoring system can help identify issues early, saving considerable time, money, and resources.</p>
+
+
+
+<p class="wp-block-paragraph">In this comprehensive guide, I’ll provide a framework on how to think about and implement effective model monitoring, helping you stay ahead of potential issues and ensure stability and reliability of your models in production.</p>
+
+
+
+<h2 class="wp-block-heading">What’s the difference between feature drift and score drift?</h2>
+
+
+
+<p class="wp-block-paragraph">Score drift refers to a gradual change in the distribution of model scores. If left unchecked, this could lead to a <strong>decline in model performance</strong>, making the model less accurate over time.</p>
+
+
+
+<p class="wp-block-paragraph">On the other hand, feature drift occurs when one or more features experience changes in the distribution. These changes in feature values can affect the underlying relationships that the model has learned, and ultimately lead to inaccurate model predictions.</p>
+
+
+
+<h2 class="wp-block-heading">Simulating score shifts</h2>
+
+
+
+<p class="wp-block-paragraph">To model real-world fraud detection challenges, I created a synthetic dataset with five financial transaction features.</p>
+
+
+
+<p class="wp-block-paragraph">The <strong>reference dataset</strong> represents the original distribution, while the <strong>production dataset</strong> introduces shifts to simulate an increase in <strong>high-value transactions without PIN verification on newer accounts,</strong> indicating an increase in fraud.</p>
+
+
+
+<p class="wp-block-paragraph">Each feature has different underlying distributions:</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item"><strong>Transaction Amount:</strong> Log-normal distribution (right-skewed with a long tail)</li>
+
+
+
+<li class="wp-block-list-item"><strong>Account Age (months):</strong> clipped normal distribution between 0 to 60 (assuming a 5-year-old company)</li>
+
+
+
+<li class="wp-block-list-item"><strong>Time Since Last Transaction</strong>: Exponential distribution</li>
+
+
+
+<li class="wp-block-list-item"><strong>Transaction Count</strong>: Poisson distribution</li>
+
+
+
+<li class="wp-block-list-item"><strong>Entered PIN:</strong> Binomial distribution.</li>
+</ul>
+
+
+
+<p class="wp-block-paragraph">To approximate model scores, I randomly assigned weights to these features and applied a sigmoid function to constrain predictions between 0 to 1. This mimics how a logistic regression fraud model generates risk scores.</p>
+
+
+
+<p class="wp-block-paragraph">As shown in the plot below:</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item"><strong>Drifted features:</strong> <em>Transaction Amount, Account Age, Transaction Count, and Entered PIN</em> all experienced shifts in distribution, scale, or relationships.</li>
+</ul>
+
+
+
+<figure class="wp-block-image size-full"><img data-dominant-color="e1dedf" data-has-transparency="true" style="--dominant-color: #e1dedf;" decoding="async" width="768" height="863" src="../Images/adba41f95c5524a3243b94593a860c24.png" alt="" class="wp-image-598830 has-transparency" srcset="https://towardsdatascience.com/wp-content/uploads/2025/03/Model-drift-1.png 768w, https://towardsdatascience.com/wp-content/uploads/2025/03/Model-drift-1-267x300.png 267w" sizes="(max-width: 768px) 100vw, 768px" data-original-src="https://towardsdatascience.com/wp-content/uploads/2025/03/Model-drift-1.png"/><figcaption class="wp-element-caption">Distribution of drifted features (image by author)</figcaption></figure>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item"><strong>Stable feature:</strong> <em>Time Since Last Transaction</em> remained unchanged.</li>
+</ul>
+
+
+
+<figure class="wp-block-image size-full"><img data-dominant-color="e0dfe1" data-has-transparency="true" style="--dominant-color: #e0dfe1;" decoding="async" width="564" height="646" src="../Images/4d231cd2c678c32b8bdd6e73d2a8596c.png" alt="" class="wp-image-598831 has-transparency" srcset="https://towardsdatascience.com/wp-content/uploads/2025/03/Model-drift-2.png 564w, https://towardsdatascience.com/wp-content/uploads/2025/03/Model-drift-2-262x300.png 262w" sizes="(max-width: 564px) 100vw, 564px" data-original-src="https://towardsdatascience.com/wp-content/uploads/2025/03/Model-drift-2.png"/><figcaption class="wp-element-caption">Distribution of stable feature (image by author)</figcaption></figure>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item"><strong>Drifted scores:</strong> As a result of the drifted features, the distribution in model scores has also changed.</li>
+</ul>
+
+
+
+<figure class="wp-block-image size-full"><img data-dominant-color="e1dfe1" data-has-transparency="true" style="--dominant-color: #e1dfe1;" loading="lazy" decoding="async" width="564" height="646" src="../Images/bee89cc1fd9283ed2ebdb7f6e742f941.png" alt="" class="wp-image-598832 has-transparency" srcset="https://towardsdatascience.com/wp-content/uploads/2025/03/Model-drift-3.png 564w, https://towardsdatascience.com/wp-content/uploads/2025/03/Model-drift-3-262x300.png 262w" sizes="auto, (max-width: 564px) 100vw, 564px" data-original-src="https://towardsdatascience.com/wp-content/uploads/2025/03/Model-drift-3.png"/><figcaption class="wp-element-caption">Distribution of model scores (image by author)</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">This setup allows us to analyze how feature drift impacts model scores in production.</p>
+
+
+
+<h3 class="wp-block-heading">Detecting model score drift using PSI</h3>
+
+
+
+<p class="wp-block-paragraph">To monitor model scores, I used population stability index (PSI) to measure how much model score distribution has shifted over time.</p>
+
+
+
+<p class="wp-block-paragraph">PSI works by binning continuous model scores and comparing the proportion of scores in each bin between the reference and production datasets. It compares the differences in proportions and their logarithmic ratios to compute a single summary statistic to quantify the drift.</p>
+
+
+
+<p class="wp-block-paragraph"><strong>Python implementation:</strong></p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python"># Define function to calculate PSI given two datasets
+def calculate_psi(reference, production, bins=10):
+  # Discretize scores into bins
+  min_val, max_val = 0, 1
+  bin_edges = np.linspace(min_val, max_val, bins + 1)
+
+  # Calculate proportions in each bin
+  ref_counts, _ = np.histogram(reference, bins=bin_edges)
+  prod_counts, _ = np.histogram(production, bins=bin_edges)
+
+  ref_proportions = ref_counts / len(reference)
+  prod_proportions = prod_counts / len(production)
+  
+  # Avoid division by zero
+  ref_proportions = np.clip(ref_proportions, 1e-8, 1)
+  prod_proportions = np.clip(prod_proportions, 1e-8, 1)
+
+  # Calculate PSI for each bin
+  psi = np.sum((ref_proportions - prod_proportions) * np.log(ref_proportions / prod_proportions))
+
+  return psi
+  
+# Calculate PSI
+psi_value = calculate_psi(ref_data['model_score'], prod_data['model_score'], bins=10)
+print(f"PSI Value: {psi_value}")</code></pre>
+
+
+
+<p class="wp-block-paragraph">Below is a summary of how to interpret PSI values:</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item"><strong>PSI &lt; 0.1</strong>: No drift, or very minor drift (distributions are almost identical).<br/></li>
+
+
+
+<li class="wp-block-list-item"><strong>0.1 ≤ PSI &lt; 0.25</strong>: Some drift. The distributions are somewhat different.<br/></li>
+
+
+
+<li class="wp-block-list-item"><strong>0.25 ≤ PSI &lt; 0.5</strong>: Moderate drift. A noticeable shift between the reference and production distributions.<br/></li>
+
+
+
+<li class="wp-block-list-item"><strong>PSI ≥ 0.5: </strong>Significant drift. There is a large shift, indicating that the distribution in production has changed substantially from the reference data.</li>
+</ul>
+
+
+
+<figure class="wp-block-image size-full"><img data-dominant-color="e2d5dd" data-has-transparency="true" style="--dominant-color: #e2d5dd;" loading="lazy" decoding="async" width="848" height="544" src="../Images/189e91dc42a7409bc81359d573bbc426.png" alt="" class="wp-image-598833 has-transparency" srcset="https://towardsdatascience.com/wp-content/uploads/2025/03/Model-drift-4.png 848w, https://towardsdatascience.com/wp-content/uploads/2025/03/Model-drift-4-300x192.png 300w, https://towardsdatascience.com/wp-content/uploads/2025/03/Model-drift-4-768x493.png 768w" sizes="auto, (max-width: 848px) 100vw, 848px" data-original-src="https://towardsdatascience.com/wp-content/uploads/2025/03/Model-drift-4.png"/><figcaption class="wp-element-caption">Histogram of model score distributions (image by author)</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">The <strong>PSI value of 0.6374</strong> suggests a significant drift between our reference and production datasets. This aligns with the histogram of model score distributions, which visually confirms the shift towards higher scores in production — <strong>indicating an increase in risky transactions.</strong></p>
+
+
+
+<h2 class="wp-block-heading">Detecting feature drift</h2>
+
+
+
+<p class="wp-block-paragraph"><strong>Kolmogorov-Smirnov test for numeric features</strong></p>
+
+
+
+<p class="wp-block-paragraph">The Kolmogorov-Smirnov (K-S) test is my preferred method for detecting drift in numeric features, because it is <strong>non-parametric,</strong> meaning it doesn’t assume a normal distribution.</p>
+
+
+
+<p class="wp-block-paragraph">The test compares a feature’s distribution in the reference and production datasets by measuring the maximum difference between the empirical cumulative distribution functions (ECDFs). The resulting K-S statistic ranges from 0 to 1:</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">0 indicates no difference between the two distributions.</li>
+
+
+
+<li class="wp-block-list-item">Values closer to 1 suggest a greater shift.</li>
+</ul>
+
+
+
+<p class="wp-block-paragraph"><strong>Python implementation:</strong></p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python"># Create an empty dataframe
+ks_results = pd.DataFrame(columns=['Feature', 'KS Statistic', 'p-value', 'Drift Detected'])
+
+# Loop through all features and perform the K-S test
+for col in numeric_cols:
+    ks_stat, p_value = ks_2samp(ref_data[col], prod_data[col])
+    drift_detected = p_value &lt; 0.05
+		
+		# Store results in the dataframe
+    ks_results = pd.concat([
+        ks_results,
+        pd.DataFrame({
+            'Feature': [col],
+            'KS Statistic': [ks_stat],
+            'p-value': [p_value],
+            'Drift Detected': [drift_detected]
+        })
+    ], ignore_index=True)
+
+</code></pre>
+
+
+
+<p class="wp-block-paragraph">Below are ECDF charts of the four numeric features in our dataset:</p>
+
+
+
+<figure class="wp-block-image size-large"><img data-dominant-color="e8e7e8" data-has-transparency="true" style="--dominant-color: #e8e7e8;" loading="lazy" decoding="async" width="1024" height="681" src="../Images/6656dc58b81f3a721c97aa913718cee4.png" alt="" class="wp-image-598834 has-transparency" srcset="https://towardsdatascience.com/wp-content/uploads/2025/03/Model-drift-5-1024x681.png 1024w, https://towardsdatascience.com/wp-content/uploads/2025/03/Model-drift-5-300x200.png 300w, https://towardsdatascience.com/wp-content/uploads/2025/03/Model-drift-5-768x511.png 768w, https://towardsdatascience.com/wp-content/uploads/2025/03/Model-drift-5.png 1150w" sizes="auto, (max-width: 1024px) 100vw, 1024px" data-original-src="https://towardsdatascience.com/wp-content/uploads/2025/03/Model-drift-5-1024x681.png"/><figcaption class="wp-element-caption">ECDFs of four numeric features (image by author)</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">Let’s look at the account age feature as an example: the x-axis represents account age (0-50 months), while the y-axis shows the ECDF for both reference and production datasets. The production dataset skews towards newer accounts, as it has a larger proportion of observations with lower account ages.</p>
+
+
+
+<p class="wp-block-paragraph"><strong>Chi-Square test for categorical features</strong></p>
+
+
+
+<p class="wp-block-paragraph">To detect shifts in categorical and boolean features, I like to use the Chi-Square test.</p>
+
+
+
+<p class="wp-block-paragraph">This test compares the frequency distribution of a categorical feature in the reference and production datasets, and returns two values:</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item"><strong>Chi-Square statistic:</strong> A higher value indicates a greater shift between the reference and production datasets.</li>
+
+
+
+<li class="wp-block-list-item"><strong>P-value</strong>: A p-value below 0.05 suggests that the difference between the reference and production datasets is statistically significant, indicating potential feature drift.</li>
+</ul>
+
+
+
+<p class="wp-block-paragraph"><strong>Python implementation:</strong></p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python"># Create empty dataframe with corresponding column names
+chi2_results = pd.DataFrame(columns=['Feature', 'Chi-Square Statistic', 'p-value', 'Drift Detected'])
+
+for col in categorical_cols:
+    # Get normalized value counts for both reference and production datasets
+    ref_counts = ref_data[col].value_counts(normalize=True)
+    prod_counts = prod_data[col].value_counts(normalize=True)
+
+    # Ensure all categories are represented in both
+    all_categories = set(ref_counts.index).union(set(prod_counts.index))
+    ref_counts = ref_counts.reindex(all_categories, fill_value=0)
+    prod_counts = prod_counts.reindex(all_categories, fill_value=0)
+
+    # Create contingency table
+    contingency_table = np.array([ref_counts * len(ref_data), prod_counts * len(prod_data)])
+
+    # Perform Chi-Square test
+    chi2_stat, p_value, _, _ = chi2_contingency(contingency_table)
+    drift_detected = p_value &lt; 0.05
+
+    # Store results in chi2_results dataframe
+    chi2_results = pd.concat([
+        chi2_results,
+        pd.DataFrame({
+            'Feature': [col],
+            'Chi-Square Statistic': [chi2_stat],
+            'p-value': [p_value],
+            'Drift Detected': [drift_detected]
+        })
+    ], ignore_index=True)</code></pre>
+
+
+
+<p class="wp-block-paragraph">The Chi-Square statistic of 57.31 with a p-value of 3.72e-14 confirms a large shift in our categorical feature, <code>Entered PIN</code>. This finding aligns with the histogram below, which visually illustrates the shift:</p>
+
+
+
+<figure class="wp-block-image size-full"><img data-dominant-color="e1e0e2" data-has-transparency="true" style="--dominant-color: #e1e0e2;" loading="lazy" decoding="async" width="375" height="433" src="../Images/0fdc7805f2970c9a0942f6c00e642d8f.png" alt="" class="wp-image-598835 has-transparency" srcset="https://towardsdatascience.com/wp-content/uploads/2025/03/Model-drift-6.png 375w, https://towardsdatascience.com/wp-content/uploads/2025/03/Model-drift-6-260x300.png 260w" sizes="auto, (max-width: 375px) 100vw, 375px" data-original-src="https://towardsdatascience.com/wp-content/uploads/2025/03/Model-drift-6.png"/><figcaption class="wp-element-caption">Distribution of categorical feature (image by author)</figcaption></figure>
+
+
+
+<h2 class="wp-block-heading">Detecting multivariate shifts</h2>
+
+
+
+<p class="wp-block-paragraph"><strong>Spearman correlation for shifts in pairwise interactions</strong></p>
+
+
+
+<p class="wp-block-paragraph">In addition to monitoring individual feature shifts, it’s important to track <strong>shifts in relationships or interactions between features</strong>, known as multivariate shifts. Even if the distributions of individual features remain stable, multivariate shifts can signal meaningful differences in the data.</p>
+
+
+
+<p class="wp-block-paragraph">By default, Pandas’ <code>.corr()</code> function calculates Pearson correlation, which only captures linear relationships between variables. However, <strong>relationships between features are often non-linear</strong> yet still follow a consistent trend.</p>
+
+
+
+<p class="wp-block-paragraph">To capture this, we use <strong>Spearman correlation</strong> to measure <strong>monotonic relationships</strong> between features. It captures whether features <strong>change together</strong> in a consistent direction, even if their relationship isn’t strictly linear.</p>
+
+
+
+<p class="wp-block-paragraph">To assess shifts in feature relationships, we compare:</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item"><strong>Reference correlation</strong> (<code>ref_corr</code>): Captures historical feature relationships in the reference dataset.</li>
+
+
+
+<li class="wp-block-list-item"><strong>Production correlation</strong> (<code>prod_corr</code>): Captures new feature relationships in production.</li>
+
+
+
+<li class="wp-block-list-item"><strong>Absolute difference in correlation</strong>: Measures how much feature relationships have shifted between the reference and production datasets. <strong>Higher values indicate more significant shifts.</strong></li>
+</ul>
+
+
+
+<p class="wp-block-paragraph"><strong>Python implementation:</strong></p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python"># Calculate correlation matrices
+ref_corr = ref_data.corr(method='spearman')
+prod_corr = prod_data.corr(method='spearman')
+
+# Calculate correlation difference
+corr_diff = abs(ref_corr - prod_corr)</code></pre>
+
+
+
+<p class="wp-block-paragraph"><strong>Example: Change in correlation</strong></p>
+
+
+
+<p class="wp-block-paragraph">Now, let’s look at the correlation between <code>transaction_amount</code> and <code>account_age_in_months</code>:</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">In <code>ref_corr</code>, the correlation is 0.00095, indicating a weak relationship between the two features.</li>
+
+
+
+<li class="wp-block-list-item">In <code>prod_corr</code>, the correlation is -0.0325, indicating a weak negative correlation.</li>
+
+
+
+<li class="wp-block-list-item">Absolute difference in the Spearman correlation is 0.0335, which is a small but noticeable shift.</li>
+</ul>
+
+
+
+<p class="wp-block-paragraph">The absolute difference in correlation indicates a <strong>shift</strong> in the relationship between <code>transaction_amount</code> and <code>account_age_in_months</code>.</p>
+
+
+
+<p class="wp-block-paragraph">There used to be no relationship between these two features, but the production dataset indicates that there is now a weak negative correlation, meaning that newer accounts have higher transaction amounts. This is spot on!</p>
+
+
+
+<p class="wp-block-paragraph"><strong>Autoencoder for complex, high-dimensional multivariate shifts</strong></p>
+
+
+
+<p class="wp-block-paragraph">In addition to monitoring pairwise interactions, we can also look for shifts across more dimensions in the data.</p>
+
+
+
+<p class="wp-block-paragraph">Autoencoders are powerful tools for detecting <strong>high-dimensional multivariate shifts</strong>, where multiple features collectively change in ways that may not be apparent from looking at individual feature distributions or pairwise correlations.</p>
+
+
+
+<p class="wp-block-paragraph">An autoencoder is a neural network that learns a compressed representation of data through two components:</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item"><strong>Encoder:</strong> Compresses input data into a lower-dimensional representation.</li>
+
+
+
+<li class="wp-block-list-item"><strong>Decoder</strong>: Reconstructs the original input from the compressed representation.</li>
+</ul>
+
+
+
+<p class="wp-block-paragraph">To detect shifts, we compare the <strong>reconstructed output</strong> to the <strong>original input</strong> and compute the <strong>reconstruction loss</strong>.</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item"><strong>Low reconstruction loss</strong> → The autoencoder successfully reconstructs the data, meaning the new observations are similar to what it has seen and learned.</li>
+
+
+
+<li class="wp-block-list-item"><strong>High reconstruction loss</strong> → The production data deviates significantly from the learned patterns, indicating potential drift.</li>
+</ul>
+
+
+
+<p class="wp-block-paragraph">Unlike traditional drift metrics that focus on <strong>individual features or pairwise relationships</strong>, autoencoders capture <strong>complex, non-linear dependencies</strong> across multiple variables simultaneously.</p>
+
+
+
+<p class="wp-block-paragraph"><strong>Python implementation:</strong></p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">ref_features = ref_data[numeric_cols + categorical_cols]
+prod_features = prod_data[numeric_cols + categorical_cols]
+
+# Normalize the data
+scaler = StandardScaler()
+ref_scaled = scaler.fit_transform(ref_features)
+prod_scaled = scaler.transform(prod_features)
+
+# Split reference data into train and validation
+np.random.shuffle(ref_scaled)
+train_size = int(0.8 * len(ref_scaled))
+train_data = ref_scaled[:train_size]
+val_data = ref_scaled[train_size:]
+
+# Build autoencoder
+input_dim = ref_features.shape[1]
+encoding_dim = 3 
+# Input layer
+input_layer = Input(shape=(input_dim, ))
+# Encoder
+encoded = Dense(8, activation="relu")(input_layer)
+encoded = Dense(encoding_dim, activation="relu")(encoded)
+# Decoder
+decoded = Dense(8, activation="relu")(encoded)
+decoded = Dense(input_dim, activation="linear")(decoded)
+# Autoencoder
+autoencoder = Model(input_layer, decoded)
+autoencoder.compile(optimizer="adam", loss="mse")
+
+# Train autoencoder
+history = autoencoder.fit(
+    train_data, train_data,
+    epochs=50,
+    batch_size=64,
+    shuffle=True,
+    validation_data=(val_data, val_data),
+    verbose=0
+)
+
+# Calculate reconstruction error
+ref_pred = autoencoder.predict(ref_scaled, verbose=0)
+prod_pred = autoencoder.predict(prod_scaled, verbose=0)
+
+ref_mse = np.mean(np.power(ref_scaled - ref_pred, 2), axis=1)
+prod_mse = np.mean(np.power(prod_scaled - prod_pred, 2), axis=1)</code></pre>
+
+
+
+<p class="wp-block-paragraph">The charts below show the distribution of reconstruction loss between both datasets.</p>
+
+
+
+<figure class="wp-block-image size-large"><img data-dominant-color="e1e1e3" data-has-transparency="true" style="--dominant-color: #e1e1e3;" loading="lazy" decoding="async" width="1024" height="418" src="../Images/035dc1a5df8bd047e8b69e4a16c71e3c.png" alt="" class="wp-image-598836 has-transparency" srcset="https://towardsdatascience.com/wp-content/uploads/2025/03/Model-drift-7-1024x418.png 1024w, https://towardsdatascience.com/wp-content/uploads/2025/03/Model-drift-7-300x123.png 300w, https://towardsdatascience.com/wp-content/uploads/2025/03/Model-drift-7-768x314.png 768w, https://towardsdatascience.com/wp-content/uploads/2025/03/Model-drift-7.png 1146w" sizes="auto, (max-width: 1024px) 100vw, 1024px" data-original-src="https://towardsdatascience.com/wp-content/uploads/2025/03/Model-drift-7-1024x418.png"/><figcaption class="wp-element-caption">Distribution of reconstruction loss between actuals and predictions (image by author)</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">The production dataset has a higher mean reconstruction error than that of the reference dataset, indicating a shift in the overall data. This aligns with the changes in the production dataset with a higher number of newer accounts with high-value transactions.</p>
+
+
+
+<h2 class="wp-block-heading">Summarizing</h2>
+
+
+
+<p class="wp-block-paragraph">Model monitoring is an essential, yet often overlooked, responsibility for data scientists and machine learning engineers.</p>
+
+
+
+<p class="wp-block-paragraph">All the statistical methods led to the same conclusion, which aligns with the observed shifts in the data: they detected <strong>a trend in production towards newer accounts making higher-value transactions</strong>. This shift resulted in higher model scores, signaling an increase in potential fraud.</p>
+
+
+
+<p class="wp-block-paragraph">In this post, I covered techniques for detecting drift on three different levels:</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item"><strong>Model score drift:</strong> Using <strong>Population Stability Index</strong> (PSI)</li>
+
+
+
+<li class="wp-block-list-item"><strong>Individual feature drift</strong>: Using <strong>Kolmogorov-Smirnov tes</strong>t for numeric features and <strong>Chi-Square test</strong> for categorical features</li>
+
+
+
+<li class="wp-block-list-item"><strong>Multivariate drift</strong>: Using <strong>Spearman correlation</strong> for pairwise interactions and <strong>autoencoders</strong> for high-dimensional, multivariate shifts.</li>
+</ul>
+
+
+
+<p class="wp-block-paragraph">These are just a few of the techniques I rely on for comprehensive monitoring — there are plenty of other equally valid statistical methods that can also detect drift effectively.</p>
+
+
+
+<p class="wp-block-paragraph">Detected shifts often point to underlying issues that warrant further investigation. The root cause could be as serious as a data collection bug, or as minor as a time change like daylight savings time adjustments.</p>
+
+
+
+<p class="wp-block-paragraph">There are also fantastic python packages, like <a href="http://evidently.ai">evidently.ai</a>, that automate many of these comparisons. However, I believe there’s significant value in deeply understanding the statistical techniques behind drift detection, rather than relying solely on these tools.</p>
+
+
+
+<p class="wp-block-paragraph">What’s the model monitoring process like at places you’ve worked?</p>
+
+
+
+<hr class="wp-block-separator has-alpha-channel-opacity is-style-dotted"/>
+
+
+
+<p class="wp-block-paragraph"><strong>Want to build your AI skills?</strong></p>
+
+
+
+<p class="wp-block-paragraph">👉🏻 I run the <a href="http://aiweekender.substack.com/"><strong>AI Weekender</strong></a><strong> and</strong> write weekly blog posts on data science, AI weekend projects, career advice for professionals in data.</p>
+
+
+
+<hr class="wp-block-separator has-alpha-channel-opacity is-style-dotted"/>
+
+
+
+<h3 class="wp-block-heading">Resources</h3>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">Jupyter Notebook: <a href="https://colab.research.google.com/drive/1qQFKjg3wLWmj2z4w6_U_xsqRREaB2sBP?authuser=3#scrollTo=EdpoxjNY_CUX">https://colab.research.google.com/drive/1qQFKjg3wLWmj2z4w6_U_xsqRREaB2sBP?authuser=3#scrollTo=EdpoxjNY_CUX</a></li>
+</ul>
+    
+</body>
+</html>

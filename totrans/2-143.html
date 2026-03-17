@@ -1,0 +1,847 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.1//EN"
+  "http://www.w3.org/TR/xhtml11/DTD/xhtml11.dtd">
+
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+<title>Deploy a Streamlit App to AWS</title>
+<link href="../Styles/Style.css" type="text/css" rel="stylesheet"/>
+</head>
+<body>
+<h1>Deploy a Streamlit App to AWS</h1>
+<blockquote>原文：<a href="https://towardsdatascience.com/deploy-a-streamlit-app-to-aws/">https://towardsdatascience.com/deploy-a-streamlit-app-to-aws/</a></blockquote>
+<p class="wp-block-paragraph"><mdspan datatext="el1752603054976" class="mdspan-comment">OK, so you’ve developed</mdspan> a fantastic Streamlit app, and now it’s time to let the world see and use it. </p>
+
+
+
+<p class="wp-block-paragraph">What options do you have? </p>
+
+
+
+<p class="wp-block-paragraph">The easiest way is to use the Streamlit Community Cloud service. That method lets anyone online access your Streamlit app, provided they have the required URL. It’s a relatively straightforward process, but it’s a publicly available endpoint and, due to potential security issues and scalability options, it isn’t an option for most organisations.</p>
+
+
+
+<p class="wp-block-paragraph">Since Streamlit was acquired by Snowflake, deploying to that platform is now a viable option as well. </p>
+
+
+
+<p class="wp-block-paragraph">The third option is to deploy to one of the many cloud services, such as Heroku, Google Cloud, or Azure.</p>
+
+
+
+<p class="wp-block-paragraph">As an AWS user, I wanted to see how easy it would be to deploy a streamlit app to AWS, and this is what this article is about. If you refer to the official Streamlit documentation online (link at the end of the article), you’ll notice that there is no information or guidance on how to do this. So this is the “missing manual”.</p>
+
+
+
+<p class="wp-block-paragraph">The deployment process is relatively straightforward. The challenging part is ensuring that the AWS networking configuration is set up correctly. By that, I mean your VPC, security groups, subnets, route tables, subnet associations, Nat Gateways, Elastic IPS, etc…</p>
+
+
+
+<p class="wp-block-paragraph">Because every organisation’s networking setup is different, I will assume that you or someone in your organisation can resolve this aspect. However, I include some troubleshooting tips at the end of the article for the most common reasons for deployment issues<span style="margin: 0px; padding: 0px;">. If you follow my steps to the letter, you <em><strong>should</strong></em> have a working, deployed app by</span> the end of it.</p>
+
+
+
+<p class="wp-block-paragraph">In my sample deployment, I’ll be using a VPC with a Public subnet and an Internet gateway. By contrast, in real-life scenarios, you’ll probably want to use a mix of all or some of elastic load balancers, private subnets, NAT gateways and Cognito for user authentication and enhanced security. Later on, I will discuss some options for securing your app.</p>
+
+
+
+<p class="wp-block-paragraph">The app we will deploy is the dashboard I wrote using Streamlit. TDS published that article a while back, and you can find a link to it at the end of this article. In that case, I retrieved my dashboard data from a PostgreSQL database running locally. However, to avoid the costs and hassle of setting up an RDS Postgres database on AWS, I will convert my dashboard code to retrieve its data from a CSV file on S3 — Amazon’s mass storage service. </p>
+
+
+
+<p class="wp-block-paragraph">Once that’s done, it’s only a matter of copying over a CSV to AWS S3 storage, and the dashboard should work just as it did when running locally using Postgres.</p>
+
+
+
+<p class="wp-block-paragraph">I assume you have an AWS account with access to the AWS console. Additionally, if you are opting for the S3 route as your data source, you’ll need to set up AWS credentials. Once you have them, either create an .aws/credentials file in your HOME directory (as I have done), or you can pass your credential key information directly in the code.</p>
+
+
+
+<p class="wp-block-paragraph">Assuming all these prerequisites are met, we can look at the deployment using AWS’s Elastic Beanstalk service.</p>
+
+
+
+<h2 class="wp-block-heading">What is AWS Elastic Beanstalk (EB)?</h2>
+
+
+
+<p class="wp-block-paragraph">AWS Elastic Beanstalk (EB) is a fully managed service that simplifies the deployment, scaling, and management of applications in the AWS Cloud. It allows you to upload your application code in popular languages like Python, Java, .NET, Node.js, and more. It automatically handles the provisioning of the underlying infrastructure, such as servers, load balancers, and networking. With Elastic Beanstalk, you can focus on writing and maintaining your application rather than configuring servers or managing capacity because the service seamlessly scales resources as your application’s traffic fluctuates.</p>
+
+
+
+<p class="wp-block-paragraph">In addition to provisioning your EC2 servers, etc., EB will install any required external libraries on your behalf, depending on the deployment type. It can also be configured to run OS commands on server startup.</p>
+
+
+
+<h2 class="wp-block-heading">The code</h2>
+
+
+
+<p class="wp-block-paragraph">Before deploying, let’s review the changes I made to my original code to accommodate the change in data source from Postgres to S3. It boils down to replacing calls to read a Postgres table with calls to read an S3 object to feed data into the dashboard. I also put the main graphical component creation and display inside a <strong>main()</strong> module, which I call at the end of the code. Here is a full listing.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">import streamlit as st
+import pandas as pd
+import matplotlib.pyplot as plt
+import datetime
+import boto3
+from io import StringIO
+
+#########################################
+# 1. Load Data from S3
+#########################################
+
+@st.cache_data
+def load_data_from_s3(bucket_name, object_key):
+    """
+    Reads a CSV file from S3 into a Pandas DataFrame.
+    Make sure your AWS credentials are properly configured.
+    """
+    s3 = boto3.client("s3")
+    obj = s3.get_object(Bucket=bucket_name, Key=object_key)
+    df = pd.read_csv(obj['Body'])
+    
+    # Convert order_date to datetime if needed
+    df['order_date'] = pd.to_datetime(df['order_date'], format='%d/%m/%Y')
+    
+    return df
+
+#########################################
+# 2. Helper Functions (Pandas-based)
+#########################################
+
+def get_date_range(df):
+    """Return min and max dates in the dataset."""
+    min_date = df['order_date'].min()
+    max_date = df['order_date'].max()
+    return min_date, max_date
+
+def get_unique_categories(df):
+    """
+    Return a sorted list of unique categories (capitalized).
+    """
+    categories = df['categories'].dropna().unique()
+    categories = sorted([cat.capitalize() for cat in categories])
+    return categories
+
+def filter_dataframe(df, start_date, end_date, category):
+    """
+    Filter the dataframe by date range and optionally by a single category.
+    """
+    # Ensure start/end_date are converted to datetime just in case
+    start_date = pd.to_datetime(start_date)
+    end_date = pd.to_datetime(end_date)
+    
+    mask = (df['order_date'] &gt;= start_date) &amp; (df['order_date'] &lt;= end_date)
+    filtered = df.loc[mask].copy()
+    
+    # If not "All Categories," filter further by category
+    if category != "All Categories":
+        # Categories in CSV might be lowercase, uppercase, etc.
+        # Adjust as needed to match your data
+        filtered = filtered[filtered['categories'].str.lower() == category.lower()]
+    
+    return filtered
+
+def get_dashboard_stats(df, start_date, end_date, category):
+    """
+    Calculate total revenue, total orders, average order value, and top category.
+    """
+    filtered_df = filter_dataframe(df, start_date, end_date, category)
+    if filtered_df.empty:
+        return 0, 0, 0, "N/A"
+    
+    filtered_df['revenue'] = filtered_df['price'] * filtered_df['quantity']
+    total_revenue = filtered_df['revenue'].sum()
+    total_orders = filtered_df['order_id'].nunique()
+    avg_order_value = total_revenue / total_orders if total_orders &gt; 0 else 0
+    
+    # Determine top category by total revenue
+    cat_revenue = filtered_df.groupby('categories')['revenue'].sum().sort_values(ascending=False)
+    top_cat = cat_revenue.index[0].capitalize() if not cat_revenue.empty else "N/A"
+    
+    return total_revenue, total_orders, avg_order_value, top_cat
+
+def get_plot_data(df, start_date, end_date, category):
+    """
+    For 'Revenue Over Time', group by date and sum revenue.
+    """
+    filtered_df = filter_dataframe(df, start_date, end_date, category)
+    if filtered_df.empty:
+        return pd.DataFrame(columns=['date', 'revenue'])
+    
+    filtered_df['revenue'] = filtered_df['price'] * filtered_df['quantity']
+    plot_df = (
+        filtered_df.groupby(filtered_df['order_date'].dt.date)['revenue']
+        .sum()
+        .reset_index()
+        .rename(columns={'order_date': 'date'})
+        .sort_values('date')
+    )
+    return plot_df
+
+def get_revenue_by_category(df, start_date, end_date, category):
+    """
+    For 'Revenue by Category', group by category and sum revenue.
+    """
+    filtered_df = filter_dataframe(df, start_date, end_date, category)
+    if filtered_df.empty:
+        return pd.DataFrame(columns=['categories', 'revenue'])
+    
+    filtered_df['revenue'] = filtered_df['price'] * filtered_df['quantity']
+    rev_cat_df = (
+        filtered_df.groupby('categories')['revenue']
+        .sum()
+        .reset_index()
+        .sort_values('revenue', ascending=False)
+    )
+    rev_cat_df['categories'] = rev_cat_df['categories'].str.capitalize()
+    return rev_cat_df
+
+def get_top_products(df, start_date, end_date, category, top_n=10):
+    """
+    For 'Top Products', return top N products by revenue.
+    """
+    filtered_df = filter_dataframe(df, start_date, end_date, category)
+    if filtered_df.empty:
+        return pd.DataFrame(columns=['product_names', 'revenue'])
+    
+    filtered_df['revenue'] = filtered_df['price'] * filtered_df['quantity']
+    top_products_df = (
+        filtered_df.groupby('product_names')['revenue']
+        .sum()
+        .reset_index()
+        .sort_values('revenue', ascending=False)
+        .head(top_n)
+    )
+    return top_products_df
+
+def get_raw_data(df, start_date, end_date, category):
+    """
+    Return the raw (filtered) data with a revenue column.
+    """
+    filtered_df = filter_dataframe(df, start_date, end_date, category)
+    if filtered_df.empty:
+        return pd.DataFrame()
+    
+    filtered_df['revenue'] = filtered_df['price'] * filtered_df['quantity']
+    filtered_df = filtered_df.sort_values(by=['order_date', 'order_id'])
+    return filtered_df
+
+def plot_data(data, x_col, y_col, title, xlabel, ylabel, orientation='v'):
+    fig, ax = plt.subplots(figsize=(10, 6))
+    if not data.empty:
+        if orientation == 'v':
+            ax.bar(data[x_col], data[y_col])
+            plt.xticks(rotation=45)
+        else:
+            ax.barh(data[x_col], data[y_col])
+        ax.set_title(title)
+        ax.set_xlabel(xlabel)
+        ax.set_ylabel(ylabel)
+    else:
+        ax.text(0.5, 0.5, "No data available", ha='center', va='center')
+    return fig
+
+#########################################
+# 3. Streamlit Application
+#########################################
+
+def main():
+    # Title
+    st.title("Sales Performance Dashboard")
+
+    # Load your data from S3
+    # Replace these with your actual bucket name and object key
+    bucket_name = "your_s3_bucket_name"
+    object_key = "your_object_name"
+    
+    df = load_data_from_s3(bucket_name, object_key)
+    
+    # Get min and max date for default range
+    min_date, max_date = get_date_range(df)
+
+    # Create UI for date and category filters
+    with st.container():
+        col1, col2, col3 = st.columns([1, 1, 2])
+        start_date = col1.date_input("Start Date", min_date)
+        end_date = col2.date_input("End Date", max_date)
+        categories = get_unique_categories(df)
+        category = col3.selectbox("Category", ["All Categories"] + categories)
+
+    # Custom CSS for metrics
+    st.markdown("""
+        &lt;style&gt;
+        .metric-row {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 20px;
+        }
+        .metric-container {
+            flex: 1;
+            padding: 10px;
+            text-align: center;
+            background-color: #f0f2f6;
+            border-radius: 5px;
+            margin: 0 5px;
+        }
+        .metric-label {
+            font-size: 14px;
+            color: #555;
+            margin-bottom: 5px;
+        }
+        .metric-value {
+            font-size: 18px;
+            font-weight: bold;
+            color: #0e1117;
+        }
+        &lt;/style&gt;
+    """, unsafe_allow_html=True)
+
+    # Fetch stats
+    total_revenue, total_orders, avg_order_value, top_category = get_dashboard_stats(df, start_date, end_date, category)
+
+    # Display key metrics
+    metrics_html = f"""
+    &lt;div class="metric-row"&gt;
+        &lt;div class="metric-container"&gt;
+            &lt;div class="metric-label"&gt;Total Revenue&lt;/div&gt;
+            &lt;div class="metric-value"&gt;${total_revenue:,.2f}&lt;/div&gt;
+        &lt;/div&gt;
+        &lt;div class="metric-container"&gt;
+            &lt;div class="metric-label"&gt;Total Orders&lt;/div&gt;
+            &lt;div class="metric-value"&gt;{total_orders:,}&lt;/div&gt;
+        &lt;/div&gt;
+        &lt;div class="metric-container"&gt;
+            &lt;div class="metric-label"&gt;Average Order Value&lt;/div&gt;
+            &lt;div class="metric-value"&gt;${avg_order_value:,.2f}&lt;/div&gt;
+        &lt;/div&gt;
+        &lt;div class="metric-container"&gt;
+            &lt;div class="metric-label"&gt;Top Category&lt;/div&gt;
+            &lt;div class="metric-value"&gt;{top_category}&lt;/div&gt;
+        &lt;/div&gt;
+    &lt;/div&gt;
+    """
+    st.markdown(metrics_html, unsafe_allow_html=True)
+
+    # Visualization Tabs
+    st.header("Visualizations")
+    tabs = st.tabs(["Revenue Over Time", "Revenue by Category", "Top Products"])
+
+    # Revenue Over Time Tab
+    with tabs[0]:
+        st.subheader("Revenue Over Time")
+        revenue_data = get_plot_data(df, start_date, end_date, category)
+        st.pyplot(plot_data(revenue_data, 'date', 'revenue', "Revenue Over Time", "Date", "Revenue"))
+
+    # Revenue by Category Tab
+    with tabs[1]:
+        st.subheader("Revenue by Category")
+        category_data = get_revenue_by_category(df, start_date, end_date, category)
+        st.pyplot(plot_data(category_data, 'categories', 'revenue', "Revenue by Category", "Category", "Revenue"))
+
+    # Top Products Tab
+    with tabs[2]:
+        st.subheader("Top Products")
+        top_products_data = get_top_products(df, start_date, end_date, category)
+        st.pyplot(plot_data(top_products_data, 'product_names', 'revenue', "Top Products", "Revenue", "Product Name", orientation='h'))
+
+    # Raw Data
+    st.header("Raw Data")
+    raw_data = get_raw_data(df, start_date, end_date, category)
+    raw_data = raw_data.reset_index(drop=True)
+    st.dataframe(raw_data, hide_index=True)
+
+if __name__ == '__main__':
+    main()</code></pre>
+
+
+
+<p class="wp-block-paragraph">Although it’s a pretty chunky piece of code, I won’t explain exactly what it does, as I have already covered that in some detail in my previously referenced TDS article. I have included a link to the article at the end of this one for those who would like to learn more.</p>
+
+
+
+<p class="wp-block-paragraph">So, assuming you have a working Streamlit app that runs locally without issues, here are the steps you need to take to deploy it to AWS.</p>
+
+
+
+<h2 class="wp-block-heading">Preparing our code for deployment</h2>
+
+
+
+<p class="wp-block-paragraph">1/ Create a new folder on your local system to hold your code.</p>
+
+
+
+<p class="wp-block-paragraph">2/ In that folder, you’ll need three files and a sub-folder containing two more files</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">File 1 is <strong>app.py — </strong> this is your main Streamlit code file</li>
+
+
+
+<li class="wp-block-list-item">File 2 is <strong>requirements.txt —</strong> this lists all external libraries your code needs to function. Depending on what your code does, it will have at least one record referencing the Streamlit library. For my code, the file contained this,</li>
+</ul>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">streamlit
+boto3
+matplotlib
+pandas</code></pre>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">File 3 is called <strong>Procfile </strong>— this tells EB how to run your code. It’s contents should look like this</li>
+</ul>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">web: streamlit run app.py --server.port 8000 --server.enableCORS false</code></pre>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">.<strong>ebextensions</strong> — this is a subfolder which holds additional files (see below)</li>
+</ul>
+
+
+
+<p class="wp-block-paragraph">3/ The .ebextensions subfolder has these two files.</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item"><strong>nginx.config</strong> </li>
+</ul>
+
+
+
+<p class="wp-block-paragraph">It should have this content:</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">option_settings:
+  aws:elasticbeanstalk:environment:proxy:
+    ProxyServer: nginx</code></pre>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item"><strong>python.config</strong></li>
+</ul>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">option_settings:
+  aws:elasticbeanstalk:container:python:
+    WSGIPath: app:main</code></pre>
+
+
+
+<blockquote class="wp-block-quote is-layout-flow wp-block-quote-is-layout-flow">
+<p class="wp-block-paragraph">Note, although I didn’t need it for what I was doing, for completenes, you can optionally add one or more packages.config files under the .ebextensions subfolder that can contain operating system commands that are run when the EC2 server starts up. For example, </p>
+</blockquote>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-yaml">#
+# 01_packages.config
+#
+packages:
+    yum:
+        amazon-linux-extras: []
+
+commands:
+    01_postgres_activate:
+        command: sudo amazon-linux-extras enable postgresql10
+    02_postgres_install:
+        command: sudo yum install -y pip3
+    03_postgres_install:
+        command: sudo pip3 install -y psycopg2</code></pre>
+
+
+
+<p class="wp-block-paragraph">Once you have all the necessary files, the next step is to zip them into an archive, preserving the folder and subfolder structure. You can use any tool you like, but I use 7-Zip.</p>
+
+
+
+<h2 class="wp-block-heading">Deploying our code</h2>
+
+
+
+<p class="wp-block-paragraph">Deployment is a multi-stage process. First, log in to the AWS console, search for “Elastic Beanstalk” in the services search bar, and click on the link. From there, you can click the <span style="margin: 0px; padding: 0px;">large orange<strong> “Create Application”</strong></span> button. You’ll see the first of around six screens, for which you must fill in the details. In the following sections, I’ll describe the fields you must input. Leave everything else as it is.</p>
+
+
+
+<p class="wp-block-paragraph">1/ Creating the application</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">This is easy: fill in the name of your application and, optionally, its description.</li>
+</ul>
+
+
+
+<p class="wp-block-paragraph">2/ Configure Environment</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">The environment tier should be set to Web Server.</li>
+
+
+
+<li class="wp-block-list-item">Fill in the application name.</li>
+
+
+
+<li class="wp-block-list-item">For Platform type, choose <strong>Managed;</strong> for Platform, choose <strong>Python,</strong> then decide which version of Python you want to use. I used Python version 3.11.</li>
+
+
+
+<li class="wp-block-list-item">In the <strong>Application Code</strong> section, click the <strong>Upload your code</strong> option and follow the instructions. Type in a version label, then click ‘Local File’ or ‘S3 Upload’, depending on where your source files are located. You want to upload the single <strong>zip file</strong> we created earlier.</li>
+
+
+
+<li class="wp-block-list-item">Choose your instance type in the <strong>Presets</strong> section. I went for the <strong>Single instance (free tier eligible). </strong>Then hit the <strong>Next</strong> button.</li>
+</ul>
+
+
+
+<p class="wp-block-paragraph">3/ Configure Service Access</p>
+
+
+
+<figure class="wp-block-image alignwide size-large"><img data-dominant-color="052e78" data-has-transparency="false" style="--dominant-color: #052e78;" decoding="async" src="../Images/9c89c9f49da8a23179031612590e7f10.png" alt="" class="wp-image-606641 not-transparent" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/06/image-119-1024x314.png"/><figcaption class="wp-element-caption">Image from AWS website</figcaption></figure>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">For the Service role, you can use an existing one if you have it, or AWS will create one for you.</li>
+
+
+
+<li class="wp-block-list-item">For the instance profile role, you’ll probably need to create this. It just needs to have the <strong>AWSElasticBeanstalkWebTier</strong> and <strong>AmazonS3ReadOnlyAccess</strong> policies attached. Hit the <strong>Next</strong> button.</li>
+
+
+
+<li class="wp-block-list-item">I would also advise setting up an EC2 key pair at this stage, as you’ll need it to log in to the EC2 server that EB creates on your behalf. This can be invaluable for investigating potential server issues.</li>
+</ul>
+
+
+
+<p class="wp-block-paragraph">4/ Set up networking, database and tags</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">Choose your VPC. I had only one default VPC set up. You also have the option to create one here if you don’t already have one. Make sure your VPC has at least one public subnet.</li>
+
+
+
+<li class="wp-block-list-item">In Instance Settings, I checked the Public IP Address option, and I chose to use my public subnets. Click the <strong>Next</strong> button.</li>
+</ul>
+
+
+
+<p class="wp-block-paragraph">5/ Configure the instance and scaling</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">Under the EC2 Security Groups section, I chose my default security group. Under Instance Type, I opted for the t3.micro. Hit the <strong>Nex</strong>t button.</li>
+</ul>
+
+
+
+<p class="wp-block-paragraph">6/ Monitoring</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">Select basic system health monitoring</li>
+
+
+
+<li class="wp-block-list-item">Uncheck the Managed Updates checkbox</li>
+
+
+
+<li class="wp-block-list-item">Click<strong> Next</strong></li>
+</ul>
+
+
+
+<p class="wp-block-paragraph">7/ Review</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">Click <strong>Create</strong> if all is OK</li>
+</ul>
+
+
+
+<p class="wp-block-paragraph">After this, you should see a screen like this,</p>
+
+
+
+<figure class="wp-block-image alignwide size-large"><img decoding="async" src="../Images/7af443d81229246083d0d3e698a6d2e1.png" alt="" class="wp-image-605858" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/06/bs2-1-1024x478.png"/><figcaption class="wp-element-caption">Image from AWS website</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">Keep an eye on the Events tab, as this will notify you if any issues arise. If you encounter problems, you can use the Logs tab to retrieve either a full set of logs or the last 100 lines of the deployment log, which can help you debug any issues. </p>
+
+
+
+<p class="wp-block-paragraph">After a few minutes, if all has gone well, the Health label will switch from grey to green and your screen will look something like this:</p>
+
+
+
+<figure class="wp-block-image alignwide size-large"><img decoding="async" src="../Images/cf961fafc1bf45a719c6d912b5950e03.png" alt="" class="wp-image-605860" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/06/bs3-1024x596.png"/><figcaption class="wp-element-caption">Image from AWS website</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">Now, you should be able to click on the Domain URL (circled in red above), and your dashboard should appear.</p>
+
+
+
+<figure class="wp-block-image alignwide size-large"><img data-dominant-color="25323e" data-has-transparency="false" style="--dominant-color: #25323e;" decoding="async" src="../Images/ec686b509b2f7a9b4097d383ebb1746d.png" alt="" class="wp-image-605861 not-transparent" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/06/bs4-1024x640.png"/><figcaption class="wp-element-caption">Image by Author</figcaption></figure>
+
+
+
+<h2 class="wp-block-heading">Troubleshooting</h2>
+
+
+
+<p class="wp-block-paragraph">The first thing to check if you encounter problems when running your dashboard is that your source data is in the correct location and is referenced correctly in your Streamlit app source code file. If you rule that out as an issue, then you will more than likely have hit a networking setup problem, and you’ll probably see a screen like this.</p>
+
+
+
+<figure class="wp-block-image alignwide size-full"><img decoding="async" src="../Images/74ed37e62528379f1e8d76edc5cd6223.png" alt="" class="wp-image-605862" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/06/bs5.png"/><figcaption class="wp-element-caption">Image by Author</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">If that’s the case, here are a few things you can check out. You may need to log in to your EC2 instance and review the logs. In my case, I encountered an issue with my pip install command, which ran out of space to install all the necessary packages. To solve that, I had to add extra Elastic Block storage to my instance. </p>
+
+
+
+<p class="wp-block-paragraph">The more likely cause will be a networking issue. In that case, try some or all of the suggestions below.</p>
+
+
+
+<p class="wp-block-paragraph"><strong>VPC Configuration</strong></p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">Ensure your Elastic Beanstalk environment is deployed in a VPC with at least one public subnet.</li>
+
+
+
+<li class="wp-block-list-item">Verify that the VPC has an Internet Gateway attached.</li>
+</ul>
+
+
+
+<p class="wp-block-paragraph"><strong>Subnet Configuration</strong></p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">Confirm that the subnet used by your Elastic Beanstalk environment is public.</li>
+
+
+
+<li class="wp-block-list-item">Check that the “Auto-assign public IPv4 address” setting is enabled for this subnet.</li>
+</ul>
+
+
+
+<p class="wp-block-paragraph"><strong>Route Table</strong></p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">Verify that the route table associated with your public subnet has a route to the Internet Gateway (0.0.0.0/0 -&gt; igw-xxxxxxxx).</li>
+</ul>
+
+
+
+<p class="wp-block-paragraph"><strong>Security Group</strong></p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">Review the inbound rules of the security group attached to your Elastic Beanstalk instances.</li>
+
+
+
+<li class="wp-block-list-item">Ensure it allows incoming traffic on port 80 (HTTP) and/or 443 (HTTPS) from the appropriate sources.</li>
+
+
+
+<li class="wp-block-list-item">Check that outbound rules allow necessary outgoing traffic.</li>
+</ul>
+
+
+
+<p class="wp-block-paragraph"><strong>Network Access Control Lists (NACLS)</strong></p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">Review the Network ACLS associated with your subnet.</li>
+
+
+
+<li class="wp-block-list-item">Ensure they allow both inbound and outbound traffic on the necessary ports.</li>
+</ul>
+
+
+
+<p class="wp-block-paragraph"><strong>Elastic Beanstalk Environment Configuration</strong></p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">Verify that your environment is using the correct VPC and public subnet in the Elastic Beanstalk console.</li>
+</ul>
+
+
+
+<p class="wp-block-paragraph"><strong>EC2 Instance Configuration</strong></p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">Verify that the EC2 instances launched by Elastic Beanstalk have public IP addresses assigned.</li>
+</ul>
+
+
+
+<p class="wp-block-paragraph"><strong>Load Balancer Configuration (if applicable)</strong></p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">If you use a load balancer, ensure it’s configured correctly in the public subnet.</li>
+
+
+
+<li class="wp-block-list-item">Check that the load balancer security group allows incoming traffic and can communicate with the EC2 instances.</li>
+</ul>
+
+
+
+<h2 class="wp-block-heading">Securing your app</h2>
+
+
+
+<p class="wp-block-paragraph">As it stands, your deployed app is visible to anyone on the internet who knows your deployed EB domain name. This is <em><strong>probably</strong></em> not what you want. So, what are your options for securing your app on AWS infrastructure?</p>
+
+
+
+<p class="wp-block-paragraph"><strong>1/ Lock the security group to trusted CIDRs</strong></p>
+
+
+
+<p class="wp-block-paragraph">In the console, find the security group associated with your EB deployment and click on it. It should look like this,</p>
+
+
+
+<figure class="wp-block-image alignwide size-large"><img decoding="async" src="../Images/4c3db049fb25641406b1515d4b17a6b9.png" alt="" class="wp-image-606640" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/06/tom1-1024x194.png"/><figcaption class="wp-element-caption">Image from AWS website</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">Make sure you’re on the Inbound Rules TAB, choose Edit Inbound Rules, and change the source IP ranges to your corporate IP ranges or another set of IP addresses.</p>
+
+
+
+<p class="wp-block-paragraph"><strong>2/ Use private subnets, internal load balancers and NAT Gateways</strong></p>
+
+
+
+<p class="wp-block-paragraph">This is a more challenging option to implement and likely requires the expertise of your AWS network administrator or deployment specialist.</p>
+
+
+
+<p class="wp-block-paragraph"><strong>3/ Using AWS Cognito and an application load balancer</strong></p>
+
+
+
+<p class="wp-block-paragraph">Again, this is a more complex setup that you’ll probably need assistance with if you’re not an AWS network guru, but it is perhaps the most robust of them all. The flow is this:-</p>
+
+
+
+<p class="wp-block-paragraph">A user navigates to your public Streamlit URL.</p>
+
+
+
+<p class="wp-block-paragraph">The ALB intercepts the request. It sees that the user is either not already logged in or not authenticated.</p>
+
+
+
+<p class="wp-block-paragraph">The ALB automatically redirects the user to Cognito to sign in or create an account. Upon successful login, Cognito redirects the user back to your application URL. The ALB now recognises a valid session and allows the request to proceed to your Streamlit app.</p>
+
+
+
+<p class="wp-block-paragraph">Your Streamlit app only ever receives traffic from authenticated users.</p>
+
+
+
+<hr class="wp-block-separator has-alpha-channel-opacity is-style-dotted"/>
+
+
+
+<h2 class="wp-block-heading">Summary</h2>
+
+
+
+<p class="wp-block-paragraph">In this article, I discussed deploying a Streamlit dashboard application I had previously written to AWS. The original app utilised PostgreSQL as its data source, and I demonstrated how to switch to using AWS S3 in preparation for deploying the app to AWS. </p>
+
+
+
+<p class="wp-block-paragraph">I discussed deploying the app to AWS using their Elastic Beanstalk service. I described and explained all the extra files required before deployment, including the need for them to be contained in a zip archive.</p>
+
+
+
+<p class="wp-block-paragraph">I then briefly explained the Elastic Beanstalk service and described the detailed steps required to use it to deploy our Streamlit app to AWS infrastructure. I described the multiple input screens that needed to be navigated and showed what inputs to use at various stages.</p>
+
+
+
+<p class="wp-block-paragraph">I highlighted some troubleshooting methods if the app deployment doesn’t go as expected.</p>
+
+
+
+<p class="wp-block-paragraph">Finally, I provided some suggestions on how to protect your app from unauthorised access.</p>
+
+
+
+<blockquote class="wp-block-quote is-layout-flow wp-block-quote-is-layout-flow">
+<p class="wp-block-paragraph">For more information on Streamlit, check out their online documention using the link below.</p>
+
+
+
+<p class="has-text-align-center wp-block-paragraph"><a href="https://docs.streamlit.io">https://docs.streamlit.io</a></p>
+
+
+
+<p class="wp-block-paragraph">To find out more about developing with Streamlit I show how to develop a modern data dashboard with it in the article linked below.</p>
+</blockquote>
+
+
+
+<figure class="wp-block-embed is-type-wp-embed is-provider-towards-data-science wp-block-embed-towards-data-science"><div class="wp-block-embed__wrapper">
+<blockquote class="wp-embedded-content" data-secret="oPbvzDABGV"><a href="https://towardsdatascience.com/building-a-data-dashboard-9441db646697/">Building a Data Dashboard</a></blockquote>
+</div></figure>
+    
+</body>
+</html>

@@ -1,0 +1,801 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.1//EN"
+  "http://www.w3.org/TR/xhtml11/DTD/xhtml11.dtd">
+
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+<title>Agentic AI from First Principles: Reflection</title>
+<link href="../Styles/Style.css" type="text/css" rel="stylesheet"/>
+</head>
+<body>
+<h1>Agentic AI from First Principles: Reflection</h1>
+<blockquote>原文：<a href="https://towardsdatascience.com/agentic-ai-from-first-principles-reflection/">https://towardsdatascience.com/agentic-ai-from-first-principles-reflection/</a></blockquote>
+<p class="wp-block-paragraph"><mdspan datatext="el1761260841645" class="mdspan-comment">Arthur C. Clarke’s Third Law</mdspan> says that “<em>any sufficiently advanced technology is indistinguishable from magic</em>”. That’s exactly how a lot of today’s AI frameworks feel. Tools like GitHub Copilot, Claude Desktop, OpenAI Operator, and Perplexity Comet are automating everyday tasks that would’ve seemed impossible to automate just five years ago. What’s even more remarkable is that with just a few lines of code, we can build our own sophisticated AI tools: ones that search through files, browse the web, click links, and even make purchases. It really does feel like magic.</p>
+
+
+
+<p class="wp-block-paragraph">Even though I <a href="https://towardsdatascience.com/i-think-of-analysts-as-data-wizards-who-help-their-product-teams-solve-problems/" rel="noreferrer noopener" target="_blank">genuinely believe in data wizards</a>, I don’t believe in magic. I find it exciting (and often helpful) to understand how things are actually built and what’s happening under the hood. That’s why I’ve decided to share a series of posts on agentic AI design concepts that’ll help you understand how all these magical tools actually work.</p>
+
+
+
+<p class="wp-block-paragraph">To gain a deep understanding, we’ll build a multi-AI agent system from scratch. We’ll avoid using frameworks like CrewAI or smolagents and instead work directly with the foundation model API. Along the way, we’ll explore the fundamental agentic design patterns: reflection, tool use, planning, and multi-agent setups. Then, we’ll combine all this knowledge to build a multi-AI agent system that can answer complex data-related questions.</p>
+
+
+
+<p class="wp-block-paragraph">As Richard Feynman put it, “<em>What I cannot create, I do not understand</em>.” So let’s start building! In this article, we’ll focus on the reflection design pattern. But first, let’s figure out what exactly reflection is.</p>
+
+
+
+<h2 class="wp-block-heading">What reflection is</h2>
+
+
+
+<p class="wp-block-paragraph">Let’s reflect on how we (humans) usually work on tasks. Imagine I need to share the results of a recent feature launch with my PM. I’ll likely put together a quick draft and then read it once or twice from beginning to end, ensuring that all parts are consistent, there’s enough information, and there are no typos.</p>
+
+
+
+<p class="wp-block-paragraph">Or let’s take another example: writing a SQL query. I’ll either write it step by step, checking the intermediate results along the way, or (if it’s simple enough) I’ll draft it all at once, execute it, look at the result (checking for errors or whether the result matches my expectations), and then tweak the query based on that feedback. I might rerun it, check the result, and iterate until it’s right.</p>
+
+
+
+<p class="wp-block-paragraph">So we rarely write long texts from top to bottom in one go. We usually circle back, review, and tweak as we go. These feedback loops are what help us improve the quality of our work.</p>
+
+
+
+<figure class="wp-block-image size-large"><img decoding="async" src="../Images/c4ff4d0f8824b18665eb5d5b1566f33f.png" alt="" class="wp-image-627319" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/10/Screenshot-2025-10-23-at-08.57.53-1024x789.png"/><figcaption class="wp-element-caption">Image by author</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">LLMs use a different approach. If you ask an LLM a question, by default, it will generate an answer token by token, and the LLM won’t be able to review its result and fix any issues. But in an agentic AI setup, we can create feedback loops for LLMs too, either by asking the LLM to review and improve its own answer or by sharing external feedback with it (like the results of a SQL execution). And that’s the whole point of reflection. It sounds pretty straightforward, but it can yield significantly better results.</p>
+
+
+
+<p class="wp-block-paragraph">There’s a substantial body of research showing the benefits of reflection:</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item"><strong>“</strong><a href="https://arxiv.org/abs/2303.17651?utm_campaign=The%20Batch&amp;utm_source=hs_email&amp;utm_medium=email&amp;_hsenc=p2ANqtz-9dHVnW1I1bA3sPBbsikjT165Qez3QiiAssknCERwgki818YHG7PyHOQSgg-nxKDa0BuE7B" target="_blank" rel="noreferrer noopener"><strong>Self-Refine: Iterative Refinement with Self-Feedback</strong></a><strong>”</strong> Madaan et al. (2023) showed that self-refinement improved performance by ~20% points across diverse tasks, ranging from dialogue response generation to mathematical reasoning.</li>
+</ul>
+
+
+
+<figure class="wp-block-image"><img decoding="async" src="../Images/d3ded3c0e3caf2ef7fc58ae0a724d373.png" alt="" data-original-src="https://cdn-images-1.medium.com/max/1600/1*fZCBw-xDGLRiQaOSGKznQw.png"/><figcaption class="wp-element-caption">Image from “<a href="https://arxiv.org/abs/2303.17651?utm_campaign=The%20Batch&amp;utm_source=hs_email&amp;utm_medium=email&amp;_hsenc=p2ANqtz-9dHVnW1I1bA3sPBbsikjT165Qez3QiiAssknCERwgki818YHG7PyHOQSgg-nxKDa0BuE7B" rel="noreferrer noopener" target="_blank">Self-Refine: Iterative Refinement with Self-Feedback</a>,” Madaan et al. </figcaption></figure>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">In <strong>“</strong><a href="https://arxiv.org/abs/2303.11366?utm_campaign=The%20Batch&amp;utm_source=hs_email&amp;utm_medium=email&amp;_hsenc=p2ANqtz-9dHVnW1I1bA3sPBbsikjT165Qez3QiiAssknCERwgki818YHG7PyHOQSgg-nxKDa0BuE7B" target="_blank" rel="noreferrer noopener"><strong>Reflexion: Language Agents with Verbal Reinforcement Learning</strong></a><strong>”</strong> Shinn et al. (2023), the authors achieved a 91% pass@1 accuracy on the HumanEval coding benchmark, surpassing the previous state-of-the-art GPT-4, which scored just 80%. They also found that Reflexion significantly outperforms all baseline approaches on the HotPotQA benchmark (a Wikipedia-based Q&amp;A dataset that challenges agents to parse content and reason over multiple supporting documents).</li>
+</ul>
+
+
+
+<figure class="wp-block-image"><img decoding="async" src="../Images/67f4dc9f4d3b70c0b2265b7a91457e2e.png" alt="" data-original-src="https://cdn-images-1.medium.com/max/1600/1*UbEzF5n1PZbD8oRLJW3mMw.png"/><figcaption class="wp-element-caption">Image from “<a href="https://arxiv.org/abs/2303.11366?utm_campaign=The%20Batch&amp;utm_source=hs_email&amp;utm_medium=email&amp;_hsenc=p2ANqtz-9dHVnW1I1bA3sPBbsikjT165Qez3QiiAssknCERwgki818YHG7PyHOQSgg-nxKDa0BuE7B" rel="noreferrer noopener" target="_blank">Reflexion: Language Agents with Verbal Reinforcement Learning</a>,” Shinn et al.</figcaption></figure>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item"><strong>“</strong><a href="https://arxiv.org/abs/2305.11738?utm_campaign=The%20Batch&amp;utm_source=hs_email&amp;utm_medium=email&amp;_hsenc=p2ANqtz-9dHVnW1I1bA3sPBbsikjT165Qez3QiiAssknCERwgki818YHG7PyHOQSgg-nxKDa0BuE7B" target="_blank" rel="noreferrer noopener"><strong>CRITIC: Large Language Models Can Self-Correct with Tool-Interactive Critiquing</strong></a><strong>”</strong> Gou et al. (2024), focuses on the impact of external feedback, enabling LLMs to use external tools to verify and correct their own outputs. This approach showed 10–30% points improvement in accuracy on various tasks, from answering free-form questions to solving math problems.</li>
+</ul>
+
+
+
+<p class="wp-block-paragraph">Reflection is especially impactful in agentic systems because it can be used to course-correct at many steps of the process:</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">When a user asks a question, the LLM can use reflection to evaluate whether the request is feasible.</li>
+
+
+
+<li class="wp-block-list-item">When the LLM puts together an initial plan, it can use reflection to double-check whether the plan makes sense and can help achieve the goal.</li>
+
+
+
+<li class="wp-block-list-item">After each execution step or tool call, the agent can evaluate whether it’s on track and whether it’s worth adjusting the plan.</li>
+
+
+
+<li class="wp-block-list-item">When the plan is fully executed, the agent can reflect to see whether it has actually accomplished the goal and solved the task.</li>
+</ul>
+
+
+
+<p class="wp-block-paragraph">It’s clear that reflection can significantly improve accuracy. However, there are trade-offs worth discussing. Reflection might require multiple additional calls to the LLM and potentially other systems, which can lead to increased latency and costs. So in business cases, it’s worth considering whether the quality improvements justify the expenses and delays in the user flow.</p>
+
+
+
+<h2 class="wp-block-heading">Reflection in frameworks</h2>
+
+
+
+<p class="wp-block-paragraph">Since there’s no doubt that reflection brings value to AI agents, it’s widely used in popular frameworks. Let’s look at some examples.</p>
+
+
+
+<p class="wp-block-paragraph">The idea of reflection was first proposed in the paper <a href="https://arxiv.org/abs/2210.03629" rel="noreferrer noopener" target="_blank">“ReAct: Synergizing Reasoning and Acting in Language Models”</a> by Yao et al. (2022). ReAct is a framework that combines interleaving stages of Reasoning (reflection through explicit thought traces) and Acting (task-relevant actions in an environment). In this framework, reasoning guides the choice of actions, and actions produce new observations that inform further reasoning. The reasoning stage itself is a combination of reflection and planning.</p>
+
+
+
+<p class="wp-block-paragraph">This framework became quite popular, so there are now several off-the-shelf implementations, such as:</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">The <a href="https://dspy.ai/api/modules/ReAct/" target="_blank" rel="noreferrer noopener"><strong>DSPy</strong></a> framework by Databricks has a <code>ReAct</code> class,</li>
+
+
+
+<li class="wp-block-list-item">In <a href="https://langchain-ai.github.io/langgraph/agents/agents/#1-install-dependencies" target="_blank" rel="noreferrer noopener"><strong>LangGraph</strong></a>, you can use the <code>create_react_agent</code> function,</li>
+
+
+
+<li class="wp-block-list-item">Code agents in the <a href="https://huggingface.co/docs/smolagents/conceptual_guides/react" target="_blank" rel="noreferrer noopener"><strong>smolagents</strong></a> library by HuggingFace are also based on the ReAct architecture.</li>
+</ul>
+
+
+
+<h2 class="wp-block-heading">Reflection from scratch</h2>
+
+
+
+<p class="wp-block-paragraph">Now that we’ve learned the theory and explored existing implementations, it’s time to get our hands dirty and build something ourselves. In the ReAct approach, agents use reflection at each step, combining planning with reflection. However, to understand the impact of reflection more clearly, we’ll look at it in isolation.</p>
+
+
+
+<p class="wp-block-paragraph">As an example, we’ll use text-to-SQL: we’ll give an LLM a question and expect it to return a valid SQL query. We’ll be working with <a href="https://www.kaggle.com/datasets/hrishitpatil/flight-data-2024" rel="noreferrer noopener" target="_blank">a flight delay dataset</a> and the ClickHouse SQL dialect.</p>
+
+
+
+<p class="wp-block-paragraph">We’ll start by using direct generation without any reflection as our baseline. Then, we’ll try using reflection by asking the model to critique and improve the SQL, or by providing it with additional feedback. After that, we’ll measure the quality of our answers to see whether reflection actually leads to better results.</p>
+
+
+
+<h3 class="wp-block-heading">Direct generation</h3>
+
+
+
+<p class="wp-block-paragraph">We’ll begin with the most straightforward approach, direct generation, where we ask the LLM to generate SQL that answers a user query.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks" datatext="el1761208924193"><code class="language-bash">pip install anthropic</code></pre>
+
+
+
+<p class="wp-block-paragraph">We need to specify the API Key for the Anthropic API.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">import os
+os.environ['ANTHROPIC_API_KEY'] = config['ANTHROPIC_API_KEY']</code></pre>
+
+
+
+<p class="wp-block-paragraph">The next step is to initialise the client, and we’re all set.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">import anthropic
+client = anthropic.Anthropic()</code></pre>
+
+
+
+<p class="wp-block-paragraph">Now we can use this client to send messages to the LLM. Let’s put together a function to generate SQL based on a user query. I’ve specified the system prompt with basic instructions and detailed information about the data schema. I’ve also created a function to send the system prompt and user query to the LLM.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">base_sql_system_prompt = '''
+You are a senior SQL developer and your task is to help generate a SQL query based on user requirements. 
+You are working with ClickHouse database. Specify the format (Tab Separated With Names) in the SQL query output to ensure that column names are included in the output.
+Do not use count(*) in your queries since it's a bad practice with columnar databases, prefer using count().
+Ensure that the query is syntactically correct and optimized for performance, taking into account ClickHouse specific features (i.e. that ClickHouse is a columnar database and supports functions like ARRAY JOIN, SAMPLE, etc.).
+Return only the SQL query without any additional explanations or comments.
+
+You will be working with flight_data table which has the following schema:
+
+Column Name | Data Type | Null % | Example Value | Description
+--- | --- | --- | --- | ---
+year | Int64 | 0.0 | 2024 | Year of flight
+month | Int64 | 0.0 | 1 | Month of flight (1–12)
+day_of_month | Int64 | 0.0 | 1 | Day of the month
+day_of_week | Int64 | 0.0 | 1 | Day of week (1=Monday … 7=Sunday)
+fl_date | datetime64[ns] | 0.0 | 2024-01-01 00:00:00 | Flight date (YYYY-MM-DD)
+op_unique_carrier | object | 0.0 | 9E | Unique carrier code
+op_carrier_fl_num | float64 | 0.0 | 4814.0 | Flight number for reporting airline
+origin | object | 0.0 | JFK | Origin airport code
+origin_city_name | object | 0.0 | "New York, NY" | Origin city name
+origin_state_nm | object | 0.0 | New York | Origin state name
+dest | object | 0.0 | DTW | Destination airport code
+dest_city_name | object | 0.0 | "Detroit, MI" | Destination city name
+dest_state_nm | object | 0.0 | Michigan | Destination state name
+crs_dep_time | Int64 | 0.0 | 1252 | Scheduled departure time (local, hhmm)
+dep_time | float64 | 1.31 | 1247.0 | Actual departure time (local, hhmm)
+dep_delay | float64 | 1.31 | -5.0 | Departure delay in minutes (negative if early)
+taxi_out | float64 | 1.35 | 31.0 | Taxi out time in minutes
+wheels_off | float64 | 1.35 | 1318.0 | Wheels-off time (local, hhmm)
+wheels_on | float64 | 1.38 | 1442.0 | Wheels-on time (local, hhmm)
+taxi_in | float64 | 1.38 | 7.0 | Taxi in time in minutes
+crs_arr_time | Int64 | 0.0 | 1508 | Scheduled arrival time (local, hhmm)
+arr_time | float64 | 1.38 | 1449.0 | Actual arrival time (local, hhmm)
+arr_delay | float64 | 1.61 | -19.0 | Arrival delay in minutes (negative if early)
+cancelled | int64 | 0.0 | 0 | Cancelled flight indicator (0=No, 1=Yes)
+cancellation_code | object | 98.64 | B | Reason for cancellation (if cancelled)
+diverted | int64 | 0.0 | 0 | Diverted flight indicator (0=No, 1=Yes)
+crs_elapsed_time | float64 | 0.0 | 136.0 | Scheduled elapsed time in minutes
+actual_elapsed_time | float64 | 1.61 | 122.0 | Actual elapsed time in minutes
+air_time | float64 | 1.61 | 84.0 | Flight time in minutes
+distance | float64 | 0.0 | 509.0 | Distance between origin and destination (miles)
+carrier_delay | int64 | 0.0 | 0 | Carrier-related delay in minutes
+weather_delay | int64 | 0.0 | 0 | Weather-related delay in minutes
+nas_delay | int64 | 0.0 | 0 | National Air System delay in minutes
+security_delay | int64 | 0.0 | 0 | Security delay in minutes
+late_aircraft_delay | int64 | 0.0 | 0 | Late aircraft delay in minutes
+'''
+
+def generate_direct_sql(rec):
+  # making an LLM call
+  message = client.messages.create(
+    model = "claude-3-5-haiku-latest",
+    # I chose smaller model so that it's easier for us to see the impact 
+    max_tokens = 8192,
+    system=base_sql_system_prompt,
+    messages = [
+        {'role': 'user', 'content': rec['question']}
+    ]
+  )
+
+  sql  = message.content[0].text
+  
+  # cleaning the output
+  if sql.endswith('```'):
+    sql = sql[:-3]
+  if sql.startswith('```sql'):
+    sql = sql[6:]
+  return sql</code></pre>
+
+
+
+<p class="wp-block-paragraph">That’s it. Now let’s test our text-to-SQL solution. I’ve created a <a href="https://github.com/miptgirl/miptgirl_medium/blob/main/ai_under_the_hood/data/flight_data_qa_pairs.json" target="_blank" rel="noreferrer noopener">small evaluation set</a> of 20 question-and-answer pairs that we can use to check whether our system is working well. Here’s one example:</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">{
+'question': 'What was the highest speed in mph?',
+'answer': '''
+    select max(distance / (air_time / 60)) as max_speed 
+    from flight_data 
+    where air_time &gt; 0 
+    format TabSeparatedWithNames'''
+}</code></pre>
+
+
+
+<p class="wp-block-paragraph">Let’s use our text-to-SQL function to generate SQL for all user queries in the test set.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python"># load evaluation set
+with open('./data/flight_data_qa_pairs.json', 'r') as f:
+    qa_pairs = json.load(f)
+qa_pairs_df = pd.DataFrame(qa_pairs)
+
+tmp = []
+# executing LLM for each question in our eval set
+for rec in tqdm.tqdm(qa_pairs_df.to_dict('records')):
+    llm_sql = generate_direct_sql(rec)
+    tmp.append(
+        {
+            'id': rec['id'],
+            'llm_direct_sql': llm_sql
+        }
+    )
+
+llm_direct_df = pd.DataFrame(tmp)
+direct_result_df = qa_pairs_df.merge(llm_direct_df, on = 'id')</code></pre>
+
+
+
+<p class="wp-block-paragraph">Now we have our answers, and the next step is to measure the quality.</p>
+
+
+
+<h3 class="wp-block-heading">Measuring quality</h3>
+
+
+
+<p class="wp-block-paragraph">Unfortunately, there’s no single correct answer in this situation, so we can’t just compare the SQL generated by the LLM to a reference answer. We need to come up with a way to measure quality.</p>
+
+
+
+<p class="wp-block-paragraph">There are some aspects of quality that we can check with objective criteria, but to check whether the LLM returned the right answer, we’ll need to use an LLM. So I’ll use a combination of approaches:</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">First, we’ll use objective criteria to check whether the correct format was specified in the SQL (we instructed the LLM to use <code>TabSeparatedWithNames</code>).</li>
+
+
+
+<li class="wp-block-list-item">Second, we can execute the generated query and see whether ClickHouse returns an execution error.</li>
+
+
+
+<li class="wp-block-list-item">Finally, we can create an LLM judge that compares the output from the generated query to our reference answer and checks whether they differ.</li>
+</ul>
+
+
+
+<p class="wp-block-paragraph">Let’s start by executing the SQL. It’s worth noting that our <code>get_clickhouse_data</code> function doesn’t throw an exception. Instead, it returns text explaining the error, which can be handled by the LLM later.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">CH_HOST = 'http://localhost:8123' # default address 
+import requests
+import pandas as pd
+import tqdm
+
+# function to execute SQL query
+def get_clickhouse_data(query, host = CH_HOST, connection_timeout = 1500):
+  r = requests.post(host, params = {'query': query}, 
+    timeout = connection_timeout)
+  if r.status_code == 200:
+      return r.text
+  else: 
+      return 'Database returned the following error:n' + r.text
+
+# getting the results of SQL execution
+direct_result_df['llm_direct_output'] = direct_result_df['llm_direct_sql'].apply(get_clickhouse_data)
+direct_result_df['answer_output'] = direct_result_df['answer'].apply(get_clickhouse_data)</code></pre>
+
+
+
+<p class="wp-block-paragraph">The next step is to create an LLM judge. For this, I’m using a chain‑of‑thought approach that prompts the LLM to provide its reasoning before giving the final answer. This gives the model time to think through the problem, which improves response quality.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">llm_judge_system_prompt = '''
+You are a senior analyst and your task is to compare two SQL query results and determine if they are equivalent. 
+Focus only on the data returned by the queries, ignoring any formatting differences. 
+Take into account the initial user query and information needed to answer it. For example, if user asked for the average distance, and both queries return the same average value but in one of them there's also a count of records, you should consider them equivalent, since both provide the same requested information.
+
+Answer with a JSON of the following structure:
+{
+  'reasoning': '&lt;your reasoning here, 1-3 sentences on why you think they are equivalent or not&gt;', 
+  'equivalence': &lt;true|false&gt;
+}
+Ensure that ONLY JSON is in the output. 
+
+You will be working with flight_data table which has the following schema:
+Column Name | Data Type | Null % | Example Value | Description
+--- | --- | --- | --- | ---
+year | Int64 | 0.0 | 2024 | Year of flight
+month | Int64 | 0.0 | 1 | Month of flight (1–12)
+day_of_month | Int64 | 0.0 | 1 | Day of the month
+day_of_week | Int64 | 0.0 | 1 | Day of week (1=Monday … 7=Sunday)
+fl_date | datetime64[ns] | 0.0 | 2024-01-01 00:00:00 | Flight date (YYYY-MM-DD)
+op_unique_carrier | object | 0.0 | 9E | Unique carrier code
+op_carrier_fl_num | float64 | 0.0 | 4814.0 | Flight number for reporting airline
+origin | object | 0.0 | JFK | Origin airport code
+origin_city_name | object | 0.0 | "New York, NY" | Origin city name
+origin_state_nm | object | 0.0 | New York | Origin state name
+dest | object | 0.0 | DTW | Destination airport code
+dest_city_name | object | 0.0 | "Detroit, MI" | Destination city name
+dest_state_nm | object | 0.0 | Michigan | Destination state name
+crs_dep_time | Int64 | 0.0 | 1252 | Scheduled departure time (local, hhmm)
+dep_time | float64 | 1.31 | 1247.0 | Actual departure time (local, hhmm)
+dep_delay | float64 | 1.31 | -5.0 | Departure delay in minutes (negative if early)
+taxi_out | float64 | 1.35 | 31.0 | Taxi out time in minutes
+wheels_off | float64 | 1.35 | 1318.0 | Wheels-off time (local, hhmm)
+wheels_on | float64 | 1.38 | 1442.0 | Wheels-on time (local, hhmm)
+taxi_in | float64 | 1.38 | 7.0 | Taxi in time in minutes
+crs_arr_time | Int64 | 0.0 | 1508 | Scheduled arrival time (local, hhmm)
+arr_time | float64 | 1.38 | 1449.0 | Actual arrival time (local, hhmm)
+arr_delay | float64 | 1.61 | -19.0 | Arrival delay in minutes (negative if early)
+cancelled | int64 | 0.0 | 0 | Cancelled flight indicator (0=No, 1=Yes)
+cancellation_code | object | 98.64 | B | Reason for cancellation (if cancelled)
+diverted | int64 | 0.0 | 0 | Diverted flight indicator (0=No, 1=Yes)
+crs_elapsed_time | float64 | 0.0 | 136.0 | Scheduled elapsed time in minutes
+actual_elapsed_time | float64 | 1.61 | 122.0 | Actual elapsed time in minutes
+air_time | float64 | 1.61 | 84.0 | Flight time in minutes
+distance | float64 | 0.0 | 509.0 | Distance between origin and destination (miles)
+carrier_delay | int64 | 0.0 | 0 | Carrier-related delay in minutes
+weather_delay | int64 | 0.0 | 0 | Weather-related delay in minutes
+nas_delay | int64 | 0.0 | 0 | National Air System delay in minutes
+security_delay | int64 | 0.0 | 0 | Security delay in minutes
+late_aircraft_delay | int64 | 0.0 | 0 | Late aircraft delay in minutes
+'''
+
+llm_judge_user_prompt_template = '''
+Here is the initial user query:
+{user_query}
+
+Here is the SQL query generated by the first analyst: 
+SQL: 
+{sql1} 
+
+Database output: 
+{result1}
+
+Here is the SQL query generated by the second analyst:
+SQL:
+{sql2}
+
+Database output:
+{result2}
+'''
+
+def llm_judge(rec, field_to_check):
+  # construct the user prompt 
+  user_prompt = llm_judge_user_prompt_template.format(
+    user_query = rec['question'],
+    sql1 = rec['answer'],
+    result1 = rec['answer_output'],
+    sql2 = rec[field_to_check + '_sql'],
+    result2 = rec[field_to_check + '_output']
+  )
+  
+  # make an LLM call
+  message = client.messages.create(
+      model = "claude-sonnet-4-5",
+      max_tokens = 8192,
+      temperature = 0.1,
+      system = llm_judge_system_prompt,
+      messages=[
+          {'role': 'user', 'content': user_prompt}
+      ]
+  )
+  data = message.content[0].text
+  
+  # Strip markdown code blocks
+  data = data.strip()
+  if data.startswith('```json'):
+      data = data[7:]
+  elif data.startswith('```'):
+      data = data[3:]
+  if data.endswith('```'):
+      data = data[:-3]
+  
+  data = data.strip()
+  return json.loads(data)</code></pre>
+
+
+
+<p class="wp-block-paragraph">Now, let’s run the LLM judge to get the results.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">tmp = []
+
+for rec in tqdm.tqdm(direct_result_df.to_dict('records')):
+  try:
+    judgment = llm_judge(rec, 'llm_direct')
+  except Exception as e:
+    print(f"Error processing record {rec['id']}: {e}")
+    continue
+  tmp.append(
+    {
+      'id': rec['id'],
+      'llm_judge_reasoning': judgment['reasoning'],
+      'llm_judge_equivalence': judgment['equivalence']
+    }
+  )
+
+judge_df = pd.DataFrame(tmp)
+direct_result_df = direct_result_df.merge(judge_df, on = 'id')</code></pre>
+
+
+
+<p class="wp-block-paragraph">Let’s look at one example to see how the LLM judge works. </p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python"># user query 
+In 2024, what percentage of time all airplanes spent in the air?
+
+# correct answer 
+select (sum(air_time) / sum(actual_elapsed_time)) * 100 as percentage_in_air 
+where year = 2024
+from flight_data 
+format TabSeparatedWithNames
+
+percentage_in_air
+81.43582596894757
+
+# generated by LLM answer 
+SELECT 
+    round(sum(air_time) / (sum(air_time) + sum(taxi_out) + sum(taxi_in)) * 100, 2) as air_time_percentage
+FROM flight_data
+WHERE year = 2024
+FORMAT TabSeparatedWithNames
+
+air_time_percentage
+81.39
+
+# LLM judge response
+{
+ 'reasoning': 'Both queries calculate the percentage of time airplanes 
+    spent in the air, but use different denominators. The first query 
+    uses actual_elapsed_time (which includes air_time + taxi_out + taxi_in 
+    + any ground delays), while the second uses only (air_time + taxi_out 
+    + taxi_in). The second query is approach is more accurate for answering 
+    "time airplanes spent in the air" as it excludes ground delays. 
+    However, the results are very close (81.44% vs 81.39%), suggesting minimal 
+    impact. These are materially different approaches that happen to yield 
+    similar results',
+ 'equivalence': FALSE
+}</code></pre>
+
+
+
+<p class="wp-block-paragraph">The reasoning makes sense, so we can trust our judge. Now, let’s check all LLM-generated queries.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">def get_llm_accuracy(sql, output, equivalence): 
+    problems = []
+    if 'format tabseparatedwithnames' not in sql.lower():
+        problems.append('No format specified in SQL')
+    if 'Database returned the following error' in output:
+        problems.append('SQL execution error')
+    if not equivalence and ('SQL execution error' not in problems):
+        problems.append('Wrong answer provided')
+    if len(problems) == 0:
+        return 'No problems detected'
+    else:
+        return ' + '.join(problems)
+
+direct_result_df['llm_direct_sql_quality_heuristics'] = direct_result_df.apply(
+    lambda row: get_llm_accuracy(row['llm_direct_sql'], row['llm_direct_output'], row['llm_judge_equivalence']), axis=1)</code></pre>
+
+
+
+<p class="wp-block-paragraph">The LLM returned the correct answer in 70% of cases, which is not bad. But there’s definitely room for improvement, as it often either provides the wrong answer or fails to specify the format correctly (sometimes causing SQL execution errors).</p>
+
+
+
+<figure class="wp-block-image"><img decoding="async" src="../Images/82bb387be810a8a8667cc96d442ce49c.png" alt="" data-original-src="https://cdn-images-1.medium.com/max/1600/1*oUityyRHgCEMldnKQAFF0Q.png"/><figcaption class="wp-element-caption">Image by author</figcaption></figure>
+
+
+
+<h3 class="wp-block-heading">Adding a reflection step</h3>
+
+
+
+<p class="wp-block-paragraph">To improve the quality of our solution, let’s try adding a reflection step where we ask the model to review and refine its answer. </p>
+
+
+
+<p class="wp-block-paragraph">For a reflection call, I’ll keep the same system prompt since it contains all the necessary information about SQL and the data schema. But I’ll tweak the user message to share the initial user query and the generated SQL, asking the LLM to critique and improve it.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">simple_reflection_user_prompt_template = '''
+Your task is to assess the SQL query generated by another analyst and propose improvements if necessary.
+Check whether the query is syntactically correct and optimized for performance. 
+Pay attention to nuances in data (especially time stamps types, whether to use total elapsed time or time in the air, etc).
+Ensure that the query answers the initial user question accurately. 
+As the result return the following JSON: 
+{{
+  'reasoning': '&lt;your reasoning here, 2-4 sentences on why you made changes or not&gt;', 
+  'refined_sql': '&lt;the improved SQL query here&gt;'
+}}
+Ensure that ONLY JSON is in the output and nothing else. Ensure that the output JSON is valid. 
+
+Here is the initial user query:
+{user_query}
+
+Here is the SQL query generated by another analyst: 
+{sql} 
+'''
+
+def simple_reflection(rec) -&gt; str:
+  # constructing a user prompt
+  user_prompt = simple_reflection_user_prompt_template.format(
+    user_query=rec['question'],
+    sql=rec['llm_direct_sql']
+  )
+  
+  # making an LLM call
+  message = client.messages.create(
+    model="claude-3-5-haiku-latest",
+    max_tokens = 8192,
+    system=base_sql_system_prompt,
+    messages=[
+        {'role': 'user', 'content': user_prompt}
+    ]
+  )
+
+  data  = message.content[0].text
+
+  # strip markdown code blocks
+  data = data.strip()
+  if data.startswith('```json'):
+    data = data[7:]
+  elif data.startswith('```'):
+    data = data[3:]
+  if data.endswith('```'):
+    data = data[:-3]
+  
+  data = data.strip()
+  return json.loads(data.replace('\n', ' '))</code></pre>
+
+
+
+<p class="wp-block-paragraph">Let’s refine the queries with reflection and measure the accuracy. We don’t see much improvement in the final quality. We’re still at 70% correct answers.</p>
+
+
+
+<figure class="wp-block-image"><img decoding="async" src="../Images/1a556089cb4524fb1fba019d45436f70.png" alt="" data-original-src="https://cdn-images-1.medium.com/max/1600/1*fBn9HoJJHtWnZE7l2MqdFg.png"/><figcaption class="wp-element-caption">Image by author</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">Let’s look at specific examples to understand what happened. First, there are a couple of cases where the LLM managed to fix the problem, either by correcting the format or by adding missing logic to handle zero values.</p>
+
+
+
+<figure class="wp-block-image alignwide"><img decoding="async" src="../Images/09249240b67e1f8873c5d5c56bdaf045.png" alt="" data-original-src="https://cdn-images-1.medium.com/max/2400/1*vsoqKVhiOEx9VhEbEle1lg.png"/><figcaption class="wp-element-caption">Image by author</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">However, there are also cases where the LLM overcomplicated the answer. The initial SQL was correct (matching the golden set answer), but then the LLM decided to ‘improve’ it. Some of these improvements are reasonable (e.g., accounting for nulls or excluding cancelled flights). Still, for some reason, it decided to use ClickHouse sampling, even though we don’t have much data and our table doesn’t support sampling. As a result, the refined query returned an execution error: <code>Database returned the following error: Code: 141. DB::Exception: Storage default.flight_data doesn't support sampling. (SAMPLING_NOT_SUPPORTED)</code>.</p>
+
+
+
+<figure class="wp-block-image"><img decoding="async" src="../Images/523f6e5bd49e6bfbbe7ea717daa00206.png" alt="" data-original-src="https://cdn-images-1.medium.com/max/1600/1*JFsKJgR3O7tnrszxQrOk7Q.png"/><figcaption class="wp-element-caption">Image by author</figcaption></figure>
+
+
+
+<h3 class="wp-block-heading">Reflection with external feedback </h3>
+
+
+
+<p class="wp-block-paragraph">Reflection didn’t improve accuracy much. This is likely because we didn’t provide any additional information that would help the model generate a better result. Let’s try sharing external feedback with the model:</p>
+
+
+
+<p class="wp-block-paragraph">The result of our check on whether the format is specified correctly<br/>The output from the database (either data or an error message)<br/>Let’s put together a prompt for this and generate a new version of the SQL.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">feedback_reflection_user_prompt_template = '''
+Your task is to assess the SQL query generated by another analyst and propose improvements if necessary.
+Check whether the query is syntactically correct and optimized for performance. 
+Pay attention to nuances in data (especially time stamps types, whether to use total elapsed time or time in the air, etc).
+Ensure that the query answers the initial user question accurately. 
+
+As the result return the following JSON: 
+{{
+  'reasoning': '&lt;your reasoning here, 2-4 sentences on why you made changes or not&gt;', 
+  'refined_sql': '&lt;the improved SQL query here&gt;'
+}}
+Ensure that ONLY JSON is in the output and nothing else. Ensure that the output JSON is valid. 
+
+Here is the initial user query:
+{user_query}
+
+Here is the SQL query generated by another analyst: 
+{sql} 
+
+Here is the database output of this query: 
+{output}
+
+We run an automatic check on the SQL query to check whether it has fomatting issues. Here's the output: 
+{formatting}
+'''
+
+def feedback_reflection(rec) -&gt; str:
+  # define message for formatting 
+  if 'No format specified in SQL' in rec['llm_direct_sql_quality_heuristics']:
+    formatting = 'SQL missing formatting. Specify "format TabSeparatedWithNames" to ensure that column names are also returned'
+  else: 
+    formatting = 'Formatting is correct'
+
+  # constructing a user prompt
+  user_prompt = feedback_reflection_user_prompt_template.format(
+    user_query = rec['question'],
+    sql = rec['llm_direct_sql'],
+    output = rec['llm_direct_output'],
+    formatting = formatting
+  )
+
+  # making an LLM call 
+  message = client.messages.create(
+    model = "claude-3-5-haiku-latest",
+    max_tokens = 8192,
+    system = base_sql_system_prompt,
+    messages = [
+        {'role': 'user', 'content': user_prompt}
+    ]
+  )
+  data  = message.content[0].text
+
+  # strip markdown code blocks
+  data = data.strip()
+  if data.startswith('```json'):
+    data = data[7:]
+  elif data.startswith('```'):
+    data = data[3:]
+  if data.endswith('```'):
+    data = data[:-3]
+  
+  data = data.strip()
+  return json.loads(data.replace('\n', ' '))</code></pre>
+
+
+
+<p class="wp-block-paragraph">After running our accuracy measurements, we can see that accuracy has improved significantly: 17 correct answers (85% accuracy) compared to 14 (70% accuracy).</p>
+
+
+
+<figure class="wp-block-image"><img decoding="async" src="../Images/6f683b10dc2eb01e93dd8551615e1fd3.png" alt="" data-original-src="https://cdn-images-1.medium.com/max/1600/1*XlUBC2ByIuDBQa2phJNNWQ.png"/><figcaption class="wp-element-caption">Image by author</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">If we check the cases where the LLM fixed the issues, we can see that it was able to correct the format, address SQL execution errors, and even revise the business logic (e.g., using air time for calculating speed).</p>
+
+
+
+<figure class="wp-block-image alignwide"><img decoding="async" src="../Images/6d675fdb3a13f0b0a3b5e72ae29cfaee.png" alt="" data-original-src="https://cdn-images-1.medium.com/max/2400/1*6_2AfwAxxEBZIkmih0UBxg.png"/><figcaption class="wp-element-caption">Image by author</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">Let’s also do some error analysis to examine the cases where the LLM made mistakes. In the table below, we can see that the LLM struggled with defining certain timestamps, incorrectly calculating total time, or using total time instead of air time for speed calculations. However, some of the discrepancies are a bit tricky:</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">In the last query, the time period wasn’t explicitly defined, so it’s reasonable for the LLM to use 2010–2023. I wouldn’t consider this an error, and I’d adjust the evaluation instead.</li>
+
+
+
+<li class="wp-block-list-item">Another example is how to define airline speed: <code>avg(distance/time)</code> or <code>sum(distance)/sum(time)</code>. Both options are valid since nothing was specified in the user query or system prompt (assuming we don’t have a predefined calculation method).</li>
+</ul>
+
+
+
+<figure class="wp-block-image alignwide"><img decoding="async" src="../Images/ab229cdae3726a5f7985eada65b16d9e.png" alt="" data-original-src="https://cdn-images-1.medium.com/max/2400/1*wCjbvibivJgbBrdAxRI1zw.png"/><figcaption class="wp-element-caption">Image by author</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">Overall, I think we achieved a pretty good result. Our final 85% accuracy represents a significant 15% point improvement. You could potentially go beyond one iteration and run 2–3 rounds of reflection, but it’s worth assessing when you hit diminishing returns in your specific case, since each iteration goes with increased cost and latency.</p>
+
+
+
+<blockquote class="wp-block-quote is-layout-flow wp-block-quote-is-layout-flow">
+<p class="wp-block-paragraph"><em>You can find the full code on <a href="https://github.com/miptgirl/miptgirl_medium/tree/main/ai_under_the_hood" target="_blank" rel="noreferrer noopener">GitHub</a>.</em></p>
+</blockquote>
+
+
+
+<h2 class="wp-block-heading">Summary</h2>
+
+
+
+<p class="wp-block-paragraph">It’s time to wrap things up. In this article, we started our journey into understanding how the magic of agentic AI systems works. To figure it out, we’ll implement a multi-agent text-to-data tool using only API calls to foundation models. Along the way, we’ll walk through the key design patterns step by step: starting today with reflection, and moving on to tool use, planning, and multi-agent coordination. </p>
+
+
+
+<p class="wp-block-paragraph">In this article, we started with the most fundamental pattern — reflection. Reflection is at the core of any agentic flow, since the LLM needs to reflect on its progress toward achieving the end goal.</p>
+
+
+
+<p class="wp-block-paragraph">Reflection is a relatively straightforward pattern. We simply ask the same or a different model to analyse the result and attempt to improve it. As we learned in practice, sharing external feedback with the model (like results from static checks or database output) significantly improves accuracy. Multiple research studies and our own experience with the text-to-SQL agent prove the benefits of reflection. However, these accuracy gains come at a cost: more tokens spent and higher latency due to multiple API calls.</p>
+
+
+
+<blockquote class="wp-block-quote is-layout-flow wp-block-quote-is-layout-flow">
+<p class="wp-block-paragraph"><em>Thank you for reading. I hope this article was insightful. Remember Einstein’s advice: “The important thing is not to stop questioning. Curiosity has its own reason for existing.” May your curiosity lead you to your next great insight.</em></p>
+</blockquote>
+
+
+
+<h2 class="wp-block-heading">Reference</h2>
+
+
+
+<p class="wp-block-paragraph">This article is inspired by the <a href="https://www.deeplearning.ai/courses/agentic-ai/" rel="noreferrer noopener" target="_blank">“Agentic AI”</a> course by Andrew Ng from DeepLearning.AI.</p>
+    
+</body>
+</html>

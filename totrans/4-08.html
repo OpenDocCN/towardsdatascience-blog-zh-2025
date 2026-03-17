@@ -1,0 +1,589 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.1//EN"
+  "http://www.w3.org/TR/xhtml11/DTD/xhtml11.dtd">
+
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+<title>Using LLamaIndex Workflow to Implement an Agent Handoff Feature Like OpenAI Swarm</title>
+<link href="../Styles/Style.css" type="text/css" rel="stylesheet"/>
+</head>
+<body>
+<h1>Using LLamaIndex Workflow to Implement an Agent Handoff Feature Like OpenAI Swarm</h1>
+<blockquote>原文：<a href="https://towardsdatascience.com/using-llamaindex-workflow-to-implement-an-agent-handoff-feature-like-openai-swarm-9a63420c8540/">https://towardsdatascience.com/using-llamaindex-workflow-to-implement-an-agent-handoff-feature-like-openai-swarm-9a63420c8540/</a></blockquote><figure class="wp-block-image size-large"><img data-dominant-color="b0a29d" data-has-transparency="false" style="--dominant-color: #b0a29d;" decoding="async" width="1792" height="1024" class="wp-image-595069 not-transparent" src="../Images/f9c034e299ccf2f0682ab28f5ca2e372.png" alt="Using LLamaIndex Workflow to Implement an Agent Handoff Feature Like OpenAI Swarm. Image by DALL-E-3" srcset="https://towardsdatascience.com/wp-content/uploads/2025/02/17jBdlIuq4_zzMaZOLVEQJg.png 1792w, https://towardsdatascience.com/wp-content/uploads/2025/02/17jBdlIuq4_zzMaZOLVEQJg-300x171.png 300w, https://towardsdatascience.com/wp-content/uploads/2025/02/17jBdlIuq4_zzMaZOLVEQJg-1024x585.png 1024w, https://towardsdatascience.com/wp-content/uploads/2025/02/17jBdlIuq4_zzMaZOLVEQJg-768x439.png 768w, https://towardsdatascience.com/wp-content/uploads/2025/02/17jBdlIuq4_zzMaZOLVEQJg-1536x878.png 1536w" sizes="(max-width: 1792px) 100vw, 1792px" data-original-src="https://towardsdatascience.com/wp-content/uploads/2025/02/17jBdlIuq4_zzMaZOLVEQJg.png"/><figcaption class="wp-element-caption">Using LLamaIndex Workflow to Implement an Agent Handoff Feature Like OpenAI Swarm. Image by DALL-E-3</figcaption></figure>
+<p class="wp-block-paragraph">Happy Lunar New Year, my friends!</p>
+<p class="wp-block-paragraph">In the last article, I introduced the Workflow framework of LlamaIndex.</p>
+<blockquote class="wp-block-quote is-layout-flow wp-block-quote-is-layout-flow"><p><a href="https://towardsdatascience.com/deep-dive-into-llamaindex-workflow-event-driven-llm-architecture-8011f41f851a"><strong>Deep Dive into LlamaIndex Workflow: Event-Driven LLM Architecture</strong></a></p></blockquote>
+<p class="wp-block-paragraph">Today, I will show you how to use LlamaIndex Workflow to implement a multi-agent orchestration feature similar to <a href="https://github.com/openai/swarm?ref=dataleadsfuture.com">OpenAI Swarm</a>, using a customer service chatbot project as an example.</p>
+<hr class="wp-block-separator has-alpha-channel-opacity"/>
+<h2 class="wp-block-heading">Introduction</h2>
+<p class="wp-block-paragraph">Remember the Swarm framework released by OpenAI not long ago? Its biggest feature is agents and handoffs.</p>
+<p class="wp-block-paragraph">The agents are straightforward: they use a set of specific commands and tools to get tasks done. It’s like putting a LLM function call into a neat package.</p>
+<p class="wp-block-paragraph">And handoffs are different. They allow an agent to pass the work to another agent seamlessly based on the context of the current conversation, making agents work together without any hiccups.</p>
+<h3 class="wp-block-heading">Why this is important</h3>
+<p class="wp-block-paragraph">Let’s look at a diagram explaining the whole process of a ReactAgent.</p>
+<figure class="wp-block-image size-large"><img data-dominant-color="f5f6f4" data-has-transparency="true" style="--dominant-color: #f5f6f4;" decoding="async" width="1000" height="384" class="wp-image-595070 has-transparency" src="../Images/0af49b0a4fd68c736f402eab8a16462a.png" alt="The ReactAgent needs at least three accesses to LLM to complete. Image by Author" srcset="https://towardsdatascience.com/wp-content/uploads/2025/02/0SUV-fI1EYN9nV3mO.png 1000w, https://towardsdatascience.com/wp-content/uploads/2025/02/0SUV-fI1EYN9nV3mO-300x115.png 300w, https://towardsdatascience.com/wp-content/uploads/2025/02/0SUV-fI1EYN9nV3mO-768x295.png 768w" sizes="(max-width: 1000px) 100vw, 1000px" data-original-src="https://towardsdatascience.com/wp-content/uploads/2025/02/0SUV-fI1EYN9nV3mO.png"/><figcaption class="wp-element-caption">The ReactAgent needs at least three accesses to LLM to complete. Image by Author</figcaption></figure>
+<p class="wp-block-paragraph">Just a simple agent call, like one, two, three, needs at least three accesses to LLM to complete.</p>
+<p class="wp-block-paragraph">Traditional agent applications are like this, keeping conversation context and user state, and the agent call chain is usually fixed. For each user request, agents have to call LLM multiple times to check the state, and honestly, some calls are unnecessary.</p>
+<p class="wp-block-paragraph">Here’s an example: imagine we have an e-commerce website, and we need a customer service team to answer users’ questions.</p>
+<figure class="wp-block-image size-large"><img data-dominant-color="dfe0df" data-has-transparency="true" style="--dominant-color: #dfe0df;" loading="lazy" decoding="async" width="630" height="100" class="wp-image-595071 has-transparency" src="../Images/b797b39a7389535e0207135fadafa660.png" alt="In an agent chain, agents are invoked sequentially. Image by Author" srcset="https://towardsdatascience.com/wp-content/uploads/2025/02/0DOq0OhhNM1m3j6yu.png 630w, https://towardsdatascience.com/wp-content/uploads/2025/02/0DOq0OhhNM1m3j6yu-300x48.png 300w" sizes="auto, (max-width: 630px) 100vw, 630px" data-original-src="https://towardsdatascience.com/wp-content/uploads/2025/02/0DOq0OhhNM1m3j6yu.png"/><figcaption class="wp-element-caption">In an agent chain, agents are invoked sequentially. Image by Author</figcaption></figure>
+<p class="wp-block-paragraph">In a chain agent application, every question from a user goes to the front desk, and then the front desk asks for the pre-sales service. If they can’t answer, the front desk asks for after-sales service, and then the front desk reorganizes the answers from the backend and replies to the customer.</p>
+<p class="wp-block-paragraph">Isn’t that silly? Look at all the unnecessary delays and call costs it causes!</p>
+<h3 class="wp-block-heading">How Swarm does it</h3>
+<p class="wp-block-paragraph">Swarm uses a handoff approach that fits the real world better. Let me use that customer service example again:</p>
+<figure class="wp-block-image size-large"><img data-dominant-color="efefef" data-has-transparency="true" style="--dominant-color: #efefef;" loading="lazy" decoding="async" width="450" height="292" class="wp-image-595072 has-transparency" src="../Images/fcfb6af6ccd4381be65e27a456186d14.png" alt="Agent handoff allows you to interact directly with the corresponding customer service. Image by Author" srcset="https://towardsdatascience.com/wp-content/uploads/2025/02/08BMzyOjBZ9Gdv-Z-.png 450w, https://towardsdatascience.com/wp-content/uploads/2025/02/08BMzyOjBZ9Gdv-Z--300x195.png 300w" sizes="auto, (max-width: 450px) 100vw, 450px" data-original-src="https://towardsdatascience.com/wp-content/uploads/2025/02/08BMzyOjBZ9Gdv-Z-.png"/><figcaption class="wp-element-caption">Agent handoff allows you to interact directly with the corresponding customer service. Image by Author</figcaption></figure>
+<p class="wp-block-paragraph">Imagine a store called Swarm. When a customer asks the front desk a question, the front desk figures out what kind of question it is (pre-sale or after-sale) and passes the customer to the corresponding service. Then, the customer talks to that service directly.</p>
+<p class="wp-block-paragraph">Imagine a store called Swarm. When a customer asks the front desk a question, the front desk figures out what kind of question it is (pre-sale or after-sale) and passes the customer to the corresponding service. Then, the customer talks to that service directly.</p>
+<p class="wp-block-paragraph">Sounds reasonable, right? So why don’t we just use Swarm?</p>
+<h3 class="wp-block-heading">Why not just use Swarm</h3>
+<p class="wp-block-paragraph">Because Swarm is still just an experimental framework. According to the official statement:</p>
+<blockquote class="wp-block-quote is-layout-flow wp-block-quote-is-layout-flow"><p>Swarm is currently an experimental sample framework intended to explore ergonomic interfaces for multi-agent systems. It is not intended to be used in production and therefore has no official support. (This also means we will not be reviewing PRs or issues!)</p></blockquote>
+<p class="wp-block-paragraph">So, we can’t use Swarm directly in production systems.</p>
+<p class="wp-block-paragraph">But what we need is the agent handoff capability, right? Since that’s the case, why not build a similar framework yourself?</p>
+<p class="wp-block-paragraph">Today’s article is written for this purpose. We will develop a project using a customer service system as an example, which will use Workflow to implement agent orchestration and handoff capabilities. Let’s get started.</p>
+<hr class="wp-block-separator has-alpha-channel-opacity"/>
+<h2 class="wp-block-heading">Project in Practice: A Customer Service Chatbot with Agent Handoff Capability</h2>
+<p class="wp-block-paragraph">This project is quite complex. To help you understand my implementation, I have put the entire project code at the end of the article. You can freely read and modify it without my permission.</p>
+<p class="wp-block-paragraph">Want to know more about my work in LLM applications or the field of data science? Feel free to subscribe to <a href="https://www.dataleadsfuture.com/using-llamaindex-workflow-to-implement-an-agent-handoff-feature-like-openai-swarm/#/portal/signup">my personal blog</a>, everything is free!</p>
+<h3 class="wp-block-heading">Step one, set up an interactive interface</h3>
+<p class="wp-block-paragraph">Whether you use an agent or not, you always need to adjust your prompts and code logic. At this point, a what-you-see-is-what-you-get chat UI becomes very important.</p>
+<p class="wp-block-paragraph">In this section, I’ll use chainlit to quickly implement a super cool web-based chat window.</p>
+<p class="wp-block-paragraph"><a href="https://docs.chainlit.io/get-started/overview?ref=dataleadsfuture.com">Chainlit</a> is a Python library built on <a href="https://streamlit.io/?ref=dataleadsfuture.com">Streamlit</a>. This means you don’t need any frontend skills to quickly build a Chatbot prototype. (Hooray)</p>
+<p class="wp-block-paragraph">Let’s get moving.</p>
+<figure class="wp-block-image size-large"><img data-dominant-color="2f3238" data-has-transparency="false" style="--dominant-color: #2f3238;" loading="lazy" decoding="async" width="438" height="348" class="wp-image-595073 not-transparent" src="../Images/dbcf530a4acb8b275e86c0722edd6a29.png" alt="The scaffold of our project. Image by Author" srcset="https://towardsdatascience.com/wp-content/uploads/2025/02/0nyyYnCy9-WCpTU9s.png 438w, https://towardsdatascience.com/wp-content/uploads/2025/02/0nyyYnCy9-WCpTU9s-300x238.png 300w" sizes="auto, (max-width: 438px) 100vw, 438px" data-original-src="https://towardsdatascience.com/wp-content/uploads/2025/02/0nyyYnCy9-WCpTU9s.png"/><figcaption class="wp-element-caption">The scaffold of our project. Image by Author</figcaption></figure>
+<p class="wp-block-paragraph">First, we create a <code>.env</code> file in the project’s root directory, which stores important environmental variables like <code>OPENAI_API_KEY</code> and <code>OPENAI_BASE_URL</code>. Later, I will use <a href="https://pypi.org/project/python-dotenv/?ref=dataleadsfuture.com">dotenv</a> to read it.</p>
+<p class="wp-block-paragraph">This is important because by using the <code>.env</code> file, you can strip the <code>API_KEY</code> from your code, then you can freely publish your code.</p>
+<p class="wp-block-paragraph">Next, we need to set up a simple project scaffold. Our project will contain two folders: <code>src</code> and <code>data</code>. Our Python source code files will be placed in the <code>src</code> folder, while text source files for RAG use will be placed in the <code>data</code> folder.</p>
+<p class="wp-block-paragraph">In the <code>src</code> directory, first create an <code>app.py</code> file, which will act as the view to launch the <code>chainlit</code> interface. This file consists of three parts:</p>
+<ol class="wp-block-list">
+<li>Code to prepare the Workflow program.</li>
+<li>Code to respond to the user lifecycle, outputting intermediate processes.</li>
+<li>Actual code to call the Workflow agent and conduct the conversation.</li>
+</ol>
+<p class="wp-block-paragraph">The code flowchart is shown below:</p>
+<figure class="wp-block-image size-large"><img data-dominant-color="f3f5f4" data-has-transparency="true" style="--dominant-color: #f3f5f4;" loading="lazy" decoding="async" width="511" height="491" class="wp-image-595074 has-transparency" src="../Images/90ec451b9b5391a3db5eda621b6dcb88.png" alt="Flowchart of the project UI interface. Image by Author" srcset="https://towardsdatascience.com/wp-content/uploads/2025/02/04Yuk5fdJeenmdgPl.png 511w, https://towardsdatascience.com/wp-content/uploads/2025/02/04Yuk5fdJeenmdgPl-300x288.png 300w" sizes="auto, (max-width: 511px) 100vw, 511px" data-original-src="https://towardsdatascience.com/wp-content/uploads/2025/02/04Yuk5fdJeenmdgPl.png"/><figcaption class="wp-element-caption">Flowchart of the project UI interface. Image by Author</figcaption></figure>
+<p class="wp-block-paragraph">As a production-ready system, we often need to connect to the enterprise-private deployment of large model ports. How to connect to a private LLM can be referred to in this article.</p>
+<blockquote class="wp-block-quote is-layout-flow wp-block-quote-is-layout-flow"><p><a href="https://towardsdatascience.com/how-to-connect-llamaindex-with-private-llm-api-deployments-a3585850507b"><strong>How to Connect LlamaIndex with Private LLM API Deployments</strong></a></p></blockquote>
+<p class="wp-block-paragraph">To make our customer service less rigid, we can set the temperature a bit higher. Here is the code for initializing the system environment, I will talk about the implementation of <code>CustomerService</code> later:</p>
+<pre class="wp-block-prismatic-blocks"><code class="language-python">llm = OpenAILike(
+    model="qwen-max-latest",
+    is_chat_model=True,
+    is_function_calling_model=True,
+    temperature=0.35
+)
+Settings.llm = llm</code></pre>
+<p class="wp-block-paragraph">Imagine, when the next customer service takes over to answer your question, what will she do first? Right, she needs to check the conversation history first.</p>
+<p class="wp-block-paragraph">So we need to create a unique, conversation-context and user-state-preserving workflow for each distinguished user in the user session:</p>
+<pre class="wp-block-prismatic-blocks"><code class="language-python">GREETINGS = "Hello, what can I do for you?"
+
+def ready_my_workflow() -&gt; CustomerService:
+    memory = ChatMemoryBuffer(
+        llm=llm,
+        token_limit=5000
+    )
+
+    agent = CustomerService(
+        memory=memory,
+        timeout=None,
+        user_state=initialize_user_state()
+    )
+    return agent
+
+def initialize_user_state() -&gt; dict[str, str | None]:
+    return {
+        "name": None
+    }
+
+@cl.on_chat_start
+async def start():
+    workflow = ready_my_workflow()
+    cl.user_session.set("workflow", workflow)
+
+    await cl.Message(
+        author="assistant", content=GREETINGS
+    ).send()</code></pre>
+<p class="wp-block-paragraph">At the same time, I will also use chainlit’s <code>cl.step</code> decorator to implement a simple logging method, which can help us output some process logs on the page, letting users know where we are now:</p>
+<pre class="wp-block-prismatic-blocks"><code class="language-python">@cl.step(type="run", show_input=False)
+async def on_progress(message: str):
+    return message</code></pre>
+<p class="wp-block-paragraph">Then there is the <code>main</code> method, which is called every round of conversation.</p>
+<pre class="wp-block-prismatic-blocks"><code class="language-python">@cl.on_message
+async def main(message: cl.Message):
+    workflow: CustomerService = cl.user_session.get("workflow")
+    context = cl.user_session.get("context")
+    msg = cl.Message(content="", author="assistant")
+    user_msg = message.content
+    handler = workflow.run(
+        msg=user_msg,
+        ctx=context
+    )
+    async for event in handler.stream_events():
+        if isinstance(event, ProgressEvent):
+            await on_progress(event.msg)
+
+    await msg.send()
+    result = await handler
+    msg.content = result
+    await msg.update()
+    cl.user_session.set("context", handler.ctx)</code></pre>
+<p class="wp-block-paragraph">In this method, we first get the user-inputted dialogue, then call the workflow’s run method to start the agent routing, while iterating through the events in the workflow pipeline and calling <code>on_progress</code> to output to the page. Finally, we output the result of the dialogue on the page and update the Context.</p>
+<p class="wp-block-paragraph">To match the construction of the chainlit interface, we can first write a simple workflow:</p>
+<pre class="wp-block-prismatic-blocks"><code class="language-python">class CustomerService(Workflow):
+    def __init__(
+            self,
+            llm: OpenAILike | None = None,
+            memory: ChatMemoryBuffer = None,
+            user_state: dict[str, str | None] = None,
+            *args,
+            **kwargs
+    ):
+        self.llm = llm or Settings.llm
+        self.memory = memory or ChatMemoryBuffer()
+        self.user_state = user_state
+        super().__init__(*args, **kwargs)
+
+    @step
+    async def start(self, ctx: Context, ev: StartEvent) -&gt; StopEvent:
+        ctx.write_event_to_stream(ProgressEvent(msg="We're making some progress."))
+        return StopEvent(result="Hello World")</code></pre>
+<p class="wp-block-paragraph">Tada, our interactive interface is out:</p>
+<figure class="wp-block-image size-large"><img data-dominant-color="252525" data-has-transparency="false" style="--dominant-color: #252525;" loading="lazy" decoding="async" width="688" height="661" class="wp-image-595075 not-transparent" src="../Images/ce6f3ccd842930273ae15537eb4108bc.png" alt="Our UI interface for this project. Image by Author" srcset="https://towardsdatascience.com/wp-content/uploads/2025/02/0g5ZpvkjTWsv-mR44.png 688w, https://towardsdatascience.com/wp-content/uploads/2025/02/0g5ZpvkjTWsv-mR44-300x288.png 300w" sizes="auto, (max-width: 688px) 100vw, 688px" data-original-src="https://towardsdatascience.com/wp-content/uploads/2025/02/0g5ZpvkjTWsv-mR44.png"/><figcaption class="wp-element-caption">Our UI interface for this project. Image by Author</figcaption></figure>
+<p class="wp-block-paragraph">Next, we can start preparing the ingredients for today, and text source files for RAG use.</p>
+<h3 class="wp-block-heading">Step two, generate text files</h3>
+<p class="wp-block-paragraph">Since this project is about simulating a customer support team for an online drone e-commerce website, I plan to set the background to an online unmanned aerial vehicle e-commerce site.</p>
+<p class="wp-block-paragraph">I need two files: one file to introduce the drones being sold in the store and their details. Another file contains common FAQs about drone use and after-sales terms.</p>
+<p class="wp-block-paragraph">To avoid business and data licensing issues, I plan to use LLM to generate the text I want. I specifically instructed LLM not to include any brands or real product information.</p>
+<p class="wp-block-paragraph">Here is a screenshot of my file generation:</p>
+<figure class="wp-block-image size-large"><img data-dominant-color="222326" data-has-transparency="false" style="--dominant-color: #222326;" loading="lazy" decoding="async" width="892" height="601" class="wp-image-595076 not-transparent" src="../Images/e1fece7fe091fef3ce6ced428a56ed62.png" alt="Screenshot of data file generated using LLM. Image by Author" srcset="https://towardsdatascience.com/wp-content/uploads/2025/02/0dvd-VAU_erwx8I5B.png 892w, https://towardsdatascience.com/wp-content/uploads/2025/02/0dvd-VAU_erwx8I5B-300x202.png 300w, https://towardsdatascience.com/wp-content/uploads/2025/02/0dvd-VAU_erwx8I5B-768x517.png 768w" sizes="auto, (max-width: 892px) 100vw, 892px" data-original-src="https://towardsdatascience.com/wp-content/uploads/2025/02/0dvd-VAU_erwx8I5B.png"/><figcaption class="wp-element-caption">Screenshot of data file generated using LLM. Image by Author</figcaption></figure>
+<p class="wp-block-paragraph">You can take my prompt as a reference:</p>
+<pre class="wp-block-prismatic-blocks"><code class="language-python">SKUS_TEMPLATE_EN = """
+    You are the owner of an online drone store, please generate a description in English of all the drones for sale.
+    Include the drone model number, selling price, detailed specifications, and a detailed description in more than 400 words.
+    Do not include brand names.
+    No less than 20 types of drones, ranging from consumer to industrial use.
+"""</code></pre>
+<pre class="wp-block-prismatic-blocks"><code class="language-python">TERMS_TEMPLATE_EN = """
+    You are the head of a brand's back office department, and you are asked to generate a standardized response to after-sales FAQs in English that is greater than 25,000 words.
+    The text should include common usage questions, as well as questions related to returns and repairs after the sale.
+    This text will be used as a reference for the customer service team when answering customer questions about after-sales issues.
+    Only the body text is generated, no preamble or explanation is added.
+"""</code></pre>
+<h3 class="wp-block-heading">Step three, handle indexing and retrieve privatized data</h3>
+<p class="wp-block-paragraph">The foundation LLM does not contain corporate internal data. For enterprise applications, it is inevitable to use RAG to allow the LLM to access corporate privatized data.</p>
+<p class="wp-block-paragraph">Our drone store is no exception. Before letting the agent staff start work, we need to provide them with some tools to access the product catalog and after-sales policy.</p>
+<p class="wp-block-paragraph">LlamaIndex provides many indexes suitable for different occasions. If used in a real system, I would prefer to use <code>KnowledgeGraphIndex</code> for product information text.</p>
+<p class="wp-block-paragraph">However, to make the sample project easy to understand, I still choose to use <code>chromadb</code> and <code>VectorStoreIndex</code>:</p>
+<pre class="wp-block-prismatic-blocks"><code class="language-python">def get_index(collection_name: str,
+              files: list[str]) -&gt; VectorStoreIndex:
+    chroma_client = chromadb.PersistentClient(path="temp/.chroma")
+
+    collection = chroma_client.get_or_create_collection(collection_name)
+    vector_store = ChromaVectorStore(chroma_collection=collection)
+    storage_context = StorageContext.from_defaults(vector_store=vector_store)
+
+    ready = collection.count()
+    if ready &gt; 0:
+        print("File already loaded")
+        index = VectorStoreIndex.from_vector_store(vector_store=vector_store)
+    else:
+        print("File not loaded.")
+        docs = SimpleDirectoryReader(input_files=files).load_data()
+        index = VectorStoreIndex.from_documents(
+            docs, storage_context=storage_context, embed_model=embed_model,
+            transformer=[SentenceSplitter(chunk_size=512, chunk_overlap=20)]
+        )
+
+    return index
+
+INDEXES = {
+    "SKUS": get_index("skus_docs", ["data/skus_en.txt"]),
+    "TERMS": get_index("terms_docs", ["data/terms_en.txt"])
+}</code></pre>
+<p class="wp-block-paragraph">The running flowchart of this code is as follows:</p>
+<figure class="wp-block-image size-large"><img data-dominant-color="f5f6f5" data-has-transparency="true" style="--dominant-color: #f5f6f5;" loading="lazy" decoding="async" width="301" height="551" class="wp-image-595077 has-transparency" src="../Images/8f947eeb1242510e50640d3d5e45cc98.png" alt="The running flowchart of the code. Image by Author" srcset="https://towardsdatascience.com/wp-content/uploads/2025/02/0DcjJIgA9QiVziqaC.png 301w, https://towardsdatascience.com/wp-content/uploads/2025/02/0DcjJIgA9QiVziqaC-164x300.png 164w" sizes="auto, (max-width: 301px) 100vw, 301px" data-original-src="https://towardsdatascience.com/wp-content/uploads/2025/02/0DcjJIgA9QiVziqaC.png"/><figcaption class="wp-element-caption">The running flowchart of the code. Image by Author</figcaption></figure>
+<p class="wp-block-paragraph">If vector data already exists, return the index directly. If the data has not been loaded yet, first load the data into the vector store, then return the index.</p>
+<p class="wp-block-paragraph">Then we add a tool method to help the agent get the corresponding retriever:</p>
+<pre class="wp-block-prismatic-blocks"><code class="language-python">async def query_docs(
+        index: VectorStoreIndex, query: str,
+        similarity_top_k: int = 1
+) -&gt; str:
+    retriever = index.as_retriever(similarity_top_k=similarity_top_k)
+    nodes = await retriever.aretrieve(query)
+    result = ""
+    for node in nodes:
+        result += node.get_content() + "nn"
+    return result</code></pre>
+<h3 class="wp-block-heading">Step four, hire a few agents</h3>
+<p class="wp-block-paragraph">Since we are building a smart customer service project, it is necessary to hire a few customer service agents.</p>
+<p class="wp-block-paragraph">We also need to set up a data class for agents, which needs to include instructions and a set of tools, just like Swarm agents. Here we use <code>AgentConfig</code> to constrain, which is inherited from Pydantic’s <code>BaseModel</code>.</p>
+<pre class="wp-block-prismatic-blocks"><code class="language-python">class AgentConfig(BaseModel):
+    """
+    Detailed configuration for an agent
+    """
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+    name: str = Field(description="agent name")
+    description: str = Field(
+        description="agent description, which describes what the agent does"
+    )
+    system_prompt: str | None = None
+    tools: list[BaseTool] | None = Field(
+        description="function tools available for this agent"
+    )</code></pre>
+<p class="wp-block-paragraph">We need to hire a lobby manager agent, this agent needs to mark which agent the user will be handed over to.</p>
+<pre class="wp-block-prismatic-blocks"><code class="language-python">class TransferToAgent(BaseModel):
+    """Used to explain which agent to transfer to next."""
+    agent_name: str = Field(description="The name of the agent to transfer to.")</code></pre>
+<p class="wp-block-paragraph">We also need to design a request transfer agent, which uses this agent to notify the workflow when a certain customer service cannot answer the user’s question.</p>
+<pre class="wp-block-prismatic-blocks"><code class="language-python">class RequestTransfer(BaseModel):
+    """
+    Used to indicate that you don't have the necessary permission to complete the user's request,
+    or that you've already completed the user's request and want to transfer to another agent.
+    """
+    pass</code></pre>
+<p class="wp-block-paragraph">Then we need to prepare a few tools for the agents to use:</p>
+<p class="wp-block-paragraph">First is a <code>login</code> tool, this tool is only used to register the user’s name. If you need to handle the user’s login action, you can implement the details in this method. I use a closure to return a tool list.</p>
+<pre class="wp-block-prismatic-blocks"><code class="language-python">def get_authentication_tools() -&gt; list[BaseTool]:
+    async def login(ctx: Context, username: str) -&gt; bool:
+        """When the user provides their name, you can use this method to update their status.。
+        :param username The user's title or name.
+        """
+        if not username:
+            return False
+
+        user_state = await ctx.get("user_state", None)
+        user_state["name"] = username.strip()
+        await ctx.set("user_state", user_state)
+        return True
+
+    return [FunctionToolWithContext.from_defaults(async_fn=login)]</code></pre>
+<p class="wp-block-paragraph">Here is a detail, since the tool needs to handle the user state saved in the workflow Context, we need to access the <code>ctx</code> object. But when the tool is called by the agent, the agent cannot sense the <code>ctx</code> object, so we need to let the agent ignore it.</p>
+<p class="wp-block-paragraph">Here I modified the behavior of the <code>FunctionTool</code> module of LlamaIndex and rewrote the <code>FunctionToolWithContext</code> module. To save time, I referred to <a href="https://github.com/run-llama/multi-agent-concierge/blob/main/utils.py?ref=dataleadsfuture.com">an example</a> on the official website, you can find it here. Of course, you can also find the source code at the end of the project code in the article.</p>
+<p class="wp-block-paragraph">We also need tools to get the product catalog and after-sales terms, these two tools are direct calls to the retriever, quite simple.</p>
+<pre class="wp-block-prismatic-blocks"><code class="language-python">def get_pre_sales_tools() -&gt; list[BaseTool]:
+    async def skus_info_retrieve(ctx: Context, query: str) -&gt; str:
+        """
+        When the user asks about a product, you can use this tool to look it up.
+        :param query: The user's request.
+        :return: The information found.
+        """
+        sku_info = await query_docs(INDEXES["SKUS"], query)
+        return sku_info
+
+    return [FunctionToolWithContext.from_defaults(async_fn=skus_info_retrieve)]
+
+def get_after_sales_tools() -&gt; list[BaseTool]:
+    async def terms_info_retrieve(ctx: Context, query: str) -&gt; str:
+        """
+        When the user asks about how to use a product, or about after-sales and repair options, you can use this tool to look it up.
+        :param query: The user's request.
+        :return: The information found.
+        """
+        terms_info = await query_docs(INDEXES["TERMS"], query)
+        return terms_info
+    return [FunctionToolWithContext.from_defaults(async_fn=terms_info_retrieve)]</code></pre>
+<p class="wp-block-paragraph">To sum up, we need three professional customer service agents:</p>
+<ol class="wp-block-list">
+<li>The first one is the front desk, used to register the user’s visit.</li>
+<li>The second one is the pre-sales service, used to recommend various products to users.</li>
+<li>The third one is the after-sales service, used to answer various usage questions and after-sales terms.</li>
+</ol>
+<pre class="wp-block-prismatic-blocks"><code class="language-python">def _get_agent_configs() -&gt; list[AgentConfig]:
+    return [
+        AgentConfig(
+            name="Authentication Agent",
+            description="Record the user's name. If there's no name, you need to ask this from the customer.",
+            system_prompt="""
+            You are a front desk customer service agent for registration.
+            If the user hasn't provided their name, you need to ask them.
+            When the user has other requests, transfer the user's request.
+            """,
+            tools=get_authentication_tools()
+        ),
+        AgentConfig(
+            name="Pre Sales Agent",
+            description="When the user asks about product information, you need to consult this customer service agent.",
+            system_prompt="""
+            You are a customer service agent answering pre-sales questions for customers.
+            You will respond to users' inquiries based on the context of the conversation.
+
+            When the context is not enough, you will use tools to supplement the information.
+            You can only handle user inquiries related to product pre-sales. 
+            Please use the RequestTransfer tool to transfer other user requests.
+            """,
+            tools=get_pre_sales_tools()
+        ),
+        AgentConfig(
+            name="After Sales Agent",
+            description="When the user asks about after-sales information, you need to consult this customer service agent.",
+            system_prompt="""
+            You are a customer service agent answering after-sales questions for customers, including how to use the product, return and exchange policies, and repair solutions.
+            You respond to users' inquiries based on the context of the conversation.
+            When the context is not enough, you will use tools to supplement the information.
+            You can only handle user inquiries related to product after-sales. 
+            Please use the RequestTransfer tool to transfer other user requests.
+            """,
+            tools=get_after_sales_tools()
+        )
+    ]</code></pre>
+<p class="wp-block-paragraph">According to the needs of the workflow, we also need to write two methods to register agents to the workflow.</p>
+<pre class="wp-block-prismatic-blocks"><code class="language-python">def get_agent_config_pair() -&gt; dict[str, AgentConfig]:
+    agent_configs = _get_agent_configs()
+    return {agent.name: agent for agent in agent_configs}
+
+def get_agent_configs_str() -&gt; str:
+    agent_configs = _get_agent_configs()
+    pair_list = [f"{agent.name}: {agent.description}" for agent in agent_configs]
+    return "n".join(pair_list)</code></pre>
+<p class="wp-block-paragraph">Finally, we also need a workflow <code>system_prompt</code> for orchestration, which will contain all agent information and user status, and hand over the user to the correct customer service agent when needed.</p>
+<p class="wp-block-paragraph">This prompt will be used directly by the workflow, no separate agent is needed, so just put the prompt here:</p>
+<pre class="wp-block-prismatic-blocks"><code class="language-python">ORCHESTRATION_PROMPT = """  
+    You are a customer service manager for a drone store.
+    Based on the user's current status, latest request, and the available customer service agents, you help the user decide which agent to consult next.
+
+    You don't focus on the dependencies between agents; the agents will handle those themselves.
+    If the user asks about something unrelated to drones, you should politely and briefly decline to answer.
+
+    Here is the list of available customer service agents:
+    {agent_configs_str}
+
+    Here is the user's current status:
+    {user_state_str}
+"""</code></pre>
+<h3 class="wp-block-heading">Step five, build the core workflow</h3>
+<p class="wp-block-paragraph">After so much preparation, we can finally get to the main course, and I’m sure everyone is eager to get started haha.</p>
+<p class="wp-block-paragraph">Since the workflow is an event-driven framework, we need to define several events like before:</p>
+<pre class="wp-block-prismatic-blocks"><code class="language-python">class OrchestrationEvent(Event):
+    query: str
+
+class ActiveSpeakerEvent(Event):
+    query: str
+
+class ToolCallEvent(Event):
+    tool_call: ToolSelection
+    tools: list[BaseTool]
+
+class ToolCallResultEvent(Event):
+    chat_message: ChatMessage
+
+class ProgressEvent(Event):
+    msg: str</code></pre>
+<ol class="wp-block-list">
+<li><code>OrchestrationEvent</code> to indicate that the workflow needs to transfer agents.</li>
+<li>After the agent transfer is completed, <code>ActiveSpeakerEvent</code> will tell the workflow to use the new agent to answer the user.</li>
+<li>If the agent needs to make a Function call, <code>ToolCallEvent</code> will be thrown to execute concurrently.</li>
+<li>The results of concurrent execution will be thrown out with <code>ToolCallResultEvent</code>, and summarized into the final result.</li>
+<li>Finally, we also need a <code>ProgressEvent</code> to stream the intermediate steps, making it easy for users to know where we are now. To avoid too much information interference, we only output the information of agent transfer here.</li>
+</ol>
+<p class="wp-block-paragraph">After defining various events, we need to start writing the workflow. The workflow this time is a bit complex, so to make it easier for everyone to understand, I still drew a flowchart:</p>
+<figure class="wp-block-image size-large"><img data-dominant-color="f5f7f7" data-has-transparency="true" style="--dominant-color: #f5f7f7;" loading="lazy" decoding="async" width="730" height="614" class="wp-image-595078 has-transparency" src="../Images/5a40450845af0332b17bcaeba420ded4.png" alt="The flowchart of our workflow. Image by Author" srcset="https://towardsdatascience.com/wp-content/uploads/2025/02/0zWymKDbZEvRB4b9A.png 730w, https://towardsdatascience.com/wp-content/uploads/2025/02/0zWymKDbZEvRB4b9A-300x252.png 300w" sizes="auto, (max-width: 730px) 100vw, 730px" data-original-src="https://towardsdatascience.com/wp-content/uploads/2025/02/0zWymKDbZEvRB4b9A.png"/><figcaption class="wp-element-caption">The flowchart of our workflow. Image by Author</figcaption></figure>
+<p class="wp-block-paragraph">First, let’s look at the <code>start</code> method. The <code>start</code> method is relatively simple, as the entry method for user dialogue, it is responsible for storing the user’s message in <code>ChatMemory</code>, and then judging whether there is an available agent currently, if there is, it throws an <code>ActiveSpeakerEvent</code>, entering the next step, if not, it throws an <code>OrchestrationEvent</code>, entering the agent orchestration.</p>
+<figure class="wp-block-image size-large"><img data-dominant-color="f3f5f6" data-has-transparency="true" style="--dominant-color: #f3f5f6;" loading="lazy" decoding="async" width="451" height="321" class="wp-image-595079 has-transparency" src="../Images/dcb2f516db0f6cad35e02ba9fed299da.png" alt="The flowchart of the start method. Image by Author" srcset="https://towardsdatascience.com/wp-content/uploads/2025/02/0a6SdoB3Gs1b_Qj3w.png 451w, https://towardsdatascience.com/wp-content/uploads/2025/02/0a6SdoB3Gs1b_Qj3w-300x214.png 300w" sizes="auto, (max-width: 451px) 100vw, 451px" data-original-src="https://towardsdatascience.com/wp-content/uploads/2025/02/0a6SdoB3Gs1b_Qj3w.png"/><figcaption class="wp-element-caption">The flowchart of the start method. Image by Author</figcaption></figure>
+<pre class="wp-block-prismatic-blocks"><code class="language-python">class CustomerService(Workflow):
+    ...
+
+    @step
+    async def start(
+            self, ctx: Context, ev: StartEvent
+    ) -&gt; ActiveSpeakerEvent | OrchestrationEvent:
+        self.memory.put(ChatMessage(
+            role="user",
+            content=ev.msg
+        ))
+        user_state = await ctx.get("user_state", None)
+        if not user_state:
+            await ctx.set("user_state", self.user_state)
+
+        user_msg = ev.msg
+        active_speaker = await ctx.get("active_speaker", default=None)
+
+        if active_speaker:
+            return ActiveSpeakerEvent(query=user_msg)
+        else:
+            return OrchestrationEvent(query=user_msg)</code></pre>
+<p class="wp-block-paragraph">From shallow to deep, let’s look at how the agent orchestration <code>orchestrate</code> method works:</p>
+<figure class="wp-block-image size-large"><img data-dominant-color="e1e6ed" data-has-transparency="true" style="--dominant-color: #e1e6ed;" loading="lazy" decoding="async" width="104" height="481" class="wp-image-595080 has-transparency" src="../Images/e3a9a033239dc8a3d5c2187c92aa2a8b.png" alt="The flowchart of the orchestrate method. Image by Author" srcset="https://towardsdatascience.com/wp-content/uploads/2025/02/0HYgjQLoqtCv0c_b1.png 104w, https://towardsdatascience.com/wp-content/uploads/2025/02/0HYgjQLoqtCv0c_b1-65x300.png 65w" sizes="auto, (max-width: 104px) 100vw, 104px" data-original-src="https://towardsdatascience.com/wp-content/uploads/2025/02/0HYgjQLoqtCv0c_b1.png"/><figcaption class="wp-element-caption">The flowchart of the orchestrate method. Image by Author</figcaption></figure>
+<p class="wp-block-paragraph">This method first takes the currently available agent and user state, and updates our <code>ORCHESTRATION_PROMPT</code> written in <code>agents.py</code>, thus getting the complete <code>system_prompt</code>.</p>
+<p class="wp-block-paragraph">Then we use <code>TransferToAgent</code>, <code>system_prompt</code>, and <code>chat_history</code> all to LLM, letting LLM judge which agent to hand over to next.</p>
+<pre class="wp-block-prismatic-blocks"><code class="language-python">class CustomerService(Workflow):
+    ...
+
+    @step
+    async def orchestrate(
+            self, ctx: Context, ev: OrchestrationEvent
+    ) -&gt; ActiveSpeakerEvent | StopEvent:
+        chat_history = self.memory.get()
+        user_state_str = await self._get_user_state_str(ctx)
+        system_prompt = ORCHESTRATION_PROMPT.format(
+            agent_configs_str=get_agent_configs_str(),
+            user_state_str=user_state_str
+        )
+        messages = [ChatMessage(role="system", content=system_prompt)] + chat_history
+        tools = [get_function_tool(TransferToAgent)]
+        event, tool_calls, _ = await self.achat_to_tool_calls(ctx, tools, messages)
+        if event is not None:
+            return event
+        tool_call = tool_calls[0]
+        selected_agent = tool_call.tool_kwargs["agent_name"]
+        await ctx.set("active_speaker", selected_agent)
+        ctx.write_event_to_stream(
+            ProgressEvent(msg=f"In step orchestrate:nTransfer to agent: {selected_agent}")
+        )
+        return ActiveSpeakerEvent(query=ev.query)</code></pre>
+<p class="wp-block-paragraph">After getting the latest agent, we update the context and throw an <code>ActiveSpeakerEvent</code>.</p>
+<p class="wp-block-paragraph">We also need to define <code>achat_to_tool_calls</code> and <code>_get_user_state_str</code> as these two tool methods. <code>achat_to_tool_calls</code> method is responsible for getting the currently needed tools from LLM. <code>_get_user_state_str</code> is used to convert the user state into a string.</p>
+<pre class="wp-block-prismatic-blocks"><code class="language-python">class CustomerService(Workflow):
+    ...
+
+    async def achat_to_tool_calls(self,
+                              ctx: Context,
+                              tools: list[FunctionTool],
+                              chat_history: list[ChatMessage]
+    ) -&gt; tuple[StopEvent | None, list[ToolSelection], ChatResponse]:
+    response = await self.llm.achat_with_tools(tools, chat_history=chat_history)
+    tool_calls: list[ToolSelection] = self.llm.get_tool_calls_from_response(
+        response=response, error_on_no_tool_call=False
+    )
+    stop_event = None
+    if len(tool_calls) == 0:
+        await self.memory.aput(response.message)
+        stop_event = StopEvent(
+            result=response.message.content
+        )
+    return stop_event, tool_calls, response
+
+    @staticmethod
+    async def _get_user_state_str(ctx: Context) -&gt; str:
+        user_state = await ctx.get("user_state", None)
+        user_state_list = [f"{k}: {v}" for k, v in user_state.items()]
+        return "n".join(user_state_list)</code></pre>
+<p class="wp-block-paragraph">After studying the <code>Orchestrate</code> branch, let’s see how the <code>ActiveSpeaker</code> branch works, which is the <code>speak_with_sub_agent</code> method:</p>
+<figure class="wp-block-image size-large"><img data-dominant-color="f2f4f4" data-has-transparency="true" style="--dominant-color: #f2f4f4;" loading="lazy" decoding="async" width="821" height="326" class="wp-image-595081 has-transparency" src="../Images/ea6a0b5e47aa1c9363e237fb3103d6b0.png" alt="The flowchart of the speak_with_sub_agent method. Image by Author" srcset="https://towardsdatascience.com/wp-content/uploads/2025/02/08zY4Beka9ye8Lp5D.png 821w, https://towardsdatascience.com/wp-content/uploads/2025/02/08zY4Beka9ye8Lp5D-300x119.png 300w, https://towardsdatascience.com/wp-content/uploads/2025/02/08zY4Beka9ye8Lp5D-768x305.png 768w" sizes="auto, (max-width: 821px) 100vw, 821px" data-original-src="https://towardsdatascience.com/wp-content/uploads/2025/02/08zY4Beka9ye8Lp5D.png"/><figcaption class="wp-element-caption">The flowchart of the speak_with_sub_agent method. Image by Author</figcaption></figure>
+<p class="wp-block-paragraph">This method first gets the current service-providing agent, as well as <code>chat_history</code> and <code>user_state</code>.</p>
+<p class="wp-block-paragraph">Then use the current agent’s <code>sys_prompt</code> and <code>tools</code>, as well as <code>chat_history</code>, to let LLM judge which tools to call next.</p>
+<pre class="wp-block-prismatic-blocks"><code class="language-python">class CustomerService(Workflow):
+    ...
+
+    @step
+    async def speak_with_sub_agent(
+            self, ctx: Context, ev: ActiveSpeakerEvent
+    ) -&gt; OrchestrationEvent | ToolCallEvent | StopEvent:
+        active_speaker = await ctx.get("active_speaker", default="")
+        agent_config: AgentConfig = get_agent_config_pair()[active_speaker]
+        chat_history = self.memory.get()
+        user_state_str = await self._get_user_state_str(ctx)
+
+        system_prompt = (
+                agent_config.system_prompt.strip()
+                + f"nn&lt;user state&gt;:n{user_state_str}"
+        )
+        llm_input = [ChatMessage(role="system", content=system_prompt)] + chat_history
+        tools = [get_function_tool(RequestTransfer)] + agent_config.tools
+        event, tool_calls, response = await self.achat_to_tool_calls(ctx, tools, llm_input)
+
+        if event is not None:
+            return event
+        await ctx.set("num_tool_calls", len(tool_calls))
+        for tool_call in tool_calls:
+            if tool_call.tool_name == "RequestTransfer":
+                await ctx.set("active_speaker", None)
+                ctx.write_event_to_stream(
+                    ProgressEvent(msg="The agent is requesting a transfer, please hold on...")
+                )
+                return OrchestrationEvent(query=ev.query)
+            else:
+                ctx.send_event(
+                    ToolCallEvent(tool_call=tool_call, tools=agent_config.tools)
+                )
+        await self.memory.aput(response.message)</code></pre>
+<p class="wp-block-paragraph">It is important to note that although the sample project is relatively simple, each agent’s tools only have one, but in actual projects, there are often multiple tools to be called concurrently. So we need to iterate through <code>tool_calls</code>, throwing <code>ToolCallEvent</code> separately.</p>
+<p class="wp-block-paragraph">At the same time, we also need to consider the situation where the current agent may not be able to handle the user’s request, thus calling <code>RequestTransfer</code>, then we need to go back to the <code>orchestrate</code> step and re-select the agent.</p>
+<p class="wp-block-paragraph">Let’s look at the <code>handle_tool_calls</code> section, the code in this section looks a lot, but the actual thing to do is very simple, just get the tool to be executed and execute it, so simple that I don’t even want to draw a flowchart.</p>
+<pre class="wp-block-prismatic-blocks"><code class="language-python">class CustomerService(Workflow):
+    ...
+
+    @step(num_workers=4)
+    async def handle_tool_calls(
+            self, ctx: Context, ev: ToolCallEvent
+    ) -&gt; ToolCallResultEvent:
+        tool_call = ev.tool_call
+        tools_by_name = {tool.metadata.get_name(): tool for tool in ev.tools}
+        tool_msg = None
+        tool = tools_by_name[tool_call.tool_name]
+        additional_kwargs = {
+            "tool_call_id": tool_call.tool_id,
+            "name": tool.metadata.get_name()
+        }
+        if not tool:
+            tool_msg = ChatMessage(
+                role="tool",
+                content=f"Tool {tool_call.tool_name} does not exists.",
+                additional_kwargs=additional_kwargs
+            )
+            return ToolCallResultEvent(chat_message=tool_msg)
+
+        try:
+            if isinstance(tool, FunctionToolWithContext):
+                tool_output = await tool.acall(ctx, **tool_call.tool_kwargs)
+            else:
+                tool_output = await tool.acall(**tool_call.tool_kwargs)
+
+            tool_msg = ChatMessage(
+                role="tool",
+                content=tool_output.content,
+                additional_kwargs=additional_kwargs
+            )
+        except Exception as e:
+            tool_msg = ChatMessage(
+                role="tool",
+                content=f"Encountered error in tool call: {e}",
+                additional_kwargs=additional_kwargs
+            )
+        return ToolCallResultEvent(chat_message=tool_msg)</code></pre>
+<p class="wp-block-paragraph">There is a small detail here, I set a parameter <code>num_workers=4</code> for the <code>step</code> decorator. This is to tell the workflow that the concurrency is only up to 4, to avoid too high concurrency causing downstream system blockage.</p>
+<p class="wp-block-paragraph">Then we come to the last method <code>aggregate_too_results</code>.</p>
+<pre class="wp-block-prismatic-blocks"><code class="language-python">class CustomerService(Workflow):
+    ...
+
+    @step
+    async def aggregate_tool_results(
+            self, ctx: Context, ev: ToolCallResultEvent
+    ) -&gt; ActiveSpeakerEvent | None:
+        num_tool_calls = await ctx.get("num_tool_calls")
+        results = ctx.collect_events(ev, [ToolCallResultEvent] * num_tool_calls)
+        if not results:
+            return None
+
+        for result in results:
+            await self.memory.aput(result.chat_message)
+        return ActiveSpeakerEvent(query="")</code></pre>
+<p class="wp-block-paragraph">This method is relatively simple, just get all the execution results of <code>tool_calls</code>, then write them into <code>ChatMemory</code>, and finally hand them back to the agent to evaluate the results and answer the user.</p>
+<h3 class="wp-block-heading">Step six, check our hard work</h3>
+<p class="wp-block-paragraph">At this point in the plot, our customer service team has been built, let’s check if these agents are working hard. Start!</p>
+<pre class="wp-block-prismatic-blocks"><code class="language-bash">chainlit run src/app.py</code></pre>
+<p class="wp-block-paragraph">Not bad, the front desk agent first asks for my name, simulating the login process, then based on my needs, hands it over to the pre-sales agent:</p>
+<figure class="wp-block-image size-large"><img data-dominant-color="282728" data-has-transparency="false" style="--dominant-color: #282728;" loading="lazy" decoding="async" width="791" height="900" class="wp-image-595082 not-transparent" src="../Images/d0e9d37f16ec53510692d6f041d023e2.png" alt="When my request was handed off to the pre-sales agent. Image by Author" srcset="https://towardsdatascience.com/wp-content/uploads/2025/02/09OovuQqrEVTs65bd.png 791w, https://towardsdatascience.com/wp-content/uploads/2025/02/09OovuQqrEVTs65bd-264x300.png 264w, https://towardsdatascience.com/wp-content/uploads/2025/02/09OovuQqrEVTs65bd-768x874.png 768w" sizes="auto, (max-width: 791px) 100vw, 791px" data-original-src="https://towardsdatascience.com/wp-content/uploads/2025/02/09OovuQqrEVTs65bd.png"/><figcaption class="wp-element-caption">When my request was handed off to the pre-sales agent. Image by Author</figcaption></figure>
+<p class="wp-block-paragraph">It can also be transferred to the after-sales agent based on my request:</p>
+<figure class="wp-block-image size-large"><img data-dominant-color="2f2e2f" data-has-transparency="false" style="--dominant-color: #2f2e2f;" loading="lazy" decoding="async" width="785" height="855" class="wp-image-595083 not-transparent" src="../Images/09e0eccb48ae297c2150a90989dbc72b.png" alt="When my request was handed off to the aftermarket agent. Image by Author" srcset="https://towardsdatascience.com/wp-content/uploads/2025/02/0X4OnvE-ze-9jLl4Z.png 785w, https://towardsdatascience.com/wp-content/uploads/2025/02/0X4OnvE-ze-9jLl4Z-275x300.png 275w, https://towardsdatascience.com/wp-content/uploads/2025/02/0X4OnvE-ze-9jLl4Z-768x836.png 768w" sizes="auto, (max-width: 785px) 100vw, 785px" data-original-src="https://towardsdatascience.com/wp-content/uploads/2025/02/0X4OnvE-ze-9jLl4Z.png"/><figcaption class="wp-element-caption">When my request was handed off to the aftermarket agent. Image by Author</figcaption></figure>
+<p class="wp-block-paragraph">I can even play with them all day!</p>
+<hr class="wp-block-separator has-alpha-channel-opacity"/>
+<h2 class="wp-block-heading">Project Source Code</h2>
+<p class="wp-block-paragraph">The code for this project is stored below, everyone can use or modify it without my permission:</p>
+<blockquote class="wp-block-quote is-layout-flow wp-block-quote-is-layout-flow"><p><a href="https://github.com/qtalen/multi-agent-customer-service"><strong>GitHub – qtalen/multi-agent-customer-service</strong></a></p></blockquote>
+<hr class="wp-block-separator has-alpha-channel-opacity"/>
+<h2 class="wp-block-heading">Conclusion</h2>
+<p class="wp-block-paragraph">To summarize today’s lesson, in this customer service chatbot project, we successfully simulated the agent handoff capability of OpenAI Swarm using LlamaIndex Workflow, achieving seamless collaboration among multiple agents.</p>
+<p class="wp-block-paragraph">We can see that the agents handoff brings obvious advantages to the project:</p>
+<ol class="wp-block-list">
+<li>The workflow autonomously decides which agent to use based on the dialogue context, there is no fixed code process, and it is completely decided by LLM.</li>
+<li>Once the workflow decides which agent will serve the user, the user interacts directly with the corresponding agent, without any intermediate steps.</li>
+</ol>
+<p class="wp-block-paragraph">However, there are still some shortcomings in the project:</p>
+<ol class="wp-block-list">
+<li>The call to the agent is too low-level, causing us to handle the function calling process in the code.</li>
+<li>The modularity of the workflow is not well done, I have also mentioned this in previous articles, which brings some obstacles to team collaboration.</li>
+</ol>
+<p class="wp-block-paragraph">I look forward to gradually solving these problems in the upcoming articles. I welcome your comments and discussions and will reply to everyone as soon as possible.</p>
+<hr class="wp-block-separator has-alpha-channel-opacity"/>
+<p class="wp-block-paragraph">Enjoyed this read? <strong><a href="https://www.dataleadsfuture.com/#/portal/signup">Subscribe now to get more cutting-edge data science tips straight to your inbox!</a></strong> Your feedback and questions are welcome – let’s discuss in the comments below!</p>
+<p class="wp-block-paragraph">This article was originally published on <a href="https://www.dataleadsfuture.com/using-llamaindex-workflow-to-implement-an-agent-handoff-feature-like-openai-swarm/#/portal/signup">Data Leads Future</a>.</p>    
+</body>
+</html>

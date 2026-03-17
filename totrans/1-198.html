@@ -1,0 +1,419 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.1//EN"
+  "http://www.w3.org/TR/xhtml11/DTD/xhtml11.dtd">
+
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+<title>Learning Triton One Kernel at a Time: Matrix Multiplication</title>
+<link href="../Styles/Style.css" type="text/css" rel="stylesheet"/>
+</head>
+<body>
+<h1>Learning Triton One Kernel at a Time: Matrix Multiplication</h1>
+<blockquote>原文：<a href="https://towardsdatascience.com/learning-triton-one-kernel-at-a-time-matrix-multiplication/">https://towardsdatascience.com/learning-triton-one-kernel-at-a-time-matrix-multiplication/</a></blockquote>
+<p class="wp-block-paragraph"><mdspan datatext="el1760116659048" class="mdspan-comment">Matrix</mdspan> multiplication is undoubtedly the most common operation performed by GPUs. It is the fundamental building block of linear algebra and shows up across a wide spectrum of different fields such as graphics, physics simulations and scientific computing while being ubiquitous in machine learning.</p>
+
+
+
+<p class="wp-block-paragraph">In today’s article, we’ll break down the conceptual implementation of general matrix-matrix multiplication (GEMM) while introducing several optimisation concepts such as tiling and memory coalescing. Finally, we’ll implement GEMM in Triton!</p>
+
+
+
+<p class="wp-block-paragraph"><em>This article is the second of a series on Triton and GPU kernels, If you are not familiar with Triton or need a refresher on GPU basics, check out the previous article!</em> <em>All the code showcased in this article is available on <a href="https://github.com/RPegoud/Triton-Kernels">GitHub</a>.</em></p>
+
+
+
+<figure class="wp-block-embed is-type-wp-embed is-provider-towards-data-science wp-block-embed-towards-data-science" datatext="el1760111958311"><div class="wp-block-embed__wrapper">
+<blockquote class="wp-embedded-content" data-secret="jQny7sP6NL"><a href="https://towardsdatascience.com/learning-triton-one-kernel-at-a-time-vector-addition/">Learning Triton One Kernel At a Time: Vector Addition</a></blockquote>
+</div></figure>
+
+
+
+<p class="wp-block-paragraph"><em>Disclaimer: all the following figures and animations were made by the author unless stated otherwise.</em></p>
+
+
+
+<h2 class="wp-block-heading">Naive GEMM</h2>
+
+
+
+<p class="wp-block-paragraph">Let’s start simple: we want to multiply two matrices <code>X</code> and <code>Y</code> with shapes <code>(M,N)</code> and <code>(N,K)</code> respectively. The output matrix <code>Z=X@Y</code> will therefore have shape <code>(M,K)</code>.</p>
+
+
+
+<p class="wp-block-paragraph">This operation involves computing the dot products of all pairs of rows and columns in <code>X</code> and <code>Y</code> respectively. A straightforward NumPy implementation might look something like this:</p>
+
+
+<div class="wp-block-tds-gist-embed">
+	
+</div>
+
+
+
+<p class="wp-block-paragraph">While easy to write, read and understand, this implementation is highly inefficient in terms of memory access and caching. As mentioned in the first article of this series, a fundamental aspect of GPU optimisation is <strong>minimising data transfers</strong>. </p>
+
+
+
+<p class="wp-block-paragraph">However, our current implementation starts by loading a row from <code>X</code>, iteratively loads all <code>K</code> columns of <code>Y</code>, computes their dot product and repeats the process for every row in <code>X</code>. This results in a total of <code>M(K+1)</code> loading operations. </p>
+
+
+
+<figure class="wp-block-image aligncenter"><img decoding="async" src="../Images/da96daa411a1e452382d92725abe2fc9.png" alt="" data-original-src="https://cdn-images-1.medium.com/max/1600/1*G0i-4NVQFPNi6C7QVmSgiQ.gif"/></figure>
+
+
+
+<p class="wp-block-paragraph">As seen in the animation, the memory access pattern is wasteful, as every column of <code>Y</code> is loaded <code>M</code> times. As an analogy: this is like running to the grocery store (global memory) every time you need a new ingredient for a dish instead of preparing all the ingredients on your kitchen counter (shared memory). Ideally, we would like to minimise the number of times each chunk of data is loaded and maximise its reusability once loaded. This leaves us with two main axes of optimisation:</p>
+
+
+
+<ol class="wp-block-list">
+<li class="wp-block-list-item">How can we improve the access pattern to minimise redundant loads?</li>
+
+
+
+<li class="wp-block-list-item">How much data can we load at once, and where should it be stored on the GPU?</li>
+</ol>
+
+
+
+<h2 class="wp-block-heading">Tiled GEMM</h2>
+
+
+
+<p class="wp-block-paragraph">As mentioned previously, the naive approach to GEMM results in many redundant loads, which induces unnecessary overhead. Ideally, we’d like to load each segment of data only once and perform all the operations in which they are used before dropping them from memory.</p>
+
+
+
+<p class="wp-block-paragraph">An elegant approach to this problem is <strong>tiling</strong>, which involves dividing large matrices in smaller <em>“tiles”</em> or sub-matrices. Consider two matrices <code>X</code> and <code>Y</code> with shapes <code>(4,6)</code> and <code>(6,4)</code> respectively, <code>X@Y</code> results in a matrix <code>Z</code> with shape <code>(4,4)</code>. </p>
+
+
+
+<p class="wp-block-paragraph">In order to compute the first element of <code>Z</code>, <code>Z[0,0]</code>, we need to compute the dot product between the first row of <code>X</code> and the first column of <code>Y</code>: <code>Z[0,0] = dot(X[0, :], Y[:, 0])</code>. We can also break down the dot product into smaller chunks, for instance in groups of 3 elements: <code>Z[0,0] = dot(X[0,0:3], Y[0:3, 0]) + dot(X[0,3:6], Y[3:6, 0])</code>. </p>
+
+
+
+<p class="wp-block-paragraph">Alternatively, we can expand this approach to two dimensions and compute an entire <code>(2,2)</code> block of Z at a time: <code>Z[0:2, 0:2] = dot(X[0:2, 0:2], Y[0:2, 0:2]) + dot(X[0:2, 2:4], Y[2:4, 0:2]) + dot(X[0:2, 4:6], Y[4:6, 0:2])</code>. </p>
+
+
+
+<p class="wp-block-paragraph">Here’s a visual representation of tiled matrix multiplication:</p>
+
+
+
+<figure class="wp-block-image size-full"><img decoding="async" src="../Images/05c848f754139f912aa32238f9acf483.png" alt="" class="wp-image-625604" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/10/image.gif"/><figcaption class="wp-element-caption">Tiled Matrix Multiplication. The computation is split in several “tiles” of X and Y (highlighted in pale blue and purple), each containing several blocks (dark blue and purple). In each block, we compute dot products (green cells in X and Y). These dot products are accumulated across the blocks of a tile to compute the output values in Z (the accumulation is represented by colors from orange to green).</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">The above animation illustrates how data is reused in tiled GEMM. For each 2×2 block in <code>X</code> and <code>Y</code>, we compute 4 dot products, which results in a <code>(2,2)</code> output matrix in <code>Z</code>. Since each tile contains 3 blocks, we need to accumulate 3 of these matrices to compute the final <code>(2,2)</code> output in <code>Z</code>. This accumulation is represented by colored cells in <code>Z</code>. </p>
+
+
+
+<p class="wp-block-paragraph">In the kitchen analogy, this is like fetching ingredients from the store and preparing them on the kitchen counter (i.e. small shared memory), reusing them several times before going back to the store.</p>
+
+
+
+<p class="wp-block-paragraph">Importantly, reusing loaded data over multiple steps allows this approach to drastically reduce the number of load operations. For <code>(2,2)</code> blocks, each <code>X</code> row and <code>Y</code> column is used in two dot products. Therefore, we’re performing <strong>twice as many operations </strong>with each block of loaded data, roughly <strong>halving</strong> the number of load operations! Note that this generalises to larger blocks as well, using a <code>(32,32)</code> block would reduce the number of loads by a factor of around 32. </p>
+
+
+
+<p class="wp-block-paragraph">Now you’re probably wondering “how large can these blocks be”? To answer this question, let’s recall how memory is managed in modern GPUs.</p>
+
+
+
+<h2 class="wp-block-heading">GPU Memory Hierarchy</h2>
+
+
+
+<p class="wp-block-paragraph">We distinguish four main types of memory in Nvidia GPUs. Here, we take the example of an A100:</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item"><strong>Registers: </strong>The fastest and smallest type of memory on the GPU, residing directly within each Streaming Multiprocessor (SM). On the A100, each SM provides <strong>256 KB of register file</strong> space (65,536 × 32-bit registers), distributed among its threads. Each thread gets its own private 32-bit registers for storing temporary variables and intermediate results, avoiding memory traffic altogether. However, register usage per thread directly affects occupancy, as using too many registers per thread limits how many threads can run concurrently.</li>
+
+
+
+<li class="wp-block-list-item"><strong>L1/Shared Memory</strong>: On an A100, each SM has 192KB of SRAM that can be <a href="https://docs.nvidia.com/cuda/ampere-tuning-guide/index.html?utm_source=chatgpt.com#unified-shared-memory-l1-texture-cache" target="_blank" rel="noreferrer noopener">flexibly configured</a> as either a hardware-managed <strong>L1 cache</strong> or a programmer-managed <strong>shared memory</strong>. For performance-critical kernels like matrix multiplication, we explicitly use this space as shared memory to stage data tiles close to the compute units, bypassing the L1 cache entirely. This gives us fine-grained control over data reuse.</li>
+
+
+
+<li class="wp-block-list-item"><strong>L2 cache</strong>: This cache is slower than L1 but much larger, with around <strong>40 MB shared across all SMs</strong> on the A100. It serves as a global cache for both data and instructions, reducing the number of accesses to high-latency HBM memory. The L2 cache is <strong>coherent across SMs</strong>, meaning that updates from one SM are visible to others, enabling synchronisation between thread blocks. Its bandwidth can reach several terabytes per second, acting as a buffer between the fast on-chip SRAM and the slower HBM.</li>
+
+
+
+<li class="wp-block-list-item"><strong>High Bandwidth Memory (HBM)</strong>: This is the device memory, it has a capacity of either 40GB or 80GB depending on the A100 model. It provides <strong>extremely high bandwidth</strong> (up to <strong>2 TB/s on the 80 GB variant) </strong>but with <strong>much</strong> <strong>higher latency</strong> than on-chip caches. HBM is where large tensors, model weights, and datasets reside during execution. Since accessing HBM is expensive, efficient kernels aim to <strong>minimise data movement</strong> and <strong>maximise on-chip data reuse</strong> via registers and shared memory.</li>
+</ul>
+
+
+
+<p class="wp-block-paragraph">As you can see, the memory hierarchy generally trades off capacity with latency. Therefore, maximising performance boils down to loading data from HBM into shared memory efficiently and reusing it as much as possible.</p>
+
+
+
+<figure class="wp-block-image size-large"><img decoding="async" src="../Images/7925bcca2d2881c04a6d16e30e7ac312.png" alt="" class="wp-image-625605" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/10/image-156-1024x549.png"/><figcaption class="wp-element-caption">GPU Memory Hierarchy, from fastest/smallest (top) to slowest/largest (bottom).</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">Choosing our block size is critical. We want blocks to be large enough to create a lot of parallel work, but small enough that their data fits in the SM’s shared memory and registers. A <code>BLOCK_SIZE</code> of <strong>64</strong> is a common starting point because it’s a multiple of the <strong>warp size</strong> (32 threads), ensuring full hardware utilisation.</p>
+
+
+
+<h2 class="wp-block-heading">Parallel Tiled GEMM</h2>
+
+
+
+<p class="wp-block-paragraph">With these considerations in mind, a natural follow-up to our tiled GEMM is to parallelise the computation of each pairs of tiles over several thread blocks, as depicted on the following animation.</p>
+
+
+
+<figure class="wp-block-image size-full"><img decoding="async" src="../Images/8189a5adb11e097039cba9314e568665.png" alt="" class="wp-image-625607" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/10/image-1.gif"/><figcaption class="wp-element-caption">Parallel Tiled Matrix Multiplication. The iteration over tiles is replaced by a parallel operation over multiple thread blocks.</figcaption></figure>
+
+
+
+<h3 class="wp-block-heading">Memory Coalescing</h3>
+
+
+
+<p class="wp-block-paragraph">Before writing tiled GEMM in Triton, we need to consider one last detail: <strong>memory coalescing</strong>, a technique that allows optimal use of global memory bandwidth. Memory coalescing is achieved when <strong>subsequent threads in a warp access subsequent memory addresses</strong>. Imagine a librarian needing to fetch books for a client, if all books are side-by-side on a shelf, they can grab them all at once. In contrast, if all books are lying on different shelves, they’ll have to grab them one by one, which takes significantly longer.</p>
+
+
+
+<p class="wp-block-paragraph">To understand how this applies to our case, note that matrices are stored linearly in memory, in other words a <code>(2,2)</code> matrix is stored as a sequence of <code>4</code> consecutive elements. Frameworks like PyTorch adopt a <strong>row-major</strong> layout, meaning that elements of a matrix are <strong>per-row contiguous in memory</strong>. For instance, elements of our <code>(2,2)</code> matrix would be stored as follows: <code>[(0,0), (0,1), (1,0), (1,1)]</code>, notice that elements of the same row are <em>contiguous </em>(touching) while elements of the same column have a <em>stride</em> of 1 (separated by one element).</p>
+
+
+
+<figure class="wp-block-image size-large"><img decoding="async" src="../Images/e897da52108bc6e066c290de9547e542.png" alt="" class="wp-image-625609" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/10/image-157-1024x772.png"/><figcaption class="wp-element-caption">PyTorch stores matrices in row-major layout. Elements of a row contiguous in memory while elements of a column are strided.</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">This implies that we can load rows using <strong>coalesced loads</strong>, but columns do <strong>not</strong> satisfy this condition. However, we need to access columns of <code>Y</code> to compute dot products. In order to maximise performance, a good practice is to transpose <code>Y</code> so that we iterate on its rows rather than its columns. </p>
+
+
+
+<p class="wp-block-paragraph">However, transposing <code>Y</code> isn’t enough to modify its layout in memory. As mentioned previously, PyTorch stores matrices in a flat array. Each matrix dimension is associated with a <code>stride</code> attribute, denoting the jump necessary to go from one element to the next one along this dimension. For instance, a <code>(10,10)</code> matrix would have <code>strides=(10,1)</code>. Indeed, starting from element <code>[0,0]</code>, element <code>[1,0]</code> is 10 memory slots (i.e. one row) away, whereas element <code>[0,1]</code> is adjacent. </p>
+
+
+
+<p class="wp-block-paragraph">When transposing a tensor, PyTorch doesn’t modify the layout in memory but simply recomputes the strides. In order to make the transpose effective from a memory standpoint we need to call <code>Y.T.contiguous()</code>.</p>
+
+
+
+<p class="wp-block-paragraph">These are the required steps the load columns of <code>Y</code> efficiently, however we’ll need to transpose the loaded blocks within the kernel to perform the dot product properly: <code>z_block = tl.dot(X_block, Y_block.T)</code>.</p>
+
+
+
+<figure class="wp-block-image size-large"><img decoding="async" src="../Images/4138d2ccc9106c3b087165df158ffa9d.png" alt="" class="wp-image-625610" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/10/image-158-1024x928.png"/><figcaption class="wp-element-caption">Representation of Y, Y.T and Y.T.contiguous() in their block representation and memory layout. The transpose operation changes the behaviour of the matrix but doesn’t modify its memory layout. This is why we need to add .contiguous() to enable coalesced reads on rows.</figcaption></figure>
+
+
+
+<h3 class="wp-block-heading">Triton Implementation</h3>
+
+
+
+<p class="wp-block-paragraph">From here on, we first describe the kernel without memory coalescing to simplify the logic and pointer arithmetic before summarising the changes required to make the load operations coalesced on <code>Y</code> columns.</p>
+
+
+
+<p class="wp-block-paragraph">Let’s start by focusing on the PyTorch wrapper around the kernel. We need to read <code>M, N, K</code> from the input matrices and compute their strides since these constants will be useful later in the kernel. Then, we define the <code>BLOCK_SIZE</code> and declare the <code>grid</code>.</p>
+
+
+<div class="wp-block-tds-gist-embed">
+	
+</div>
+
+
+
+<p class="wp-block-paragraph">Now let’s dive into the actual kernel code. We’re going to make use of Triton’s <code>make_block_ptr</code> utility, which simplifies the pointer arithmetic. We create one block pointer per matrix and pass the matrix shape, its strides, and the size of the block as inputs. Additionally, we specify the offset, the coordinate of the top-left element in the current block. For <code>X</code>, this corresponds to <code>(m_idx * BLOCK_SIZE, 0)</code> where <code>m_idx</code> is the index of the current block along the <code>M</code> dimension. </p>
+
+
+
+<p class="wp-block-paragraph">From there, we define <code>z_acc</code>, a zero matrix that will receive the partial dot-products as we iterate through tiles. We now iterate through the shared dimension <code>N</code>, loading blocks of size <code>(BLOCK_SIZE, BLOCK_SIZE)</code>, and accumulate their dot products in <code>z_acc</code>. We then move the block pointers along the shared dimension by using <code>.advance</code>.</p>
+
+
+
+<p class="wp-block-paragraph">You might have noticed that when loading data, we use <code>boundary_check</code> and <code>padding_option</code> instead of <code>mask</code> and <code>other</code> as in the previous article. These arguments are specific to the use of block pointers and specify which axes to check for out-of-bound operations (here <code>(0,1)</code> for x and y) and how to treat those invalid values. Here we set them to zero to be ignored in the dot product.</p>
+
+
+<div class="wp-block-tds-gist-embed">
+	
+</div>
+
+
+
+<p class="wp-block-paragraph">We can now take a look at the performance of this kernel by using the following function:</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">def bench(fn: callable, x: torch.Tensor, y: torch.Tensor, repeat: int):
+  flops = []
+  med_latency = []
+
+  for _ in tqdm(range(repeat), desc=f"Benchmarking {fn.__name__}"):
+    latency_ms = triton.testing.do_bench(
+      lambda: fn(x, y),
+      quantiles=[0.5], # get the median latency
+      return_mode="all",
+      )
+    n_flops = 2 * M * N * K # matmul roughly requires 2*M*N*K operations
+    tflops = n_flops / (latency_ms / 1e3) / 1e12
+
+    med_latency.append(latency_ms)
+    flops.append(tflops)
+
+  flops = np.array(flops)
+  med_latency = np.array(med_latency)
+  print(f"Absolute Error: {torch.sum(torch.abs(X@Y - fn(x, y)))}")
+  print(f"Median Latency: {med_latency.mean():.4f} ± {med_latency.std():.3f} ms")
+  print(f"Throughput: {flops.mean():.4f} ± {flops.std():.3f} TeraFLOPS")
+
+M = 8192
+N = 6144
+K = 4096
+
+X = torch.randn((M, N), device="cuda", dtype=torch.float32)
+Y = torch.randn((N, K), device="cuda", dtype=torch.float32)
+
+bench(block_matmul, X, Y, repeat=10)</code></pre>
+
+
+
+<p class="wp-block-paragraph">We get the following outputs (using a T4 GPU on Colab):<br/></p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">Absolute Error: 0.0 # the kernel outputs the correct result!
+Median Latency: 130.7831 ± 1.794 ms
+Throughput: 3.1533 ± 0.043 TeraFLOPS</code></pre>
+
+
+
+<p class="wp-block-paragraph">Now let’s review the changes required for coalesced loads on <code>Y</code>: we mainly need to flip the shape, strides and offsets when defining the block pointer for <code>Y</code>. Additionally, we update the block pointer to move along the column dimension (previously row dimension). The full code for this implementation is available on <a href="https://github.com/RPegoud/Triton-Kernels" target="_blank" rel="noreferrer noopener">GitHub</a>.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">@triton.jit
+def coalesced_block_matmul_kernel(
+    X_ptr, X_m_stride, X_n_stride,
+    Y_ptr, Y_k_stride, Y_n_stride,
+    Z_ptr, Z_m_stride, Z_k_stride,
+    M, N, K,
+    BLOCK_SIZE: tl.constexpr,
+):
+    ... 
+    y_block_ptr = tl.make_block_ptr(
+        base=Y_ptr,
+        # flip the shape, strides and offsets to match Y.T
+        shape=(K, N),
+        strides=(Y_k_stride, Y_n_stride), 
+        offsets=(k_idx * BLOCK_SIZE, 0),
+        block_shape=(BLOCK_SIZE, BLOCK_SIZE),
+        order=(0, 1),
+    )
+    ...
+
+    for _ in range(0, N, BLOCK_SIZE):
+        ... # loads
+        z_acc += tl.dot(x, y.T)  # transpose Y back for dot product
+        x_block_ptr = tl.advance(x_block_ptr, offsets=(0, BLOCK_SIZE))
+        # advance the block pointer along columns of Y.T (i.e rows of Y)
+        y_block_ptr = tl.advance(y_block_ptr, offsets=(0, BLOCK_SIZE))
+
+    tl.store(pointer=z_block_ptr, value=z_acc, boundary_check=(0, 1))
+
+def coalesced_block_matmul(X, Y):
+    Y = Y.T.contiguous()  # Y is now (K,N)
+    M, N = X.shape
+    K, _ = Y.shape
+    Z = torch.empty((M, K), device="cuda")
+
+    x_stride_m, x_stride_n = X.stride()
+    y_stride_k, y_stride_n = Y.stride()
+    z_stride_m, z_stride_k = Z.stride()
+
+    ...  # define BLOCK_SIZE and grid
+
+    coalesced_block_matmul_kernel[grid](
+        X, x_stride_m, x_stride_n,
+        Y, y_stride_n, y_stride_k,
+        Z, z_stride_m, z_stride_k,
+        M, N, K,
+        BLOCK_SIZE,
+    )
+
+    return Z</code></pre>
+
+
+
+<p class="wp-block-paragraph">Here are the results of our benchmark for the kernel with coalesced loads for <code>Y</code>:</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">Absolute Error: 0.0 # Again, the kernel is correct!
+Median Latency: 261.9420 ± 0.858 ms
+Throughput: 1.5741 ± 0.005 TeraFLOPS</code></pre>
+
+
+
+<p class="wp-block-paragraph">Surprisingly, the throughput of this second kernel is only half of what we obtained with the first one, despite improving the efficiency of load operations 🤔</p>
+
+
+
+<p class="wp-block-paragraph">A quick inspection using <code>nsight</code> (Nvidia’s kernel profiler, more on that in a future article) reveals that the transpose operation within the kernel creates a “traffic jam”. Specifically, the transpose creates <strong>bank conflicts</strong>, causing threads to remain idle most of the time. Notably, the warp scheduler has no eligible warp to dispatch 87.6% of the time as they are waiting for the bank conflict to resolve. Additionally, the report reads:</p>
+
+
+<p class="wp-block-shortcode">———————– ———– ————–<br/>
+Metric Name             Metric Unit   Metric Value<br/>
+———————– ———– ————–<br/>
+…<br/>
+DRAM Throughput                   %           8.20<br/>
+Compute (SM) Throughput           %          21.14<br/>
+…</p>
+
+
+
+<p class="wp-block-paragraph">This indicates that the kernel is <strong>latency bound</strong> (i.e. neither memory nor compute bound, refer to the previous article for more details). In contrast, the first kernel is <strong>compute bound </strong>(i.e. increasing compute will improve performance) since the compute throughput is high compared to the DRAM throughput.</p>
+
+
+<p class="wp-block-shortcode">———————– ———– ————–<br/>
+Metric Name             Metric Unit   Metric Value<br/>
+———————– ———– ————–<br/>
+…<br/>
+DRAM Throughput                   %          29.35<br/>
+Compute (SM) Throughput           %          74.39<br/>
+…</p>
+
+
+
+<h2 class="wp-block-heading">Conclusion</h2>
+
+
+
+<p class="wp-block-paragraph">This experiment highlights the importance of profiling and empirical validation. Even well-intentioned optimisations like coalescing memory accesses can introduce new bottlenecks if not evaluated carefully. The first kernel, though simpler, was compute-bound and better matched the hardware characteristics.</p>
+
+
+
+<p class="wp-block-paragraph">In the next articles of this series, we’ll implement a softmax kernel, paying particular attention to integrating Triton with PyTorch’s <code>autograd</code> and profiling kernels using Nsight.</p>
+
+
+
+<p class="wp-block-paragraph">Until next time! 👋</p>
+
+
+
+<h4 class="wp-block-heading">Useful Resources</h4>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item"><a href="https://github.com/RPegoud/Triton-Kernels" target="_blank" rel="noreferrer noopener">Complete implementation</a></li>
+
+
+
+<li class="wp-block-list-item"><a href="https://www.cs.sfu.ca/~ashriram/Courses/CS7ARCH/hw/hw4.html" target="_blank" rel="noreferrer noopener">Introduction to GEMM and Assignment</a></li>
+
+
+
+<li class="wp-block-list-item"><a href="https://en.wikipedia.org/wiki/Ampere_%28microarchitecture%29#cite_note-15" target="_blank" rel="noreferrer noopener">Nvidia Ampere Architecture (A100 specs)</a></li>
+</ul>
+    
+</body>
+</html>

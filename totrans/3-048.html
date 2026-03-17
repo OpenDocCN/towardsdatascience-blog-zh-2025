@@ -1,0 +1,609 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.1//EN"
+  "http://www.w3.org/TR/xhtml11/DTD/xhtml11.dtd">
+
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+<title>Building a Scalable and Accurate Audio Interview Transcription Pipeline with Google Gemini</title>
+<link href="../Styles/Style.css" type="text/css" rel="stylesheet"/>
+</head>
+<body>
+<h1>Building a Scalable and Accurate Audio Interview Transcription Pipeline with Google Gemini</h1>
+<blockquote>原文：<a href="https://towardsdatascience.com/building-a-scalable-and-accurate-audio-interview-transcription-pipeline-with-google-gemini/">https://towardsdatascience.com/building-a-scalable-and-accurate-audio-interview-transcription-pipeline-with-google-gemini/</a></blockquote>
+<p class="wp-block-paragraph"><strong>This article is co-authored by Ugo Pradère and David Haüet</strong></p>
+
+
+
+<p class="wp-block-paragraph"><mdspan datatext="el1745629161913" class="mdspan-comment">How hard</mdspan> can it be to transcribe an interview? You feed the audio to an AI model, wait a few minutes, and boom: perfect transcript, right? Well… not quite.</p>
+
+
+
+<p class="wp-block-paragraph">When it comes to accurately transcribe long audio interviews, even more when the spoken language is not English, things get a lot more complicated. You need high quality transcription with reliable speaker identification, precise timestamps, and all that at an affordable price. Not so simple after all.</p>
+
+
+
+<p class="wp-block-paragraph">In this article, we take you behind the scenes of our journey to build a scalable and production-ready transcription pipeline using Google’s Vertex AI and Gemini models. From unexpected model limitations to budget evaluation and timestamp drift disasters, we’ll walk you through the real challenges, and how we solved them.</p>
+
+
+
+<p class="wp-block-paragraph">Whether you are building your own audio processing tool or just curious about what happens “under the hood” of a robust transcription system using a multimodal model, you will find practical insights, clever workarounds, and lessons learned that should be worth your time.</p>
+
+
+
+<h2 class="wp-block-heading">Context of the project and constraints</h2>
+
+
+
+<p class="wp-block-paragraph">At the beginning of 2025, we started an interview transcription project with a clear goal: to build a system capable of transcribing interviews in French, typically involving a journalist and a guest, but not restricted to this situation, and lasting from a few minutes to over an hour. The final output was expected to be just a raw transcript but had to reflect the natural spoken dialogue written in a “book-like” dialogue, ensuring both a faithful transcription of the original audio content and a good readability.</p>
+
+
+
+<p class="wp-block-paragraph">Before diving into development, we conducted a short market review of existing solutions, but the outcomes were never satisfactory: the quality was often disappointing, the pricing definitely too high for an intensive usage, and in most cases, both at once. At that point, we realized a custom pipeline would be necessary.</p>
+
+
+
+<p class="wp-block-paragraph">Because our organization is engaged in the Google ecosystem, we were required to use Google Vertex AI services. Google Vertex AI offers a variety of Speech-to-Text (S2T) models for audio transcription, including specialized ones such as “Chirp,” “Latestlong,” or “Phone call,” whose names already hint at their intended use cases. However, producing a complete transcription of an interview that combines high accuracy, speaker diarization, and precise timestamping, especially for long recordings, remains a real technical and operational challenge.</p>
+
+
+
+<h2 class="wp-block-heading">First attempts and limitations</h2>
+
+
+
+<p class="wp-block-paragraph">We initiated our project by evaluating all those models on our use case. However, after extensive testing, we came quickly to the following conclusion: no Vertex AI service fully meets the complete set of requirements and will allow us to achieve our goal in a simple and effective manner. There was always at least one missing specification, usually on timestamping or diarization.<br/></p>
+
+
+
+<p class="wp-block-paragraph">The terrible Google documentation, this must be said, cost us a significant amount of time during this preliminary research. This prompted us to ask Google for a meeting with a Google Cloud Machine Learning Specialist to try and find a solution to our problem. After a quick video call, our discussion with the Google rep quickly confirmed our conclusions: what we aimed to achieve was not as simple as it seemed at first. The entire set of requirements could not be fulfilled by a single Google service and a custom implementation of a VertexAI S2T service had to be developed.</p>
+
+
+
+<p class="wp-block-paragraph">We presented our preliminary work and decided to continue exploring two strategies:</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">Use Chirp2 to generate the transcription and timestamping of long audio files, then use Gemini for diarization.</li>
+
+
+
+<li class="wp-block-list-item">Use Gemini 2.0 Flash for transcription and diarization, although the timestamping is approximate and the token output length requires looping.</li>
+</ul>
+
+
+
+<p class="wp-block-paragraph">In parallel of these investigations, we also had to consider the financial aspect. The tool would be used for hundreds of hours of transcription per month. Unlike text, which is generally cheap enough not to have to think about it, audio can be quite costly. We therefore included this parameter from the beginning of our exploration to avoid ending up with a solution that worked but was too expensive to be exploited in production.</p>
+
+
+
+<h2 class="wp-block-heading">Deep dive into transcription with Chirp2</h2>
+
+
+
+<p class="wp-block-paragraph">We began with a deeper investigation of the Chirp2 model since it is considered as the “best in class” Google S2T service. A straightforward application of the documentation provided the expected result. The model turned out to be quite effective, offering good transcription with word-by-word timestamping according to the following output in json format:</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-json">"transcript":"Oui, en effet",
+"confidence":0.7891818284988403
+"words":[
+  {
+    "word":"Oui",
+    "start-offset":{
+      "seconds":3.68
+    },
+    "end-offset":{
+      "seconds":3.84
+    },
+    "confidence":0.5692862272262573
+  }
+  {
+    "word":"en",
+    "start-offset":{
+      "seconds":3.84
+    },
+    "end-offset":{
+      "seconds":4.0
+    },
+    "confidence":0.758037805557251
+  },
+  {
+    "word":"effet",
+    "start-offset":{
+      "seconds":4.0
+    },
+    "end-offset":{
+      "seconds":4.64
+    },
+    "confidence":0.8176857233047485
+  },
+]</code></pre>
+
+
+
+<p class="wp-block-paragraph">However, a new requirement came along the project added by the operational team: the transcription must be as faithful as possible to the original audio content and include small filler words, interjections, onomatopoeia or even mumbling that can add meaning to a conversation, and typically come from the non-speaking participant either at the same time or toward the end of a sentence of the speaking one. We’re talking about words like “oui oui,” “en effet” but also simple expressions like (hmm, ah, etc.), so typical of the French language! It’s actually not uncommon to validate or, more rarely, oppose someone point with a simple “Hmm Hmm”. Upon analyzing Chirp with transcription, we noticed that while some of these small words were present, a number of those expressions were missing. First downside for Chirp2.</p>
+
+
+
+<p class="wp-block-paragraph">The main challenge in this approach lies in the reconstruction of the speaker sentences while performing diarization. We quickly abandoned the idea of giving Gemini the context of the interview and the transcription text, and asking it to determine who said what. This method could easily result in incorrect diarization. We instead explored sending the interview context, the audio file, and the transcription content in a compact format, instructing Gemini to only perform diarization and sentence reconstruction without re-transcribing the audio file. We requested a TSV format, an ideal structured format for transcription: “human readable” for fast quality checking, easy to process algorithmically, and lightweight. Its structure is as follows:</p>
+
+
+
+<p class="wp-block-paragraph">First line with speaker presentation:</p>
+
+
+
+<p class="wp-block-paragraph"><em>Diarization Speaker_1:speaker_name\Speaker_2:speaker_name\Speaker_3:speaker_name\Speaker_4:speaker_name, etc.</em></p>
+
+
+
+<p class="wp-block-paragraph">Then the transcription in the following format: </p>
+
+
+
+<p class="wp-block-paragraph"><em>speaker_id\ttime_start\ttime_stop\text</em><em> with:</em></p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item"><strong><em>speaker:</em></strong><em> Numeric speaker ID (e.g., 1, 2, etc.)</em></li>
+
+
+
+<li class="wp-block-list-item"><strong><em>time_start:</em></strong><em> Segment start time in the format 00:00:00</em></li>
+
+
+
+<li class="wp-block-list-item"><strong><em>time_stop:</em></strong><em> Segment end time in the format 00:00:00</em></li>
+
+
+
+<li class="wp-block-list-item"><strong><em>text:</em></strong><em> Transcribed text of the dialogue segment</em></li>
+</ul>
+
+
+
+<p class="wp-block-paragraph">An example output: </p>
+
+
+
+<blockquote class="wp-block-quote is-layout-flow wp-block-quote-is-layout-flow">
+<p class="wp-block-paragraph"><em>Diarization Speaker_1:Lea Finch\Speaker_2:David Albec </em></p>
+
+
+
+<p class="wp-block-paragraph"><em>1</em><em> </em><em>00:00:00</em><em> </em><em>00:03:00</em><em> </em><em>Hi Andrew, how are you? </em></p>
+
+
+
+<p class="wp-block-paragraph"><em>2</em><em> </em><em>00:03:00</em><em> </em><em>00:03:00</em><em> </em><em>Fine thanks. </em></p>
+
+
+
+<p class="wp-block-paragraph"><em>1</em><em> </em><em>00:04:00</em><em> </em><em>00:07:00</em><em> </em><em>So, let’s start the interview </em></p>
+
+
+
+<p class="wp-block-paragraph"><em>2</em><em> </em><em>00:07:00</em><em> </em><em>00:08:00</em><em> </em><em>All right.</em></p>
+
+
+
+<p class="wp-block-paragraph">A simple version of the context provided to the LLM:</p>
+
+
+
+<p class="wp-block-paragraph"><em>Here is the interview of David Albec, professional football player, by journalist Lea Finch</em></p>
+</blockquote>
+
+
+
+<p class="wp-block-paragraph">The result was fairly qualitative with what appeared to be accurate diarization and sentence reconstruction. However, instead of getting the exact same text, it seemed slightly modified in several places. Our conclusion was that, despite our clear instructions, Gemini probably carries out more than just diarization and actually performed partial transcription.</p>
+
+
+
+<p class="wp-block-paragraph">We also evaluated at this point the cost of transcription with this methodology. Below is the approximate calculation based only on audio processing: </p>
+
+
+
+<p class="wp-block-paragraph">Chirp2 price /min: 0.016 usd</p>
+
+
+
+<p class="wp-block-paragraph">Gemini 2.0 flash /min: 0,001875 usd</p>
+
+
+
+<p class="wp-block-paragraph">Price /hour: 1,0725 usd</p>
+
+
+
+<p class="wp-block-paragraph">Chirp2 is indeed quite “expensive”, about ten times more than Gemini 2.0 flash at the time of writing, and still requires the audio to be processed by Gemini for diarization. We therefore decided to put this method aside for now and explore a way using the brand new multimodal Gemini 2.0 Flash alone, which had just left experimental mode.</p>
+
+
+
+<h2 class="wp-block-heading">Next: exploring audio transcription with Gemini flash 2.0</h2>
+
+
+
+<p class="wp-block-paragraph">We provided Gemini with both the interview context and the audio file requesting a structured output in a consistent format. By carefully crafting our prompt with standard LLM guidelines, we were able to specify our transcription requirements with a high degree of precision. In addition with the typical elements any prompt engineer might include, we emphasized several key instructions essential for ensuring a quality transcription (<em>comment in italic)</em>:</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">Transcribe interjections and onomatopoeia even when mid-sentence.</li>
+
+
+
+<li class="wp-block-list-item">Preserve the full expression of words, including slang, insults, or inappropriate language. =&gt; <em>the model tends to change words it considers inappropriate. For this specific point, we had to require Google to deactivate the safety rules on our Google Cloud Project</em>.</li>
+
+
+
+<li class="wp-block-list-item">Build complete sentences, paying particular attention to changes in speaker mid-sentence, for example when one speaker finishes another’s sentence or interrupts. =&gt; <em>Such errors affect diarization and accumulate throughout the transcript until context is strong enough for the LLM to correct</em>.</li>
+
+
+
+<li class="wp-block-list-item">Normalize prolonged words or interjections like “euuuuuh” to “euh.” and not “euh euh euh euh euh …” =&gt;<em> this was a classical bug we were encountering called “repetition bug” and is discussed in more detail below</em></li>
+
+
+
+<li class="wp-block-list-item">Identify speakers by voice tone while using context to determine who is the journalist and who is the interviewee. =&gt; <em>in addition we can pass the information of the first speaker in the prompt</em></li>
+</ul>
+
+
+
+<p class="wp-block-paragraph">Initial results were actually quite satisfying in terms of transcription, diarization, and sentence construction. Transcribing short test files made us feel like the project was nearly complete… until we tried longer files. </p>
+
+
+
+<h2 class="wp-block-heading">Dealing with Long Audio and LLM Token Limitations</h2>
+
+
+
+<p class="wp-block-paragraph">Our early tests on short audio clips were encouraging but scaling the process to longer audios quickly revealed new challenges: what initially seemed like a simple extension of our pipeline turned out to be a technical hurdle in itself. Processing files longer than just a few minutes revealed indeed a series of challenges related to model constraints, token limits, and output reliability:</p>
+
+
+
+<ol class="wp-block-list">
+<li class="wp-block-list-item">One of the first problems we encountered with long audio was the token limit: the number of output tokens exceeded the maximum allowed (MAX_INPUT_TOKEN = 8192) forcing us to implement a looping mechanism by repeatedly calling Gemini while resending the previously generated transcript, the initial prompt, a continuation prompt, and the same audio file.</li>
+</ol>
+
+
+
+<p class="wp-block-paragraph">Here is an example of the continuation prompt we used: </p>
+
+
+
+<p class="wp-block-paragraph"><em>Continue transcribing audio interview from the previous result. Start processing the audio file from the previous generated text. Do not start from the beginning of the audio. Be careful to continue the previously generated content which is available between the following tags &lt;previous_result&gt;.</em></p>
+
+
+
+<ol start="2" class="wp-block-list">
+<li class="wp-block-list-item">Using this transcription loop with large data inputs seems to significantly degrade the LLM output quality, especially for timestamping. In this configuration, timestamps can drift by over 10 minutes on an hour-long interview. If a few seconds drift was considered compatible with our intended use, a few minutes made timestamping useless. </li>
+</ol>
+
+
+
+<p class="wp-block-paragraph">Our initial test on short audios of a few minutes resulted in a maximum 5 to 10 seconds drift, and significant drift was observed generally after the first loop when max input token was reached. We conclude from these experimental observations, that while this looping technique ensures continuity in transcription fairly well, it not only leads to cumulative timestamp errors but also to a drastic loss of LLM timestamps accuracy. </p>
+
+
+
+<ol start="3" class="wp-block-list">
+<li class="wp-block-list-item">We also encountered a recurring and particularly frustrating bug: the model would sometimes fall into a loop, repeating the same word or phrase over dozens of lines. This behavior made entire portions of the transcript unusable and often looked something like this:</li>
+</ol>
+
+
+
+<p class="wp-block-paragraph"><em>1    00:00:00    00:03:00    Hi Andrew, how are you? </em></p>
+
+
+
+<p class="wp-block-paragraph"><em>2    00:03:00    00:03:00    Fine thanks.</em></p>
+
+
+
+<p class="wp-block-paragraph"><em>2    00:03:00    00:03:00    Fine thanks</em></p>
+
+
+
+<p class="wp-block-paragraph"><em>2    00:03:00    00:03:00    Fine thanks</em></p>
+
+
+
+<p class="wp-block-paragraph"><em>2    00:03:00    00:03:00    Fine thanks. </em></p>
+
+
+
+<p class="wp-block-paragraph"><em>2    00:03:00    00:03:00    Fine thanks</em></p>
+
+
+
+<p class="wp-block-paragraph"><em>2    00:03:00    00:03:00    Fine thanks. </em></p>
+
+
+
+<p class="wp-block-paragraph"><em>etc.</em></p>
+
+
+
+<p class="wp-block-paragraph">This bug seems erratic but appears more frequently with medium-quality audio with strong background noise, far away speaker for example. And “on the field”, this is often the case.. Likewise, speaker hesitations or word repetitions seem to trigger it. We still don’t know exactly what causes this “repetition bug”. Google Vertex team is aware of it but hasn’t provided a clear explanation. </p>
+
+
+
+<p class="wp-block-paragraph">The consequences of this bug were especially limiting: once it occurred, the only viable solution was to restart the transcription from scratch. Unsurprisingly, the longer the audio file, the higher the probability of encountering the issue. In our tests, it affected roughly one out of every three runs on recordings longer than an hour, making it extremely difficult to deliver a reliable, production-quality service under such conditions.</p>
+
+
+
+<ol start="4" class="wp-block-list">
+<li class="wp-block-list-item">To make it worse, resuming transcription after a reached Max_token “cutoff” required resending the entire audio file each time. Although we only needed the next segment, the LLM would still process the full file again (without outputting the transcription), meaning we were billed the full audio time lenght for every resend.</li>
+</ol>
+
+
+
+<p class="wp-block-paragraph">In practice, we found that the token limit was typically reached between the 15th and 20th minute of the audio. As a result, transcribing a one hour long interview often required 4 to 5 separate LLM calls, leading to a total billing equivalent of 4 to 5 hours of audio for a single file. </p>
+
+
+
+<p class="wp-block-paragraph">With this process, the cost of audio transcription does not scale linearly. While a 15-minute audio would be billed as 15 minutes, in a single LLM call, a 1-hour file could effectively cost 4 hours, and a 2-hour file could increase to 16 hours, following a near quadratic pattern (≈ 4^x, where x = number of hours).<br/>This made long audio processing not just unreliable, but also expensive for long audio files.</p>
+
+
+
+<h2 class="wp-block-heading">Pivoting to Chunked Audio Transcription</h2>
+
+
+
+<p class="wp-block-paragraph">Given these major limitations, and being much more confident in the ability of the LLM to handle text-based tasks over audio, we decided to shift our approach and isolate the audio transcription process to maintain high transcription quality. A quality transcription is indeed the key step of the need and it makes sense to ensure that this part of the process should be at the core of the strategy.</p>
+
+
+
+<p class="wp-block-paragraph">At this point, splitting audio into chunks became the ideal solution. Not only, it seemed likely to greatly improve timestamp accuracy by avoiding the LLM timestamping performance degradation after looping and cumulative drift, but also reducing price since each chunk would be runned ideally once. While it introduced new uncertainties around merging partial transcriptions, the tradeoff seemed to our advantage.</p>
+
+
+
+<p class="wp-block-paragraph">We thus focused on breaking long audio into shorter chunks that would insure a single LLM transcription request. During our tests, we observed that issues like repetition loops or timestamp drift typically began around the 18-minute mark in most interviews. It became clear that we should use 15-minute (or shorter) chunks for safety. Why not use 5-minute chunks? The quality improvement looked minimal to us while tripling the number of segments. In addition, shorter chunks reduce the overall context, which could hurt diarization.</p>
+
+
+
+<p class="wp-block-paragraph">Also this setup drastically minimized the repetition bug, we observed that it still occurred occasionally. In a desire to provide the best service possible, we definitely wanted to find an efficient counterback to this problem and we identified an opportunity with our previously annoying max_input_token: with 10-minute chunks, we could definitely be confident that token limits wouldn’t be exceeded in nearly all cases. Thus, if the token limit was hit, we knew for sure the repetition bug occurred and could restart that chunk transcription. This pragmatic method turned out to be indeed very effective at identifying and avoiding the bug. Great news.</p>
+
+
+
+<h2 class="wp-block-heading">Correcting audio chunks transcription</h2>
+
+
+
+<p class="wp-block-paragraph">With good transcripts of 10 minutes audio chunk in hand, we implemented at this stage an algorithmic post-processing of each transcript to address minor issues:</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">Removal of header tags like tsv or json added at the start and the end of the transcription content: </li>
+</ul>
+
+
+
+<p class="wp-block-paragraph">Despite optimizing the prompt, we couldn’t fully eliminate this side effect without hurting the transcription quality. Since this is easily handled algorithmically, we chose to do so.</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">Replacing speaker IDs with names:</li>
+</ul>
+
+
+
+<p class="wp-block-paragraph">Speaker identification by name only begins once the LLM has enough context to determine who is the journalist and who is being interviewed. This results in incomplete diarization at the beginning of the transcript with early segments using numeric IDs (first speaker in chunk = 1, etc.). Moreover, since each chunk may have a different ID order (first person to talk being speaker 1), this would create confusion during merging. We instructed the LLM to only use IDs and provide a diarization mapping in the first line, during the transcription process. The speaker ids are therefore replaced during the algorithmic correction and the diarization headline removed.</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">Rarely, malformed or empty transcript lines are encountered. These lines are deleted, but we flag them with a note to the user: “formatting issue on this line” so users are at least aware of a potential content loss and correct it eventually handwise. In our final optimized version, such lines were extremely rare.</li>
+</ul>
+
+
+
+<h2 class="wp-block-heading">Merging chunks and maintaining content continuity</h2>
+
+
+
+<p class="wp-block-paragraph">At the previous stage of audio chunking, we initially tried to make chunks with clean cuts. Unsurprisingly, this led to words or even full sentences loss at cut points. So we naturally switched to overlapping chunk cuts to avoid such content loss, leaving the optimization of the size of the overlap to the chunk merging process. </p>
+
+
+
+<p class="wp-block-paragraph">Without a clean cut between chunks, the opportunity to merge the chunks algorithmically disappeared. For the same audio input, the transcript lines output can be quite different with breaks at different points of the sentences or even filler words or hesitations being displayed differently. In such a situation, it is complex, not to say impossible, to make an effective algorithm for a clean merge. </p>
+
+
+
+<p class="wp-block-paragraph">This left us with the use of the LLM option of course. Quickly, few tests confirmed the LLM could better merge together segments when overlaps included full sentences. A 30-second overlap proved sufficient. With a 10 min audio chunk structure, this would implies the following chunks cuts: </p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">1st transcript: 0 to 10 minutes </li>
+
+
+
+<li class="wp-block-list-item">2nd transcript: 9m30s to 19m30s </li>
+
+
+
+<li class="wp-block-list-item">3rd transcript: 19m to 29m …and so on.</li>
+</ul>
+
+
+
+<figure class="wp-block-image size-full"><img decoding="async" src="../Images/452cbe35bf6e13991aa2ee17573c2812.png" alt="" class="wp-image-602341" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/04/overlap.png"/><figcaption class="wp-element-caption">Image by the authors</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">Those overlapped chunk transcripts were corrected by the previously described algorithm and sent to the LLM for merging to reconstruct the full audio transcript. The idea was to send the full set of chunk transcripts with a prompt instructing the LLM to merge and give the full merged audio transcript in tsv format as the previous LLM transcription step. In this configuration, the merging process has mainly three quality criterias:</p>
+
+
+
+<ol class="wp-block-list">
+<li class="wp-block-list-item">Ensure transcription continuity without content loss or duplication.</li>
+
+
+
+<li class="wp-block-list-item">Adjust timestamps to resume from where the previous chunk ended.</li>
+
+
+
+<li class="wp-block-list-item">Preserve diarization.</li>
+</ol>
+
+
+
+<p class="wp-block-paragraph">As expected, max_input_token was exceeded, forcing us into an LLM call loop. However, since we were now using text input, we were more confident in the reliability of the LLM… probably too much. The result of the merge was satisfactory in most cases but prone to several issues: tag insertions, multi-line entries merged into one line, incomplete lines, and even hallucinated continuations of the interview. Despite many prompt optimizations, we couldn’t achieve sufficiently reliable results for production use. </p>
+
+
+
+<p class="wp-block-paragraph">As with audio transcription, we identified the amount of input information as the main issue. We were sending several hundred, even thousands of text lines containing the prompt, the set of partial transcripts to fuse, a roughly similar amount with the previous transcript, and some more with the prompt and its example. Definitely too much for a precise application of our set of instructions.</p>
+
+
+
+<p class="wp-block-paragraph">On the plus side, timestamp accuracy did indeed improve significantly with this chunking approach: we maintained a drift of just 5 to 10 seconds max on transcriptions over an hour. As the start of a transcript should have minimal drift in timestamping, we instructed the LLM to use the timestamps of the “ending chunk” as reference for the fusion and correct any drift by a second per sentence. This made the cut points seamless and kept overall timestamp accuracy.</p>
+
+
+
+<h2 class="wp-block-heading">Splitting the chunk transcripts for full transcript reconstruction</h2>
+
+
+
+<p class="wp-block-paragraph">In a modular approach similar to the workaround we used for transcription, we decided to carry out the merge of the transcript individually, in order to avoid the previously described issues. To do so, each 10 minute transcript is split into three parts based on the start_time of the segments:</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">Overlap segment to merge at the beginning: 0 to 1 minute</li>
+
+
+
+<li class="wp-block-list-item">Main segment to paste: 1 to 9 minutes</li>
+
+
+
+<li class="wp-block-list-item">Overlap segment to merge at the end: 9 to 10 minutes</li>
+</ul>
+
+
+
+<p class="wp-block-paragraph"><em>NB: Since each chunk, including first and last ones, is processed the same way, the overlap at the beginning of the first chunk is directly merged with the main segment, and the overlap at the end of the last chunk (if there is one) is merged accordingly.</em></p>
+
+
+
+<p class="wp-block-paragraph">The beginning and end segments are then sent in pairs to be merged. As expected, the quality of the output drastically increased, resulting in an efficient and reliable merge between the transcripts chunk. With this procedure, the response of the LLM proved to be highly reliable and showed none of the previously mentioned errors encountered during the looping process.</p>
+
+
+
+<p class="wp-block-paragraph"><em>The process of transcript assembly for an audio of 28 minutes 42 seconds: </em></p>
+
+
+
+<figure class="wp-block-image size-full"><img decoding="async" src="../Images/563b438f1bf46663cc499ca33af86c9a.png" alt="" class="wp-image-602342" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/04/28min-file.png"/><figcaption class="wp-element-caption">Image by the authors</figcaption></figure>
+
+
+
+<h2 class="wp-block-heading">Full transcript reconstruction</h2>
+
+
+
+<p class="wp-block-paragraph">At this final stage, the only remaining task was to reconstruct the complete transcript from the processed splits. To achieve this, we algorithmically combined the main content segments with their corresponding merged overlaps alternately.</p>
+
+
+
+<h2 class="wp-block-heading">Overall process overview</h2>
+
+
+
+<p class="wp-block-paragraph">The overall process involves 6 steps from which 2 are carried out by Gemini:</p>
+
+
+
+<ol class="wp-block-list">
+<li class="wp-block-list-item">Chunking the audio into overlapped audio chunks</li>
+
+
+
+<li class="wp-block-list-item">Transcribing each chunks into partial text transcripts (LLM step)</li>
+
+
+
+<li class="wp-block-list-item">Correction of partial transcripts</li>
+
+
+
+<li class="wp-block-list-item">Splitting audio chunks transcripts into start, main, and end text splits</li>
+
+
+
+<li class="wp-block-list-item">Fusing end and start splits of each couple of chunk splits (LLM step)</li>
+
+
+
+<li class="wp-block-list-item">Reconstructing the full transcripts</li>
+</ol>
+
+
+
+<figure class="wp-block-image size-full"><img decoding="async" src="../Images/50b80e48ca4ba0faea506dce5baf957b.png" alt="" class="wp-image-602343" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/04/overall-process.png"/><figcaption class="wp-element-caption">Image by the authors</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">The overall process takes about 5 min per hour of transcription deserved to the user in an asynchronous tool. Quite reasonable considering the quantity of work executed behind the scene, and this for a fraction of the price of other tools or pre-built Google models like Chirp2.</p>
+
+
+
+<p class="wp-block-paragraph">One additional improvement that we considered but ultimately decided not to implement was the timestamp correction. We observed that timestamps at the end of each chunk typically ran about five seconds ahead of the actual audio. A straightforward solution could have been to incrementally adjust the timestamps algorithmically by approximately one second every two minutes to correct most of this drift. However, we chose not to implement this adjustment, as the minor discrepancy was acceptable for our business needs.</p>
+
+
+
+<h2 class="wp-block-heading">Conclusion</h2>
+
+
+
+<p class="wp-block-paragraph">Building a high-quality, scalable transcription pipeline for long interviews turned out to be much more complex than simply choosing the “right” Speech-to-Text model. Our journey with Google’s Vertex AI and Gemini models highlighted key challenges around diarization, timestamping, cost-efficiency, and long audio handling, especially when aiming to export the full information of an audio.</p>
+
+
+
+<p class="wp-block-paragraph">Using careful prompt engineering, smart audio chunking strategies, and iterative refinements, we were able to build a robust system that balances accuracy, performance, and operational cost, turning an initially fragmented process into a smooth, production-ready pipeline.</p>
+
+
+
+<p class="wp-block-paragraph">There’s still room for improvement but this workflow now forms a solid foundation for scalable, high-fidelity audio transcription. As LLMs continue to evolve and APIs become more flexible, we’re optimistic about even more streamlined solutions in the near future.</p>
+
+
+
+<h2 class="wp-block-heading">Key takeaways</h2>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item"><strong>No Vertex AI S2T model met all our needs: </strong>Google Vertex AI provides specialized models, but each one has limitations in terms of transcription accuracy, diarization, or timestamping for long audios.</li>
+
+
+
+<li class="wp-block-list-item"><strong>Token limits and long prompts influence transcription quality drastically: </strong>Gemini output token limitation significantly degrades transcription quality for long audios, requiring heavily prompted looping strategies and finally forcing us to shift to shorter audio chunks.</li>
+
+
+
+<li class="wp-block-list-item"><strong>Chunked audio transcription and transcript reconstruction significantly improves quality and cost-efficiency:<br/></strong>Splitting audio into 10 minute overlapping segments minimized critical bugs like repeated sentences and timestamp drift, enabling higher quality results and drastically reduced costs.</li>
+
+
+
+<li class="wp-block-list-item"><strong>Careful prompt engineering remains essential:</strong> Precision in prompts, especially regarding diarization and interjections for transcription, as well as transcript fusions, proved to be crucial for reliable LLM performance.</li>
+
+
+
+<li class="wp-block-list-item"><strong>Short transcript fusion merging maximize reliability:<br/></strong>Splitting each chunk transcript into smaller segments with end to start merging of overlaps provided high accuracy and avoided common LLM issues like hallucinations or incorrect formatting.<br/></li>
+</ul>
+
+
+
+<p class="wp-block-paragraph"/>
+
+
+
+<p class="wp-block-paragraph"/>
+    
+</body>
+</html>

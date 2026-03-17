@@ -1,0 +1,416 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.1//EN"
+  "http://www.w3.org/TR/xhtml11/DTD/xhtml11.dtd">
+
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+<title>Zero-Inflated Data: A Comparison of Regression Models</title>
+<link href="../Styles/Style.css" type="text/css" rel="stylesheet"/>
+</head>
+<body>
+<h1>Zero-Inflated Data: A Comparison of Regression Models</h1>
+<blockquote>原文：<a href="https://towardsdatascience.com/zero-inflated-data-comparison-of-regression-models/">https://towardsdatascience.com/zero-inflated-data-comparison-of-regression-models/</a></blockquote>
+<p class="wp-block-paragraph"><mdspan datatext="el1757014699606" class="mdspan-comment">I have recently worked</mdspan> on a regression problem. I knew that <strong>the target</strong> I wanted to design a predictive model for <strong>was countable</strong> (i.e. 0, 1, 2, …). Consequently, I immediately thought about choosing a Generalized Linear Model (GLM) with a relevant <strong>discrete distribution</strong>, like the <strong>Poisson distribution </strong>or the <strong>Negative binomial distribution</strong>. But everything did not go as well as expected. I mistook haste for speed.</p>
+
+
+
+<h2 class="wp-block-heading">Zero inflated data</h2>
+
+
+
+<p class="wp-block-paragraph">First of all, let us have a look at a dataset suitable for the post. I have chosen the results of the <a href="http://nhts.ornl.gov" target="_blank" rel="noreferrer noopener"><strong>NextGen National Household Travel Survey</strong></a> [1]. The variable of interest, named “BIKETRANSIT”, is the number of “days in last 30 days cycling used”, so this is an integer value between 0 and 30 for daily users. Here is a histogram of the variable in question.</p>
+
+
+
+<figure class="wp-block-image size-full"><img decoding="async" src="../Images/978e97fb2a55c96d4aef144fe50ffaaa.png" alt="" class="wp-image-618717" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/09/zero_inflated_hist.png"/><figcaption class="wp-element-caption">Histogram of the number of cycling days</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">We can clearly see the <strong>countable data is zero inflated</strong>. Most of the respondents have not used a bike a single day over the last 30 days. I have also noticed some interesting patterns: there tend to be more people reporting bike use on exactly 5, 10, 15, 20, 25, or 30 days compared to the adjacent numbers. This is probably because respondents prefer to choose round numbers when they are unsure of the precise count. Whatever the reason, in this post we will focus primarily on the issue of zero inflation by <strong>comparing models designed for zero-inflated count data</strong>.</p>
+
+
+
+<p class="wp-block-paragraph">Several survey fields have been selected as <strong>independent variables</strong> to explain the number of bike days (e.g., age, gender, worker category, education level, household size, and district characteristics). I intentionally excluded features that count the number of days spent on other activities (such as using taxis or shared bikes), since some of them are highly correlated with the outcome of interest. I want the model to remain realistic: predicting bike usage over 30 days based on taxi, car, or public transport usage over the same period would not provide meaningful insights.</p>
+
+
+
+<h2 class="wp-block-heading">Poisson regression limits</h2>
+
+
+
+<p class="wp-block-paragraph">Before introducing the zero inflated model, I would like to <strong>illustrate the limit of the Poisson regression</strong>, which I first considered for this dataset. I have not looked at the Negative Binomial distribution in the section. Poisson regression assumes that the dependent random variable Y follows a Poisson distribution, conditional on the independent variables X and the parameters β.</p>
+
+
+
+<figure class="wp-block-image aligncenter size-full"><img decoding="async" src="../Images/15ac241d6dc510e5d559e2af71350207.png" alt="" class="wp-image-618718" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/09/poisson_model_distribution.png"/><figcaption class="wp-element-caption">Poisson regression distribution model</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">So, let’s take a <strong>look at some empirical distributions of Y∣X,β</strong>. Since I included many features, it is difficult to find a large number of observations with exactly the same values of X. To address this, I used a clustering algorithm — <a href="https://scikit-learn.org/stable/modules/generated/sklearn.cluster.AgglomerativeClustering.html" target="_blank" rel="noreferrer noopener">AgglomerativeClustering from scikit-learn</a> [2] — to group observations with similar feature profiles.<br/>First, I preprocessed the data so that it can feed the regression models and also the clustering algorithm. I do not want to spend too much explaining all the preprocessing steps as this post does not focus on it. <strong>The full preprocessing code is available on a </strong><a href="https://github.com/kapytaine/zero_inflated_data" target="_blank" rel="noreferrer noopener"><strong>repo</strong></a><strong> [8]</strong>. In brief, I encoded the categorical features using one-hot encoding. I also applied several preprocessing steps to the other features: imputing missing values, clipping outliers, and applying transformation functions where appropriate. Finally, I performed clustering on the transformed dataset.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">from sklearn.cluster import AgglomerativeClustering
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import StandardScaler
+
+pipe = Pipeline(
+    [
+        ("scaler", StandardScaler()), # I normalized the data as some numerical features, like age, have range of value greater than the one hot encoded features and I know clustering works based on some distance
+        ("cluster", AgglomerativeClustering(n_clusters=100)) # I chose 100 clusters to have many observations in the biggest groups
+    ]
+)
+cluster_id = pipe.fit_predict(X_train_preprocessed) # here X_train_preprocessed is numerical dataframe, after encoding the categorical features</code></pre>
+
+
+
+<p class="wp-block-paragraph">Then I estimated the parameter of the Poisson distribution Ⲗ with the unbiased estimator being the mean of the observed random variables for each group of the cluster.</p>
+
+
+
+<figure class="wp-block-image aligncenter size-full"><img decoding="async" src="../Images/bc5d58a130ea0607ecb9c86c9d08c4eb.png" alt="" class="wp-image-618719" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/09/lambda_poisson_estimator.png"/><figcaption class="wp-element-caption">Ⲗ estimator</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">I then plotted the <strong>empirical histograms</strong> along with the <strong>probability mass functions of the fitted Poisson distributions</strong> for several groups of observations. To assess the quality of the fit, I computed both the <strong>cross-entropy</strong> and the <strong>entropy</strong>, noting that entropy serves as a lower bound for cross-entropy according to <a href="https://en.wikipedia.org/wiki/Gibbs%27_inequality" target="_blank" rel="noreferrer noopener">Gibbs’ inequality</a> [3]. A good model should produce a cross-entropy value close to the entropy (though slightly larger).</p>
+
+
+
+<p class="wp-block-paragraph">For this analysis, I focused on three of the largest groups, since parameter estimation is more reliable with larger sample sizes. This is particularly important here because the data is skewed due to zero inflation, making it necessary to collect many observations. Among the groups, two contain bike users, while one group (228 respondents) reported no bike usage at all. For this last group, no Poisson distribution was fitted, as the Poisson parameter must be strictly greater than zero. Finally, I used a vertical log scale in the plots to account for the zero inflation.</p>
+
+
+
+<figure class="wp-block-image aligncenter size-large"><img decoding="async" src="../Images/eab8f50dc9e0c8d6f8cf4e27be351eb3.png" alt="" class="wp-image-618720" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/09/poisson_fitting-492x1024.png"/></figure>
+
+
+
+<p class="wp-block-paragraph">I find it difficult to evaluate the quality of the fitted distribution by looking at the entropy and the cross entropy. However <strong>I can see that the histogram and the probability mass function differ a lot</strong>. <strong>This is why I then considered the Zero Inflated Poisson (ZIP) distribution</strong>.</p>
+
+
+
+<h2 class="wp-block-heading">Zero inflated data adapted models</h2>
+
+
+
+<p class="wp-block-paragraph">Models designed for zero-inflated data aim to <strong>capture both the high probability of zeros and the relatively low probabilities of other events</strong>. I explored <strong>two main families</strong> of such models:</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">“<strong>Zero-inflated models</strong> […] model the zeros using a two-component mixture model. […] The probability of the variable being zero is determined by both the main distribution and the mixture weight”. “A zero-inflated model can only increase the probability of P(x = 0)” [5]. For notation, I use the following setup (slightly different from Wikipedia and other sources). Let X1 be a hidden variable following a Bernoulli distribution. In my notation, the probability of success is p (whereas Wikipedia uses 1-π). Let X2 be another hidden variable following a distribution that allows zeros with nonzero probability. For my use case, I assume X2 is discrete. The observed variable is then defined as X=X1*X2 which leads to the following probability mass function:<br/><img decoding="async" src="../Images/18f297ab3df162ca27af92010d71a632.png" data-original-src="https://cdn-images-1.medium.com/max/1000/1*SMeCnuOgF2Uur3hEwfOwAg.png"/>We can notice that X1 and X2 are partially hidden. When X=0, then we cannot know the values of X1 and X2, but as soon as X&gt;0, both variables X1 and X2 are known.</li>
+
+
+
+<li class="wp-block-list-item"><a href="https://en.wikipedia.org/wiki/Hurdle_model" target="_blank" rel="noreferrer noopener"><strong>Hurdle models</strong></a> model the observable “random variable […] using two parts, the first of which is the probability of attaining the value 0, and the second part models the probability of the non-zero values” [5]. Unlike zero-inflated models, the second component must follow a distribution in which the probability of zero is exactly zero. Using the same notation as before, X1 models whether the observation is zero or non-zero (typically via a Bernoulli distribution). X2 follows a distribution that assigns no probability mass to zero. Consequently, the probability mass function is:<br/><img decoding="async" src="../Images/d617ea5b2f7526ca03c7a2646e25f22d.png" data-original-src="https://cdn-images-1.medium.com/max/1000/1*DSYDp8OEQqzGLOSswawdug.png"/></li>
+</ul>
+
+
+
+<h2 class="wp-block-heading">Zero Inflated Poisson model</h2>
+
+
+
+<p class="wp-block-paragraph">Let us have a look a the <a href="https://en.wikipedia.org/wiki/Zero-inflated_model#Zero-inflated_Poisson" target="_blank" rel="noreferrer noopener"><strong>Zero Inflated Poisson model</strong></a> [4]. The ZIP probability mass function is:</p>
+
+
+
+<figure class="wp-block-image aligncenter size-full"><img decoding="async" src="../Images/b006468b67a7427dffd009376cdb3326.png" alt="" class="wp-image-618721" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/09/zip_pmf.png"/><figcaption class="wp-element-caption">ZIP probability mass function</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">It is now possible to extend the previous histograms and Poisson-fitted probability mass functions by adding the ZIP-fitted probability mass functions. To do this, estimators of the two parameters, p and λ, are required. I used the method of moments to derive these estimators: the first two moments provide a system of two equations with two unknowns, which can then be solved.</p>
+
+
+
+<figure class="wp-block-image aligncenter size-full"><img decoding="async" src="../Images/9ea1c0faa929bb63f9d162bf72763e20.png" alt="" class="wp-image-618722" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/09/zip_estimators_design_by_moment_method.png"/><figcaption class="wp-element-caption">Moment method to get ZIP parameter estimators</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">So the parameter estimators are:</p>
+
+
+
+<figure class="wp-block-image aligncenter size-full"><img decoding="async" src="../Images/95680e0ab71ccdf4d6eef34b9c277c1b.png" alt="" class="wp-image-618723" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/09/p_lambda_zip_estimators.png"/><figcaption class="wp-element-caption">ZIP parameter estimators</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">Finally I have plotted the same two figures with the fitted ZIP distribution probability mass functions as well as the cross entropy measures.</p>
+
+
+
+<figure class="wp-block-image aligncenter size-large"><img decoding="async" src="../Images/a426e0a3b5dd141e7ec739aa981d252d.png" alt="" class="wp-image-618724" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/09/poisson_zip_fitting-492x1024.png"/></figure>
+
+
+
+<p class="wp-block-paragraph">Both <strong>visual inspection</strong> and <strong>cross-entropy</strong> values show that the <strong>ZIP model fits the observed data better than the Poisson model</strong>. This provides an objective and quantifiable reason to <strong>prefer ZIP regression over Poisson regression.</strong></p>
+
+
+
+<h2 class="wp-block-heading">Model comparison</h2>
+
+
+
+<p class="wp-block-paragraph">Let us now compare several models. I split the data into training and test sets, but it was not immediately clear which evaluation metrics would be most appropriate. For instance, should I rely on Poisson deviance, even though the data is zero-inflated? Or mean squared error, which heavily penalizes outliers? In the end, I chose to use multiple metrics to better capture model performance: <strong>mean absolute error</strong>, <strong>Poisson deviance</strong>, and <strong>correlation.</strong> The models I evaluated are:</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">A <strong>naïve model</strong> predicting the mean value of the training set,</li>
+
+
+
+<li class="wp-block-list-item"><strong>Linear regression</strong> (<em>lr</em>),</li>
+
+
+
+<li class="wp-block-list-item"><strong>Poisson regression</strong> (<em>pr</em>),</li>
+
+
+
+<li class="wp-block-list-item"><strong>Zero-inflated Poisson regression</strong> (<em>zip</em>),</li>
+
+
+
+<li class="wp-block-list-item">A <strong>chained Logistic–Poisson regression</strong> (hurdle model, <em>lr_pr</em>),</li>
+
+
+
+<li class="wp-block-list-item">A <strong>chained Logistic–Zero-Truncated Poisson regression</strong> (hurdle model, <em>lr_tpr</em>).</li>
+</ul>
+
+
+
+<h2 class="wp-block-heading">ZIP model</h2>
+
+
+
+<p class="wp-block-paragraph">Let us look at the ZIP regression implementation. First the <strong>negative log likelihood of the observed data</strong>, noted y, is:</p>
+
+
+
+<figure class="wp-block-image aligncenter size-large"><img decoding="async" src="../Images/ce661b4ea561ec3f47081de94dfd83f0.png" alt="" class="wp-image-618725" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/09/ZIP_neg_log_likelihood-1024x177.png"/><figcaption class="wp-element-caption">Negative log likelihood</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">The marginal likelihood of the observed data, P(Y=y), can be expressed analytically without the integral formulation of the joint distribution, P(Y=y, X1=x1). So it <strong>can be optimized directly without needing to use the </strong><a href="https://en.wikipedia.org/wiki/Expectation%E2%80%93maximization_algorithm" target="_blank" rel="noreferrer noopener"><strong>expectation minimization algorithm</strong></a> [6]. The two distribution parameters p and Ⲗ are functions of the features X and the parameters of the model β that will be learnt. I have chosen that <strong>p is defined as the sigmoid of the dot product between X and β</strong> and <strong>Ⲗ is defined as the exponential of the dot product between X and β</strong>. To make the model more flexible, I use separate sets of parameters β: one for p and another for λ.</p>
+
+
+
+<figure class="wp-block-image aligncenter size-full"><img decoding="async" src="../Images/ef5135e395ec850faaca01f4b0cb340c.png" alt="" class="wp-image-618726" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/09/model_link_functions.png"/><figcaption class="wp-element-caption">ZIP parameter expressions</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">Moreover, I have added a <strong>prior on the parameters β to regularize the model</strong>, especially useful for the Poisson model for which there is few observations because of the zero inflation. I have assumed a Normal prior, hence the L2 regularization terms added to the loss function. I have assumed two different priors, one on the β for the Bernoulli model and one on the β for the Poisson model, hence the two α hyper parameters, noted as alpha_b and alpha_p attributes in the model. I have optimized these values by means of a hyper parameter optimization.</p>
+
+
+
+<p class="wp-block-paragraph">I created a class that inherits from scikit-learn’s <a href="https://scikit-learn.org/stable/modules/generated/sklearn.base.BaseEstimator.html" target="_blank" rel="noreferrer noopener"><code>BaseEstimator</code></a>. The Python implementation of the loss function is shown below (implemented within the class, hence the <code>self</code> argument):</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">def _loss(self, beta: np.ndarray, X: np.ndarray, y: np.ndarray) -&gt; float:
+    n_feat = X.shape[1]
+
+    # split beta into two parts: one for bernoulli p and one for poisson lambda
+    beta_p = beta[:n_feat]
+    beta_lam = beta[n_feat:]
+    
+    # get bernoulli p and poisson lambda
+    p = sigmoid.val(beta_p, X)
+    lam = exp.val(beta_lam, X)
+    
+    # initialize negative log likelihood
+    out = 0
+    
+    # y == 0
+    y_e0_mask = np.where(y == 0)[0]
+    out += np.sum(-np.log((1 - p) + p * np.exp(-lam))[y_e0_mask])
+    
+    # y &gt; 0
+    y_gt0_mask = np.where(y &gt; 0)[0]
+    out += np.sum(-np.log(p)[y_gt0_mask])
+    out += np.sum(-xlogy(y, lam)[y_gt0_mask])
+    out += np.sum(lam[y_gt0_mask])
+    
+    # prior
+    mask_b = np.ones_like(beta)
+    mask_b[n_feat:] = 0
+    mask_p = np.ones_like(beta)
+    mask_p[:n_feat] = 0
+    if self.fit_intercept:
+        mask_b[n_feat - 1] = 0
+        mask_p[2 * n_feat - 1] = 0
+    out += 0.5 * self.alpha_b * np.sum((beta * mask_b) ** 2)
+    out += 0.5 * self.alpha_p * np.sum((beta * mask_p) ** 2)
+    
+    return out</code></pre>
+
+
+
+<p class="wp-block-paragraph">In order to optimize the loss objective function, I have also computed the <strong>jacobian of the loss</strong>.</p>
+
+
+
+<figure class="wp-block-image aligncenter size-large"><img decoding="async" src="../Images/725a9bce5a8e74f34c11b937706de0a7.png" alt="" class="wp-image-618727" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/09/ZIP_jac_neg_log_likelihood-1024x498.png"/><figcaption class="wp-element-caption">Jacobian of the negative log likelihood</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">The Python implementation is:</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">def _jac(self, beta: np.ndarray, X: np.ndarray, y: np.ndarray) -&gt; np.ndarray:
+    n_feat = X.shape[1]
+
+    # split beta into two parts: one for bernoulli p and one for poisson lambda
+    beta_p = beta[:n_feat]
+    beta_lam = beta[n_feat:]
+
+    # get bernoulli p and poisson lambda
+    p = sigmoid.val(beta_p, X)
+    lam = exp.val(beta_lam, X)
+
+    # y == 0 &amp; beta_p
+    jac_e0_p = np.expand_dims(
+        np.where(
+            y == 0,
+            (1 - np.exp(-lam)) / ((1 - p) + p * np.exp(-lam)),
+            np.zeros_like(y),
+        ),
+        axis=1,
+    ) * sigmoid.jac(beta_p, X)
+    # y == 0 &amp; beta_lam
+    jac_e0_lam = np.expand_dims(
+        np.where(
+            y == 0,
+            p * np.exp(-lam) / ((1 - p) + p * np.exp(-lam)),
+            np.zeros_like(y),
+        ),
+        axis=1,
+    ) * exp.jac(beta_lam, X)
+
+    # y &gt; 0 &amp; beta_p
+    jac_gt0_p = np.expand_dims(
+        np.where(y &gt; 0, -1 / p, np.zeros_like(y)), axis=1
+    ) * sigmoid.jac(beta_p, X)
+    # y &gt; 0 &amp; beta_lam
+    jac_gt0_lam = np.expand_dims(
+        np.where(y &gt; 0, 1 - y / lam, np.zeros_like(y)), axis=1
+    ) * exp.jac(beta_lam, X)
+
+    # initialize jac
+    out = np.concatenate((jac_e0_p + jac_gt0_p, jac_e0_lam + jac_gt0_lam), axis=1)
+
+    # jac for prior
+    mask_b = np.ones_like(beta)
+    mask_b[n_feat:] = 0
+    mask_p = np.ones_like(beta)
+    mask_p[:n_feat] = 0
+    if self.fit_intercept:
+        mask_b[n_feat - 1] = 0
+        mask_p[2 * n_feat - 1] = 0
+
+    return (
+        np.sum(out, axis=0)
+        + self.alpha_b * beta * mask_b
+        + self.alpha_p * beta * mask_p
+    )</code></pre>
+
+
+
+<p class="wp-block-paragraph">Unfortunately the loss function is not convex, a local minima is not guaranteed to be a global minima. I have chosen the light implementation of Broyden-Fletcher-Goldfarb-Shanno from scipy because it is faster than the gradient descent methods that I have tested.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">res = minimize(
+    self._loss,
+    np.zeros(2 * n_feat),
+    args=(X, y),
+    jac=self._jac,
+    method="L-BFGS-B",
+)</code></pre>
+
+
+
+<p class="wp-block-paragraph">The entire class is coded in this <a href="https://github.com/kapytaine/zero_inflated_data/blob/master/src/model/MixtureBernPoisRegression.py" target="_blank" rel="noreferrer noopener">file</a> from the shared repo.<br/>After performing an hyper optimization tuning phase to get the best regularization hyper parameters, I have finally computed the chosen metrics on the test set. The fitting time has been displayed in addition to the metrics.</p>
+
+
+
+<figure class="wp-block-image aligncenter size-large"><img decoding="async" src="../Images/fddc30f74b309234e5f6ed27b0453f17.png" alt="" class="wp-image-618728" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/09/benchmark_results-1024x316.png"/><figcaption class="wp-element-caption">Benchmark results</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph"><strong>Zero-inflated models</strong> — both ZIP and hurdle — <strong>achieve better metrics than the naïve model, linear regression, and standard Poisson regression</strong>. I initially expected a larger performance gap, given that the empirical histogram of the observed Y more closely resembles a ZIP distribution than a Poisson distribution. The <strong>improvement, however, comes at the cost of longer fitting times</strong>, particularly for the ZIP model. For this use case, hurdle models appear to offer the best compromise, delivering strong performance while keeping training time relatively low.</p>
+
+
+
+<p class="wp-block-paragraph">One possible reason for the relatively modest improvement may be that the data does not strictly follow a ZIP distribution. To investigate this, I ran another benchmark using the same models on a synthetic dataset specifically generated to follow a ZIP distribution. This dataset was designed to have approximately the same number of observations and features as the original one, but with a target variable that follows ZIP distribution by design.</p>
+
+
+
+<figure class="wp-block-image aligncenter size-full"><img decoding="async" src="../Images/1cf2a48de704142083c781b5886e9109.png" alt="" class="wp-image-618729" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/09/benchmark_results_fake_dataset.png"/><figcaption class="wp-element-caption">Benchmark results for a fake ZIP distributed dataset</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph"><strong>When the target truly follows a ZIP distribution, the ZIP model outperforms all the other models considered</strong>. It is also worth noting that, in this synthetic setup, the features are no longer sparse (by design), which may help explain the reduction in fitting time.</p>
+
+
+
+<h2 class="wp-block-heading">Conclusions</h2>
+
+
+
+<p class="wp-block-paragraph"><strong>Before choosing a statistical model</strong>, it is crucial to <strong>carefully analyze the dataset</strong> rather than relying solely on prior assumptions about its characteristics. Examining the empirical distribution — such as through histograms — often reveals insights that guide the choice of an appropriate probability model.</p>
+
+
+
+<p class="wp-block-paragraph">This is particularly important for zero-inflated data, where standard models may struggle. A synthetic example with a zero-inflated Poisson (ZIP) distribution shows how <strong>the right model can provide a much better fit compared to alternatives</strong>, even if those alternatives are not entirely misguided.</p>
+
+
+
+<p class="wp-block-paragraph"><strong>For zero-inflated datasets</strong>, models such as the <strong>zero-inflated Poisson</strong> or <strong>hurdle models</strong> are especially useful. While both can capture excess zeros effectively, hurdle models sometimes offer comparable performance with faster training.</p>
+
+
+
+<h2 class="wp-block-heading">Further readings</h2>
+
+
+
+<p class="wp-block-paragraph">When working on this topic and writing the post, I found this <a href="https://medium.com/@amit25173/zero-inflated-models-for-rare-event-prediction-9dd2ec6af614" target="_blank" rel="noreferrer noopener">medium post</a> [7] that I highly recommend.</p>
+
+
+
+<h2 class="wp-block-heading">References</h2>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">Federal Highway Administration. (2022). 2022 NextGen National Household Travel Survey Core<br/>Data, U.S. Department of Transportation, Washington, DC. Available online:<br/><a href="http://nhts.ornl.gov" target="_blank" rel="noreferrer noopener">http://nhts.ornl.gov</a></li>
+
+
+
+<li class="wp-block-list-item">Agglomerative Clustering <a href="https://scikit-learn.org/stable/modules/generated/sklearn.cluster.AgglomerativeClustering.html" target="_blank" rel="noreferrer noopener">https://scikit-learn.org/stable/modules/generated/sklearn.cluster.AgglomerativeClustering.html</a></li>
+
+
+
+<li class="wp-block-list-item">Gibbs’ inequality <a href="https://en.wikipedia.org/wiki/Gibbs%27_inequality" target="_blank" rel="noreferrer noopener">https://en.wikipedia.org/wiki/Gibbs%27_inequality</a></li>
+
+
+
+<li class="wp-block-list-item">Zero inflated Poisson <a href="https://en.wikipedia.org/wiki/Zero-inflated_model#Zero-inflated_Poisson" target="_blank" rel="noreferrer noopener">https://en.wikipedia.org/wiki/Zero-inflated_model#Zero-inflated_Poisson</a></li>
+
+
+
+<li class="wp-block-list-item">Hurdle model <a href="https://en.wikipedia.org/wiki/Hurdle_model" target="_blank" rel="noreferrer noopener">https://en.wikipedia.org/wiki/Hurdle_model</a></li>
+
+
+
+<li class="wp-block-list-item">Expectation–maximization algorithm <a href="https://en.wikipedia.org/wiki/Expectation%E2%80%93maximization_algorithm" target="_blank" rel="noreferrer noopener">https://en.wikipedia.org/wiki/Expectation%E2%80%93maximization_algorithm</a></li>
+
+
+
+<li class="wp-block-list-item">Zero-Inflated Models for Rare Event Prediction <a href="https://medium.com/@amit25173/zero-inflated-models-for-rare-event-prediction-9dd2ec6af614" target="_blank" rel="noreferrer noopener">https://medium.com/@amit25173/zero-inflated-models-for-rare-event-prediction-9dd2ec6af614</a><br/>Repo to reproduce the results <a href="https://github.com/kapytaine/zero_inflated_data" target="_blank" rel="noreferrer noopener">https://github.com/kapytaine/zero_inflated_data</a></li>
+</ul>
+    
+</body>
+</html>

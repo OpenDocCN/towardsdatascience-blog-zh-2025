@@ -1,0 +1,1045 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.1//EN"
+  "http://www.w3.org/TR/xhtml11/DTD/xhtml11.dtd">
+
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+<title>How I Fine-Tuned Granite-Vision 2B to Beat a 90B Model — Insights and Lessons Learned</title>
+<link href="../Styles/Style.css" type="text/css" rel="stylesheet"/>
+</head>
+<body>
+<h1>How I Fine-Tuned Granite-Vision 2B to Beat a 90B Model — Insights and Lessons Learned</h1>
+<blockquote>原文：<a href="https://towardsdatascience.com/how-i-fine-tuned-granite-vision-2b-to-beat-a-90b-model-insights-and-lessons-learned/">https://towardsdatascience.com/how-i-fine-tuned-granite-vision-2b-to-beat-a-90b-model-insights-and-lessons-learned/</a></blockquote>
+<p class="wp-block-paragraph"><mdspan datatext="el1753471540338" class="mdspan-comment">Fine-tuning large language</mdspan> or vision-language models is a powerful technique that unlocks their potential on specialized tasks. However, despite their effectiveness, these approaches are often out of reach for many users due to their high computational cost and the need for GPUs with large VRAM — resources that only a small percentage of end users can access.</p>
+
+
+
+<p class="wp-block-paragraph">In this project, I fine-tuned IBM’s <a href="https://huggingface.co/ibm-granite/granite-vision-3.2-2b" target="_blank" rel="noreferrer noopener">Granite-Vision 2B</a>, a relatively small yet powerful vision-language model, to tackle the challenge of converting images of tables into clean, structured HTML code.</p>
+
+
+
+<p class="wp-block-paragraph">What makes this project particularly exciting is that the fine-tuning was performed on a consumer-grade GPU — the NVIDIA RTX 4070 Ti Super — and yet, the resulting 2-billion-parameter model was able to outperform much larger models, including <a href="https://huggingface.co/meta-llama/Llama-3.2-90B-Vision" target="_blank" rel="noreferrer noopener">meta-llama/Llama-3.2–90B-Vision</a>, on this image-to-text generation task. This success not only demonstrates the power of parameter-efficient fine-tuning methods like LoRA but also highlights the practical value of building specialized small models tailored to specific problems.</p>
+
+
+
+<p class="wp-block-paragraph">In this post, I’ll walk you through the motivation behind this work, the model and dataset choices, the custom HTML similarity metric I adapted, the experiments and results, and finally, the key insights and lessons learned throughout the process. Whether you’re interested in vision-language models, fine-tuning techniques, or practical AI applications, I hope this journey offers useful takeaways. The fine-tuning code used for this project was adapted from <a href="https://huggingface.co/learn/cookbook/en/fine_tuning_granite_vision_sft_trl" target="_blank" rel="noreferrer noopener">HuggingFace’s Granite Vision fine-tuning cookbook</a>, authored by Eli Schwartz, who in turn adapted the original code from Sergio Paniego.</p>
+
+
+
+<h2 class="wp-block-heading">Motivation</h2>
+
+
+
+<p class="wp-block-paragraph">While working on Retrieval-Augmented Generation (RAG) projects, I encountered a major challenge: accurately extracting large and complex tables from PDFs, especially when these tables appeared as images. Despite trying different approaches — including tools like Unstructured and large vision-language models such as Meta’s Llama 90B — the results often fell short of the accuracy needed.</p>
+
+
+
+<p class="wp-block-paragraph">This led me to consider a different approach: a <strong>small, specialized vision-language model focused exclusively on table understanding and extraction</strong>. Such a model could serve as a dedicated preprocessing step to significantly improve RAG pipelines that rely on accurate table extraction.</p>
+
+
+
+<p class="wp-block-paragraph">Around the same time, IBM released Granite-Vision 2B — a vision-language model with just the right balance of size and power. It’s capable enough to handle complex tables, yet small enough to be fine-tuned on consumer-grade GPUs with 16 GB of VRAM. This made it an ideal candidate for my project.</p>
+
+
+
+<h2 class="wp-block-heading">The Task: Image to HTML (Table Extraction)</h2>
+
+
+
+<p class="wp-block-paragraph">One important design choice was the target format: <strong>HTML</strong>. By converting tables into clean HTML code, we obtain a structured and widely supported representation that can be easily converted into other formats. For example, HTML tables can be readily imported into data analysis tools like Pandas as dataframes, making downstream processing and analysis much more efficient.</p>
+
+
+
+<p class="wp-block-paragraph">The original plan was to build a custom dataset by extracting HTML table tags, rendering them as images, and pairing each image with its corresponding HTML code. Fortunately, I found a solution: the <a href="https://huggingface.co/datasets/apoidea/pubtabnet-html">PubTabNet-HTML</a> dataset, which includes over 568,000 image–HTML pairs, far more than needed for this project.</p>
+
+
+
+<p class="wp-block-paragraph">PubTabNet was developed by IBM and is based on scientific articles from the <strong>PubMed Central Open Access Subset (commercial use collection)</strong>. The tables were extracted by aligning PDF and XML versions of the articles. The <strong>annotations</strong> (i.e., the HTML labels) are licensed under the <strong>Community Data License Agreement – Permissive – Version 1.0</strong>, and while <strong>IBM does not own the images</strong>, they are used in accordance with the <a href="https://www.ncbi.nlm.nih.gov/pmc/tools/openftlist/">PMC Open Access Subset Terms of Use</a>. This makes the dataset suitable for both research and commercial applications, provided the license terms are followed.</p>
+
+
+
+<h2 class="wp-block-heading">Custom Metric: HTML Similarity</h2>
+
+
+
+<p class="wp-block-paragraph">Standard text similarity metrics like BLEU or ROUGE are insufficient for evaluating HTML table generation because they primarily focus on surface-level text matching and ignore important structural and stylistic aspects of HTML code.</p>
+
+
+
+<p class="wp-block-paragraph" id="5f51">To better capture the quality of generated HTML tables, I adapted a custom <strong>HTML Similarity</strong> metric that combines multiple complementary components, where the most important ones (style and structure) are imported from <a href="https://raw.githubusercontent.com/ninoseki/niteru" rel="noreferrer noopener" target="_blank"><strong>niteru</strong></a>:</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item"><strong>Style similarity (S):</strong> Extracts CSS classes of each html document and calculates the jaccard similarity of the sets of classes.</li>
+
+
+
+<li class="wp-block-list-item"><strong>Structural similarity (T):</strong> Uses sequence comparison of the html tags to compute the similarity.</li>
+
+
+
+<li class="wp-block-list-item"><strong>Content similarity (C):</strong> Based on normalized edit distance between the extracted plain text content of the tables.</li>
+
+
+
+<li class="wp-block-list-item"><strong>Token overlap similarity (J):</strong> The Jaccard similarity between the sets of content tokens.</li>
+</ul>
+
+
+
+<p class="wp-block-paragraph" id="1193">The final similarity score <strong>M</strong> is a weighted sum of these components:</p>
+
+
+
+<figure class="wp-block-image aligncenter"><img decoding="async" src="../Images/ef52545aa5b7280f65429ab9cd183c5e.png" alt="" class="wp-image-612218" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/07/0ChPEt6vqrmYCByTj.png"/></figure>
+
+
+
+<p class="wp-block-paragraph" id="8251">I manually tested the metric on various example outputs, iteratively adjusting the weighting coefficients to better capture meaningful similarities. This process resulted in a balanced evaluation that fairly rewards accurate table structure and style, alongside precise textual content. Python implementation is as follows:</p>
+
+
+
+<pre class="wp-block-prismatic-blocks" datatext=""><code class="language-python">from torchmetrics.text import EditDistance
+from niteru import style_similarity, structural_similarity
+
+ed_distance = EditDistance()
+
+def extract_table_text(html):
+    """Extracts only the text from an HTML table in row-wise space-separated format."""
+    soup = BeautifulSoup(html, "html.parser")
+    table = soup.find("table")  # Find the first table
+    if not table:
+        return ""
+    # Extract rows and join cells with spaces
+    return "\n".join(" ".join(cell.get_text(strip=True) for cell in row.find_all(["th", "td"])) for row in table.find_all("tr"))
+
+def extract_html_table(html):
+    """Extracts html table from text"""
+    match = re.search(r'&lt;table\b.*?&lt;/table&gt;', html, re.DOTALL | re.IGNORECASE)
+    if match:
+        table_html = match.group()
+        return table_html
+    else:
+        return html
+
+def html_similarity(html1, html2):
+    html1 = extract_html_table(html1)
+    html2 = extract_html_table(html2)
+    # Compute individual similarity scores
+    style_sim = style_similarity(html1, html2)  # Assume returns [0,1]
+    struct_sim = structural_similarity(html1, html2)  # Assume returns [0,1]
+    txt1, txt2 = extract_table_text(html1), extract_table_text(html2)
+    content_sim = 1 - (ed_distance(txt1, txt2) /
+                                   max(len(txt1), len(txt2) + 1e-10))  # Avoid division by zero
+    jaccard_sim = 1 - (len(set(txt1.split()).intersection(set(txt2.split()))) /
+                        len(set(txt1.split()).union(set(txt2.split()))) + 1e-10)
+    
+    # Weighted sum of the similarities
+    final_score = (0.10 * style_sim) + (0.40 * struct_sim) + (0.30 * content_sim) + (0.20 * jaccard_sim)
+    # Ensure final score is in [0,1]
+    final_score = max(0, min(1, final_score))
+    return final_score</code></pre>
+
+
+
+<p class="wp-block-paragraph">The metric also includes a regex-based function to extract only the HTML content within <code>&lt;table&gt;</code> tags. This was necessary because one of the reference models only generated incomplete or extra HTML outside of the table structure. By focusing the comparison strictly on the table content, the metric provides a more fair and meaningful evaluation across models.</p>
+
+
+
+<p class="wp-block-paragraph">Developing a custom evaluation metric like this is crucial for reliably tracking model improvements and benchmarking performance against reference models.</p>
+
+
+
+<h2 class="wp-block-heading">Training Setup</h2>
+
+
+
+<p class="wp-block-paragraph">To fine-tune the model efficiently on my NVIDIA RTX 4070 Ti Super, which has 16 GB VRAM, I used <strong>LoRA</strong> (Low-Rank Adaptation). This allowed me to update only a small number of parameters, significantly reducing GPU memory usage. In fact, during training, the model used only about half of the available VRAM — with enough headroom to play around with longer sequences, but not enough to handle more than one batch. Additionally, LoRA is generally faster to train than approaches like QLoRA.</p>
+
+
+
+<h2 class="wp-block-heading">LoRA Setup</h2>
+
+
+
+<p class="wp-block-paragraph">I used the following LoRA configuration:</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python"># Setup LoRA
+target_modules = []
+for layer_type in layers_to_tune:
+    target_modules.extend(
+        name for name, _ in model.named_modules()
+        if (layer_type in name) 
+        and '_proj' in name
+    )
+peft_config = LoraConfig(
+    r=16,
+    lora_alpha=32,
+    lora_dropout=0.1,
+    target_modules=target_modules,
+    use_dora=True,
+    init_lora_weights="gaussian"
+)</code></pre>
+
+
+
+<p class="wp-block-paragraph" id="0122">Key points:</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item"><code>r=16</code>: This low-rank dimension provides a good balance between model capacity and GPU memory usage.</li>
+
+
+
+<li class="wp-block-list-item"><code>use_dora=True</code>: <a href="https://arxiv.org/pdf/2402.09353" target="_blank" rel="noreferrer noopener">DoRA</a> (Weight-Decomposed Low Rank Adaptation) improves the learning capacity and stability of LoRA by decomposing the pretrained weights into magnitude and direction components, helping the model better resemble the capacity of full fine-tuning — all without adding inference overhead. Performed slightly better than the default setting.</li>
+
+
+
+<li class="wp-block-list-item"><code>init_lora_weights="gaussian"</code>: No particular reason, I didn’t want to experiment with this parameter.</li>
+
+
+
+<li class="wp-block-list-item"><code>target_modules</code>: This flexible setup allows selectively targeting vision layers, language layers, or both, depending on the experiment. In practice, vision layers remained unaffected — even with <code>use_dora=False</code>— since DoRA currently supports only embedding, linear, and Conv2d layers. As a result, I fine-tuned only the language layers.</li>
+</ul>
+
+
+
+<h2 class="wp-block-heading">Dataset Setup</h2>
+
+
+
+<p class="wp-block-paragraph">During my initial experiments, I kept running into <strong>out-of-memory (OOM)</strong> errors — even though there was still plenty of available GPU VRAM after loading model, LoRA layers and optimizer parameters (around 4GB still free). There were no memory spikes during training, but the crashes consistently happened at the same training step.</p>
+
+
+
+<p class="wp-block-paragraph">After some investigation, I realized that the problem was caused by large tables, which resulted in extremely long token sequences. To address this, I adjusted the <code>max_seq_length</code> parameter and filtered out samples that exceeded this limit. After experimentation, I found that using <code>max_seq_length = 1024</code> allowed me to fine-tune the model reliably without triggering OOM errors.</p>
+
+
+
+<p class="wp-block-paragraph" id="6720">To filter out oversized tables, I wrote a simple data processing function that:</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">Filters out samples whose HTML token length exceeds <code>max_seq_length</code></li>
+
+
+
+<li class="wp-block-list-item">Automatically balances the number of training and test samples</li>
+
+
+
+<li class="wp-block-list-item">Uses <strong>streaming</strong> to avoid loading the entire dataset into memory (PubTabNet-HTML is quite large, around 10 GB on disk)</li>
+</ul>
+
+
+
+<p class="has-surface-primary-color has-text-color has-link-color wp-elements-e07b684b2ed6b913d2017b2ba511d25b wp-block-paragraph">.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">def load_process_filter_dataset(dataset, max_seq_length, num_train_images, num_test_images, system_message):
+    global processor
+    ds = load_dataset(dataset, split='train', streaming=True)
+    max_html_tokens = max_seq_length - len(processor.tokenizer.tokenize(system_message))
+    num_total_needed = num_train_images + num_test_images
+    filtered_samples = []
+    p_bar = tqdm(total=num_total_needed, desc="Filtering dataset samples")
+    for sample in ds:
+        processed = process_and_filter_example(sample, max_html_tokens)
+        if processed:
+            filtered_samples.append(processed)
+            p_bar.update(1)
+        if len(filtered_samples) &gt;= num_total_needed:
+            break
+    p_bar.close()
+    # Convert to in-memory dataset
+    ds_filtered = Dataset.from_list(filtered_samples)
+    # Split into train/test
+    ds_train = ds_filtered.select(range(num_train_images))
+    ds_test = ds_filtered.select(range(num_train_images, num_total_needed))
+    return ds_train, ds_test
+
+def process_and_filter_example(example, max_html_tokens):
+    global processor
+    extracted_table = extract_html_table(example['html_table'])
+    token_count = len(processor.tokenizer.tokenize(extracted_table))
+    if token_count &lt; max_html_tokens:
+        example['html_table'] = extracted_table
+        return example
+    return None</code></pre>
+
+
+
+<p class="wp-block-paragraph">The final configuration included <code>num_train_images=10000</code> and <code>num_test_images=250</code> to compute the evaluation loss.</p>
+
+
+
+<h2 class="wp-block-heading">Fine-Tuning Configuration</h2>
+
+
+
+<p class="wp-block-paragraph">For training, I used the <strong>Transformers SFTTrainer</strong> to fine-tune the model:</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python"># Training arguments
+    training_args = SFTConfig(
+        output_dir=f"src/models/{model_name.split('/')[-1].replace('-', '_', 1).split('-')[0]}/checkpoints/{experiment_name}",
+        num_train_epochs=1,
+        per_device_train_batch_size=1,
+        per_device_eval_batch_size=1,
+        gradient_accumulation_steps=gradient_accumulation_steps,
+        max_seq_length=max_seq_length,
+        warmup_steps=10,
+        learning_rate=3e-4,
+        weight_decay=0.01,
+        logging_strategy="steps",
+        eval_strategy='steps',
+        logging_steps=25,
+        save_strategy="steps",
+        save_steps=50,
+        save_total_limit=1,
+        greater_is_better=False,
+        load_best_model_at_end=True,
+        optim="adamw_torch_fused",
+        bf16=True,
+        push_to_hub=False,
+        report_to="wandb" if not debug else "none",
+        remove_unused_columns=False,
+        gradient_checkpointing=True,
+        dataset_text_field="",
+        dataset_kwargs={"skip_prepare_dataset": True},
+        dataset_num_proc=8
+    )
+
+# Setup Trainer
+    trainer = SFTTrainer(
+        model=model,
+        args=training_args,
+        train_dataset=train_dataset,
+        eval_dataset=test_dataset,
+        data_collator=collate_fn,
+        peft_config=peft_config,
+        processing_class=processor.tokenizer
+    )</code></pre>
+
+
+
+<p class="wp-block-paragraph" id="4642">Key points:</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item"><code>num_train_epochs=1</code>: The dataset is very large, and to run multiple experiments efficiently, I chose to train for only one full epoch while maximizing learning per sample and number of training samples.</li>
+
+
+
+<li class="wp-block-list-item"><code>per_device_train_batch_size=1</code>: Larger batch sizes would not fit in GPU memory without significantly reducing max_seq_length — which would hurt performance on large tables. Keeping longer sequences was more important for this task.</li>
+
+
+
+<li class="wp-block-list-item"><code>gradient_accumulation_steps=8</code>: Used to effectively simulate a larger batch size and help stabilize the learning process, compensating for the small physical batch. This is the final value, but experimented with <code>gradient_accumulation_steps=4</code> as well.</li>
+
+
+
+<li class="wp-block-list-item"><code>optim="adamw_torch_fused"</code> and <code>bf16=True</code>: These settings leverage modern NVIDIA architectures (Ada Lovelace) to accelerate training and reduce memory usage — as recommended for this hardware.</li>
+</ul>
+
+
+
+<h2 class="wp-block-heading">Evaluation Loss Workaround</h2>
+
+
+
+<p class="wp-block-paragraph">At the time of developing the project, there is a known issue in the Transformers + LoRA integration that causes an error when running evaluation with a validation dataset during training. Fortunately, a community-tested <a href="https://raw.githubusercontent.com/huggingface/transformers/issues/33420#issuecomment-2957417282" target="_blank" rel="noreferrer noopener">workaround</a> is available (although not yet merged into the main branch), and I successfully used this fix in my experiments.</p>
+
+
+
+<h2 class="wp-block-heading">Evaluation (Inference) Setup</h2>
+
+
+
+<p class="wp-block-paragraph">The evaluation dataset used for final scoring was completely independent from the <code>eval_dataset</code> used during training. It consists of <strong>500 randomly selected images</strong>, none of which were included in either the <code>train_dataset</code> or the training <code>eval_dataset</code>.</p>
+
+
+
+<p class="wp-block-paragraph">Once fine-tuning was complete, I used the <strong>best model checkpoint</strong> — selected based on the lowest evaluation loss — to run inference on these 500 samples.</p>
+
+
+
+<p class="wp-block-paragraph">Initially, I attempted to perform inference by simply <strong>loading the LoRA/DoRA adapter</strong> on top of the base model. However, I found that inference with <strong>DoRA adapters is extremely slow</strong> when not merged into the model weights (as explained in the <a href="https://raw.githubusercontent.com/huggingface/peft/blob/main/docs/source/developer_guides/lora.md" target="_blank" rel="noreferrer noopener">official PEFT docs</a>). In fact, generating one test random sample took about <strong>90 seconds</strong> in this configuration.</p>
+
+
+
+<p class="wp-block-paragraph">To resolve this, I merged the adapter weights into the base model — which is the recommended practice — and after merging, inference speed improved dramatically: <strong>down to ~20 seconds for the same sample</strong>, making full evaluation runs much more practical.</p>
+
+
+
+<p class="wp-block-paragraph" id="4a53">The <strong>reference models</strong> used for comparison with my fine-tuned models are:</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item"><a href="https://huggingface.co/meta-llama/Llama-3.2-90B-Vision" target="_blank" rel="noreferrer noopener">meta-llama/Llama-3.2–90B-Vision</a>: Meta’s massive <strong>90-billion parameter</strong>model — the main baseline I aimed to surpass through specialization and parameter-efficient fine-tuning of a much smaller VLM.</li>
+
+
+
+<li class="wp-block-list-item"><a href="https://huggingface.co/KennethTM/pix2struct-base-table2html" target="_blank" rel="noreferrer noopener">KennethTM/pix2struct-base-table2html</a>: A much smaller model fine-tuned from Google’s <a href="https://huggingface.co/google/pix2struct-base" target="_blank" rel="noreferrer noopener">pix2struct-base</a>, highly specialized for exactly the same dataset I used in this project. Thanks to its smaller size, the developer(s) was able to train it for many more samples and over longer training runs — demonstrating the key advantage of using <strong>smaller, targeted models</strong> for specific tasks.</li>
+</ul>
+
+
+
+<p class="wp-block-paragraph">These two baselines allowed me to benchmark both <strong>scaling-based performance</strong> (vs the 90B model) and <strong>specialization efficiency</strong> (vs the smaller, dedicated Pix2Struct model).</p>
+
+
+
+<h2 class="wp-block-heading">Experiments &amp; Results</h2>
+
+
+
+<p class="wp-block-paragraph">A total of 9 experiments were conducted, iteratively modifying one or two components at a time. The goal was to understand the effect of each change on model performance, gradually refining the setup to achieve the best possible <strong>HTML Similarity</strong> score compared to reference models.</p>
+
+
+
+<p class="wp-block-paragraph">The experimental process was incremental: whenever a change improved the results, it was incorporated into the next round of experiments and continued exploring new variations.</p>
+
+
+
+<p class="wp-block-paragraph" id="4e97">The experiments focused on adjusting the following components:</p>
+
+
+
+<ol class="wp-block-list">
+<li class="wp-block-list-item"><strong>Vision vs. Language Layers</strong></li>
+</ol>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">1.1 <code>lang_only</code></li>
+
+
+
+<li class="wp-block-list-item">1.2 <code>vision_only</code></li>
+
+
+
+<li class="wp-block-list-item">1.3 <code>lang_vision</code></li>
+</ul>
+
+
+
+<p class="wp-block-paragraph" id="2cd4"><strong>2. Ground Truth Output Format</strong></p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">2.1 <code>lang_table_only</code></li>
+</ul>
+
+
+
+<p class="wp-block-paragraph" id="8fd4"><strong>3. Training Framework</strong></p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">3.1 <code>lang_table_unsloth</code></li>
+
+
+
+<li class="wp-block-list-item">3.2 <code>vision_table_unsloth</code></li>
+</ul>
+
+
+
+<p class="wp-block-paragraph" id="1d47"><strong>4. Gradient Accumulation</strong></p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">4.1 <code>lang_table_only_2</code></li>
+</ul>
+
+
+
+<p class="wp-block-paragraph" id="efa7"><strong>5. Prompt Format</strong></p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">5.1 <code>lang_table_only_3</code></li>
+</ul>
+
+
+
+<p class="wp-block-paragraph" id="c5ad"><strong>6. Gradient Accumulation &amp; Dataset Size</strong></p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">6.1 <code>lang_table_only_4</code></li>
+</ul>
+
+
+
+<p class="wp-block-paragraph">Both the <strong>evaluation loss</strong> and the <strong>HTML Similarity</strong> metric were used to assess model performance, and I found them to be well correlated — confirming that HTML Similarity is a good proxy for how well the model is learning the task.</p>
+
+
+
+<p class="wp-block-paragraph">Before diving into the results of each experiment, let’s first look at <strong>GPU memory utilization during training</strong>, which is often the most critical factor in determining whether a model can be fine-tuned on consumer hardware.</p>
+
+
+
+<figure class="wp-block-image"><img decoding="async" src="../Images/cb4398ae68fedba99ef1bae054cf1710.png" alt="" class="wp-image-612235" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/07/0C2k1RXWk9g7G0T3g.png"/><figcaption class="wp-element-caption">GPU Memory Utilization During Training | Image by author from wandb.ai</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">As shown in the graph, GPU utilization remained stable throughout training — averaging around <strong>75% VRAM usage</strong>, or roughly <strong>12 GB</strong> on my GPU. Most of VRAM usage (~5.5 GB) is the frozen model weights. LoRA gradients + optimizer states take very little (&lt;&lt; 1 GB). Activations + overhead should fill the rest (~5–6 GB), which depends on <code>batch_size</code> and <code>max_seq_length</code>.</p>
+
+
+
+<h2 class="wp-block-heading">First Run: <code>lang_only</code></h2>
+
+
+
+<p class="wp-block-paragraph" id="ae1b">This experiment uses the following initial components/parameters:</p>
+
+
+
+<figure class="wp-block-image aligncenter"><img decoding="async" src="../Images/efdd9d367623635cb9726ebd08ab98d1.png" alt="" class="wp-image-612222" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/07/1HdRwMD_YMzn9SRufTAGRbQ.png"/></figure>
+
+
+
+<p class="wp-block-paragraph" id="2a2f">These were the starting values for the first experiment. In subsequent runs, I modified many of them as I refined the approach. This first experiment focused only on tuning <strong>language layers</strong>, while training the model to predict the full raw HTML output — including everything inside and around the <code>&lt;table&gt;</code> tags.</p>
+
+
+
+<p class="wp-block-paragraph">Since this was the first run, I’ll include the <strong>training loss curve</strong> here to illustrate how it behaves. For later experiments, I’ll omit this graph — as the behavior was similar across runs, with minor variations. In practice, <strong>evaluation loss</strong> is more useful for comparing performance across experiments.</p>
+
+
+
+<figure class="wp-block-image"><img decoding="async" src="../Images/00058548fd92f139e58ba0fe47217114.png" alt="" class="wp-image-612236" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/07/01iFJY3ngxyHw0QWS.png"/><figcaption class="wp-element-caption">Training Loss | Image by author from wandb.ai</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">One important note about the logging configuration: <code>logging_steps=25</code> means that the training loss is only logged after every 25 steps, where each logged value is the average over <code>gradient_accumulation_steps=4</code>. As a result, the largest drop in loss appears at the second log point — where most of the initial learning happens. After that, the model continues learning more gradually, with a slow decreasing trend, depending on the difficulty of the training samples.</p>
+
+
+
+<p class="wp-block-paragraph" id="db66">Now, let’s take a look at the <strong>evaluation loss</strong>:</p>
+
+
+
+<figure class="wp-block-image"><img decoding="async" src="../Images/cd98a112082ad27def847b88ee7e847a.png" alt="" class="wp-image-612234" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/07/06opCxWpe17EghcAA.png"/><figcaption class="wp-element-caption">Validation Loss 1 | Image by author from wandb.ai</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">Since we are evaluating on the same set of 250 validation samples, the evaluation loss curve gives us a more stable and meaningful view of model learning — and will serve as a baseline for comparisons across future runs.</p>
+
+
+
+<p class="wp-block-paragraph">Here, we observe a clear and consistent downward trend throughout training. The initial loss starts close to <strong>0.03</strong>, with a steady improvement as training progresses, eventually stabilizing just below <strong>0.015</strong>.<br/><br/>The smooth nature of this curve — compared to the more variable training loss — reflects the regular structure of the validation set and confirms that the model is generalizing well to unseen samples, even with a small batch size and a single epoch of training.</p>
+
+
+
+<p class="wp-block-paragraph" id="0a40">Now, let’s compare the performance of this fine-tuned model against the reference models on the <strong>HTML Similarity</strong> metric:</p>
+
+
+
+<figure class="wp-block-image aligncenter"><img decoding="async" src="../Images/037c54bc1502c9aa558cd3e06a0d0ba2.png" alt="" class="wp-image-612230" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/07/16FDDu5SEanoFf-8ya0P9Xg.png"/></figure>
+
+
+
+<p class="wp-block-paragraph">As we can see, this first experiment already delivers <strong>strong performance gains</strong> — improving the base Granite-Vision 2B model by a large margin (+0.18) and clearly outperforming LLaMA 90B Vision on this specialized task. Only Pix2Struct retains a slight lead at this stage.</p>
+
+
+
+<h2 class="wp-block-heading">Second Run: <code>vision_only</code></h2>
+
+
+
+<p class="wp-block-paragraph">There isn’t much to analyze in this run. I tested several variations that could potentially unblock learning in the vision layers — including drastically increasing the learning rate — but without success.<br/><br/>While the base code suggests that fine-tuning vision layers <strong>should</strong> be possible, in practice I found it was not working in this setup. The following evaluation loss curve confirms that no learning occurred — the loss remained constant throughout training. To avoid wasting compute resources, I stopped the run early:</p>
+
+
+
+<figure class="wp-block-image"><img decoding="async" src="../Images/cc717d3bed2ba656374be32487da6da8.png" alt="" class="wp-image-612229" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/07/0p2OXPA9YdRw6Umbu.png"/><figcaption class="wp-element-caption">Validation Loss 2 | Image by author from wandb.ai</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">Additionally, training was noticeably faster in this run compared to the previous <code>lang_only</code> experiment — suggesting that the language layers (which contain the bulk of the model’s parameters) remained frozen, and only the small vision layers were being processed:</p>
+
+
+
+<figure class="wp-block-image"><img decoding="async" src="../Images/9e3b8b3b3920dd57062d69ae5bbaa382.png" alt="" class="wp-image-612227" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/07/0SxVYzpR73JmWLmOj.png"/><figcaption class="wp-element-caption">Validation Samples per Second 1  | Image by author from wandb.ai</figcaption></figure>
+
+
+
+<h2 class="wp-block-heading">Third Run: <code>lang_vision</code></h2>
+
+
+
+<p class="wp-block-paragraph">At this point, it was clear that only language layers were being effectively trained. In this <code>lang_vision</code> run — where both language and vision layers were selected — I expected results similar to <code>lang_only</code>.</p>
+
+
+
+<p class="wp-block-paragraph">Indeed, the evaluation loss curve confirmed this expectation, showing nearly identical behavior to <code>lang_only</code>:</p>
+
+
+
+<figure class="wp-block-image"><img decoding="async" src="../Images/2117b2bc5a22298e21a923add02020de.png" alt="" class="wp-image-612239" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/07/0JoKWPenyVZLWKUVO.png"/><figcaption class="wp-element-caption">Validation Loss 3 | Image by author from wandb.ai</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">Once this was clear, I again stopped training early to conserve resources, and proceeded to test new approaches.</p>
+
+
+
+<h2 class="wp-block-heading">Fourth Run: <code>lang_table_only</code></h2>
+
+
+
+<p class="wp-block-paragraph" id="a086">This experiment modified the following component:</p>
+
+
+
+<figure class="wp-block-image aligncenter"><img decoding="async" src="../Images/851923d8f42bb6901ae1ea12beb83f6f.png" alt="" class="wp-image-612219" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/07/1Bh4-sDk62PdoMO_tuTLmtg.png"/></figure>
+
+
+
+<p class="wp-block-paragraph">The goal of this run was to train the model to predict <strong>only the table content</strong>, without any surrounding HTML wrapper code. This approach could help improve learning — by removing unnecessary tokens — and also align the training behavior more closely with Pix2Struct’s model.</p>
+
+
+
+<p class="wp-block-paragraph">Additionally, by stripping out the wrapper HTML, the target sequences became shorter — which allowed longer and more complex tables to fit within the model’s context window. This change could also improve the model’s ability to generalize to larger or more detailed tables.</p>
+
+
+
+<p class="wp-block-paragraph">Let’s look at the <strong>evaluation loss</strong> compared to the first run:</p>
+
+
+
+<figure class="wp-block-image"><img decoding="async" src="../Images/fbb74274e94026043b56d62efae3983c.png" alt="" class="wp-image-612237" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/07/0cyrnc4CdtQVyOK9-.png"/><figcaption class="wp-element-caption">Validation Loss 4 | Image by author from wandb.ai</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">At first glance, the higher evaluation loss might seem counterintuitive. However, there’s a clear explanation: the wrapper HTML code is trivial for the model to learn — since it tends to be nearly identical across many training samples. These repetitive tokens reduce cross-entropy loss, artificially lowering the average loss in earlier runs. By removing them, the model now focuses entirely on the more challenging and variable table content — resulting in a higher but more meaningful loss value.</p>
+
+
+
+<p class="wp-block-paragraph" id="3bd7">Now, let’s see how this change impacted the <strong>HTML Similarity</strong> metric:</p>
+
+
+
+<figure class="wp-block-image aligncenter"><img decoding="async" src="../Images/a1165ea42448204ded266ab39c72a3ef.png" alt="" class="wp-image-612232" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/07/19GjzVNjE7bIgZTpv0zaCDw.png"/></figure>
+
+
+
+<p class="wp-block-paragraph">In this first test, we observe <strong>no significant gain or degradation</strong> from using this new output format. It is possible that the model would need <strong>more epochs</strong> or <strong>larger training samples</strong> to fully adapt to this new format. Another idea is to <strong>update the prompt</strong> — so that from the very first step the model understands it should focus solely on table content, rather than having to infer this behavior through training alone. This will be explored in the next experiments.</p>
+
+
+
+<h2 class="wp-block-heading">Fifth / Sixth Run: <code>lang_table_unsloth</code>, <code>vision_table_unsloth</code></h2>
+
+
+
+<p class="wp-block-paragraph" id="dee1">In these experiments, I explored the following components:</p>
+
+
+
+<figure class="wp-block-image aligncenter"><img decoding="async" src="../Images/f3000c93c861d24187b702e3c0a3f75e.png" alt="" class="wp-image-612220" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/07/1JsRu6TNke3i9796skkd2Jg.png"/></figure>
+
+
+
+<p class="wp-block-paragraph">At this point, I discovered the promising <a href="https://raw.githubusercontent.com/unslothai/unsloth" target="_blank" rel="noreferrer noopener">Unsloth</a> framework — which claims to offer <strong>2x faster training</strong> with up to <strong>70% lower memory usage</strong>. Of course, I wanted to test whether it could accelerate my workflow.</p>
+
+
+
+<p class="wp-block-paragraph">My first idea was to leverage the improved memory handling to run longer sequences (<code>max_seq_length=2048</code>), but in my case this quickly led to <strong>Out of Memory (OOM)</strong> errors — so I reverted to my previous configuration.</p>
+
+
+
+<p class="wp-block-paragraph">The training speed improvements, however, were undeniable — almost <strong>4x faster</strong> than my earlier runs:</p>
+
+
+
+<figure class="wp-block-image"><img decoding="async" src="../Images/e7d77aed0df77ca91e896f8d6a8cd22b.png" alt="" class="wp-image-612228" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/07/0a3L93_n7xNS6p5Yz.png"/><figcaption class="wp-element-caption">Validation Samples per Second 2 | Image by author from wandb.ai</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">Unfortunately, this came at a clear <strong>cost to loss performance</strong>:</p>
+
+
+
+<figure class="wp-block-image"><img decoding="async" src="../Images/f18dc7d7c8d08a863b598135846992fd.png" alt="" class="wp-image-612231" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/07/0HTXUxNbjuvT9bm6b.png"/><figcaption class="wp-element-caption">Validation Loss 5 | Image by author from wandb.ai</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">Given this noticeable drop in quality, I paused the experiment to investigate further — particularly to see if <strong>Unsloth would allow me to train vision layers</strong>, which is one of its advertised advantages. However, I encountered exactly the same behavior as with HuggingFace Transformers — no actual learning in vision layers.</p>
+
+
+
+<p class="wp-block-paragraph">With these results in mind, I decided to <strong>set aside Unsloth for this project</strong>and continue using <strong>HuggingFace Transformers</strong>, which had shown more reliable learning in earlier runs.</p>
+
+
+
+<h2 class="wp-block-heading">Seventh Run: <code>lang_table_only_2</code></h2>
+
+
+
+<p class="wp-block-paragraph" id="3b42">Here are the new parameters for this run:</p>
+
+
+
+<figure class="wp-block-image aligncenter"><img decoding="async" src="../Images/338ae8562e99f2d2a7a2621bd35f5ee6.png" alt="" class="wp-image-612221" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/07/16teOd9Xfo_j999mQnMBf7w.png"/></figure>
+
+
+
+<p class="wp-block-paragraph">Going back to the previous configuration, I wanted to analyze the impact of a <strong>larger virtual batch size</strong> (via higher <code>gradient_accumulation_steps</code>).</p>
+
+
+
+<p class="wp-block-paragraph">The results were promising — the <strong>evaluation loss</strong> became smoother and trended closer to the original <code>lang_only</code> run, even though the model was now predicting <strong>only the table content</strong>:</p>
+
+
+
+<figure class="wp-block-image"><img decoding="async" src="../Images/d4737e1896473d62c7d08e9c9a921fc1.png" alt="" class="wp-image-612240" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/07/0-gcf63aNJEiJ8vdp.png"/><figcaption class="wp-element-caption">Validation Loss 6 | Image by author from wandb.ai</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">Based on this positive result, I decided to keep this <code>gradient_accumulation_steps=8</code> setting for the final experiment.</p>
+
+
+
+<p class="wp-block-paragraph" id="438c">Evaluating this model on <strong>HTML Similarity</strong> resulted in a small but meaningful improvement — finally reaching parity with Pix2Struct:</p>
+
+
+
+<figure class="wp-block-image aligncenter"><img decoding="async" src="../Images/d3f5564932067f1855bf0ea998fcff75.png" alt="" class="wp-image-612223" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/07/1ClgxE6ESaeIMEsqdmWT3Tw.png"/></figure>
+
+
+
+<p class="wp-block-paragraph" id="4c05">Naturally, the goal is not just to match Pix2Struct — but to surpass it. Two important levers remained to explore: dataset size and prompt.</p>
+
+
+
+<h2 class="wp-block-heading">Eighth Run: <code>lang_table_only_3</code></h2>
+
+
+
+<p class="wp-block-paragraph" id="4957">The updated parameters for this run were:</p>
+
+
+
+<figure class="wp-block-image aligncenter"><img decoding="async" src="../Images/cff1bca96f4270b644842cae402813b4.png" alt="" class="wp-image-612225" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/07/11PRLE_JZExevVh7xAPKoVA.png"/></figure>
+
+
+
+<p class="wp-block-paragraph" id="8a2a">I accidentally reverted <code>gradient_accumulation_steps</code> back to <strong>4</strong> in this run, only realizing it once the training was nearly complete — but this actually gave me an extra-chance to observe its effect on learning.</p>
+
+
+
+<p class="wp-block-paragraph" id="d098">The main goal here was to <strong>double the training size</strong> (to 10K images) and to test the updated, clearer <strong>prompt</strong> format. Unfortunately, a random <strong>CUDA error</strong> caused training to halt around <strong>80% completion</strong> — but even so, the improvement was clear:</p>
+
+
+
+<figure class="wp-block-image"><img decoding="async" src="../Images/29327a5dfa467d2d43f2e17a4a5bda9a.png" alt="" class="wp-image-612241" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/07/07F0c7NEVQYx8x7wk.png"/><figcaption class="wp-element-caption">Validation Loss 7 | Image by author from wandb.ai</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph" id="fe56">As expected, some smoothness was lost due to the smaller virtual batch size, but the new <strong>prompt</strong> proved very effective — noticeably boosting model learning.</p>
+
+
+
+<p class="wp-block-paragraph">This set the stage perfectly for the <strong>final experiment</strong>, using this improved prompt, 10K training samples, and restoring <code>gradient_accumulation_steps</code> to 8.</p>
+
+
+
+<h2 class="wp-block-heading">Final Run: <code>lang_table_only_4</code></h2>
+
+
+
+<p class="wp-block-paragraph" id="e831">The final set of parameters are:</p>
+
+
+
+<figure class="wp-block-image aligncenter"><img decoding="async" src="../Images/5b2a04148c7262d28b89c19659d6c075.png" alt="" class="wp-image-612233" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/07/10chMPq0QNxSZaW37lUNQSA.png"/></figure>
+
+
+
+<p class="wp-block-paragraph" id="8646">The evaluation loss for this final run:</p>
+
+
+
+<figure class="wp-block-image"><img decoding="async" src="../Images/23f07b7a2a06feeb024658bd6d8b797d.png" alt="" class="wp-image-612238" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/07/0FFmLTCDTrr_G6dZ5.png"/><figcaption class="wp-element-caption">Validation Loss 7 | Image by author from wandb.ai</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">As expected, restoring the <code>gradient_accumulation_steps</code> to 8 smoothed the loss curve, reducing spikes and achieving slightly lower overall loss values. With a <strong>full epoch</strong> of training on 10K images, this became the best-performing model across all experiments.</p>
+
+
+
+<p class="wp-block-paragraph" id="1552">Now, let’s look at the final results on the <strong>HTML Similarity</strong> metric:</p>
+
+
+
+<figure class="wp-block-image"><img decoding="async" src="../Images/fc1c9a0d7bc2956bdde1092995625394.png" alt="" class="wp-image-612243" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/07/0Sj7kLSE48elL4yoV.png"/><figcaption class="wp-element-caption">Final HTML Similarity Results | Image by author from matplotlib</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">The goal of this project was achieved — the fine-tuned model now <strong>surpasses both reference models</strong> on this task. Looking back at the original Granite-Vision 2B, the LoRA fine-tuning improved performance to <strong>0.77</strong>, a <strong>+21 percentage point gain</strong> — all accomplished in under <strong>8 hours</strong> on a <strong>consumer-grade GPU</strong>.</p>
+
+
+
+<h2 class="wp-block-heading">Qualitative Results</h2>
+
+
+
+<p class="wp-block-paragraph" id="3089">To better illustrate how much the model improved through fine-tuning, let’s look at a specific example: <strong>Image ID 618932</strong>.</p>
+
+
+
+<figure class="wp-block-image aligncenter"><img decoding="async" src="../Images/07ca41e2f639309d2ecb840b68a84759.png" alt="" class="wp-image-612226" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/07/0C5aFQ4-IivGmZELA.png"/><figcaption class="wp-element-caption">PubTabNet Evaluation Sample with ID 618932 | Image from <a href="https://pmc.ncbi.nlm.nih.gov/tools/openftlist/" data-type="link" data-id="https://pmc.ncbi.nlm.nih.gov/tools/openftlist/">PMC</a></figcaption></figure>
+
+
+
+<p class="wp-block-paragraph" id="130d">This table is particularly tricky — under the <code>Kappa</code> column there are <strong>sub-headers</strong> (<code>Present study</code> and <code>King et al. 2001</code>). These complex layouts typically challenge generic VLMs, especially when they haven’t been exposed to enough similar examples during training. Models can usually <strong>understand</strong> these sub-headers and <strong>answer questions</strong> about them, but generating the full table structure in HTML often requires further prompt tuning and specialized fine-tuning.</p>
+
+
+
+<p class="wp-block-paragraph">Let’s first see how a <em>base</em>, non-fine-tuned Granite-Vision 2B model performs on this task.</p>
+
+
+
+<h2 class="wp-block-heading">Baseline: Raw Granite-Vision 2B</h2>
+
+
+
+<p class="wp-block-paragraph">The model can answer questions based on the table correctly:</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">prompt='What is the Kappa value for the question "Do you communicate with this power?" in the present study?'
+res = predict(sample['image'], prompt=prompt)
+print(res)</code></pre>
+
+
+
+<p class="wp-block-paragraph"><strong>Out[1]:</strong></p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-">74</code></pre>
+
+
+
+<p class="wp-block-paragraph">However, when asked to generate the full HTML table, the model struggles:</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">prompt = "Convert table to HTML (&lt;table&gt; ... &lt;/table&gt;)"
+html = predict(sample['image'], prompt=prompt)
+html = '&lt;table&gt;' + html + '&lt;/table&gt;' if '&lt;table&gt;' not in html else html
+display(HTML(html))</code></pre>
+
+
+
+<p class="wp-block-paragraph"><strong>Out[2]:</strong></p>
+
+
+
+<figure class="wp-block-image aligncenter"><img decoding="async" src="../Images/edad5830d63c006ab5980401a9d2a4d3.png" alt="" class="wp-image-612217" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/07/0EkdSSAsdGoR2WNwB.png"/></figure>
+
+
+
+<p class="wp-block-paragraph">And the <strong>HTML Similarity</strong> metrics for this attempt:</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">Style similarity: 1.0000
+Structural similarity: 0.4091
+Lev-Edit Distance: 0.1434
+Final HTML Similarity Score: 0.3619</code></pre>
+
+
+
+<h2 class="wp-block-heading">Fine-Tuned Model: <code>lang_table_only_4</code></h2>
+
+
+
+<p class="wp-block-paragraph">Now, let’s try the exact same test using the fine-tuned model:</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">from src.models.granite_vision.transformers_library import LLM as granite_vision
+
+model = granite_vision(
+    model_path,
+    adapter='lang_table_only_4'
+)</code></pre>
+
+
+
+<p class="wp-block-paragraph"><strong>Out[4]:</strong></p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">Model loaded
+Adapter 'lang_table_only_4' loaded
+Adapter 'lang_table_only_4' merged
+Using cuda: NVIDIA GeForce RTX 4070 Ti SUPER</code></pre>
+
+
+
+<p class="wp-block-paragraph">And the same prediction prompt:</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-">prompt = "Convert table to HTML (&lt;table&gt; ... &lt;/table&gt;)"
+html = model.predict(sample['image'], max_new_tokens=1024, query=prompt)
+display(HTML(html))</code></pre>
+
+
+
+<p class="wp-block-paragraph"><strong>Out[5]:</strong></p>
+
+
+
+<figure class="wp-block-image"><img decoding="async" src="../Images/f54dff7111febfce27bff02bf71336e1.png" alt="" class="wp-image-612224" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/07/0ZRJFzOw4UbNEO8jY.png"/></figure>
+
+
+
+<p class="wp-block-paragraph" id="53c8">The fine-tuned model now produces an output that closely matches the ground truth, correctly capturing the table structure and sub-headers — something the base model struggled with.</p>
+
+
+
+<p class="wp-block-paragraph">Final <strong>HTML Similarity</strong> metrics:</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">Style similarity: 1.0000
+Structural similarity: 0.9231
+Lev-Edit Distance: 1.0000
+Final HTML Similarity Score: 0.9615</code></pre>
+
+
+
+<p class="wp-block-paragraph">This example shows a clear quantitative improvement as well: from a score of 0.36 to 0.96 on a complex table structure — confirming that fine-tuning on this specialized task dramatically boosts the model’s capability.</p>
+
+
+
+<h2 class="wp-block-heading">Inference Speed</h2>
+
+
+
+<p class="wp-block-paragraph">One major advantage of using a smaller model — aside from the ability to fine-tune on consumer-grade hardware — is <strong>inference speed</strong>. Even if larger models offer competitive performance, latency and throughput remain key factors, especially in production settings.</p>
+
+
+
+<p class="wp-block-paragraph" id="4747">Let’s compare the inference speed of the different models:</p>
+
+
+
+<figure class="wp-block-image"><img decoding="async" src="../Images/1c536955b6eae017f701faebac5faf98.png" alt="" class="wp-image-612242" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/07/07g3t4WOXYsC-9DXX.png"/><figcaption class="wp-element-caption">Inference SpeedM | Image by author from matplotlib</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph" id="54a9">As shown in the plot, <strong>Pix2Struct</strong> is by far the fastest model. For some use cases — such as <strong>batch-processing thousands of documents for table extraction</strong> — this speed advantage could translate into <strong>significant time savings</strong> and lower compute costs.</p>
+
+
+
+<p class="wp-block-paragraph" id="f95e">However, the <strong>fine-tuned Granite-Vision 2B</strong> achieves a good balance when the amount of documents to process is not massive, having a superior accuracy on this specialized task and reasonably fast inference without the need for extremely large compute infrastructure.</p>
+
+
+
+<h2 class="wp-block-heading">Conclusions</h2>
+
+
+
+<p class="wp-block-paragraph" id="55a0">This project demonstrated that with <strong>LoRA-based fine-tuning</strong> and a <strong>targeted task</strong> (table extraction → HTML), a <strong>small vision-language model (Granite-Vision 2B)</strong> can <strong>outperform much larger models</strong> — even Meta’s 90B LLaMA Vision — while requiring only a <strong>consumer GPU</strong> and less than a day of training.</p>
+
+
+
+<p class="wp-block-paragraph" id="1419">A few key takeaways:</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item"><strong>Small, specialized models matter</strong> — you don’t always need 70B+ models to solve specific problems with high accuracy.</li>
+
+
+
+<li class="wp-block-list-item"><strong>Parameter-efficient fine-tuning (LoRA)</strong> is a game-changer: adapting large foundation models becomes accessible for most practitioners.</li>
+
+
+
+<li class="wp-block-list-item"><strong>Prompt design and training targets</strong> have a big influence — small changes (like switching to <code>lang_table_only</code> or refining the prompt) directly impacted performance.</li>
+
+
+
+<li class="wp-block-list-item">Having a <strong>custom metric (HTML Similarity)</strong> was critical to track meaningful progress beyond generic text-based metrics.</li>
+
+
+
+<li class="wp-block-list-item">Smaller models not only train faster, but also <strong>infer faster</strong> — ideal for production pipelines with high volume.</li>
+</ul>
+
+
+
+<p class="wp-block-paragraph" id="42b5">Finally — and maybe most importantly — this type of experimentation shows that <strong>you can move fast and iterate</strong> even with limited hardware. Fine-tuning powerful open models and adapting them to real-world tasks is <strong>not reserved to big labs anymore</strong>.</p>
+
+
+
+<p class="wp-block-paragraph" id="20fa">I hope this encourages other AI engineers to experiment with small VLMs and fine-tuning techniques for their own projects and solutions — and to see that powerful results are possible even without massive compute budgets!</p>
+
+
+
+<h2 class="wp-block-heading">What’s Next?</h2>
+
+
+
+<p class="wp-block-paragraph" id="2aa2">There are definitely some interesting follow-up ideas that can be explored next:</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item"><strong>Prompt engineering refinements</strong>: Final tests (while writing this blog) showed that separating prompts into <em>system message</em> (defining behavior) and <em>user message</em> (providing task instructions) significantly improved the base model’s performance. Applying this strategy during fine-tuning could further enhance the model’s ability to consistently generate accurate HTML. This will be tested in upcoming experiments.</li>
+
+
+
+<li class="wp-block-list-item"><strong>Training vision layers</strong>: Currently, only the language layers are fine-tuned, as training the vision layers through text-only loss proved ineffective. A more advanced approach could involve adding an auxiliary vision loss — for example, contrastive learning between vision outputs and HTML structure — to better adapt the vision backbone for table extraction tasks.</li>
+
+
+
+<li class="wp-block-list-item"><strong>Improved generalization</strong>: The current model is fine-tuned on a single dataset. Expanding training to include more diverse document layouts, table styles, and noisy OCR scenarios could improve robustness and transferability to real-world data.</li>
+</ul>
+
+
+
+<h2 class="wp-block-heading">Links</h2>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item"><a href="https://github.com/JulioSanchezD/TableVision2html" target="_blank" rel="noreferrer noopener">GitHub Repository</a></li>
+
+
+
+<li class="wp-block-list-item"><a href="https://huggingface.co/JulioSnchezD/granite-vision-3.2-2b-table2html" target="_blank" rel="noreferrer noopener">HuggingFace Model</a></li>
+</ul>
+
+
+
+<hr class="wp-block-separator has-alpha-channel-opacity"/>
+
+
+
+<p class="wp-block-paragraph" id="c2ff">If you liked this post, feel free to reach out or share your own experiments!</p>
+    
+</body>
+</html>

@@ -1,0 +1,222 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.1//EN"
+  "http://www.w3.org/TR/xhtml11/DTD/xhtml11.dtd">
+
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+<title>Understanding the Evolution of ChatGPT: Part 3- Insights from Codex and InstructGPT</title>
+<link href="../Styles/Style.css" type="text/css" rel="stylesheet"/>
+</head>
+<body>
+<h1>Understanding the Evolution of ChatGPT: Part 3- Insights from Codex and InstructGPT</h1>
+<blockquote>原文：<a href="https://towardsdatascience.com/understanding-the-evolution-of-chatgpt-part-3-insights-from-codex-and-instructgpt-04ece2967bf7/">https://towardsdatascience.com/understanding-the-evolution-of-chatgpt-part-3-insights-from-codex-and-instructgpt-04ece2967bf7/</a></blockquote>
+<figure class="wp-block-image size-large"><img data-dominant-color="ebedee" data-has-transparency="false" style="--dominant-color: #ebedee;" decoding="async" width="2560" height="1437" class="wp-image-595902 not-transparent" src="../Images/3941316af22faef1c87daa87155d4c32.png" alt="(Image from Unsplash)" srcset="https://towardsdatascience.com/wp-content/uploads/2025/01/1HNiOu0hotXxagUamrvGHnA-scaled.jpeg 2560w, https://towardsdatascience.com/wp-content/uploads/2025/01/1HNiOu0hotXxagUamrvGHnA-300x168.jpeg 300w, https://towardsdatascience.com/wp-content/uploads/2025/01/1HNiOu0hotXxagUamrvGHnA-1024x575.jpeg 1024w, https://towardsdatascience.com/wp-content/uploads/2025/01/1HNiOu0hotXxagUamrvGHnA-768x431.jpeg 768w, https://towardsdatascience.com/wp-content/uploads/2025/01/1HNiOu0hotXxagUamrvGHnA-1536x862.jpeg 1536w, https://towardsdatascience.com/wp-content/uploads/2025/01/1HNiOu0hotXxagUamrvGHnA-2048x1150.jpeg 2048w" sizes="(max-width: 2560px) 100vw, 2560px" data-original-src="https://towardsdatascience.com/wp-content/uploads/2025/01/1HNiOu0hotXxagUamrvGHnA-scaled.jpeg"/><figcaption class="wp-element-caption">(Image from <a href="https://www.istockphoto.com/photo/success-transformation-gm1417761158-464748077">Unsplash</a>)</figcaption></figure>
+<p class="wp-block-paragraph">This is the third article in our GPT series, and also the most practical one: finally, we will talk about how to effectively fine-tune LLMs.</p>
+<p class="wp-block-paragraph">It is <strong>practical</strong> in the way that, if you were asked to train your own LLMs today, you can skip pre-training and jump straight into using an open-source LLM or SLM; However, very likely you’ll still need to finetune it a bit on your own data and task, and that is where this article can come to help.</p>
+<p class="wp-block-paragraph">More specifically, we will focus on two finetuned models – Codex and InstructGPT, as they represent addressing two types of challenges in LLM finetuning:</p>
+<ul class="wp-block-list">
+<li>Codex needs to adapt a pretrained LLM to a different modality (code script), as programming languages have many unique characteristics than natural language;</li>
+<li>InstructGPT aims to make the model more aligned with human preferences, which cannot be achieved automatically by traditional language modeling objectives.</li>
+</ul>
+<p class="wp-block-paragraph">As we will see later, both challenges demand creativity and carefulness at every stage of the finetuning process: how to collect high-quality data, how to modify model architectures, how to effectively initialize your model, how to determine a proper objective, and how to properly evaluate it.</p>
+<p class="wp-block-paragraph">Below is the outline for this article:</p>
+<ul class="wp-block-list">
+<li><strong>Overview</strong>: why we need finetuning and what makes it so challenging; GPT3.5 and its finetuned versions.</li>
+<li><strong>Codex</strong>: how to evaluate code generation properly, how to collect data and how to adapt the model to process programming languages.</li>
+<li><strong>InstructGPT and ChatGPT</strong>: how to evaluate alignment, why RLHF works, and how it is implemented in InstructGPT.</li>
+<li><strong>Summary:</strong> best practices in LLM finetuning.</li>
+</ul>
+<p class="wp-block-paragraph">Below are the links to our previous articles if you are interested:</p>
+<ul class="wp-block-list">
+<li><a href="https://medium.com/towards-data-science/understanding-the-evolution-of-gpt-part-1-an-in-depth-look-at-gpt-1-and-what-inspired-it-b7388a32e87d">Part 1: An In-Depth Look at GPT-1 and What Inspired It</a>: where we cover the <strong>pre-training plus finetuning</strong> paradigm and its evolution from CV to NLP, previous pre-training efforts such as <strong>Word2Vec</strong> and <strong>GloVe</strong>, <strong>decoder-only Transformers</strong>, <strong>auto-regressive</strong> vs. <strong>auto-encoding</strong> LM, and key innovations of <strong>GPT-1</strong>.</li>
+<li><a href="https://medium.com/towards-data-science/understanding-the-evolution-of-chatgpt-part-2-gpt-2-and-gpt-3-77a01ed934c5">Part 2: GPT-2 and GPT-3</a>: where we cover how GPT models were scaled up from 117M to 175B, under the philosophy of exploring <strong>task-agnostic pre-training</strong> via <strong>scaling hypothesis</strong> and <strong>in-context learning</strong>.</li>
+</ul>
+<hr class="wp-block-separator has-alpha-channel-opacity"/>
+<h2 class="wp-block-heading">Overview</h2>
+<p class="wp-block-paragraph">As we explained in <a href="https://medium.com/towards-data-science/understanding-the-evolution-of-chatgpt-part-2-gpt-2-and-gpt-3-77a01ed934c5">our second article</a>, both GPT-2 and GPT-3 can be considered as OpenAI’s experiments to test the potential of task-agnostic pre-training. While doing so, the authors also mentioned finetuning as a promising direction for future studies, as it might help the model to further improve its performance on certain tasks.</p>
+<h3 class="wp-block-heading">Why is Finetuning Needed?</h3>
+<p class="wp-block-paragraph">The reasons are three-fold.</p>
+<p class="wp-block-paragraph">The first reason is of course performance. Pre-trained models are more like generalists that can perform a wide range of tasks reasonably well, but still they might struggle to beat the specialists trained on a particular task. If our goal is to have such a specialized model to help us on a very specific task, then finetuning should be definitely considered.</p>
+<p class="wp-block-paragraph">Another reason is that, albeit being generally powerful, GPT-3 models are not always reliable in following human instructions, especially when those instructions became complex. This is because, as the authors explained in InstructGPT paper, that the pre-training objective focuses mainly on language modeling like predicting the next token, but such capabilities cannot translates to instruction-following. Thus, some special finetuning strategies are needed.</p>
+<p class="wp-block-paragraph">There are also concerns on safety and ethical aspects, due to very similar reasons that auto-regressive language modeling alone is not sufficient to enforce the model to avoid generating harmful or biased answers. For that issue, finetuning can also enable us to better control the generation process.</p>
+<h3 class="wp-block-heading">Challenges in Finetuning</h3>
+<p class="wp-block-paragraph">Broadly speaking, there are two types of challenges in finetuning LLMs: the need to adapt to a new modality, and the need to align the model with human preferences.</p>
+<p class="wp-block-paragraph">Taking Codex as an example for the former case, where the pre-trained model needs to be applied to a different modality that presents some unique characteristics, for example, to process code scripts it needs to understand basic syntax of a specific programming language, handle static and dynamic types and even infer types, and correctly handle indentations in languages like Python.</p>
+<p class="wp-block-paragraph">The latter case is more tricky in some way, as "alignment" itself is a pretty vague and controversial concept, and it has to be defined more clearly and translated to a set of measurable aspects before we can actually finetuning towards that goal. Moreover, even if we have worked out a definition of alignment, achieving that goal is also non-trivial, as there is no ready-to-use training objectives directly connect to it.</p>
+<p class="wp-block-paragraph">On top of that, we also need to collect high-quality domain-specific training data and rethink the evaluation process, including the evaluation dataset as well as the evaluation metrics to use.</p>
+<p class="wp-block-paragraph">In later sections, we will see how Codex and InstructGPT handled these issues. In particular, we will highlight how they implemented every step with both creativity and carefulness, from which anyone who wants to finetune his or her own LLM can learn something.</p>
+<h3 class="wp-block-heading">GPT-3.5</h3>
+<p class="wp-block-paragraph">GPT-3.5 series typically refer to the model series finetuned on top of GPT-3, including the following variants (see <a href="https://en.wikipedia.org/wiki/GPT-3#GPT-3.5">wiki</a>):</p>
+<ul class="wp-block-list">
+<li>code-davinvi-002: a version of Codex.</li>
+<li>text-davinci-002: a transitional model from GPT-3 to InstructGPT.</li>
+<li>text-davinci-003: more similar to InstructGPT.</li>
+</ul>
+<p class="wp-block-paragraph">Overall, GPT-3.5 could be considered as finetuned GPT-3 with enhanced instruction following, better generation quality, and better steerability. It is the foundation to several other models including ChatGPT, Codex, Whisper and the text model of DALL-E2, which demonstrates the potential of effectively finetuning LLMs on specialized tasks.</p>
+<p class="wp-block-paragraph">In the following sections, we will dive deeper into Codex and InstructGPT. Rather than covering every detail of their finetuning process, we will mainly focus on the aspects that best showcase the importance of creativity and carefulness.</p>
+<hr class="wp-block-separator has-alpha-channel-opacity"/>
+<h2 class="wp-block-heading">Codex</h2>
+<p class="wp-block-paragraph">The <a href="https://arxiv.org/pdf/2107.03374">Codex</a> model was released in 2021 and is specialized in Python code-writing.</p>
+<p class="wp-block-paragraph">Below are a few aspects that we want to highlight.</p>
+<h3 class="wp-block-heading">Evaluation of Code Generation</h3>
+<p class="wp-block-paragraph">When building a model for a new task, the first thing that often comes to mind is how to evaluate that task properly.</p>
+<p class="wp-block-paragraph">This is important because, without an effective evaluation protocol, we cannot determine if we are really making any progress, and sometimes we even cannot identify the gaps in our current model in the first place.</p>
+<p class="wp-block-paragraph">In the case of Codex, the authors first realized that standard match-based metrics such as BLEU score are not suitable for measuring code generation performance.</p>
+<p class="wp-block-paragraph">In case you are not familiar with <strong>BLEU score</strong>: it is widely used for evaluating text generation tasks such as machine translation, by comparing overlapping phrases and calculating a precision score, while also considering text length to ensure balance.</p>
+<p class="wp-block-paragraph">However, the same coding problem might be solved with different data structures or algorithms. For example, generating a Fibonacci sequence can be implemented by either a top-down or bottom-up DP algorithm, resulting in very different code scripts:</p>
+<pre class="wp-block-prismatic-blocks"><code class="language-kotlin">def fib_top_down(n, memo={}):
+    if n in memo:
+        return memo[n]
+    if n &lt;= 1:
+        return n
+    memo[n] = fib_top_down(n-1, memo) + fib_top_down(n-2, memo)
+    return memo[n]
+
+def fib_bottom_up(n):
+    if n &lt;= 1:
+        return n
+    dp = [0] * (n + 1)
+    dp[0], dp[1] = 0, 1
+    for i in range(2, n + 1):
+        dp[i] = dp[i-1] + dp[i-2]
+    return dp[n]</code></pre>
+<p class="wp-block-paragraph">In that case, if we evaluate both solutions against a given reference solution using BLEU score, it is very likely that one or even both solutions will have very low BLEU scores, even though both solutions are correct.</p>
+<p class="wp-block-paragraph">An alternative way is to evaluate by what the authors called "<strong>functional correctness</strong>", for example the <em><strong>pass@k</strong></em> metric used by <a href="https://arxiv.org/pdf/1906.04908">Kulal et al</a>, where for each problem we will generate <em><strong>k</strong></em> code samples and test each of them, and then a problem can be considered as solved if any sample passes the unit tests. In the end, the total fraction of problems solved is reported. However, as the authors pointed out, calculating <em><strong>pass@k</strong></em> with this definition will result in high variance due to randomness in this process, especially when <em><strong>k</strong></em> is small.</p>
+<p class="wp-block-paragraph">To mitigate this issue, the authors propose another way to estimate <em><strong>pass@k</strong></em>: instead of generating k samples directly, they generate n ≥ k samples per task. As more samples are generated and tested, the estimation process will be more reliable even if k is small. And then, based on how many samples are correct (assume c samples passes unit tests), an unbiased estimator can be estimated as below:</p>
+<figure class="wp-block-image size-large"><img data-dominant-color="f8f8f8" data-has-transparency="false" style="--dominant-color: #f8f8f8;" decoding="async" width="997" height="306" class="wp-image-595903 not-transparent" src="../Images/9af84427a37e303622f1b16b7291d2d5.png" alt="Figure 1. Left: the optimized pass@k definition. right: a numerically stable script to calculate pass@k. (image from Codex paper.)" srcset="https://towardsdatascience.com/wp-content/uploads/2025/01/1XBJx-hmKq1skZcQeHTWLfw.png 997w, https://towardsdatascience.com/wp-content/uploads/2025/01/1XBJx-hmKq1skZcQeHTWLfw-300x92.png 300w, https://towardsdatascience.com/wp-content/uploads/2025/01/1XBJx-hmKq1skZcQeHTWLfw-768x236.png 768w" sizes="(max-width: 997px) 100vw, 997px" data-original-src="https://towardsdatascience.com/wp-content/uploads/2025/01/1XBJx-hmKq1skZcQeHTWLfw.png"/><figcaption class="wp-element-caption">Figure 1. Left: the optimized pass@k definition. right: a numerically stable script to calculate pass@k. (image from <a href="https://arxiv.org/pdf/2107.03374">Codex paper</a>.)</figcaption></figure>
+<p class="wp-block-paragraph">where</p>
+<ul class="wp-block-list">
+<li><em>C(n, k)</em> is the number of ways to choose k samples out of n;</li>
+<li><em>C(n-c, k)</em> is the number of ways to choose k samples out of the (n-c) incorrect samples;</li>
+<li>Thus, <em>C(n-c, k)/C(n, k)</em> represents the probability that all chosen samples are incorrect;</li>
+<li>Finally, <em>1 – C(n-c, k)/C(n, k)</em> represents the probability that at least one sample is correct.</li>
+</ul>
+<p class="wp-block-paragraph">To further prove that optimizing for BLEU score is not equivalent to optimizing for functional correctness, the authors also plot the BLEU score densities for correct (blue) and wrong (green) solutions for 4 random coding problems, where the distributions are clearly not separable:</p>
+<figure class="wp-block-image size-large"><img data-dominant-color="e7ebeb" data-has-transparency="true" style="--dominant-color: #e7ebeb;" loading="lazy" decoding="async" width="643" height="594" class="wp-image-595904 has-transparency" src="../Images/e21032f39b05e11cc978310e75b1a678.png" alt="Figure 2. BLEU score probability density for correct (blue) and wrong (green) solutions for 4 random problems. (Image from Codex paper.)" srcset="https://towardsdatascience.com/wp-content/uploads/2025/01/1Ndevc5GUcClqJtSQe8qIOw.png 643w, https://towardsdatascience.com/wp-content/uploads/2025/01/1Ndevc5GUcClqJtSQe8qIOw-300x277.png 300w" sizes="auto, (max-width: 643px) 100vw, 643px" data-original-src="https://towardsdatascience.com/wp-content/uploads/2025/01/1Ndevc5GUcClqJtSQe8qIOw.png"/><figcaption class="wp-element-caption">Figure 2. BLEU score probability density for correct (blue) and wrong (green) solutions for 4 random problems. (Image from <a href="https://arxiv.org/pdf/2107.03374">Codex paper</a>.)</figcaption></figure>
+<p class="wp-block-paragraph">Beyond optimizing for the evaluation metric, the authors also built a new dataset called <strong>HumanEval</strong>, which contains 164 hand-written programming problems. As shown in the example below, each problem includes a function signature, a docstring, a body and an average of 7.7 unit tests:</p>
+<figure class="wp-block-image size-large"><img data-dominant-color="f6f6ef" data-has-transparency="true" style="--dominant-color: #f6f6ef;" loading="lazy" decoding="async" width="989" height="442" class="wp-image-595905 has-transparency" src="../Images/fbf55b33b1b90b0b438a1fc2904f7fed.png" alt="Figure 3. Example problems from the HumanEval dataset. (Image from Codex paper.)" srcset="https://towardsdatascience.com/wp-content/uploads/2025/01/1e80_CJB3tyHH0Mj8fPdQIQ.png 989w, https://towardsdatascience.com/wp-content/uploads/2025/01/1e80_CJB3tyHH0Mj8fPdQIQ-300x134.png 300w, https://towardsdatascience.com/wp-content/uploads/2025/01/1e80_CJB3tyHH0Mj8fPdQIQ-768x343.png 768w" sizes="auto, (max-width: 989px) 100vw, 989px" data-original-src="https://towardsdatascience.com/wp-content/uploads/2025/01/1e80_CJB3tyHH0Mj8fPdQIQ.png"/><figcaption class="wp-element-caption">Figure 3. Example problems from the HumanEval dataset. (Image from <a href="https://arxiv.org/pdf/2107.03374">Codex paper</a>.)</figcaption></figure>
+<p class="wp-block-paragraph">Note that as the authors mentioned in the paper, it is important for these tasks to be hand-written, since otherwise the problems for evaluation might be overlap with that for training. Also, to ensure the testing process will not pose any risks due to malicious code, the authors also created a sandbox to execute code scripts.</p>
+<h3 class="wp-block-heading">Training Data Collection</h3>
+<p class="wp-block-paragraph">Moving to the training part, the first question is how to collect high-quality training data. For code generation, the good news is that we can leverage the vast amount of code repositories from GitHub, but still some data cleaning strategies are needed, as the paper mentioned:</p>
+<blockquote class="wp-block-quote is-layout-flow wp-block-quote-is-layout-flow"><p>We filtered out files which were likely auto-generated, had average line length greater than 100, had maximum line length greater than 1000, or contained a small percentage of alphanumeric characters.</p></blockquote>
+<p class="wp-block-paragraph">Note that most of these cleaning strategies are specialized to programming languages, so we might need to come up with other ideas when cleaning our own data.</p>
+<h3 class="wp-block-heading">Adaptations in Finetuning</h3>
+<p class="wp-block-paragraph">The most important adaptation is for the tokenizer, due to the obvious reason that the distribution of words in GitHub code differs a lot from that of natural language. In the Codex paper, the authors noted that this is especially the case when <strong>encoding whitespaces</strong>, making the original GPT-3 tokenizer less effective.</p>
+<p class="wp-block-paragraph">To fix that issue, an additional set of tokens were added to the vocabulary, to represent whitespace runs of different lengths. As mentioned in the paper, this simple modification enables representing code with 30% fewer tokens.</p>
+<p class="wp-block-paragraph">So, if our model needs to handle an input corpus presents different distribution with natural languages, we might need to do some study on the distribution and modify the tokenizer a bit as well.</p>
+<h3 class="wp-block-heading">Findings in Evaluation</h3>
+<p class="wp-block-paragraph">Firstly, the figure below shows the pass rates of different models on the HumanEval dataset. Overall, all the Codex variants show significantly better performance compared to GPT-3, where</p>
+<ul class="wp-block-list">
+<li>Codex (finetuned on code) solves 28% of the problems;</li>
+<li>Codex-S (finetuned on standalone functions) solves 37.7%;</li>
+<li>Codex-S with generating 100 samples and selecting the one with the highest mean log-probability solves 44.5%;</li>
+<li>Codex-S oracle which selects the sample that passes the unit tests solves an amazing of of 77.5% problems.</li>
+</ul>
+<figure class="wp-block-image size-large"><img data-dominant-color="f1f0ef" data-has-transparency="true" style="--dominant-color: #f1f0ef;" loading="lazy" decoding="async" width="621" height="413" class="wp-image-595906 has-transparency" src="../Images/b6fb16b333877eb3141b308f933a4bee.png" alt="Figure 4. Codex pass rates. (Image from Codex paper.)" srcset="https://towardsdatascience.com/wp-content/uploads/2025/01/15Ba-BQIYtd3yNNw5KmDmag.png 621w, https://towardsdatascience.com/wp-content/uploads/2025/01/15Ba-BQIYtd3yNNw5KmDmag-300x200.png 300w" sizes="auto, (max-width: 621px) 100vw, 621px" data-original-src="https://towardsdatascience.com/wp-content/uploads/2025/01/15Ba-BQIYtd3yNNw5KmDmag.png"/><figcaption class="wp-element-caption">Figure 4. Codex pass rates. (Image from <a href="https://arxiv.org/pdf/2107.03374">Codex paper</a>.)</figcaption></figure>
+<p class="wp-block-paragraph">Plus, a scaling law similar to that of GPT-3 is also observed, suggesting better performance can be achieved with even larger models:</p>
+<figure class="wp-block-image size-large"><img data-dominant-color="f5f6f7" data-has-transparency="true" style="--dominant-color: #f5f6f7;" loading="lazy" decoding="async" width="600" height="376" class="wp-image-595907 has-transparency" src="../Images/0b86bccb83c02c00643a818f583629a1.png" alt="Figure 5. Test loss vs. number of parameters. (Image from Codex paper.)" srcset="https://towardsdatascience.com/wp-content/uploads/2025/01/1el_T_TVyqx_e11qWgz_QBA.png 600w, https://towardsdatascience.com/wp-content/uploads/2025/01/1el_T_TVyqx_e11qWgz_QBA-300x188.png 300w" sizes="auto, (max-width: 600px) 100vw, 600px" data-original-src="https://towardsdatascience.com/wp-content/uploads/2025/01/1el_T_TVyqx_e11qWgz_QBA.png"/><figcaption class="wp-element-caption">Figure 5. Test loss vs. number of parameters. (Image from <a href="https://arxiv.org/pdf/2107.03374">Codex paper</a>.)</figcaption></figure>
+<p class="wp-block-paragraph">And the authors also noticed that higher temperatures are more preferred for larger k, highlighting the importance of careful hyper-parameter tuning:</p>
+<figure class="wp-block-image size-large"><img data-dominant-color="f6f6f7" data-has-transparency="true" style="--dominant-color: #f6f6f7;" loading="lazy" decoding="async" width="653" height="375" class="wp-image-595908 has-transparency" src="../Images/cc2559badaa1e44778b7132ae06e2a26.png" alt="Figure 6. Higher temperatures are preferred for larger k. (Image from Codex paper.)" srcset="https://towardsdatascience.com/wp-content/uploads/2025/01/1F1d5EKrrTe-kNmBbhRhTfw.png 653w, https://towardsdatascience.com/wp-content/uploads/2025/01/1F1d5EKrrTe-kNmBbhRhTfw-300x172.png 300w" sizes="auto, (max-width: 653px) 100vw, 653px" data-original-src="https://towardsdatascience.com/wp-content/uploads/2025/01/1F1d5EKrrTe-kNmBbhRhTfw.png"/><figcaption class="wp-element-caption">Figure 6. Higher temperatures are preferred for larger k. (Image from <a href="https://arxiv.org/pdf/2107.03374">Codex paper</a>.)</figcaption></figure>
+<hr class="wp-block-separator has-alpha-channel-opacity"/>
+<h2 class="wp-block-heading">InstructGPT and ChatGPT</h2>
+<h3 class="wp-block-heading">Evaluation of Alignment</h3>
+<p class="wp-block-paragraph">How to properly evaluate "alignment" is also challenging, as the definition of alignment is not as clear as other aspects such as accuracy. In this work the authors define alignment as <strong>if the models are "helpful, honest, and harmless"</strong> and convert them to more measurable properties<strong>:</strong></p>
+<ul class="wp-block-list">
+<li><strong>Helpful</strong>: by measuring if the model could <strong>follow instructions</strong> and even infer intentions from a few-shot prompt.</li>
+<li><strong>Honest</strong>: by measuring truthfulness, or in the author’s words, "if the model’s statements about the world are true". More specifically, they propose to measure it by <strong>hallucination rate</strong> on the TruthfulQA dataset.</li>
+<li><strong>Harmless</strong>: by measuring "if an output is inappropriate in the context of a customer assistant, denigrates a protected class, or contains sexual or violent content", and benchmarking on datasets designed to measure <strong>bias</strong> and <strong>toxicity</strong>.</li>
+</ul>
+<p class="wp-block-paragraph">On top of that, to make sure the finetuning process will not cause severe regressions on pre-training performance, the evaluation process also need to reflect quality on both the pre-training and finetuning objectives. For that reason, InstructGPT was evaluated on two separate datasets:</p>
+<ul class="wp-block-list">
+<li><strong>Evaluations on API distribution</strong>: this is mainly for evaluating the finetuning quality, by asking human labelers to rate which output is preferred;</li>
+<li><strong>Evaluations on public NLP datasets</strong>: this evaluates both the pre-training and finetuning quality, including traditional NLP datasets as well as datasets for evaluating model safety like truthfulness, toxicity and bias.</li>
+</ul>
+<p class="wp-block-paragraph">Next, we will briefly explain how RLHF works and how it is implemented in InstructGPT.</p>
+<h3 class="wp-block-heading">RLHF (Reinforcement Learning from Human Feedback)</h3>
+<p class="wp-block-paragraph">The figure below shows the 5 elements in a typical Reinforcement Learning scenario:</p>
+<figure class="wp-block-image size-large"><img data-dominant-color="eaeced" data-has-transparency="true" style="--dominant-color: #eaeced;" loading="lazy" decoding="async" width="308" height="302" class="wp-image-595909 has-transparency" src="../Images/23ed78331ee08db791e5c906eb5d4e43.png" alt="Figure 7. Five elements in RL: Agent, Environment, Reward, State and Action. (Image from wiki.)" srcset="https://towardsdatascience.com/wp-content/uploads/2025/01/1zEels8f7xCaTTbxwsITggg.png 308w, https://towardsdatascience.com/wp-content/uploads/2025/01/1zEels8f7xCaTTbxwsITggg-300x294.png 300w" sizes="auto, (max-width: 308px) 100vw, 308px" data-original-src="https://towardsdatascience.com/wp-content/uploads/2025/01/1zEels8f7xCaTTbxwsITggg.png"/><figcaption class="wp-element-caption">Figure 7. Five elements in RL: Agent, Environment, Reward, State and Action. (Image from <a href="https://en.wikipedia.org/wiki/Reinforcement_learning">wiki</a>.)</figcaption></figure>
+<p class="wp-block-paragraph">Now imagine you are teaching your puppy to sit, where you can find all the 5 elements:</p>
+<ul class="wp-block-list">
+<li><strong>Agent</strong>: Your puppy learning this new command "sit".</li>
+<li><strong>Environment</strong>: Everything around your puppy.</li>
+<li><strong>State</strong>: The situation your puppy is in (whether it is sitting or not).</li>
+<li><strong>Reward</strong>: A treat that you give your puppy when it follows your command;</li>
+<li><strong>Action</strong>: What your puppy could do, like sitting, jumping or barking.</li>
+</ul>
+<p class="wp-block-paragraph">Reinforcement Learning works like this: In the beginning your dog (agent) didn’t understand what "sit" means, but it will try different things like running, sitting or even barking (actions) in your house (environment). Every time it sits, it will get a treat (reward). Over time your puppy learns that sitting gets a treat and it appears like it finally understands "sit".</p>
+<p class="wp-block-paragraph">Training a model with RL follows a very similar <strong>trial-and-error</strong> approach. The key to RL is having a well-designed reward. This reward must be closely aligned with the goal; otherwise the agent will not be able to learn the desired behaviors. Meanwhile, producing such a reward should be as easy and quick as possible, since if it is too slow or too complicated to calculate the reward, the RL process will also become extremely slow, making it less useful in practical tasks.</p>
+<p class="wp-block-paragraph">For example, in a game, every action the agent takes will automatically get a score from the environment, and this score is directly connected to your agent’s performance in playing this game.</p>
+<p class="wp-block-paragraph">However, in many real-world applications, there is no ready-to-use reward like a score in a game. Instead researchers have to take great efforts in defining a proper reward function. Moreover, some desired behaviors are very difficult to translate into reward functions – for example, how could you define a reward function to guide the agent to answer questions more politely?</p>
+<p class="wp-block-paragraph">This leads to <strong>RLHF</strong>: <strong>Reinforcement Learning from Human Feedback</strong>.</p>
+<p class="wp-block-paragraph">Again in the puppy training example, imagine your puppy finally learns to sit, but sometimes it also barks while sitting, or it will jump onto the couch first instead of sitting quietly on the floor.</p>
+<p class="wp-block-paragraph">What can you do in that case?</p>
+<p class="wp-block-paragraph">With <strong>RLHF</strong>, you don’t just give your puppy a treat every time it sits. Instead, you give treats by <strong>comparing</strong> its behaviors. For example, if the puppy sits quietly on the floor, it gets a bigger reward than if it sits while barking or after jumping onto the couch. This way, your puppy learns that sitting quietly on the floor is better, even though you didn’t explicitly explain what "quiet" means.</p>
+<p class="wp-block-paragraph">As we mentioned before, having an easy and fast reward is the key to RL, which makes it unrealistic to involve a human into the training loop to provide direct feedback. To overcome this issue, we can collect some human feedback first, and then use these feedback to learn a reward function to mimic human preferences when comparing two actions.</p>
+<p class="wp-block-paragraph">In summary, RLHF typically involves three stages:</p>
+<ul class="wp-block-list">
+<li><strong>Collect human feedback</strong>: sampling model outputs, and ask human judges to compare which is better.</li>
+<li><strong>Learn a reward model</strong> by mimicking human judge’s preferences.</li>
+<li><strong>Train a better policy</strong> using the leant reward model in the RL process.</li>
+</ul>
+<p class="wp-block-paragraph">In case you are not familiar with RL terminology: a <strong>policy</strong> refers to the agent’s strategy to choose actions based on the state of the environment.</p>
+<p class="wp-block-paragraph">Next we will cover how this RLHF approach is implemented in finetuning InstructGPT.</p>
+<h3 class="wp-block-heading">Implementation of RLHF in InstructGPT</h3>
+<p class="wp-block-paragraph"><a href="https://arxiv.org/pdf/2203.02155">InstructGPT</a> and <a href="https://openai.com/index/chatgpt/">ChatGPT</a> were trained using the same model (see this <a href="https://openai.com/index/chatgpt/">blog</a>), with RLHF being the key element in finetuning.</p>
+<p class="wp-block-paragraph">The training process largely follows the steps we have introduced in the previous section, with special care on data quality and implementation details, which in my opinion, <strong>are equivalently important to make InstructGPT such a success</strong>.</p>
+<p class="wp-block-paragraph">Now let me break it down.</p>
+<figure class="wp-block-image size-large"><img data-dominant-color="eeeff0" data-has-transparency="true" style="--dominant-color: #eeeff0;" loading="lazy" decoding="async" width="998" height="574" class="wp-image-595910 has-transparency" src="../Images/6294be7b33bc8dc72a280b433bc61aec.png" alt="Figure 8. An illustration of the RLHF steps in training InstructGPT/ChatGPT. (image from InstructGPT paper.)" srcset="https://towardsdatascience.com/wp-content/uploads/2025/01/1bkxVWz5OjA948ggkvcPi3A.png 998w, https://towardsdatascience.com/wp-content/uploads/2025/01/1bkxVWz5OjA948ggkvcPi3A-300x173.png 300w, https://towardsdatascience.com/wp-content/uploads/2025/01/1bkxVWz5OjA948ggkvcPi3A-768x442.png 768w" sizes="auto, (max-width: 998px) 100vw, 998px" data-original-src="https://towardsdatascience.com/wp-content/uploads/2025/01/1bkxVWz5OjA948ggkvcPi3A.png"/><figcaption class="wp-element-caption">Figure 8. An illustration of the RLHF steps in training InstructGPT/ChatGPT. (image from <a href="https://arxiv.org/pdf/2203.02155">InstructGPT paper</a>.)</figcaption></figure>
+<p class="wp-block-paragraph"><strong>Step 1: Collect demonstration data and train a supervised policy</strong></p>
+<p class="wp-block-paragraph">In this step, human labelers were asked to provide high-quality demonstrations of the desired behavior for each prompt.</p>
+<p class="wp-block-paragraph"><strong>Prompt dataset</strong>: To begin with, you need to have a prompt dataset from which you can sample individual prompts, and ideally that prompt dataset should be both useful and diverse.</p>
+<p class="wp-block-paragraph">To do that, the authors took an iterative approach: in the very beginning, labelers were asked to manually write some seed prompts, and these data were used to train a model via supervised learning. This model was later deployed to the OpenAI API to collect text prompts from users, which later formed the prompt dataset.</p>
+<p class="wp-block-paragraph">The table below shows the distribution of this prompt dataset, as diversity is very important in making sure the model will be trained on various tasks:</p>
+<figure class="wp-block-image size-large"><img data-dominant-color="ebebeb" data-has-transparency="false" style="--dominant-color: #ebebeb;" loading="lazy" decoding="async" width="339" height="405" class="wp-image-595911 not-transparent" src="../Images/56a854209005a86c5e60862872488241.png" alt="" srcset="https://towardsdatascience.com/wp-content/uploads/2025/01/1AHwKUSFYBNHdiM1rfNaOYw.png 339w, https://towardsdatascience.com/wp-content/uploads/2025/01/1AHwKUSFYBNHdiM1rfNaOYw-251x300.png 251w" sizes="auto, (max-width: 339px) 100vw, 339px" data-original-src="https://towardsdatascience.com/wp-content/uploads/2025/01/1AHwKUSFYBNHdiM1rfNaOYw.png"/></figure>
+<p class="wp-block-paragraph"><strong>Human data collection</strong>: human data are needed in three components throughout the RLHF process, including writing demonstrations in Step 1, providing comparison data in Step 2, and conducting final evaluations after finetuning.</p>
+<p class="wp-block-paragraph">In the paper the authors mentioned many practices to ensure data quality:</p>
+<ul class="wp-block-list">
+<li>Firstly, high-quality data come from good labelers. To ensure their ability in data labeling, a screening test was conducted to select labelers who were "sensitive to the preferences of different demographic groups, and were good at identifying outputs that were potentially harmful".</li>
+<li>Secondly, to ensure consistency between all the labelers, an onboarding process was setup to train all labelers, and detailed instructions for each task were provided. The authors also mentioned that they setup a shared chat room to answer questions from labelers.</li>
+<li>Finally, to see how the model generalizes to the preferences of different labelers, a separate group of labelers who didn’t got through the screening test were hired for evaluation.</li>
+</ul>
+<p class="wp-block-paragraph">Based on these human demonstration data, a pretrained GPT-3 model was finetuned using supervised learning in the first step. This model is referred to as the baseline policy, which will be used to produce comparison outputs in Step 2 and initialize the PPO algorithm in Step 3.</p>
+<p class="wp-block-paragraph"><strong>Step 2: Collect comparison data and train a reward model</strong></p>
+<p class="wp-block-paragraph"><strong>Comparison data collection</strong>: Once the baseline policy is available, it is used to generate outputs for some sampled prompts, and these outputs will be reviewed and ranked by human labelers from the best to the worst. To speedup this ranking process, a set of K outputs will be shown simultaneously to the human labelers, where K ranges from 4 to 9.</p>
+<p class="wp-block-paragraph"><strong>Reward model training</strong>: The reward model was initialized from the supervised baseline policy, by removing the final unembedding layer and training on the comparison data. In particular, the authors mention that <strong>training all comparisons from each prompt as a single batch</strong> rather than shuffling the comparisons can help alleviate overfitting. It was trained to assign scalar scores to input-response pairs, with 6B parameters. Note that we need to seek a balance when deciding the size of this reward model: it needs to be sufficiently large to accurately mimic human preferences, however it cannot be too large since it needs to support fast inference during the RL process.</p>
+<p class="wp-block-paragraph"><strong>Step 3: Optimize a policy using the reward model with PPO</strong></p>
+<p class="wp-block-paragraph">At this point we have got everything ready to finetune the model with RLHF: the initial policy and the reward model. The training in this step follows a typical RL process: in each episode, a new prompt is sampled (the "<strong>state"</strong>) and new outputs will be generated (the model’s "<strong>action"</strong>) by the current policy (the "<strong>agent"</strong>), and then the reward model will calculate a reward for the output ("<strong>reward"</strong>), according to which the policy will be updated using PPO.</p>
+<p class="wp-block-paragraph">Don’t worry if you are not familiar with <strong>PPO</strong> – it is simply a method designed to help the agent to <strong>slowly</strong> update its strategies.</p>
+<p class="wp-block-paragraph">A few things to mention here:</p>
+<ul class="wp-block-list">
+<li>A per-token KL penalty is added at each token to mitigate the over-optimization of the reward model.</li>
+<li>The authors further experimented with mixing the pretraining gradients into the PPO gradients, in order to fix the performance regressions on public NLP datasets (such regressions are often called "<strong>the alignment tax</strong>"), which was referred to as "PPO-ptx". In this paper, <strong>InstructGPT</strong> actually refers to the PPO-ptx models.</li>
+</ul>
+<p class="wp-block-paragraph">Note that Step 2 and Step 3 can be iterated continuously:</p>
+<ul class="wp-block-list">
+<li>With an updated policy (from Step 3), we can generate new outputs and collect more comparison data, which can be used to train a new reward model by repeating Step 2;</li>
+<li>With a new reward model (from Step 2), we can get a better policy by repeating Step 3.</li>
+</ul>
+<h3 class="wp-block-heading">Findings in Evaluation</h3>
+<p class="wp-block-paragraph">Due to space limitation we will not go through all the evaluation results in this article, instead we will just highlight several new findings.</p>
+<p class="wp-block-paragraph">As perhaps the most important finding, results show that <strong>RLHF can indeed improve alignment</strong>. The figure below shows the win rate against the supervised 175B GPT3 model, evaluated by human judges. According to this figure, both PPO and PPO-ptx significantly outperform the GPT baselines, where even the 1.3B PPO models are better than the 175B GPT-3. This result clearly demonstrates the effectiveness of RLHF.</p>
+<figure class="wp-block-image size-large"><img data-dominant-color="f8f8f7" data-has-transparency="true" style="--dominant-color: #f8f8f7;" loading="lazy" decoding="async" width="1185" height="635" class="wp-image-595912 has-transparency" src="../Images/b691e7a9741ba4d8826e3ecac3a25078.png" alt="Figure 9. Human evaluation results. (Image from InstructGPT paper.)" srcset="https://towardsdatascience.com/wp-content/uploads/2025/01/1XormFyyLdwnAsd_IryWVxw.png 1185w, https://towardsdatascience.com/wp-content/uploads/2025/01/1XormFyyLdwnAsd_IryWVxw-300x161.png 300w, https://towardsdatascience.com/wp-content/uploads/2025/01/1XormFyyLdwnAsd_IryWVxw-1024x549.png 1024w, https://towardsdatascience.com/wp-content/uploads/2025/01/1XormFyyLdwnAsd_IryWVxw-768x412.png 768w" sizes="auto, (max-width: 1185px) 100vw, 1185px" data-original-src="https://towardsdatascience.com/wp-content/uploads/2025/01/1XormFyyLdwnAsd_IryWVxw.png"/><figcaption class="wp-element-caption">Figure 9. Human evaluation results. (Image from <a href="https://arxiv.org/pdf/2203.02155">InstructGPT paper</a>.)</figcaption></figure>
+<p class="wp-block-paragraph">The authors also found that InstructGPT show <strong>improves in truthfulness</strong> (hallucination rate reduced from 41% to 21%), <strong>slight improvements in toxicity</strong> (25% fewer toxic outputs), but <strong>no significant improvements on reducing bias</strong>.</p>
+<p class="wp-block-paragraph">Another finding is that PPO-ptx can minimize performance regressions on public NLP datasets, as shown in the figure below.</p>
+<figure class="wp-block-image size-large"><img data-dominant-color="f1f1ef" data-has-transparency="true" style="--dominant-color: #f1f1ef;" loading="lazy" decoding="async" width="822" height="855" class="wp-image-595913 has-transparency" src="../Images/7aea1cb312b2882ec529200630123216.png" alt="Figure 10. Few-shot performance on public NLP datasets. (Image from InstructGPT paper.)" srcset="https://towardsdatascience.com/wp-content/uploads/2025/01/1TqwG6rtyesfBLkcFQxsecA.png 822w, https://towardsdatascience.com/wp-content/uploads/2025/01/1TqwG6rtyesfBLkcFQxsecA-288x300.png 288w, https://towardsdatascience.com/wp-content/uploads/2025/01/1TqwG6rtyesfBLkcFQxsecA-768x799.png 768w" sizes="auto, (max-width: 822px) 100vw, 822px" data-original-src="https://towardsdatascience.com/wp-content/uploads/2025/01/1TqwG6rtyesfBLkcFQxsecA.png"/><figcaption class="wp-element-caption">Figure 10. Few-shot performance on public NLP datasets. (Image from <a href="https://arxiv.org/pdf/2203.02155">InstructGPT paper</a>.)</figcaption></figure>
+<h2 class="wp-block-heading">Summary</h2>
+<p class="wp-block-paragraph">Training a LLM usually involves multiple stages like pre-training, supervised finetuning, and alignment with RLHF. For our tasks at hand, we can usually start from an open-source, pre-trained LLM and finetune it on domain-specific data.</p>
+<p class="wp-block-paragraph">A few questions to ask while finetuning your own LLMs (though this is not meant to be an exhaustive list):</p>
+<ul class="wp-block-list">
+<li>Do we have a clear definition on the model’s desired behaviors? How can we evaluate such behaviors? If no available metrics to use, can we create one by ourselves?</li>
+<li>Do we have available training data? If not, how can we collect such data by ourselves? If human labelers are needed, how to ensure their labeling quality?</li>
+<li>What kind of cleaning or pre-processing is needed? Any heuristics can we use to check the data quality?</li>
+<li>Does our data cover a wide range of scenarios?</li>
+<li>Do we need to modify our tokenizers? Do we need to modify the model structures? Do we need to add auxiliary finetuning objectives?</li>
+<li>Does finetuning lead to regression on pre-training performance? Can we seek a balance?</li>
+<li>Does finetuning lead to some unexpected negative behaviors? How can we mitigate that?</li>
+<li>How to prevent overfitting in the finetuning process?</li>
+<li>What hyper-parameters can we tune during finetuning or during evaluation? Any heuristics we can leverage?</li>
+</ul>
+<p class="wp-block-paragraph">In the end of the day, exploring a new task is always both challenging and exciting, and I hope the learnings from this article can help make it less challenging, more exciting, and ultimately more enjoyable 🙂</p>
+<p class="wp-block-paragraph">Thanks for reading!</p>    
+</body>
+</html>

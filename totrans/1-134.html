@@ -1,0 +1,521 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.1//EN"
+  "http://www.w3.org/TR/xhtml11/DTD/xhtml11.dtd">
+
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+<title>Building a Multimodal RAG That Responds with Text, Images, and Tables from Sources</title>
+<link href="../Styles/Style.css" type="text/css" rel="stylesheet"/>
+</head>
+<body>
+<h1>Building a Multimodal RAG That Responds with Text, Images, and Tables from Sources</h1>
+<blockquote>原文：<a href="https://towardsdatascience.com/building-a-multimodal-rag-with-text-images-tables-from-sources-in-response/">https://towardsdatascience.com/building-a-multimodal-rag-with-text-images-tables-from-sources-in-response/</a></blockquote>
+<p class="wp-block-paragraph"><strong><mdspan datatext="el1762199690220" class="mdspan-comment">Retrieval-Augmented</mdspan> Generation (RAG)</strong> has been one of the earliest and most successful applications of Generative AI. Yet, few chatbots return <em>images, tables, and figures</em> from source documents alongside textual answers.</p>
+
+
+
+<p class="wp-block-paragraph">In this post, I explore why it’s difficult to build a reliable, truly multimodal RAG system, especially for <em>complex documents</em> such as research papers and corporate reports — which often include dense text, formulae, tables, and graphs.</p>
+
+
+
+<p class="wp-block-paragraph">Also, here I present an approach for an <strong>improved multimodal RAG pipeline</strong> that delivers consistent, high-quality multimodal results across these document types.</p>
+
+
+
+<h2 class="wp-block-heading">Dataset and Setup</h2>
+
+
+
+<p class="wp-block-paragraph">To illustrate, I built a small multimodal knowledge base using the following documents:</p>
+
+
+
+<ol start="1" class="wp-block-list">
+<li class="wp-block-list-item"><a href="https://arxiv.org/pdf/2407.04003"><em>Fully Fine-tuned CLIP Models are Efficient Few-Shot Learners</em></a></li>
+
+
+
+<li class="wp-block-list-item"><a href="https://arxiv.org/pdf/2405.02962"><em>VectorPainter: Advanced Stylized Vector Graphics Synthesis Using Stroke-Style Priors</em></a></li>
+
+
+
+<li class="wp-block-list-item"><a href="https://www.ifc.org/content/dam/ifc/doc/2023/marketing-strategy-for-financial-services-en.pdf"><em>Marketing Strategy for Financial Services: Financing Farming &amp; Processing the Cassava, Maize and Plantain Value Chains in Côte d’Ivoire</em></a></li>
+</ol>
+
+
+
+<p class="wp-block-paragraph">The language model used is <strong>GPT-4o</strong>, and for embeddings I used <strong>text-embedding-3-small</strong>.</p>
+
+
+
+<h2 class="wp-block-heading">The Standard Multimodal RAG Architecture</h2>
+
+
+
+<p class="wp-block-paragraph">In theory, a multimodal RAG bot should:</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">Accept <strong>text and image</strong> queries.</li>
+
+
+
+<li class="wp-block-list-item">Return <strong>text and image</strong> responses.</li>
+
+
+
+<li class="wp-block-list-item">Retrieve <strong>context</strong> from both text and image sources.</li>
+</ul>
+
+
+
+<p class="wp-block-paragraph">A typical pipeline looks like this:</p>
+
+
+
+<ol class="wp-block-list">
+<li class="wp-block-list-item"><strong>Ingestion</strong></li>
+</ol>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item"><strong>Parsing &amp; chunking:</strong> Split documents into text segments and extract images.</li>
+
+
+
+<li class="wp-block-list-item"><strong>Image summarization:</strong> Use an LLM to generate captions or summaries for each image.</li>
+
+
+
+<li class="wp-block-list-item"><strong>Multi-vector embeddings:</strong> Create embeddings for text chunks, image summaries, and optionally for the raw image features (e.g., using CLIP).</li>
+</ul>
+
+
+
+<p class="wp-block-paragraph"><strong>2. Indexing</strong></p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">Store embeddings and metadata in a vector database.</li>
+</ul>
+
+
+
+<p class="wp-block-paragraph"><strong>3. Retrieval</strong></p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">For a user query, perform similarity search on:</li>
+
+
+
+<li class="wp-block-list-item">Text embeddings (for textual matches)</li>
+
+
+
+<li class="wp-block-list-item">Image summary embeddings (for image relevance)</li>
+</ul>
+
+
+
+<p class="wp-block-paragraph"><strong>4. Generation</strong></p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">Use a multimodal LLM to synthesize the final response using both retrieved text and images.</li>
+</ul>
+
+
+
+<h2 class="wp-block-heading">The Inherent Assumption</h2>
+
+
+
+<p class="wp-block-paragraph">This approach assumes that <strong>the caption or summary of an image generated from its content, always contains enough context</strong> about the text or themes that appear in the document, for which this image would be an appropriate response.</p>
+
+
+
+<p class="wp-block-paragraph">In real-world documents, this often isn’t true.</p>
+
+
+
+<p class="wp-block-paragraph"><strong>Example: Context Loss in Corporate Reports</strong></p>
+
+
+
+<p class="wp-block-paragraph">Take the “Marketing Strategy for Financial Services (#3 in dataset)” report in the dataset. In its Executive Summary, there are two similar-looking tables showing <em>Working Capital</em> requirements — one for <strong>primary producers (farmers)</strong> and one for <strong>processors</strong>. They are the following:</p>
+
+
+
+<figure class="wp-block-image size-full"><img decoding="async" src="../Images/dd96276fdfa81e2db7599672ceb25335.png" alt="" class="wp-image-628795" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/11/Fig-1.png"/><figcaption class="wp-element-caption">Working Capital Table for Primary Producers</figcaption></figure>
+
+
+
+<figure class="wp-block-image size-full"><img decoding="async" src="../Images/d2d0c706893183c977e377afe58f56ad.png" alt="" class="wp-image-628796" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/11/Fig-2.png"/><figcaption class="wp-element-caption">Working Capital Table for Processors</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">GPT-4o generates the following for the first table:</p>
+
+
+
+<p class="wp-block-paragraph"><em>“The table outlines various types of working capital financing options for agricultural businesses, including their purposes and availability across different situations”</em></p>
+
+
+
+<p class="wp-block-paragraph">And the following for the second table:</p>
+
+
+
+<p class="wp-block-paragraph"><em>“The table provides an overview of working capital financing options, detailing their purposes and potential applicability in different scenarios for businesses, particularly exporters and stock purchasers”</em></p>
+
+
+
+<p class="wp-block-paragraph">Both seem fine individually — but neither captures the <strong>context</strong> that distinguishes <em>producers</em> from <em>processors</em>.</p>
+
+
+
+<p class="wp-block-paragraph">This means they will be <strong>retrieved incorrectly</strong> for queries specifically asking about producers or processors only. There are other tables such as CAPEX, Funding opportunities where the same issue can be seen.</p>
+
+
+
+<p class="wp-block-paragraph">For the VectorPainter paper, where Fig 3 in the paper shows the VectorPainter pipeline, GPT-4o generates the caption as <em>“Overview of the proposed framework for stroke-based style extraction and stylized SVG synthesis with stroke-level constraints,”</em> missing the fact that it represents the core theme of the paper, named “VectorPainter” by the authors.</p>
+
+
+
+<p class="wp-block-paragraph">And for the Vision Language similarity distillation loss formula defined in Sec 3.3 of the CLIP finetuning paper, the caption generated is <em>“Equation representing the Variational Logit Distribution (VLD) loss, defined as the sum of Kullback–Leibler (KL) divergences between predicted and target logit distributions over a batch of inputs.”, </em>where the context of vision and language correlation is absent.</p>
+
+
+
+<p class="wp-block-paragraph">It is also to be noted that in the research papers, the figures and tables have a author provided caption, however, during the extraction process, this is extracted not as part of the image, but as part of the text. And also the positioning of the caption is sometimes above and at other times below the figure. As for the Marketing Strategy reports, the embedded tables and other images do not even have an attached caption describing the figure.</p>
+
+
+
+<p class="wp-block-paragraph">What the above has illustrated is that the real-world documents do not follow any standard format of text, images, tables and captions, thereby making the process of associating context to the figures difficult.</p>
+
+
+
+<h2 class="wp-block-heading">The New and Improved Multimodal RAG pipeline</h2>
+
+
+
+<p class="wp-block-paragraph">To solve this, I made two key changes.</p>
+
+
+
+<p class="wp-block-paragraph"><strong>1. Context-Aware Image Summaries</strong></p>
+
+
+
+<p class="wp-block-paragraph">Instead of asking the LLM to summarize the image, I extract the <strong>text immediately before and after the figure</strong> — up to 200 characters in each direction.<br/> This way, the image caption includes:</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">The <em>author-provided</em> caption (if any)</li>
+
+
+
+<li class="wp-block-list-item">The <em>surrounding narrative</em> that gives it meaning</li>
+</ul>
+
+
+
+<p class="wp-block-paragraph">Even if the document lacks a formal caption, this provides a contextually accurate summary.</p>
+
+
+
+<p class="wp-block-paragraph"><strong>2. Text Response Guided Image Selection at Generation Time</strong></p>
+
+
+
+<p class="wp-block-paragraph">During retrieval, I <strong>don’t</strong> match the user query directly with image captions. This is because the user query often is too short to provide adequate context for image retrieval (eg; What is … ?)<br/> Instead:</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">First, generate the <strong>textual response</strong> using the top text chunks retrieved for context.</li>
+
+
+
+<li class="wp-block-list-item">Then, <strong>select the best two images</strong> for the text response matched to the image captions</li>
+</ul>
+
+
+
+<p class="wp-block-paragraph">This ensures the final images are chosen <strong>in relation to the actual response</strong>, not the query alone.</p>
+
+
+
+<p class="wp-block-paragraph">Here is a diagram for the <strong>Extraction to Embedding</strong> pipeline:</p>
+
+
+
+<figure class="wp-block-image size-full"><img decoding="async" src="../Images/8b6c7c2b22e8c88899e39aa2a1b05a69.png" alt="" class="wp-image-628798" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/11/Fig-3.png"/><figcaption class="wp-element-caption">Extraction to Embedding Pipeline</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">And the pipeline for <strong>Retrieval and Response Generation </strong>is as follows:</p>
+
+
+
+<figure class="wp-block-image size-full"><img decoding="async" src="../Images/221e8aee124ad73be66fa09025123f47.png" alt="" class="wp-image-628800" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/11/Fig-4-1.png"/><figcaption class="wp-element-caption">Retrieval and Response Generation</figcaption></figure>
+
+
+
+<h2 class="wp-block-heading">Implementation Details</h2>
+
+
+
+<p class="wp-block-paragraph"><strong>Step 1: Extract Text and Images</strong></p>
+
+
+
+<p class="wp-block-paragraph">Use <a href="https://developer.adobe.com/document-services/docs/overview/pdf-extract-api/quickstarts/python/" rel="noreferrer noopener" target="_blank">Adobe PDF Extract API</a> to parse PDFs into:</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">figures/ and tables/ folders with .png files</li>
+
+
+
+<li class="wp-block-list-item">A structuredData.json file containing positions, text, and file paths</li>
+</ul>
+
+
+
+<p class="wp-block-paragraph">I found this API to be far more reliable than libraries like PyMuPDF, especially for extracting formulas and diagrams.</p>
+
+
+
+<p class="wp-block-paragraph"><strong>Step 2: Create a Text File</strong></p>
+
+
+
+<p class="wp-block-paragraph">Concatenate all textual elements from the JSON to create the raw text corpus:</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python"># Extract text, sorted by Page and vertical order (Bounds[1])
+elements = data.get("elements", [])
+# Concatenate text
+all_text = []
+for el in elements:
+  if "Text" in el:
+    all_text.append(el["Text"].strip())
+    final_text = "\n".join(all_text)</code></pre>
+
+
+
+<p class="wp-block-paragraph"><strong>Step 3: Build Image Captions</strong>: Walk through each element of `structuredData.json`, check if the element filepath ends in `.png` . Load the file from figures and tables folder of the document, then use the LLM to perform a quality check on the image. This is needed as the extraction process will find some illegible, small images, header and footer, company logos etc which need to be excluded from any user responses.</p>
+
+
+
+<p class="wp-block-paragraph">Note that we are not asking the LLM to interpret the images; just comment if it is clear and relevant enough to be included in the database. The prompt for the LLM would be like:</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-css">Analyse the given image for quality, clarity, size etc. Is it a good quality image that can be used for further processing ? The images that we consider good quality are tables of facts and figures, scientific images, formulae, everyday objects and scenes etc. Images of poor quality would be any company logo or any image that is illegible, small, faint and in general would not look good in a response to a user query.
+Answer with a simple Good or Poor. Do not be verbose</code></pre>
+
+
+
+<p class="wp-block-paragraph">Next we create the image summary. For this, in the `structuredData.json`, we look at the elements behind and ahead of the `.png` element, and collect up to 200 characters in each direction for a total of 400 characters. This forms the image caption or summary. The code snippet is as follows:</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python"># Collect before
+j = i - 1
+while j &gt;= 0 and len(text_before) &lt; 200:
+  if "Text" in elements[j] and not ("Table" in elements[j]["Path"] or "Figure" in elements[j]["Path"]):
+    text_before = elements[j]["Text"].strip() + " " + text_before
+    j -= 1
+    text_before = text_before[-200:]
+# Collect after
+k = i + 1
+while k &lt; len(elements) and len(text_after) &lt; 200:
+  if "Text" in elements[k]:
+    text_after += " " + elements[k]["Text"].strip()
+    k += 1
+    text_after = text_after[:200]</code></pre>
+
+
+
+<p class="wp-block-paragraph">We perform this for each figure and table for every document in our database, and store the image captions as metadata. In my case, I store as a `image_captions.json` file.</p>
+
+
+
+<p class="wp-block-paragraph">This simple change makes a <strong>huge difference</strong> — the resulting captions include meaningful context. For instance, the captions I get for the two Working Capital tables from the Marketing Strategy report are as follows. Note how the contexts are now <strong>clearly differentiated</strong> and include farmers and processors.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-json">"caption": "o farmers for their capital expenditure needs as well as for their working capital needs. The table below shows the different products that would be relevant for the small, medium, and large farmers. Working Capital Input Financing For purchase of farm inputs and labour Yes Yes Yes Contracted Crop Loan* For purchase of inputs for farmers contracted by reputable buyers Yes Yes Yes Structured Loan"</code></pre>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-json">"caption": "producers and their buyers b)\t Potential Loan products at the processing level At the processing level, the products that would be relevant to the small scale and the medium_large processors include Working Capital Invoice discounting_ Factoring Financing working capital requirements by use of accounts receivable as collateral for a loan Maybe Yes Warehouse receipt-financing Financing working ca"</code></pre>
+
+
+
+<p class="wp-block-paragraph"><strong>Step 4: Chunk Text and Generate Embeddings</strong></p>
+
+
+
+<p class="wp-block-paragraph">The text file of the document is split into chunks of 1000 characters, using <em>` RecursiveCharacterTextSplitter`</em> from `<em>langchain</em>` and stored. Embeddings created for the text chunks and image captions, normalized and stored as `<em>faiss</em>` indexes</p>
+
+
+
+<p class="wp-block-paragraph"><strong>Step 5: Context Retrieval and Response Generation</strong></p>
+
+
+
+<p class="wp-block-paragraph">The user query is matched and the top 5 text chunks are retrieved as context. Then we use these retrieved chunks and user query to get the text response using the LLM.</p>
+
+
+
+<p class="wp-block-paragraph">In the next step, we take the generated text response and find the top 2 closest image matches (based on caption embeddings) to the response. This is different from the traditional way of matching the user query to the image embeddings and provides much better results.</p>
+
+
+
+<p class="wp-block-paragraph">There is one final step. Our image captions were based on 400 characters around the image in the document, and may not form a logical and concise caption for display. Therefore, for the final selected 2 images, we ask the LLM to take the image captions along with the images and create a brief caption ready for display in the final response.</p>
+
+
+
+<p class="wp-block-paragraph">Here is the code for the above logic:</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python"># Retrieve context
+result = retrieve_context_with_images_from_chunks(
+user_input,
+content_chunks_json_path,
+faiss_index_path,
+top_k=5,
+text_only_flag= True
+)
+text_results = result.get("top_chunks", [])
+# Construct prompts
+payload_1 = construct_prompt_text_only (user_input, text_results)
+# Collect responses (synchronously for tool)
+assistant_text, caption_text = "", ""
+for chunk in call_gpt_stream(payload_1):
+  assistant_text += chunk
+  lst_final_images = retrieve_top_images (assistant_text, caption_faiss_index_path, captions_json_path, top_n=2)
+if len(lst_final_images) &gt; 0:
+  payload = construct_img_caption (lst_final_images)
+for chunk in call_gpt_stream(payload):
+  caption_text += chunk
+response = {
+"answer": assistant_text + ("\n\n" + caption_text if caption_text else ""),
+"images": [x['image_name'] for x in lst_final_images],
+}
+return response</code></pre>
+
+
+
+<h2 class="wp-block-heading">Test Results</h2>
+
+
+
+<p class="wp-block-paragraph">Let’s run the queries mentioned at the beginning of this blog to see if the images retrieved are relevant to the user query. For simplicity, I am printing only the images and their captions displayed and not the text response.</p>
+
+
+
+<p class="wp-block-paragraph"><strong>Query 1: </strong><em>What are the loan and working capital requirement of the primary producer ?</em></p>
+
+
+
+<p class="wp-block-paragraph">Figure 1: Overview of working capital financing options for small, medium, and large farmers.</p>
+
+
+
+<p class="wp-block-paragraph">Figure 2: Capital expenditure financing options for medium and large farmers.</p>
+
+
+
+<figure class="wp-block-image size-full"><img decoding="async" src="../Images/831cfe25b5647eef724eb9bc99eab52e.png" alt="" class="wp-image-628803" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/11/Fig-5.png"/><figcaption class="wp-element-caption">Image Result for Query 1</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph"><strong>Query 2: </strong><em>What are the loan and working capital requirement of the processors ?</em></p>
+
+
+
+<p class="wp-block-paragraph">Figure 1: Overview of working capital loan products for small-scale and medium-large processors.<br/> Figure 2: CAPEX loan products for machinery purchase and business expansion at the processing level.</p>
+
+
+
+<figure class="wp-block-image size-full"><img decoding="async" src="../Images/20d9e582ab67561cd8a360a7f1348541.png" alt="" class="wp-image-628804" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/11/Fig-6.png"/><figcaption class="wp-element-caption">Image Result for Query 2</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph"><strong>Query 3</strong>: <em>What is vision language distillation ?</em></p>
+
+
+
+<p class="wp-block-paragraph">Figure 1: Vision-language similarity distillation loss formula for transferring modal consistency from pre-trained CLIP to fine-tuned models.</p>
+
+
+
+<p class="wp-block-paragraph">Figure 2: Final objective function combining distillation loss, supervised contrastive loss, and vision-language similarity distillation loss with balancing hyperparameters.</p>
+
+
+
+<figure class="wp-block-image size-full"><img decoding="async" src="../Images/b9650b71c3a2a7322ee7f5b72f8b9306.png" alt="" class="wp-image-628806" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/11/Fig-7.png"/><figcaption class="wp-element-caption">Formula Retrieval for Query 3</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph"><strong>Query 4</strong>: <em>What is VectorPainter pipeline ?</em></p>
+
+
+
+<p class="wp-block-paragraph">Figure 1: Overview of the stroke style extraction and SVG synthesis process, highlighting stroke vectorization, style-preserving loss, and text-prompt-based generation.</p>
+
+
+
+<p class="wp-block-paragraph">Figure 2: Comparison of various methods for style transfer across raster and vector formats, showcasing the effectiveness of the proposed approach in maintaining stylistic consistency.</p>
+
+
+
+<figure class="wp-block-image size-full"><img decoding="async" src="../Images/9d67e0c2003ef267dd898fa03c207998.png" alt="" class="wp-image-628807" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/11/Fig-8.png"/><figcaption class="wp-element-caption">Image Retrieval for Query 4</figcaption></figure>
+
+
+
+<h2 class="wp-block-heading">Conclusion</h2>
+
+
+
+<p class="wp-block-paragraph">This enhanced pipeline demonstrates how <strong>context-aware image summarization</strong> and <strong>text response based image selection</strong> can dramatically improve multimodal retrieval accuracy.</p>
+
+
+
+<p class="wp-block-paragraph">The approach produces <strong>rich, multimodal answers</strong> that combine text and visuals in a coherent way — essential for research assistants, document intelligence systems, and AI-powered knowledge bots.</p>
+
+
+
+<p class="wp-block-paragraph">Try it out… leave your comments and connect with me at <a href="http://www.linkedin.com/in/partha-sarkar-lets-talk-AI" rel="noreferrer noopener" target="_blank">www.linkedin.com/in/partha-sarkar-lets-talk-AI</a></p>
+
+
+
+<h2 class="wp-block-heading">Resources</h2>
+
+
+
+<p class="wp-block-paragraph">1. <a href="https://arxiv.org/pdf/2407.04003" rel="noreferrer noopener" target="_blank"><em>Fully Fine-tuned CLIP Models are Efficient Few-Shot Learners</em></a>: Mushui Liu, Bozheng Li, Yunlong Yu Zhejiang University</p>
+
+
+
+<p class="wp-block-paragraph">2. <a href="https://arxiv.org/pdf/2405.02962" rel="noreferrer noopener" target="_blank"><em>VectorPainter: Advanced Stylized Vector Graphics Synthesis Using Stroke-Style Priors</em></a>: Juncheng Hu, Ximing Xing, Jing Zhang, Qian Yu† Beihang University</p>
+
+
+
+<p class="wp-block-paragraph">3. <a href="https://www.ifc.org/content/dam/ifc/doc/2023/marketing-strategy-for-financial-services-en.pdf" rel="noreferrer noopener" target="_blank"><em>Marketing Strategy for Financial Services: Financing Farming &amp; Processing the Cassava, Maize and Plantain Value Chains in Côte d’Ivoire</em></a> from <a href="https://www.ifc.org" rel="noreferrer noopener" target="_blank">https://www.ifc.org</a></p>
+    
+</body>
+</html>

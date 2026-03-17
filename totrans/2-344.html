@@ -1,0 +1,253 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.1//EN"
+  "http://www.w3.org/TR/xhtml11/DTD/xhtml11.dtd">
+
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+<title>Efficient Graph Storage for Entity Resolution Using Clique-Based Compression</title>
+<link href="../Styles/Style.css" type="text/css" rel="stylesheet"/>
+</head>
+<body>
+<h1>Efficient Graph Storage for Entity Resolution Using Clique-Based Compression</h1>
+<blockquote>原文：<a href="https://towardsdatascience.com/efficient-graph-storage-for-entity-resolution-using-clique-based-compression/">https://towardsdatascience.com/efficient-graph-storage-for-entity-resolution-using-clique-based-compression/</a></blockquote>
+<p class="wp-block-paragraph">In the <mdspan datatext="el1747272593253" class="mdspan-comment">world of entity</mdspan> resolution (ER), one of the central challenges is managing and maintaining the complex relationships between records. At its core, <a data-type="link" data-id="https://tilores.io" href="https://tilores.io">Tilores</a> models entities as graphs: each node represents a record, and edges represent rule-based matches between those records. This approach gives us flexibility, traceability, and a high level of accuracy, but it also comes with significant storage and computational challenges, especially at scale. This article explains the details about efficiently storing highly connected graphs using clique-based graph compression.</p>
+
+
+
+<h2 class="wp-block-heading">The Entity Graph Model</h2>
+
+
+
+<p class="wp-block-paragraph">In Tilores, a valid entity is a graph where every record is connected to at least one other via a matching rule. For instance, if record <code>a</code> matches record <code>b</code> according to rule <code>R1</code>, we store that as an edge <code>"a:b:R1"</code>. If another rule, say <code>R2</code>, also connects <code>a</code> and <code>b</code>, we store an additional edge <code>"a:b:R2"</code>. These edges are kept as a simple list, but could alternatively be modeled using an adjacency list structure for more efficient storage.</p>
+
+
+
+<h3 class="wp-block-heading">Why Retain All Edges?</h3>
+
+
+
+<p class="wp-block-paragraph">Most entity resolution systems or master data management systems don’t retain the relationships between records, but only store a representation of the underlying data and typically a generic matching score, leaving the user uncertain about how the entity was formed. Even worse, the user has no way to correct errors made by the automatic matching system.</p>
+
+
+
+<p class="wp-block-paragraph">Hence, retaining all edges in an entity graph serves multiple purposes:</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item"><strong>Traceability</strong>: Allows the user to understand why two records were grouped into the same entity.</li>
+
+
+
+<li class="wp-block-list-item"><strong>Analytics</strong>: Insights such as rule effectiveness and data similarity can be extracted from edge metadata.</li>
+
+
+
+<li class="wp-block-list-item"><strong>Data Deletion &amp; Recalculation</strong>: When a record is deleted or a rule is modified, the graph must be recalculated. Edge information is essential to understand how an entity was formed and how it should be updated.</li>
+</ul>
+
+
+
+<h2 class="wp-block-heading">The Scaling Problem: Quadratic Growth</h2>
+
+
+
+<p class="wp-block-paragraph">When discussing potential scaling issues in entity resolution, this typically refers to the challenge of matching each record with all other records. While this is a <a href="https://tilores.io/content/The-Complexities-of-Entity-Resolution-Implementation">challenge on its own</a>, retaining all edges of an entity results in similar issues on the storage side. Entities where many records are connected with each other create a multitude of edges. In the worst case every new record is connected to all existing records. This quadratic growth can be expressed with the formula:</p>
+
+
+
+<p class="wp-block-paragraph"><code>n * (n - 1) / 2</code></p>
+
+
+
+<p class="wp-block-paragraph">For small entities, this is not an issue. For example, an entity with 3 records can have a maximum of 3 edges. For n = 100, this increases to 4,950 edges and for n = 1,000 this results in up to 499,500 edges.</p>
+
+
+
+<p class="wp-block-paragraph">This creates an immense storage and computational overhead, especially since entity resolution graphs often exhibit this kind of dense connectivity.</p>
+
+
+
+<h2 class="wp-block-heading">Solution: Clique-Based Graph Compression (CBGC)</h2>
+
+
+
+<p class="wp-block-paragraph">A clique in a graph is a group of nodes where every node is connected to every other node in that group. A clique can also be called a complete subgraph. The smallest possible clique contains a single node and no edges. A pair of nodes connected by an edge also forms a clique. And three nodes, such as the one below, form a triangle shaped clique.</p>
+
+
+
+<figure class="wp-block-image aligncenter size-full"><img decoding="async" src="../Images/4d32696d48ad49b32d035d15ac75c240.png" alt="" class="wp-image-604129" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/05/cbgc-triangle.png"/><figcaption class="wp-element-caption">A Simple Clique: Triangle<br/>(image by the author)</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">A maximal clique is a clique that cannot be extended by adding any adjacent node, and a maximum clique is the clique with the largest number of nodes in the whole graph. For the purpose of this article, we’re going to use the term clique only to refer to cliques with at least three nodes.</p>
+
+
+
+<p class="wp-block-paragraph">The previously shown triangle could be represented in Tilores by the following edges:</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-json">[
+  "a:b:R1",
+  "a:c:R1",
+  "b:c:R1"
+]</code></pre>
+
+
+
+<p class="wp-block-paragraph">Because a triangle is a clique, we could also represent the graph by storing only the nodes in this clique and the associated rule ID:</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-json">{
+  "R1": [
+    ["a", "b", "c"]
+  ]
+}</code></pre>
+
+
+
+<p class="wp-block-paragraph">Let’s consider the following slightly more complicated graph:</p>
+
+
+
+<figure class="wp-block-image aligncenter size-full"><img decoding="async" src="../Images/5ca5fbb46735d46c72390c9922daed3c.png" alt="" class="wp-image-604130" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/05/cbgc-6-node-clique.png"/><figcaption class="wp-element-caption">Complete Subgraph with 6 Nodes<br/>(image by the author)</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">Based on its appearance, we can easily spot that all nodes are connected to each other. So instead of listing all 15 edges [remember <code>n*(n-1)/2</code>], we can simply store this clique in the following form:</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-json">{
+  "R1":[
+    ["a", "b", "c", "d", "e", "f"]
+  ]
+}</code></pre>
+
+
+
+<p class="wp-block-paragraph">However, in a realistic graph, not all records are connected to each other. Consider the following graph:</p>
+
+
+
+<figure class="wp-block-image aligncenter size-full"><img decoding="async" src="../Images/f17a8974a33ecf2935976e03ea67441a.png" alt="" class="wp-image-604138" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/05/cbgc-complex-graph.png"/><figcaption class="wp-element-caption">A Complex Graph with Three Highlighted Cliques<br/>(image by the author)</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">There are three larger cliques highlighted: yellow, red and blue (teal if you’re picky). There is also a single remaining node. While those are probably the largest cliques, you might spot dozens of others. For example, do you notice the 4-node clique between the two red and two yellow nodes?</p>
+
+
+
+<p class="wp-block-paragraph">Sticking with the colored cliques, we could store them in the following way (using y, r and b for yellow, red and blue):</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-json">{
+  "R1": [
+    ["y1", "y2", "y3"],
+    ["r1", "r2", "r3", "r4", "r5"],
+    ["b1", "b2", "b3", "b4", "b5", "b6"]
+  ]
+}</code></pre>
+
+
+
+<p class="wp-block-paragraph">Additionally, we can store the remaining 10 edges (p for purple):</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-json">[
+  "y1:r1:R1",
+  "y1:r2:R1",
+  "y2:r1:R1",
+  "y2:r2:R1",
+  "r4:p1:R1",
+  "r5:p1:R1",
+  "r5:b1:R1",
+  "b2:p1:R1",
+  "y3:b5:R1",
+  "y3:b6:R1"
+]</code></pre>
+
+
+
+<p class="wp-block-paragraph">This means that the whole graph can now be represented with only three cliques and ten edges, instead of the original 38 edges.</p>
+
+
+
+<figure class="wp-block-image aligncenter size-full"><img decoding="async" src="../Images/5aa43724f80c63fed3d76d61cae53d5f.png" alt="" class="wp-image-604132" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/05/cbgc-compressed.png"/><figcaption class="wp-element-caption">Compressed Graph<br/>(image by the author)</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">This clique-based graph compression (CBGC) is loss-free (unless you need edge properties). In a realistic dataset, we identified massive storage savings. For one customer, CBGC reduced edge storage by 99.7%, replacing hundreds of thousands of edges with just a few hundred cliques and sparse edges.</p>
+
+
+
+<h2 class="wp-block-heading">Performance Benefits Beyond Storage</h2>
+
+
+
+<p class="wp-block-paragraph">CBGC is not just about compression. It also enables faster operations, particularly when handling record and edge deletion.</p>
+
+
+
+<p class="wp-block-paragraph">Any sane entity resolution engine should split an entity into multiple ones if the only link between two subgraphs was deleted, for example, due to regulatory or compliance reasons. Identifying separate, unconnected subgraphs is typically done using a connected components algorithm. In short, it works by grouping all nodes that are connected via edges into separate subgraphs. As a result each edge needs to be checked at least once.</p>
+
+
+
+<p class="wp-block-paragraph">However, if a graph is stored as a compressed graph, then there is no need to traverse all edges of a clique. Instead it is sufficient to add a limited number of edges for each clique, for example a transitive path between the nodes of a clique, treating each clique as a pre-connected subgraph.</p>
+
+
+
+<h2 class="wp-block-heading">Trade-Offs: Clique Detection Complexity</h2>
+
+
+
+<p class="wp-block-paragraph">There is a trade-off: clique detection is computationally expensive, particularly when attempting to find the maximum cliques, a well-known NP-hard problem.</p>
+
+
+
+<p class="wp-block-paragraph">In practice it is often sufficient to simplify this workload. Approximate algorithms for clique detection (e.g. greedy heuristics) perform well enough for most uses. Additionally, CBGC is recalculated selectively, usually when an entity’s edge count surpasses a threshold. This hybrid approach balances compression efficiency with acceptable processing cost.</p>
+
+
+
+<h2 class="wp-block-heading">Beyond Cliques</h2>
+
+
+
+<p class="wp-block-paragraph">Arguably, the most common pattern in entity resolution is the complete subgraph. However, further optimization could be achieved by identifying other recurring patterns such as</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">stars: store as a list of nodes where the first entry represents the central node</li>
+
+
+
+<li class="wp-block-list-item">paths: store as an ordered list of nodes</li>
+
+
+
+<li class="wp-block-list-item">communities: store like a clique and mark the missing edges</li>
+</ul>
+
+
+
+<h2 class="wp-block-heading">Closing Thoughts</h2>
+
+
+
+<p class="wp-block-paragraph">Entity resolution systems often face the challenge of managing dense, highly interconnected graphs. Storing all edges naively quickly becomes unsustainable. CBGC provides an efficient way to model entities by exploiting structural properties of the data.</p>
+
+
+
+<p class="wp-block-paragraph">Not only does it reduce storage overhead, but it also improves system performance, especially during data deletion and reprocessing. While clique detection has its computational costs, careful engineering choices allow us to reap the benefits without sacrificing scalability.</p>
+
+
+
+<p class="wp-block-paragraph"/>
+    
+</body>
+</html>

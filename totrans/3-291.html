@@ -1,0 +1,184 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.1//EN"
+  "http://www.w3.org/TR/xhtml11/DTD/xhtml11.dtd">
+
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+<title>How to Find Seasonality Patterns in Time Series</title>
+<link href="../Styles/Style.css" type="text/css" rel="stylesheet"/>
+</head>
+<body>
+<h1>How to Find Seasonality Patterns in Time Series</h1>
+<blockquote>原文：<a href="https://towardsdatascience.com/how-to-find-seasonality-patterns-in-time-series-c3b9f11e89c6/">https://towardsdatascience.com/how-to-find-seasonality-patterns-in-time-series-c3b9f11e89c6/</a></blockquote>
+<p class="wp-block-paragraph">In my professional life as a data scientist, I have encountered time series multiple times. Most of my knowledge comes from my academic experience, specifically my courses in Econometrics (I have a degree in Economics), where we studied statistical properties and models of time series.</p>
+<p class="wp-block-paragraph">Among the models I studied was <strong>SARIMA</strong>, which acknowledges the <strong>seasonality</strong> of a time series, however, we have never studied how to intercept and recognize seasonality patterns.</p>
+<p class="wp-block-paragraph">Most of the time I had to find seasonal patterns I simply relied on <strong>visual</strong> <strong>inspections</strong> of data. This was until I stumbled on <a href="https://www.youtube.com/watch?v=spUNpyF58BY&amp;t=1s">this YouTube video</a> on <strong>Fourier transforms</strong> and eventually found out what a <strong>periodogram</strong> is.</p>
+<p class="wp-block-paragraph">In this blog post, I will explain and apply simple concepts that will turn into useful tools that every DS who’s studying time series should know.</p>
+<p class="wp-block-paragraph"><strong>Table of Contents</strong></p>
+<ol class="wp-block-list">
+<li>What is a Fourier Transform?</li>
+<li>Fourier Transform in Python</li>
+<li>Periodogram</li>
+</ol>
+<h2 class="wp-block-heading">Overview</h2>
+<p class="wp-block-paragraph">Let’s assume I have the following dataset (<a href="https://www.kaggle.com/datasets/robikscube/hourly-energy-consumption">AEP energy consumption</a>, CC0 license):</p>
+<pre class="wp-block-prismatic-blocks"><code class="language-python">import pandas as pd
+import matplotlib.pyplot as plt
+
+df = pd.read_csv("data/AEP_hourly.csv", index_col=0) 
+df.index = pd.to_datetime(df.index)
+df.sort_index(inplace=True)
+
+fig, ax = plt.subplots(figsize=(20,4))
+df.plot(ax=ax)
+plt.tight_layout()
+plt.show()</code></pre>
+<figure class="wp-block-image size-large"><img data-dominant-color="add5e2" data-has-transparency="true" style="--dominant-color: #add5e2;" decoding="async" width="2000" height="400" class="wp-image-597230 has-transparency" src="../Images/0c7bbea815860ba63ab180ba889539df.png" alt="AEP hourly energy consumption | Image by Author" srcset="https://towardsdatascience.com/wp-content/uploads/2025/02/1m9_pvwCDzl19iz3U3UbBFw.png 2000w, https://towardsdatascience.com/wp-content/uploads/2025/02/1m9_pvwCDzl19iz3U3UbBFw-300x60.png 300w, https://towardsdatascience.com/wp-content/uploads/2025/02/1m9_pvwCDzl19iz3U3UbBFw-1024x205.png 1024w, https://towardsdatascience.com/wp-content/uploads/2025/02/1m9_pvwCDzl19iz3U3UbBFw-768x154.png 768w, https://towardsdatascience.com/wp-content/uploads/2025/02/1m9_pvwCDzl19iz3U3UbBFw-1536x307.png 1536w" sizes="(max-width: 2000px) 100vw, 2000px" data-original-src="https://towardsdatascience.com/wp-content/uploads/2025/02/1m9_pvwCDzl19iz3U3UbBFw.png"/><figcaption class="wp-element-caption">AEP hourly energy consumption | Image by Author</figcaption></figure>
+<p class="wp-block-paragraph">It is very clear, just from a visual inspection, that <strong>seasonal patterns are playing a role</strong>, however it might be trivial to intercept them all.</p>
+<p class="wp-block-paragraph">As explained before, the discovery process I used to perform was mainly <strong>manual</strong>, and it could have looked something as follows:</p>
+<pre class="wp-block-prismatic-blocks"><code class="language-python">fig, ax = plt.subplots(3, 1, figsize=(20,9))
+
+df_3y = df[(df.index &gt;= '2006–01–01') &amp;amp; (df.index &lt; '2010–01–01')]
+df_3M = df[(df.index &gt;= '2006–01–01') &amp;amp; (df.index &lt; '2006–04–01')]
+df_7d = df[(df.index &gt;= '2006–01–01') &amp;amp; (df.index &lt; '2006–01–08')]
+
+ax[0].set_title('AEP energy consumption 3Y')
+df_3y[['AEP_MW']].groupby(pd.Grouper(freq = 'D')).sum().plot(ax=ax[0])
+for date in df_3y[[True if x % (24 * 365.25 / 2) == 0 else False for x in range(len(df_3y))]].index.tolist():
+ ax[0].axvline(date, color = 'r', alpha = 0.5)
+
+ax[1].set_title('AEP energy consumption 3M')
+df_3M[['AEP_MW']].plot(ax=ax[1])
+for date in df_3M[[True if x % (24 * 7) == 0 else False for x in range(len(df_3M))]].index.tolist():
+ ax[1].axvline(date, color = 'r', alpha = 0.5)
+
+ax[2].set_title('AEP energy consumption 7D')
+df_7d[['AEP_MW']].plot(ax=ax[2])
+for date in df_7d[[True if x % 24 == 0 else False for x in range(len(df_7d))]].index.tolist():
+ ax[2].axvline(date, color = 'r', alpha = 0.5)
+
+plt.tight_layout()
+plt.show()</code></pre>
+<figure class="wp-block-image size-large"><img data-dominant-color="f2f7f8" data-has-transparency="true" style="--dominant-color: #f2f7f8;" decoding="async" width="2000" height="900" class="wp-image-597231 has-transparency" src="../Images/86f0c378fe879f70a890fdbefd5ff399.png" alt="AEP hourly energy consumption, smaller timeframe | Image by Author" srcset="https://towardsdatascience.com/wp-content/uploads/2025/02/1yy3iDzcFMmnx8_hj_q8qFg.png 2000w, https://towardsdatascience.com/wp-content/uploads/2025/02/1yy3iDzcFMmnx8_hj_q8qFg-300x135.png 300w, https://towardsdatascience.com/wp-content/uploads/2025/02/1yy3iDzcFMmnx8_hj_q8qFg-1024x461.png 1024w, https://towardsdatascience.com/wp-content/uploads/2025/02/1yy3iDzcFMmnx8_hj_q8qFg-768x346.png 768w, https://towardsdatascience.com/wp-content/uploads/2025/02/1yy3iDzcFMmnx8_hj_q8qFg-1536x691.png 1536w" sizes="(max-width: 2000px) 100vw, 2000px" data-original-src="https://towardsdatascience.com/wp-content/uploads/2025/02/1yy3iDzcFMmnx8_hj_q8qFg.png"/><figcaption class="wp-element-caption">AEP hourly energy consumption, smaller timeframe | Image by Author</figcaption></figure>
+<p class="wp-block-paragraph">This is a more in-depth visualization of this time series. As we can see the following patterns are influencing the data:
+**- a 6 month cycle,</p>
+<ul class="wp-block-list">
+<li>a weekly cycle,</li>
+<li>and a daily cycle.**</li>
+</ul>
+<p class="wp-block-paragraph">This dataset shows energy consumption, so these seasonal patterns are easily inferable just from domain knowledge. However, by relying only on a manual inspection we could <strong>miss important informations.</strong> These could be some of the main <strong>drawbacks</strong>:</p>
+<ul class="wp-block-list">
+<li><strong>Subjectivity:</strong> We might miss less obvious patterns.</li>
+<li><strong>Time-consuming</strong> : We need to test different timeframes one by one.</li>
+<li><strong>Scalability issues:</strong> Works well for a few datasets, but inefficient for large-scale analysis.</li>
+</ul>
+<p class="wp-block-paragraph">As a Data Scientist it would be useful to have a tool that gives us <strong>immediate feedback</strong> on the most important frequencies that compose the time series. This is where the <strong>Fourier Transforms</strong> come to help.</p>
+<h2 class="wp-block-heading">1. What is a Fourier Transform</h2>
+<p class="wp-block-paragraph">The Fourier Transform is a mathematical tool that allows us to "switch domain".</p>
+<p class="wp-block-paragraph">Usually, we visualize our data in the <strong>time domain</strong>. However, using a Fourier Transform, we can switch to the <strong>frequency domain</strong>, which shows the frequencies that are present in the signal and their relative contribution to the original time series.</p>
+<h3 class="wp-block-heading">Intuition</h3>
+<p class="wp-block-paragraph">Any well-behaved function f(x) can be written as a sum of sinusoids with different frequencies, amplitudes and phases. In simple terms, <strong>every signal</strong> (time series) is just a <strong>combination</strong> of <strong>simple waveforms</strong>.</p>
+<figure class="wp-block-image size-large"><img data-dominant-color="000000" data-has-transparency="true" style="--dominant-color: #000000;" loading="lazy" decoding="async" width="968" height="117" class="wp-image-597232 has-transparency" src="../Images/3267315fd506baffeb8476beed2b3dc0.png" alt="Image by Author" srcset="https://towardsdatascience.com/wp-content/uploads/2025/02/1QzhfdRwvBcYDkZZL73G09g.png 968w, https://towardsdatascience.com/wp-content/uploads/2025/02/1QzhfdRwvBcYDkZZL73G09g-300x36.png 300w, https://towardsdatascience.com/wp-content/uploads/2025/02/1QzhfdRwvBcYDkZZL73G09g-768x93.png 768w" sizes="auto, (max-width: 968px) 100vw, 968px" data-original-src="https://towardsdatascience.com/wp-content/uploads/2025/02/1QzhfdRwvBcYDkZZL73G09g.png"/><figcaption class="wp-element-caption">Image by Author</figcaption></figure>
+<p class="wp-block-paragraph">Where:</p>
+<ul class="wp-block-list">
+<li>F(f) represents the function in the <strong>frequency domain</strong>.</li>
+<li>f(x) is the original function in the <strong>time domain</strong>.</li>
+<li>exp(−i2πf(x)) is a complex exponential that acts as a "frequency filter".</li>
+</ul>
+<p class="wp-block-paragraph">Thus, <strong>F(f)</strong> tells us <strong>how much</strong> frequency <strong>f</strong> is <strong>present</strong> in the original function.</p>
+<h3 class="wp-block-heading"><strong>Example</strong></h3>
+<p class="wp-block-paragraph">Let’s consider a signal composed of three sine waves with frequencies 2 Hz, 3 Hz, and 5 Hz:</p>
+<figure class="wp-block-image size-large"><img data-dominant-color="f7fafb" data-has-transparency="true" style="--dominant-color: #f7fafb;" loading="lazy" decoding="async" width="1000" height="300" class="wp-image-597233 has-transparency" src="../Images/565fc29a6b91700b7ab3cb948cdd6c0e.png" alt="A Simple Signal in time domain | Image by Author" srcset="https://towardsdatascience.com/wp-content/uploads/2025/02/1kntNLgrCK9BMvriI7W_CYA.png 1000w, https://towardsdatascience.com/wp-content/uploads/2025/02/1kntNLgrCK9BMvriI7W_CYA-300x90.png 300w, https://towardsdatascience.com/wp-content/uploads/2025/02/1kntNLgrCK9BMvriI7W_CYA-768x230.png 768w" sizes="auto, (max-width: 1000px) 100vw, 1000px" data-original-src="https://towardsdatascience.com/wp-content/uploads/2025/02/1kntNLgrCK9BMvriI7W_CYA.png"/><figcaption class="wp-element-caption">A Simple Signal in time domain | Image by Author</figcaption></figure>
+<p class="wp-block-paragraph">Now, let’s apply a Fourier Transform to extract these frequencies from the signal:</p>
+<figure class="wp-block-image size-large"><img data-dominant-color="f9faf9" data-has-transparency="true" style="--dominant-color: #f9faf9;" loading="lazy" decoding="async" width="1000" height="300" class="wp-image-597234 has-transparency" src="../Images/ddb6bc8d1c7a4cc051d0b4c38091da6e.png" alt="A Simple Signal in the frequency domain | Image by Author" srcset="https://towardsdatascience.com/wp-content/uploads/2025/02/1OjZ68_7S-mIi2pIjtoUtWA.png 1000w, https://towardsdatascience.com/wp-content/uploads/2025/02/1OjZ68_7S-mIi2pIjtoUtWA-300x90.png 300w, https://towardsdatascience.com/wp-content/uploads/2025/02/1OjZ68_7S-mIi2pIjtoUtWA-768x230.png 768w" sizes="auto, (max-width: 1000px) 100vw, 1000px" data-original-src="https://towardsdatascience.com/wp-content/uploads/2025/02/1OjZ68_7S-mIi2pIjtoUtWA.png"/><figcaption class="wp-element-caption">A Simple Signal in the frequency domain | Image by Author</figcaption></figure>
+<p class="wp-block-paragraph">The graph above represents our signal expressed in the frequency domain instead of the classic time domain. From the resulting plot, we can see that our signal is decomposed in 3 elements of frequency 2 Hz, 3 Hz and 5 Hz as expected from the starting signal.</p>
+<p class="wp-block-paragraph">As said before, any well-behaved function can be written as a sum of sinusoids. With the information we have so far it is possible to decompose our signal into three sinusoids:</p>
+<figure class="wp-block-image size-large"><img data-dominant-color="eff0f1" data-has-transparency="true" style="--dominant-color: #eff0f1;" loading="lazy" decoding="async" width="1274" height="725" class="wp-image-597229 has-transparency" src="../Images/9a08a761f3c8bcee65474da5c637d611.png" alt="A Simple Signal decomposition in its basic wavelength | Image by Author" srcset="https://towardsdatascience.com/wp-content/uploads/2025/02/1N7ZkfEKZFym8tsAfv17E4w.png 1274w, https://towardsdatascience.com/wp-content/uploads/2025/02/1N7ZkfEKZFym8tsAfv17E4w-300x171.png 300w, https://towardsdatascience.com/wp-content/uploads/2025/02/1N7ZkfEKZFym8tsAfv17E4w-1024x583.png 1024w, https://towardsdatascience.com/wp-content/uploads/2025/02/1N7ZkfEKZFym8tsAfv17E4w-768x437.png 768w" sizes="auto, (max-width: 1274px) 100vw, 1274px" data-original-src="https://towardsdatascience.com/wp-content/uploads/2025/02/1N7ZkfEKZFym8tsAfv17E4w.png"/><figcaption class="wp-element-caption">A Simple Signal decomposition in its basic wavelength | Image by Author</figcaption></figure>
+<p class="wp-block-paragraph">The original signal (in blue) can be obtained by summing the three waves (in red). This process can easily be applied in any time series to evaluate the main frequencies that compose the time series.</p>
+<h2 class="wp-block-heading">2 Fourier Transform in Python</h2>
+<p class="wp-block-paragraph">Given that it is quite easy to switch between the time domain and the frequency domain, let’s have a look at the AEP energy consumption time series we started studying at the beginning of the article.</p>
+<p class="wp-block-paragraph">Python provides the "numpy.fft" library to compute the Fourier Transform for discrete signals. FFT stands for Fast Fourier Transform which is an algorithm used to decompose a discrete signal into its frequency components:</p>
+<pre class="wp-block-prismatic-blocks"><code class="language-python">from numpy import fft
+
+X = fft.fft(df['AEP_MW'])
+N = len(X)
+frequencies = fft.fftfreq(N, 1)
+periods = 1 / frequencies
+fft_magnitude = np.abs(X) / N
+
+mask = frequencies &gt;= 0
+
+# Plot the Fourier Transform
+fig, ax = plt.subplots(figsize=(20, 3))
+ax.step(periods[mask], fft_magnitude[mask]) # Only plot positive frequencies
+ax.set_xscale('log')
+ax.xaxis.set_major_formatter('{x:,.0f}')
+ax.set_title('AEP energy consumption - Frequency-Domain')
+ax.set_xlabel('Frequency (Hz)')
+ax.set_ylabel('Magnitude')
+plt.show()</code></pre>
+<figure class="wp-block-image size-large"><img data-dominant-color="f7fafb" data-has-transparency="true" style="--dominant-color: #f7fafb;" loading="lazy" decoding="async" width="1635" height="400" class="wp-image-597235 has-transparency" src="../Images/04509a2d82a71996546765dbc2230357.png" alt="AEP hourly energy consumption in frequency domain | Image by Author" srcset="https://towardsdatascience.com/wp-content/uploads/2025/02/1Uj5W-kGdj3rHykE2f-RowQ.png 1635w, https://towardsdatascience.com/wp-content/uploads/2025/02/1Uj5W-kGdj3rHykE2f-RowQ-300x73.png 300w, https://towardsdatascience.com/wp-content/uploads/2025/02/1Uj5W-kGdj3rHykE2f-RowQ-1024x251.png 1024w, https://towardsdatascience.com/wp-content/uploads/2025/02/1Uj5W-kGdj3rHykE2f-RowQ-768x188.png 768w, https://towardsdatascience.com/wp-content/uploads/2025/02/1Uj5W-kGdj3rHykE2f-RowQ-1536x376.png 1536w" sizes="auto, (max-width: 1635px) 100vw, 1635px" data-original-src="https://towardsdatascience.com/wp-content/uploads/2025/02/1Uj5W-kGdj3rHykE2f-RowQ.png"/><figcaption class="wp-element-caption">AEP hourly energy consumption in frequency domain | Image by Author</figcaption></figure>
+<p class="wp-block-paragraph">This is the frequency domain visualization of the AEP_MW energy consumption. When we analyze the graph we can already see that at certain frequencies we have a higher magnitude, implying higher importance of such frequencies.</p>
+<p class="wp-block-paragraph">However, before doing so we add one more piece of theory that will allow us to build a <strong>periodogram</strong>, that will give us a better view of the most important frequencies.</p>
+<h2 class="wp-block-heading">3. Periodogram</h2>
+<p class="wp-block-paragraph">The periodogram is a frequency-domain representation of the <strong>power spectral density</strong> (PSD) of a signal. While the Fourier Transform tells us which frequencies are present in a signal, the periodogram quantifies the power (or intensity) of those frequencies. This passage is usefull as it <strong>reduces the noise</strong> of less important frequencies.</p>
+<p class="wp-block-paragraph">Mathematically, the periodogram is given by:</p>
+<figure class="wp-block-image size-large"><img data-dominant-color="000000" data-has-transparency="true" style="--dominant-color: #000000;" loading="lazy" decoding="async" width="1444" height="241" class="wp-image-597236 has-transparency" src="../Images/650ab7c9c24ceb8adbb48f6a9961a4e5.png" alt="Image by Author" srcset="https://towardsdatascience.com/wp-content/uploads/2025/02/12XZn6NkQG5KnyvOtYT3WMw.png 1444w, https://towardsdatascience.com/wp-content/uploads/2025/02/12XZn6NkQG5KnyvOtYT3WMw-300x50.png 300w, https://towardsdatascience.com/wp-content/uploads/2025/02/12XZn6NkQG5KnyvOtYT3WMw-1024x171.png 1024w, https://towardsdatascience.com/wp-content/uploads/2025/02/12XZn6NkQG5KnyvOtYT3WMw-768x128.png 768w" sizes="auto, (max-width: 1444px) 100vw, 1444px" data-original-src="https://towardsdatascience.com/wp-content/uploads/2025/02/12XZn6NkQG5KnyvOtYT3WMw.png"/><figcaption class="wp-element-caption">Image by Author</figcaption></figure>
+<p class="wp-block-paragraph">Where:</p>
+<ul class="wp-block-list">
+<li>P(f) is the power spectral density (PSD) at frequency f,</li>
+<li>X(f) is the Fourier Transform of the signal,</li>
+<li>N is the total number of samples.</li>
+</ul>
+<p class="wp-block-paragraph">This can be achieved in Python as follows:</p>
+<pre class="wp-block-prismatic-blocks"><code class="language-python">power_spectrum = np.abs(X)**2 / N # Power at each frequency
+
+fig, ax = plt.subplots(figsize=(20, 3))
+ax.step(periods[mask], power_spectrum[mask])
+ax.set_title('AEP energy consumption Periodogram')
+ax.set_xscale('log')
+ax.xaxis.set_major_formatter('{x:,.0f}')
+plt.xlabel('Frequency (Hz)')
+plt.ylabel('Power')
+plt.show()</code></pre>
+<figure class="wp-block-image size-large"><img data-dominant-color="f9fbfb" data-has-transparency="false" style="--dominant-color: #f9fbfb;" loading="lazy" decoding="async" width="2000" height="400" class="wp-image-597237 not-transparent" src="../Images/7c5c01c75dae0f733ccdd3e8dfef0bbc.png" alt="AEP hourly energy consumption Periodogram | Image by Author" srcset="https://towardsdatascience.com/wp-content/uploads/2025/02/1F0Xperu_4ufe4kbQhZ1y8A.png 2000w, https://towardsdatascience.com/wp-content/uploads/2025/02/1F0Xperu_4ufe4kbQhZ1y8A-300x60.png 300w, https://towardsdatascience.com/wp-content/uploads/2025/02/1F0Xperu_4ufe4kbQhZ1y8A-1024x205.png 1024w, https://towardsdatascience.com/wp-content/uploads/2025/02/1F0Xperu_4ufe4kbQhZ1y8A-768x154.png 768w, https://towardsdatascience.com/wp-content/uploads/2025/02/1F0Xperu_4ufe4kbQhZ1y8A-1536x307.png 1536w" sizes="auto, (max-width: 2000px) 100vw, 2000px" data-original-src="https://towardsdatascience.com/wp-content/uploads/2025/02/1F0Xperu_4ufe4kbQhZ1y8A.png"/><figcaption class="wp-element-caption">AEP hourly energy consumption Periodogram | Image by Author</figcaption></figure>
+<p class="wp-block-paragraph">From this periodogram, it is now possible to <strong>draw conclusions</strong>. As we can see the most powerful frequencies sit at:</p>
+<ul class="wp-block-list">
+<li>24 Hz, corresponding to 24h,</li>
+<li>4.380 Hz, corresponding to 6 months,</li>
+<li>and at 168 Hz, corresponding to the weekly cycle.</li>
+</ul>
+<p class="wp-block-paragraph">These three are the same seasonality components we found in the manual exercise done in the visual inspection. However, using this visualization, we can see <strong>three other cycles</strong>, weaker in power, but present:</p>
+<ul class="wp-block-list">
+<li>a 12 Hz cycle,</li>
+<li>an 84 Hz cycle, correspondint to half a week,</li>
+<li>an 8.760 Hz cycle, corresponding to a full year.</li>
+</ul>
+<p class="wp-block-paragraph">It is also possible to use the function "periodogram" present in scipy to obtain the same result.</p>
+<pre class="wp-block-prismatic-blocks"><code class="language-python">from scipy.signal import periodogram
+
+frequencies, power_spectrum = periodogram(df['AEP_MW'], return_onesided=False)
+periods = 1 / frequencies
+
+fig, ax = plt.subplots(figsize=(20, 3))
+ax.step(periods, power_spectrum)
+ax.set_title('Periodogram')
+ax.set_xscale('log')
+ax.xaxis.set_major_formatter('{x:,.0f}')
+plt.xlabel('Frequency (Hz)')
+plt.ylabel('Power')
+plt.show()</code></pre>
+<h2 class="wp-block-heading">Conclusions</h2>
+<p class="wp-block-paragraph">When we are dealing with time series one of the most important components to consider is seasonalities.</p>
+<p class="wp-block-paragraph">In this blog post, we’ve seen how to <strong>easily discover seasonalities</strong> within a time series using a periodogram. Providing us with a simple-to-implement tool that will become extremely useful in the exploratory process.</p>
+<p class="wp-block-paragraph">However, this is just a starting point of the possible implementations of Fourier Transform that we could benefit from, as there are many more:</p>
+<ul class="wp-block-list">
+<li><strong>Spectrogram</strong></li>
+<li><strong>Feature encoding</strong></li>
+<li><strong>Time series decomposition</strong></li>
+<li>…</li>
+</ul>
+<p class="wp-block-paragraph">Please leave some claps if you enjoyed the article and feel free to comment, any suggestion and feedback is appreciated!</p>
+<p class="wp-block-paragraph">_<a href="https://github.com/lorenzomezzini/MediumPosts/blob/main/Fourier/FTT_and_Periodogram.ipynb">Here you can find a notebook with the code from this blog post.</a>_</p>    
+</body>
+</html>

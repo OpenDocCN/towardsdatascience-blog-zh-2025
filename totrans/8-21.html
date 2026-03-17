@@ -1,0 +1,528 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.1//EN"
+  "http://www.w3.org/TR/xhtml11/DTD/xhtml11.dtd">
+
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+<title>Speed up Pandas code with Numpy</title>
+<link href="../Styles/Style.css" type="text/css" rel="stylesheet"/>
+</head>
+<body>
+<h1>Speed up Pandas code with Numpy</h1>
+<blockquote>原文：<a href="https://towardsdatascience.com/speed-up-pandas-code-with-numpy-fdee76210794/">https://towardsdatascience.com/speed-up-pandas-code-with-numpy-fdee76210794/</a></blockquote><figure class="wp-block-image size-large"><img data-dominant-color="967e64" data-has-transparency="false" style="--dominant-color: #967e64;" decoding="async" width="1792" height="1024" class="wp-image-596407 not-transparent" src="../Images/0b58b0660e82625f817aeda184a5a99b.png" alt="Image by AI (Dalle-3)" srcset="https://towardsdatascience.com/wp-content/uploads/2025/01/0EnRawczB5k_0TE2m.jpg 1792w, https://towardsdatascience.com/wp-content/uploads/2025/01/0EnRawczB5k_0TE2m-300x171.jpg 300w, https://towardsdatascience.com/wp-content/uploads/2025/01/0EnRawczB5k_0TE2m-1024x585.jpg 1024w, https://towardsdatascience.com/wp-content/uploads/2025/01/0EnRawczB5k_0TE2m-768x439.jpg 768w, https://towardsdatascience.com/wp-content/uploads/2025/01/0EnRawczB5k_0TE2m-1536x878.jpg 1536w" sizes="(max-width: 1792px) 100vw, 1792px" data-original-src="https://towardsdatascience.com/wp-content/uploads/2025/01/0EnRawczB5k_0TE2m.jpg"/><figcaption class="wp-element-caption">Image by AI (Dalle-3)</figcaption></figure>
+
+
+<p class="wp-block-paragraph">In one of the first articles I wrote on Medium, I talked about using the apply() method on Pandas dataframes and said it should be avoided, if possible, on larger dataframes. I’ll put a link to that article at the end of this one if you want to check it out.</p>
+<p class="wp-block-paragraph">Although I talked then a bit about possible alternatives, i.e. using vectorisation, I didn’t give many examples of using vectorisation, so I intend to remedy that here. Specifically, I want to talk about how NumPy and a couple of its lesser-known methods <strong>( <code>where</code></strong>and <strong><code>select</code>)</strong> can be used to speed up Pandas operations that involve complex if/then/else conditions.</p>
+<p class="wp-block-paragraph">Vectorisation in the context of Pandas refers to the method of applying operations to entire blocks of data at once rather than iterating through them row by row or element by element. This approach is possible due to Pandas’ reliance on NumPy, which supports vectorised operations that are highly optimized and written in C, enabling faster processing. When you use vectorised operations in Pandas, such as applying arithmetic operations or functions to DataFrame or Series objects, the operations are dispatched to multiple data elements simultaneously.</p>
+<p class="wp-block-paragraph">This not only leads to more concise and readable code but can significantly boost performance by reducing the overhead of Python loops and taking advantage of modern CPUs’ capabilities to perform operations on multiple data points in parallel. Vectorization is a key feature that makes Pandas powerful for data manipulation and analysis in Python.</p>
+<p class="wp-block-paragraph">The problem is that some vectorisation operations are obvious and happen without you even realising that’s what’s being done under the hood. Many times, though, when the types of operations you want to perform become more complex, it is difficult to see how vectorisation can be applied in these situations.</p>
+<p class="wp-block-paragraph">In this article, I’ll discuss some common scenarios in which this is the case and show you how vectorisation can be applied.</p>
+<h3 class="wp-block-heading">Getting some data to work with</h3>
+<p class="wp-block-paragraph">In many of my articles looking at the performance of Python libraries and database systems, I use a synthetic set of sales data for my testing. The schema of this data set looks like this,</p>
+<ul class="wp-block-list">
+<li><code>order_id</code> (int)</li>
+<li><code>order_date</code> (date)</li>
+<li><code>customer_id</code> (int)</li>
+<li><code>customer_name</code> (str)</li>
+<li><code>product_id</code> (int)</li>
+<li><code>product_name</code> (str)</li>
+<li><code>category</code> (str)</li>
+<li><code>quantity</code> (int)</li>
+<li><code>price</code> (float)</li>
+<li><code>total</code> (float)</li>
+</ul>
+<p class="wp-block-paragraph">Here is a Python program that you can use to generate such a data set. It produces a CSV. The number of records to create and the location of the output file is configurable. It uses the NumPy and polars libraries, so you must install these before running it.</p>
+<p class="wp-block-paragraph">For this test, as I have a fairly high-spec PC, I’ll create and use a 1 million record CSV.</p>
+<pre class="wp-block-prismatic-blocks"><code class="language-python"># generate the 1m record CSV file
+#
+import polars as pl
+import numpy as np
+from datetime import datetime, timedelta
+
+def generate(nrows: int, filename: str):
+    names = np.asarray(
+        [
+            "Laptop",
+            "Smartphone",
+            "Desk",
+            "Chair",
+            "Monitor",
+            "Printer",
+            "Paper",
+            "Pen",
+            "Notebook",
+            "Coffee Maker",
+            "Cabinet",
+            "Plastic Cups",
+        ]
+    )
+
+    categories = np.asarray(
+        [
+            "Electronics",
+            "Electronics",
+            "Office",
+            "Office",
+            "Electronics",
+            "Electronics",
+            "Stationery",
+            "Stationery",
+            "Stationery",
+            "Electronics",
+            "Office",
+            "Sundry",
+        ]
+    )
+
+    product_id = np.random.randint(len(names), size=nrows)
+    quantity = np.random.randint(1, 11, size=nrows)
+    price = np.random.randint(199, 10000, size=nrows) / 100
+
+    # Generate random dates between 2010-01-01 and 2023-12-31
+    start_date = datetime(2010, 1, 1)
+    end_date = datetime(2023, 12, 31)
+    date_range = (end_date - start_date).days
+
+    # Create random dates as np.array and convert to string format
+    order_dates = np.array([(start_date + timedelta(days=np.random.randint(0, date_range))).strftime('%Y-%m-%d') for _ in range(nrows)])
+
+    # Define columns
+    columns = {
+        "order_id": np.arange(nrows),
+        "order_date": order_dates,
+        "customer_id": np.random.randint(100, 1000, size=nrows),
+        "customer_name": [f"Customer_{i}" for i in np.random.randint(2**15, size=nrows)],
+        "product_id": product_id + 200,
+        "product_names": names[product_id],
+        "categories": categories[product_id],
+        "quantity": quantity,
+        "price": price,
+        "total": price * quantity,
+    }
+
+    # Create Polars DataFrame and write to CSV with explicit delimiter
+    df = pl.DataFrame(columns)
+    df.write_csv(filename, separator=',',include_header=True)  # Ensure comma is used as the delimiter
+
+# Generate data with random order_date and save to CSV
+generate(1_000_000, "/mnt/d/sales_data/sales_data_1m.csv")</code></pre>
+<h3 class="wp-block-heading">Setting up our development environment</h3>
+<p class="wp-block-paragraph">Before we get to the example code, let’s set up a separate development environment. That way, what we do won’t interfere with other versions of libraries, programming, etc… we might have on the go for other projects we’re working on.</p>
+<p class="wp-block-paragraph">I use Miniconda for this, but you can use whatever method suits you best.</p>
+<p class="wp-block-paragraph">If you want to go down the Miniconda route and don’t already have it, you must install Miniconda first. Get it using this link,</p>
+<blockquote class="wp-block-quote is-layout-flow wp-block-quote-is-layout-flow"><p><a href="https://docs.anaconda.com/miniconda"><strong>Miniconda – Anaconda documentation</strong></a></p></blockquote>
+<p class="wp-block-paragraph">Once the environment is created, switch to it using the <code>activate</code>command, and then install Jupyter and any required Python libraries.</p>
+<pre class="wp-block-prismatic-blocks"><code class="language-csharp">#create our test environment
+(base) C:Usersthoma&gt;conda create -n pandas_vect python=3.12 -y</code></pre>
+<pre class="wp-block-prismatic-blocks"><code class="language-csharp"># Now activate it
+(base) C:Usersthoma&gt;conda activate pandas_vect</code></pre>
+<pre class="wp-block-prismatic-blocks"><code class="language-bash"># Install python libraries, etc ...
+(pandas_vect) C:Usersthoma&gt;conda install pandas numpy jupyter -y</code></pre>
+<p class="wp-block-paragraph">Now type in <code>jupyter notebook</code> into your command prompt. You should see a jupyter notebook open in your browser. If that doesn’t happen automatically, what you’ll likely see is a screenful of information after the <code>jupyter notebook</code>command.</p>
+<p class="wp-block-paragraph">Near the bottom, there will be a URL that you should copy and paste into your browser to initiate the Jupyter Notebook.</p>
+<p class="wp-block-paragraph">Your URL will be different to mine, but it should look something like this:-</p>
+<pre class="wp-block-prismatic-blocks"><code class="language-bash">http://127.0.0.1:8888/tree?token=3b9f7bd07b6966b41b68e2350721b2d0b6f388d248cc69da</code></pre>
+<h3 class="wp-block-heading">The code</h3>
+<p class="wp-block-paragraph">To begin, let’s read our data set into a Pandas dataframe. We’ll time everything to get an idea of any speed-ups we gain.</p>
+<pre class="wp-block-prismatic-blocks"><code class="language-python">import pandas as pd
+import numpy as np
+import time
+
+# Start the timer
+start_time = time.time()
+
+# Path to the CSV file
+file_path = "d:sales_datasales_data_1m.csv"
+
+# Read the CSV file into a DataFrame
+df = pd.read_csv(file_path)
+
+# Display the last 10 rows of the DataFrame
+print(df.head())
+
+# End the timer and calculate the elapsed time
+elapsed_time = time.time() - start_time
+print(f"Time taken to read the CSV file : {elapsed_time} seconds")
+
+#
+# Here is our output
+#
+
+  order_id  order_date  customer_id   customer_name  product_id  
+0         0  2022-08-01          245    Customer_884         201   
+1         1  2022-02-19          701   Customer_1672         205   
+2         2  2017-01-01          184  Customer_21720         208   
+3         3  2013-03-09          275  Customer_23770         200   
+4         4  2022-04-23          960  Customer_23790         210   
+
+  product_names   categories  quantity  price   total  
+0    Smartphone  Electronics         3  90.02  270.06  
+1       Printer  Electronics         6  12.74   76.44  
+2      Notebook   Stationery         8  48.35  386.80  
+3        Laptop  Electronics         3  74.85  224.55  
+4       Cabinet       Office         6  53.77  322.62  
+
+Time taken to read the CSV file : 1.0295870304107666 seconds</code></pre>
+<h3 class="wp-block-heading">Example 1 – Setting the scene</h3>
+<p class="wp-block-paragraph">So, many operations you do on a Pandas dataframe are inherently vectorised. For example, suppose we want to multiply the quantity field by 5 and update the total value column.</p>
+<pre class="wp-block-prismatic-blocks"><code class="language-bash"># Start the timer
+start_time = time.time()
+
+df['quantity'] *= 5
+
+# Update 'total' to reflect the new 'quantity'
+df['total'] = df['quantity'] * df['price']
+
+# Display the updated DataFrame
+print(df.head())
+
+# End the timer and calculate the elapsed time
+elapsed_time = time.time() - start_time
+print(f"Time taken : {elapsed_time} seconds")
+
+#
+# Output
+#
+
+   order_id  order_date  customer_id   customer_name  product_id  
+0         0  2022-08-01          245    Customer_884         201   
+1         1  2022-02-19          701   Customer_1672         205   
+2         2  2017-01-01          184  Customer_21720         208   
+3         3  2013-03-09          275  Customer_23770         200   
+4         4  2022-04-23          960  Customer_23790         210   
+
+  product_names   categories  quantity  price    total  
+0    Smartphone  Electronics        15  90.02  1350.30  
+1       Printer  Electronics        30  12.74   382.20  
+2      Notebook   Stationery        40  48.35  1934.00  
+3        Laptop  Electronics        15  74.85  1122.75  
+4       Cabinet       Office        30  53.77  1613.10  
+
+Time taken : 0.009307861328125 seconds</code></pre>
+<p class="wp-block-paragraph">It took less than one-hundredth of a second to process 1 million records. How do we know the above was a vectorisation process? Apart from the minuscule amount of time it took to run, we can check to see how long it takes to do the same thing using a non-vectorised method—specifically, using the apply() method.</p>
+<p class="wp-block-paragraph">If you weren’t very experienced in coding Pandas, this is a method you might have devised to solve this problem in the first place.</p>
+<p class="wp-block-paragraph"><strong>Using the Apply() method</strong></p>
+<p class="wp-block-paragraph">Apply() allows you to run a function that will be applied to every record in a dataframe. This should be quicker than using a for loop to iterate over the dataframe rows, but how does it compare to the original vectorised code?</p>
+<pre class="wp-block-prismatic-blocks"><code class="language-python"># Start the timer
+start_time = time.time()
+
+# Define the function to update 'quantity' and 'total'
+def update_row(row):
+    row['quantity'] *= 5
+    row['total'] = row['quantity'] * row['price']
+    return row
+
+# Apply the function to each row
+df = df.apply(update_row, axis=1)
+
+# Display the updated DataFrame
+print(df.head())
+
+# End the timer and calculate the elapsed time
+elapsed_time = time.time() - start_time
+print(f"Time taken : {elapsed_time} seconds")
+
+#
+# Output
+#
+
+   order_id  order_date  customer_id   customer_name  product_id  
+0         0  2022-08-01          245    Customer_884         201   
+1         1  2022-02-19          701   Customer_1672         205   
+2         2  2017-01-01          184  Customer_21720         208   
+3         3  2013-03-09          275  Customer_23770         200   
+4         4  2022-04-23          960  Customer_23790         210   
+
+  product_names   categories  quantity  price    total  
+0    Smartphone  Electronics        15  90.02  1350.30  
+1       Printer  Electronics        30  12.74   382.20  
+2      Notebook   Stationery        40  48.35  1934.00  
+3        Laptop  Electronics        15  74.85  1122.75  
+4       Cabinet       Office        30  53.77  1613.10 
+
+Time taken : 75.53943586349487 seconds</code></pre>
+<p class="wp-block-paragraph">So, as you can see from the timng of ther above operation, we’ve established that vectorisation in Pandas coding is essential when processing large datasets and that it often just gets implemented "<strong>behind the scenes"</strong> for simpler code problems.</p>
+<p class="wp-block-paragraph">But what happens when our coding needs are slightly more complicated?</p>
+<h3 class="wp-block-heading">Example 2 -Vectorise an If/then/else condition</h3>
+<p class="wp-block-paragraph">In this example, say we want to do the same operation as before (quantity <em> 5), but this time only for Smartphone products. For any other products, we want (quantity </em> 2).</p>
+<p class="wp-block-paragraph">Here is the naive apply() implementation.</p>
+<pre class="wp-block-prismatic-blocks"><code class="language-python">def update_record(row):
+    if row['product_names'] == 'Smartphone':
+        row['quantity'] *= 5
+    else:
+        row['quantity'] *= 2
+    row['total'] = row['quantity'] * row['price']
+    return row
+
+# Start the timer
+start_time = time.time()
+
+# Apply the update_record function to each row
+df = df.apply(update_record, axis=1)
+
+# End the timer and calculate the elapsed time
+elapsed_time = time.time() - start_time
+
+# Display the updated DataFrame
+print(df)
+print(f"Time taken: {elapsed_time} seconds")
+
+        order_id  order_date  customer_id   customer_name  product_id  
+0              0  2022-08-01          245    Customer_884         201   
+1              1  2022-02-19          701   Customer_1672         205   
+2              2  2017-01-01          184  Customer_21720         208   
+3              3  2013-03-09          275  Customer_23770         200   
+4              4  2022-04-23          960  Customer_23790         210   
+...          ...         ...          ...             ...         ...   
+999995    999995  2011-05-08          408  Customer_26518         202   
+999996    999996  2019-02-11          850   Customer_4581         208   
+999997    999997  2021-11-19          399  Customer_28681         205   
+999998    999998  2016-05-02          714  Customer_12693         209   
+999999    999999  2018-08-12          324  Customer_28553         207   
+
+       product_names   categories  quantity  price    total  
+0         Smartphone  Electronics        15  90.02  1350.30  
+1            Printer  Electronics        12  12.74   152.88  
+2           Notebook   Stationery        16  48.35   773.60  
+3             Laptop  Electronics         6  74.85   449.10  
+4            Cabinet       Office        12  53.77   645.24  
+...              ...          ...       ...    ...      ...  
+999995          Desk       Office        12  32.29   387.48  
+999996      Notebook   Stationery         6   8.16    48.96  
+999997       Printer  Electronics         6  92.69   556.14  
+999998  Coffee Maker  Electronics         4  18.10    72.40  
+999999           Pen   Stationery        16  93.04  1488.64  
+
+[1000000 rows x 10 columns]
+Time taken: 78.65310955047607 seconds</code></pre>
+<p class="wp-block-paragraph">At almost 80 secs, the run time is wayyyy too long.</p>
+<p class="wp-block-paragraph">There are a couple of ways we can improve this using vectorisation. The first is the obvious way and probably what most experienced Pandas coders would turn to as it seems natural. It’s quick, too.</p>
+<pre class="wp-block-prismatic-blocks"><code class="language-bash"># Start the timer
+start_time = time.time()
+
+# Multiply 'quantity' by 5 for Smartphones, by 2 for others
+df.loc[df['product_names'] == 'Smartphone', 'quantity'] *= 5
+df.loc[df['product_names'] != 'Smartphone', 'quantity'] *= 2
+
+# Update 'total' based on new 'quantity'
+df['total'] = df['quantity'] * df['price']
+
+# Display the updated DataFrame
+print(df.head())
+
+# End the timer and calculate the elapsed time
+elapsed_time = time.time() - start_time
+print(f"Time taken : {elapsed_time} seconds")
+
+#
+# Output
+#
+
+   order_id  order_date  customer_id   customer_name  product_id  
+0         0  2022-08-01          245    Customer_884         201   
+1         1  2022-02-19          701   Customer_1672         205   
+2         2  2017-01-01          184  Customer_21720         208   
+3         3  2013-03-09          275  Customer_23770         200   
+4         4  2022-04-23          960  Customer_23790         210   
+
+  product_names   categories  quantity  price    total  
+0    Smartphone  Electronics        15  90.02  1350.30  
+1       Printer  Electronics        12  12.74   152.88  
+2      Notebook   Stationery        16  48.35   773.60  
+3        Laptop  Electronics         6  74.85   449.10  
+4       Cabinet       Office        12  53.77   645.24  
+Time taken : 0.14528226852416992 seconds</code></pre>
+<p class="wp-block-paragraph">The second way I’ll show uses a NumPy method you might not have encountered before – the NumPy <strong>where()</strong> function, and it’s even faster than regular vectorisation. Numpy.where() takes three arguments. The first argument is the condition you’re testing for. The second is what is returned if the test condition returns True, and the third is returned if the test condition is False.</p>
+<pre class="wp-block-prismatic-blocks"><code class="language-bash"># Start the timer
+start_time = time.time()
+
+# Update 'quantity' using numpy.where
+df['quantity'] = np.where(df['product_names'].values == 'Smartphone', df['quantity'].values * 5, df['quantity'].values * 2)
+
+# Recalculate 'total' based on the new 'quantity'
+df['total'] = df['quantity'] * df['price']
+
+# Display the updated DataFrame
+print(df.head())
+
+# End the timer and calculate the elapsed time
+elapsed_time = time.time() - start_time
+print(f"Time taken : {elapsed_time} seconds")
+
+#
+# Output
+#
+
+   order_id  order_date  customer_id   customer_name  product_id  
+0         0  2022-08-01          245    Customer_884         201   
+1         1  2022-02-19          701   Customer_1672         205   
+2         2  2017-01-01          184  Customer_21720         208   
+3         3  2013-03-09          275  Customer_23770         200   
+4         4  2022-04-23          960  Customer_23790         210   
+
+  product_names   categories  quantity  price    total  
+0    Smartphone  Electronics        15  90.02  1350.30  
+1       Printer  Electronics        12  12.74   152.88  
+2      Notebook   Stationery        16  48.35   773.60  
+3        Laptop  Electronics         6  74.85   449.10  
+4       Cabinet       Office        12  53.77   645.24  
+
+Time taken : 0.026806116104125977 seconds</code></pre>
+<p class="wp-block-paragraph">Using NumPy, in this case, was more than 5x times faster than the regular vectorisation speed and a whopping 3500x faster than using apply().</p>
+<h3 class="wp-block-heading">Example 3 – vectorise multiple if/then/else conditions.</h3>
+<p class="wp-block-paragraph">Nested if/then/else conditions can be handled using nested Numpy.where conditions. But it gets harder to read and maintain such code when there are many such cases. If you’ve ever used nested IF statements in Excel, you’ll know what I mean.</p>
+<p class="wp-block-paragraph">In this instance, we can use another pretty cool NumPy method not many people have heard of, which is called <strong>select().</strong></p>
+<p class="wp-block-paragraph">Like where(), select() also takes 3 arguments. The first is a Python list of <strong><code>conditions</code></strong> to test for. The second argument is a Python list of <strong><code>choices</code></strong> that tells NumPy what to return if the equivalent condition is met. The third argument is a <strong><code>default</code></strong> statement of what to return if none of the conditions are met.</p>
+<p class="wp-block-paragraph">The order of these is important. The first item in the choices list goes with the first item in the conditions list, and so on.</p>
+<p class="wp-block-paragraph">In a sense, it’s a bit like a case statement you would use if programming in Python, C, Java, etc …</p>
+<p class="wp-block-paragraph">Take our previous example to an extreme. Say we want to multiply our initial quantity by a different amount for each different type of product.</p>
+<pre class="wp-block-prismatic-blocks"><code class="language-bash">import pandas as pd
+import numpy as np
+
+# Start the timer
+start_time = time.time()
+
+# Define conditions
+conditions = [
+    df['product_names'] == 'Smartphone',
+    df['product_names'] == 'Printer',
+    df['product_names'] == 'Notebook',
+    df['product_names'] == 'Laptop',
+    df['product_names'] == 'Cabinet'
+]
+
+# Define choices
+choices = [
+    df['quantity'] * 1.5,
+    df['quantity'] * 2.5,
+    df['quantity'] * 3.5,
+    df['quantity'] * 4.5,
+    df['quantity'] * 5.5
+]
+
+# Default value if none of the conditions are met
+default_choice = 0
+
+# Update 'quantity' using numpy.select
+df['quantity'] = np.select(conditions, choices, default=default_choice)
+
+# Recalculate 'total' based on the new 'quantity'
+df['total'] = df['quantity'] * df['price']
+
+# Display the updated DataFrame
+print(df.head(10))
+
+# End the timer and calculate the elapsed time
+elapsed_time = time.time() - start_time
+print(f"Time taken : {elapsed_time} seconds")
+
+#
+# Output
+#
+
+ order_id  order_date  customer_id   customer_name  product_id  
+0         0  2022-08-01          245    Customer_884         201   
+1         1  2022-02-19          701   Customer_1672         205   
+2         2  2017-01-01          184  Customer_21720         208   
+3         3  2013-03-09          275  Customer_23770         200   
+4         4  2022-04-23          960  Customer_23790         210   
+5         5  2019-07-10          197  Customer_25587         202   
+6         6  2014-11-12          510   Customer_6912         204   
+7         7  2016-07-12          150  Customer_17761         200   
+8         8  2016-11-12          997  Customer_23801         209   
+9         9  2017-01-23          151  Customer_30325         207   
+
+  product_names   categories  quantity  price     total  
+0    Smartphone  Electronics       4.5  90.02   405.090  
+1       Printer  Electronics      15.0  12.74   191.100  
+2      Notebook   Stationery      28.0  48.35  1353.800  
+3        Laptop  Electronics      13.5  74.85  1010.475  
+4       Cabinet       Office      33.0  53.77  1774.410  
+5          Desk       Office       0.0  47.17     0.000  
+6       Monitor  Electronics       0.0  22.50     0.000  
+7        Laptop  Electronics      40.5  49.33  1997.865  
+8  Coffee Maker  Electronics       0.0  47.22     0.000  
+9           Pen   Stationery       0.0   3.50     0.000  
+
+Time taken : 0.26836657524108887 seconds</code></pre>
+<h3 class="wp-block-heading">Example 4 – Vectorise nested multiple if/then/else conditions</h3>
+<p class="wp-block-paragraph">My final example is similar to the previous one, but now the quantity for Smartphones only gets multiplied by 1.5 if the existing quantity for Smartphones is &gt; 5. Otherwise, the quantity gets multiplied by 2.</p>
+<p class="wp-block-paragraph">The other conditions are unchanged. In other words, we have a nested if/then/else scenario. If this logic was in a function in a programming language like Python, it would look similar to this,</p>
+<pre class="wp-block-prismatic-blocks"><code class="language-sql">def adjust_quantity(row):
+    if row['product_names'] == 'Smartphone':
+        if row['quantity'] &gt; 5:
+            row['quantity'] *= 1.5
+        else:
+            row['quantity'] *= 2
+    elif row['product_names'] == 'Printer':
+        row['quantity'] *= 2.5
+    elif row['product_names'] == 'Notebook':
+        row['quantity'] *= 3.5
+    elif row['product_names'] == 'Laptop':
+        row['quantity'] *= 4.5
+    elif row['product_names'] == 'Cabinet':
+        row['quantity'] *= 5.5
+    else:
+        row['quantity'] = 0  # Default case if none of the conditions are met
+    return row</code></pre>
+<p class="wp-block-paragraph">Can we vectorise this? Yes, we can by modifying the same method as before. This time, we add some extra boolean logical tests and the extra actions required to the <code>choices</code> list.</p>
+<p class="wp-block-paragraph">I won’t repeat the whole code, just the changes.</p>
+<pre class="wp-block-prismatic-blocks"><code class="language-bash"># Define conditions
+conditions = [
+  (df['product_names'] == 'Smartphone') &amp;amp; (df['quantity'] &gt; 5),
+  (df['product_names'] == 'Smartphone') &amp;amp; (df['quantity'] &lt;=5),    
+  df['product_names'] == 'Printer',
+  df['product_names'] == 'Notebook',
+  df['product_names'] == 'Laptop',
+  df['product_names'] == 'Cabinet'
+]
+
+# Define choices
+choices = [
+  df['quantity'] * 1.5,
+  df['quantity'] * 2,    
+  df['quantity'] * 2.5,
+  df['quantity'] * 3.5,
+  df['quantity'] * 4.5,
+  df['quantity'] * 5.5
+]</code></pre>
+<p class="wp-block-paragraph">Running our new code, we get this output,</p>
+<pre class="wp-block-prismatic-blocks"><code class="language-yaml">   order_id  order_date  customer_id   customer_name  product_id  
+0         0  2022-08-01          245    Customer_884         201   
+1         1  2022-02-19          701   Customer_1672         205   
+2         2  2017-01-01          184  Customer_21720         208   
+3         3  2013-03-09          275  Customer_23770         200   
+4         4  2022-04-23          960  Customer_23790         210   
+5         5  2019-07-10          197  Customer_25587         202   
+6         6  2014-11-12          510   Customer_6912         204   
+7         7  2016-07-12          150  Customer_17761         200   
+8         8  2016-11-12          997  Customer_23801         209   
+9         9  2017-01-23          151  Customer_30325         207   
+
+  product_names   categories  quantity  price     total  
+0    Smartphone  Electronics       6.0  90.02   540.120  
+1       Printer  Electronics      15.0  12.74   191.100  
+2      Notebook   Stationery      28.0  48.35  1353.800  
+3        Laptop  Electronics      13.5  74.85  1010.475  
+4       Cabinet       Office      33.0  53.77  1774.410  
+5          Desk       Office       0.0  47.17     0.000  
+6       Monitor  Electronics       0.0  22.50     0.000  
+7        Laptop  Electronics      40.5  49.33  1997.865  
+8  Coffee Maker  Electronics       0.0  47.22     0.000  
+9           Pen   Stationery       0.0   3.50     0.000  
+Time taken : 0.33173537254333496 seconds</code></pre>
+<p class="wp-block-paragraph">The run time is slightly slower than the previous run as more work is being done.</p>
+<h3 class="wp-block-heading">Summary</h3>
+<p class="wp-block-paragraph">Hopefully, you’ll take away two things from this article. The first is that vectorisation is an essential ingredient for performant Pandas code when dealing with medium to large data sets. The second is that even if the operations you need to apply to dataframe records are complex, they can still often be vectorised.</p>
+<p class="wp-block-paragraph">I explained why vectorisation in Pandas is essential for performant code and I showed serveral examples of how we can use vectorisation even in complex data processing scenarios</p>
+<blockquote class="wp-block-quote is-layout-flow wp-block-quote-is-layout-flow"><p>_That’s all from me for now. I hope you found this article useful. If you did, please check out my profile page at <a href="https://medium.com/@thomas_reid">this link</a>. From there, you can see my other published stories and subscribe to get notified when I post new content._</p></blockquote>
+<p class="wp-block-paragraph">If you liked this content, Medium thinks you’ll find these articles interesting, too.</p>
+<blockquote class="wp-block-quote is-layout-flow wp-block-quote-is-layout-flow">
+<p class="wp-block-paragraph"><a href="https://ai.gopubby.com/structured-output-in-the-openai-api-4dd2ecb1703e"><strong>Structured output in the OpenAI API</strong></a></p>
+<p class="wp-block-paragraph"><a href="https://towardsdatascience.com/pyspark-explained-delta-tables-dc20916f9422"><strong>PySpark Explained: Delta Tables</strong></a></p>
+</blockquote>
+<p class="wp-block-paragraph">Here’s the link to the story I referred to at the beginning about avoiding the use of the apply() method in Pandas when dealing with large dataframes.</p>
+<blockquote class="wp-block-quote is-layout-flow wp-block-quote-is-layout-flow"><p><a href="https://towardsdev.com/avoid-using-the-pandas-apply-method-on-big-dataframes-51d8a4c072b7"><strong>Thinking of using Pandas apply() on a big dataframe: Stop! – read this instead</strong></a></p></blockquote>    
+</body>
+</html>

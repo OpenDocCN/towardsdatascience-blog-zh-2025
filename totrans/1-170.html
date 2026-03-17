@@ -1,0 +1,418 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.1//EN"
+  "http://www.w3.org/TR/xhtml11/DTD/xhtml11.dtd">
+
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+<title>Federated Learning and Custom Aggregation Schemes</title>
+<link href="../Styles/Style.css" type="text/css" rel="stylesheet"/>
+</head>
+<body>
+<h1>Federated Learning and Custom Aggregation Schemes</h1>
+<blockquote>原文：<a href="https://towardsdatascience.com/federated-learning-and-custom-aggregation-schemes/">https://towardsdatascience.com/federated-learning-and-custom-aggregation-schemes/</a></blockquote>
+<h2 class="wp-block-heading"><mdspan datatext="el1760590418549" class="mdspan-comment">Who Should</mdspan> Read This Document?</h2>
+
+
+
+<p class="wp-block-paragraph">This document is for <strong>machine learning practitioners, researchers, and engineers</strong> interested in exploring <strong>custom aggregation schemes</strong> in federated learning. It is particularly useful for those who want to design, test, and analyze new aggregation methods in real, distributed environments.</p>
+
+
+
+<h2 class="wp-block-heading">Introduction </h2>
+
+
+
+<p class="wp-block-paragraph"><strong>Machine Learning (ML)</strong> continues to drive innovation across diverse domains such as healthcare, finance, and defense. However, while ML models rely heavily on large volumes of centralized high-quality data, concerns around data privacy, ownership, and regulatory compliance remain significant barriers.</p>
+
+
+
+<p class="wp-block-paragraph"><strong>Federated Learning (FL)</strong> addresses these challenges by enabling model training across distributed datasets, allowing data to remain decentralized while still contributing to a shared global model. This decentralized approach makes FL especially valuable in sensitive domains where centralizing data is impractical or restricted.</p>
+
+
+
+<p class="wp-block-paragraph">To fully leverage FL, understanding and designing <strong>custom aggregation</strong> schemes is important. Effective aggregation not only influences model accuracy and robustness but also handles issues such as data heterogeneity, client reliability, and adversarial behavior. Analyzing and building tailored aggregation methods is, therefore, a key step toward optimizing performance and ensuring fairness in federated settings.</p>
+
+
+
+<p class="wp-block-paragraph">In my <a href="https://towardsdatascience.com/fighting-back-against-attacks-in-federated-learning/">previous article</a>, we explored the cyberattack landscape in federated learning and how it differs from traditional centralized ML. That discussion introduced <a href="https://www.scaleoutsystems.com/">Scaleout</a>’s open-source <a href="https://github.com/Dackeval/fedn_atttack_simulator/tree/K8">attack simulation toolkit</a>, which helps researchers and practitioners analyze the impact of various attack types and evaluate the limitations of existing mitigation schemes, especially under challenging conditions such as extreme data imbalance, non-IID distributions, and the presence of stragglers or late joiners.</p>
+
+
+
+<p class="wp-block-paragraph">However, that first article did not cover how to design, implement, and test your own schemes in live, distributed environments. </p>
+
+
+
+<p class="wp-block-paragraph">This may sound complex, but this article offers a quick, step-by-step guide covering the basic concepts needed to design and develop custom aggregation schemes for real-world federated settings.</p>
+
+
+
+<h2 class="wp-block-heading">What are <em>Server Functions? </em></h2>
+
+
+
+<p class="wp-block-paragraph"><strong>Custom Aggregators</strong> are functions that run on the server side of a federated learning setup. They define how model updates from clients are processed, such as aggregation, validation, or filtering, before producing the next global model. <strong>Server Function</strong> is the term used in the Scaleout Edge AI platform to refer to custom aggregators. </p>
+
+
+
+<p class="wp-block-paragraph">Beyond simple aggregation, Server Functions enable researchers and developers to design new schemes to include privacy preservation, fairness, robustness, and convergence efficiency. By customizing this layer, one can also experiment with innovative defense mechanisms, adaptive aggregation rules, or optimization methods tailored to specific data and deployment scenarios.</p>
+
+
+
+<p class="wp-block-paragraph">Server Functions are the mechanism in the Scaleout Edge AI platform for implementing custom aggregation schemes. In addition to this flexibility, the platform includes four built-in aggregators: FedAvg (default), FedAdam (FedOpt), FedYogi(FedOpt), and FedAdaGrad(FedOpt). The implementation of the methods from the <a href="https://arxiv.org/pdf/2003.00295.pdf" data-type="link" data-id="https://arxiv.org/pdf/2003.00295.pdf">FedOpt family</a> follows the approach described in the paper. For more details, please refer to the <a href="https://docs.scaleoutsystems.com/en/stable/aggregators.html">platform’s documentation</a>.</p>
+
+
+
+<h2 class="wp-block-heading">Building A Custom Aggregation Scheme</h2>
+
+
+
+<p class="wp-block-paragraph">In this blog post, <strong>I will demonstrate how you can build and test your own attack mitigation scheme using Scaleout’s Edge AI platform.</strong> One of the key enablers for this is the platform’s <em>Server Function</em> feature. </p>
+
+
+
+<p class="wp-block-paragraph">Within the scope of this post, the focus will be on how to develop and execute a custom aggregation process in a geographically distributed setting. I will skip the basic setup and assume you are already familiar with the Scaleout platform. If you’re just getting started, here are some useful resources:</p>
+
+
+
+<p class="wp-block-paragraph">Quickstart FL Example: <a href="https://docs.scaleoutsystems.com/en/stable/quickstart.html">https://docs.scaleoutsystems.com/en/stable/quickstart.html</a> </p>
+
+
+
+<p class="wp-block-paragraph">Framework Architecture: <a href="https://docs.scaleoutsystems.com/en/stable/architecture.html">https://docs.scaleoutsystems.com/en/stable/architecture.html</a> </p>
+
+
+
+<p class="wp-block-paragraph">Client API Reference: <a href="https://docs.scaleoutsystems.com/en/stable/apiclient.html">https://docs.scaleoutsystems.com/en/stable/apiclient.html</a> Server </p>
+
+
+
+<p class="wp-block-paragraph">Function Guide: <a href="https://docs.scaleoutsystems.com/en/stable/serverfunctions.html">https://docs.scaleoutsystems.com/en/stable/serverfunctions.html</a></p>
+
+
+
+<h2 class="wp-block-heading">Example: Label-Flipping Attack</h2>
+
+
+
+<p class="wp-block-paragraph">Let’s consider a concrete attack, Label-Flipping. In this scenario, a malicious client intentionally alters the labels in its local dataset (for example, flipping “cat” to “dog”). When these poisoned updates are sent to the server, the global model learns incorrect patterns, leading to reduced accuracy and reliability.</p>
+
+
+
+<p class="wp-block-paragraph">For this experiment, we used the <a href="http://yann.lecun.com/exdb/mnist/" data-type="link" data-id="https://www.kaggle.com/datasets/hojjatk/mnist-dataset">MNIST</a> open source dataset, divided into six partitions, each assigned to a separate client. <strong>client-6 acts as a malicious participant by flipping labels in its local data, using it for training, and sending the resulting local model to the aggregator.</strong></p>
+
+
+
+<figure class="wp-block-image size-large"><img decoding="async" src="../Images/56dd743d77893793def026164e336062.png" alt="" class="wp-image-626491" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/10/Untitled-5-1024x378.png"/><figcaption class="wp-element-caption">Connected Clients View on Scaleout’s Edge Platform (Image created by the author)</figcaption></figure>
+
+
+
+<figure class="wp-block-table"><table class="has-border-color has-tds-gray-border-color has-fixed-layout" style="border-style:solid;border-width:1px"><thead><tr><th class="has-text-align-center" data-align="center">Malicious Client</th><th>ID</th></tr></thead><tbody><tr><td class="has-text-align-center" data-align="center">client-6</td><td>07505d04-08a5-4453-ad55-d541e9e4ef57</td></tr></tbody></table></figure>
+
+
+
+<p class="wp-block-paragraph">Here you can see an example of a data point (a grayscale image) from client-6, where the labels have been intentionally flipped. By altering the labels, this client attempts to corrupt the global model during the aggregation process.</p>
+
+
+
+<figure class="wp-block-image size-large"><img decoding="async" src="../Images/281ed22271a61368692bdb787ad319c5.png" alt="" class="wp-image-625823" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/10/Flipped-1024x342.png"/><figcaption class="wp-element-caption">As an example, in Client-6’s modified dataset, the label of an image originally marked as <em>9</em> was changed to <em>5</em> (image created by the author).</figcaption></figure>
+
+
+
+<p class="has-text-align-center has-tds-gray-color has-spindle-background-color has-text-color has-background has-link-color wp-elements-f55530a2bc0b5071467c10e0b2b26b5f wp-block-paragraph"><strong><span style="text-decoration: underline;">Task</span> </strong><br/><strong>Prevent client-6 from interfering with the development of the global model.</strong></p>
+
+
+
+<h2 class="wp-block-heading">Mitigation with Cosine Similarity</h2>
+
+
+
+<p class="wp-block-paragraph">To counter this, we use a<strong> cosine similarity-based approach</strong> as an example. The idea is straightforward: compare each client’s update vector with the global model (Step 1). If the similarity score is below a predefined threshold (s̄ᵢ &lt; 𝓣), the update is likely from a malicious client (Steps 2–4). In the final step (Step 5), that client’s contribution is excluded from the aggregation process, which in this case uses a weighted federated averaging scheme (FedAVG).</p>
+
+
+
+<figure class="wp-block-image size-full"><img decoding="async" src="../Images/d7006b6d4a9beebb7bce923def118bc8.png" alt="" class="wp-image-625255" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/10/Untitled-1.png"/><figcaption class="wp-element-caption">A mathematical representation of the implemented method (image created by the author).</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph"><em><strong>Note</strong>: This is a straightforward attack mitigation scheme, primarily intended to demonstrate the flexibility in supporting custom aggregation in realistic federated learning scenarios. The same scheme may not be effective for highly challenging cases, such as those with imbalanced datasets or non-IID conditions.</em></p>
+
+
+
+<p class="wp-block-paragraph">The <strong>Python implementation</strong> below illustrates the custom aggregator workflow: identifying online clients (Step 1), computing cosine-similarity scores (Steps 2–3), excluding the malicious client (Step 4), and performing federated weighted averaging (Step 5).  </p>
+
+
+
+<p class="has-text-align-center wp-block-paragraph"><strong><mark style="background-color:rgba(0, 0, 0, 0)" class="has-inline-color has-text-secondary-color">Step 1</mark></strong></p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python"># --- Compute deltas (client - previous_global) ---
+        prev_flat = self._flatten_params(previous_global)
+        flat_deltas, norms = [], []
+        for params in client_params:
+            flat = self._flatten_params(params)
+            delta = flat - prev_flat
+            flat_deltas.append(delta)
+            norms.append(np.linalg.norm(delta))</code></pre>
+
+
+
+<p class="has-text-align-center wp-block-paragraph"><mark style="background-color:rgba(0, 0, 0, 0)" class="has-inline-color has-text-secondary-color"><strong>Step 2 and 3</strong></mark></p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python"># --- Cosine similarity matrix ---
+        similarity_matrix = np.zeros((num_clients, num_clients), dtype=float)
+        for i in range(num_clients):
+            for j in range(i + 1, num_clients):
+                denom = norms[i] * norms[j]
+                sim = float(np.dot(flat_deltas[i], flat_deltas[j]) / denom) if denom &gt; 0 else 0.0
+                similarity_matrix[i, j] = sim
+                similarity_matrix[j, i] = sim
+
+        # --- Average similarity per client ---
+        avg_sim = np.zeros(num_clients, dtype=float)
+        if num_clients &gt; 1:
+            avg_sim = np.sum(similarity_matrix, axis=1) / (num_clients - 1)
+
+        for cid, s in zip(client_ids, avg_sim):
+            logger.info(f"Round {self.round}: Avg delta-cosine similarity for {cid}: {s:.4f}")</code></pre>
+
+
+
+<p class="has-text-align-center wp-block-paragraph"><mark style="background-color:rgba(0, 0, 0, 0)" class="has-inline-color has-text-secondary-color"><strong>Step 4</strong></mark></p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python"># --- Mark suspicious clients ---
+        suspicious_indices = [i for i, s in enumerate(avg_sim) if s &lt; self.similarity_threshold]
+        suspicious_clients = [client_ids[i] for i in suspicious_indices]
+
+        if suspicious_clients:
+            logger.warning(f"Round {self.round}: Excluding suspicious clients: {suspicious_clients}")
+
+        # --- Keep only non-suspicious clients ---
+        keep_indices = [i for i in range(num_clients) if i not in suspicious_indices]
+        if len(keep_indices) &lt; 3:  # safeguard
+            logger.warning("Too many exclusions, falling back to ALL clients.")
+            keep_indices = list(range(num_clients))
+
+        kept_client_ids = [client_ids[i] for i in keep_indices]
+        logger.info(f"Round {self.round}: Clients used for FedAvg: {kept_client_ids}")</code></pre>
+
+
+
+<p class="has-text-align-center wp-block-paragraph"><mark style="background-color:rgba(0, 0, 0, 0)" class="has-inline-color has-text-secondary-color"><strong>Step 5</strong></mark></p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python"> # === Weighted FedAvg ===
+        weighted_sum = [np.zeros_like(param) for param in previous_global]
+        total_weight = 0
+
+        for i in keep_indices:
+            client_id = client_ids[i]
+            client_parameters, metadata = client_updates[client_id]
+            num_examples = metadata.get("num_examples", 1)
+
+            total_weight += num_examples
+            for j, param in enumerate(client_parameters):
+                weighted_sum[j] += param * num_examples
+
+        if total_weight == 0:
+            logger.error("Aggregation failed: total_weight = 0.")
+            return previous_global
+
+        new_global = [param / total_weight for param in weighted_sum]
+        logger.info("Models aggregated with FedAvg + cosine similarity filtering")
+        return new_global</code></pre>
+
+
+
+<p class="wp-block-paragraph">Full code is available at Github: <a href="https://github.com/sztoor/server_functions_cosine_similarity_example.git">https://github.com/sztoor/server_functions_cosine_similarity_example.git</a> </p>
+
+
+
+<h2 class="wp-block-heading">Step-by-Step Activation of Server Functions</h2>
+
+
+
+<ol class="wp-block-list">
+<li class="wp-block-list-item">Log in to <strong>Scaleout Studio</strong> and create a new project.</li>
+
+
+
+<li class="wp-block-list-item">Upload the <strong>Compute Package</strong> and <strong>Seed Model</strong> to the project.</li>
+
+
+
+<li class="wp-block-list-item">Connect clients to the Studio by installing Scaleout’s <em>client-side libraries</em> via <strong>pip</strong> ( <em># pip install fedn</em>) . I have connected six clients.</li>
+</ol>
+
+
+
+<p class="wp-block-paragraph"><strong>Note:</strong> For Steps 1–3, please refer to the <a href="https://docs.scaleoutsystems.com/en/stable/quickstart.html">Quick Start Guide</a> for detailed instructions.</p>
+
+
+
+<ol start="4" class="wp-block-list">
+<li class="wp-block-list-item">Clone the Github repository from the provided link. This will give you two Python files:
+<ol class="wp-block-list">
+<li class="wp-block-list-item"><em>server_functions.py</em> – contains the cosine similarity–based aggregation scheme.</li>
+
+
+
+<li class="wp-block-list-item"><em>scaleout_start_session.py</em> – connects to the Studio, pushes the local server_function, and starts a training session based on predefined settings (e.g., 5 rounds, 180-second round timeout).</li>
+</ol>
+</li>
+
+
+
+<li class="wp-block-list-item">Execute scaleout_start_session.py script. </li>
+</ol>
+
+
+
+<p class="wp-block-paragraph">For full details about these steps, refer to the official <a href="https://docs.scaleoutsystems.com/en/stable/serverfunctions.html"><em>Server Functions</em></a> Guide.</p>
+
+
+
+<h2 class="wp-block-heading">Result and Discussion</h2>
+
+
+
+<p class="wp-block-paragraph">The steps involved when running <em>scaleout_start_session.py</em> are outlined below. </p>
+
+
+
+<p class="wp-block-paragraph">In this setup, six clients were connected to the studio, with <strong>client-6</strong> using a deliberately flipped dataset to simulate malicious behavior. The logs from Scaleout Studio provide a detailed view of the <em>Server Function</em> execution and how the system responds during aggregation. In <strong>Section 1</strong>, the logs show that the server successfully received models from all clients, confirming that communication and model upload were functioning as expected. <strong>Section 2</strong> presents the similarity scores for each client. These scores quantify how closely each client’s update aligns with the overall trend, providing a metric for detecting anomalies.</p>
+
+
+
+<p class="has-text-align-center wp-block-paragraph"><strong><mark style="background-color:rgba(0, 0, 0, 0)" class="has-inline-color has-text-secondary-color">Section 1</mark></strong></p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-bash">2025-10-20 11:35:08  [INFO] Received client selection request.
+2025-10-20 11:35:08  [INFO] Clients selected: ['eef3e17f-d498-474c-aafe-f7fa7203e9a9', 'e578482e-86b0-42fc-8e56-e4499e6ca553', '7b4b5238-ff67-4f03-9561-4e16ccd9eee7', '69f6c936-c784-4ab9-afb2-f8ccffe15733', '6ca55527-0fec-4c98-be94-ef3ffb09c872', '07505d04-08a5-4453-ad55-d541e9e4ef57']
+2025-10-20 11:35:14  [INFO] Received previous global model
+2025-10-20 11:35:14  [INFO] Received metadata
+2025-10-20 11:35:14  [INFO] Received client model from client eef3e17f-d498-474c-aafe-f7fa7203e9a9
+2025-10-20 11:35:14  [INFO] Received metadata
+2025-10-20 11:35:15  [INFO] Received client model from client e578482e-86b0-42fc-8e56-e4499e6ca553
+2025-10-20 11:35:15  [INFO] Received metadata
+2025-10-20 11:35:15  [INFO] Received client model from client 07505d04-08a5-4453-ad55-d541e9e4ef57
+2025-10-20 11:35:15  [INFO] Received metadata
+2025-10-20 11:35:15  [INFO] Received client model from client 69f6c936-c784-4ab9-afb2-f8ccffe15733
+2025-10-20 11:35:15  [INFO] Received metadata
+2025-10-20 11:35:15  [INFO] Received client model from client 6ca55527-0fec-4c98-be94-ef3ffb09c872
+2025-10-20 11:35:16  [INFO] Received metadata
+2025-10-20 11:35:16  [INFO] Received client model from client 7b4b5238-ff67-4f03-9561-4e16ccd9eee7</code></pre>
+
+
+
+<p class="has-text-align-center wp-block-paragraph"><strong><mark style="background-color:rgba(0, 0, 0, 0)" class="has-inline-color has-text-secondary-color">Section 2</mark></strong></p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-bash">2025-10-20 11:35:16  [INFO] Receieved aggregation request: aggregate
+2025-10-20 11:35:16  [INFO] Round 0: Avg delta-cosine similarity for eef3e17f-d498-474c-aafe-f7fa7203e9a9: 0.7498
+2025-10-20 11:35:16  [INFO] Round 0: Avg delta-cosine similarity for e578482e-86b0-42fc-8e56-e4499e6ca553: 0.7531
+2025-10-20 11:35:16  [INFO] Round 0: Avg delta-cosine similarity for 07505d04-08a5-4453-ad55-d541e9e4ef57: -0.1346
+2025-10-20 11:35:16  [INFO] Round 0: Avg delta-cosine similarity for 69f6c936-c784-4ab9-afb2-f8ccffe15733: 0.7528
+2025-10-20 11:35:16  [INFO] Round 0: Avg delta-cosine similarity for 6ca55527-0fec-4c98-be94-ef3ffb09c872: 0.7475
+2025-10-20 11:35:16  [INFO] Round 0: Avg delta-cosine similarity for 7b4b5238-ff67-4f03-9561-4e16ccd9eee7: 0.7460</code></pre>
+
+
+
+<p class="has-text-align-center wp-block-paragraph"><mark style="background-color:rgba(0, 0, 0, 0)" class="has-inline-color has-text-secondary-color"><strong>Section 3</strong></mark></p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-bash">2025-10-20 11:35:16 ⚠️ [WARNING] Round 0: Excluding suspicious clients: ['07505d04-08a5-4453-ad55-d541e9e4ef57']</code></pre>
+
+
+
+<p class="has-text-align-center wp-block-paragraph"><mark style="background-color:rgba(0, 0, 0, 0)" class="has-inline-color has-text-secondary-color"><strong>Section 4</strong></mark></p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-bash">2025-10-20 11:35:16  [INFO] Round 0: Clients used for FedAvg: ['eef3e17f-d498-474c-aafe-f7fa7203e9a9', 'e578482e-86b0-42fc-8e56-e4499e6ca553', '69f6c936-c784-4ab9-afb2-f8ccffe15733', '6ca55527-0fec-4c98-be94-ef3ffb09c872', '7b4b5238-ff67-4f03-9561-4e16ccd9eee7']
+2025-10-20 11:35:16  [INFO] Models aggregated with FedAvg + cosine similarity filtering</code></pre>
+
+
+
+<p class="wp-block-paragraph"><strong>Section 3</strong> highlights that <strong>client-6 (ID …e4ef57)</strong> was identified as malicious. The warning message indicates that this client would be excluded from the aggregation process. This exclusion is justified by its extremely low similarity score of –<strong>0.1346</strong>, the lowest among all clients, and by the threshold value (𝓣) set in the server function. By removing client-6, the aggregation step ensures that the global model is not adversely affected by outlier updates. <strong>Section 4</strong> then lists the client IDs included in the aggregation, confirming that only the trusted clients contributed to the updated global model.</p>
+
+
+
+<p class="has-text-align-center has-tds-gray-color has-spindle-background-color has-text-color has-background has-link-color wp-elements-16871b294b797da1ffdb78810a22bf1c wp-block-paragraph"><span style="text-decoration: underline;"><strong>Task Accomplished</strong></span><br/><strong>client-6 has been successfully excluded from the aggregation process using the custom aggregation scheme.</strong></p>
+
+
+
+<p class="wp-block-paragraph">Together with the log messages, <span style="text-decoration: underline;">the platform provides rich, per-client insights that enhance understanding of client behavior.</span> These include per-client training loss and accuracy, global model performance metrics, and training times for each client. Another key feature is the model trail, which tracks model updates over time and enables a detailed analysis of how individual clients impact the global model. Together, the sections and supplementary data provide a comprehensive view of client contributions, clearly illustrating the distinction between normal clients and the malicious <strong>client-6 (ID …e4ef57)</strong>, and demonstrating the effectiveness of the server function in mitigating potential attacks.</p>
+
+
+
+<figure class="wp-block-image size-large"><img decoding="async" src="../Images/a5b9457465af679e402dfb92e15bb8a5.png" alt="" class="wp-image-626528" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/10/post-2-1024x574.png"/><figcaption class="wp-element-caption">Training accuracy for each client. Client-6 (ID …e4ef57) achieved the lowest accuracy  <br/>(image created by the author). </figcaption></figure>
+
+
+
+<figure class="wp-block-image size-large"><img decoding="async" src="../Images/3d1969918d69d75b46c88f9f2e0bc824.png" alt="" class="wp-image-626531" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/10/post-3-1-1024x574.png"/><figcaption class="wp-element-caption">Training loss across all clients. Client-6 (ID …e4ef57) exhibits the highest loss value (image created by the author).</figcaption></figure>
+
+
+
+<figure class="wp-block-image size-large"><img decoding="async" src="../Images/74ec16133ab62579223178e63fb84359.png" alt="" class="wp-image-626530" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/10/post-1-1024x649.png"/><figcaption class="wp-element-caption">Global model accuracy over five consecutive rounds (image created by the author).</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">The client-side training accuracy and loss plots highlight the performance of each client. They show that client-6 deviates significantly from the others.<strong> Including it in the aggregation process would harm the global model’s performance.</strong></p>
+
+
+
+<h2 class="wp-block-heading">Summary</h2>
+
+
+
+<p class="wp-block-paragraph">This blog post highlights the importance of custom aggregators to address special needs and enables the development of robust, efficient, and highly accurate models in federated machine learning settings. It also emphasizes the value of leveraging existing building blocks rather than starting entirely from scratch and spending significant time on components that are not central to the core idea.</p>
+
+
+
+<p class="wp-block-paragraph">Federated Learning offers a powerful way to unlock datasets that are difficult or even impossible to centralize in a single location. Studies like this demonstrate that while the approach is highly promising, it also requires a careful understanding of the underlying systems. Fortunately, there are ready-to-use platforms that make it easier to explore real-world use cases, experiment with different aggregation schenes, and design solutions tailored to specific needs.</p>
+
+
+
+<h2 class="wp-block-heading">Useful Links</h2>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item"><a href="https://www.youtube.com/watch?v=Rnfhfqy_Tts">Custom Server Functions in Scaleout Studio</a> </li>
+
+
+
+<li class="wp-block-list-item"><a href="https://www.youtube.com/watch?v=tDknBCZGnTg">Getting Started with Scaleout Studio</a></li>
+
+
+
+<li class="wp-block-list-item"><a href="https://www.youtube.com/watch?v=MM7qA9VCykM">Federated Learning Explained: Concepts, Benefits, and Practical Applications</a></li>
+
+
+
+<li class="wp-block-list-item"><a href="https://www.youtube.com/watch?v=gWpcGdkcW20">Cross-Device Federated Machine Learning Using Minimal Resources</a></li>
+
+
+
+<li class="wp-block-list-item"><a href="https://ieeexplore.ieee.org/abstract/document/9826069" data-type="link" data-id="https://ieeexplore.ieee.org/abstract/document/9826069">Scalable federated machine learning with FEDn</a>, <em>2022 22nd IEEE International Symposium on Cluster, Cloud and Internet Computing (CCGrid)</em>.</li>
+</ul>
+
+
+
+<p class="has-heading-6-font-size wp-block-paragraph">Author’s Details:</p>
+
+
+
+<p class="wp-block-paragraph"><a href="https://www.uu.se/en/contact-and-organisation/staff?query=N7-398" data-type="link" data-id="https://www.uu.se/en/contact-and-organisation/staff?query=N7-398">Salman Toor</a><br/>CTO and Co-founder, <a href="https://www.scaleoutsystems.com/" data-type="link" data-id="https://www.scaleoutsystems.com/">Scaleout</a>.<br/>Associate Professor<br/>Department of Information Technology, <br/>Uppsala University, Sweden<br/><a href="https://www.linkedin.com/in/salman-toor-1104b84/" data-type="link" data-id="https://www.linkedin.com/in/salman-toor-1104b84/">LinkedIn</a>  <a href="https://scholar.google.com/citations?user=PIGlWyYAAAAJ&amp;hl=en" data-type="link" data-id="https://scholar.google.com/citations?user=PIGlWyYAAAAJ&amp;hl=en">Google Scholar</a></p>
+    
+</body>
+</html>

@@ -1,0 +1,317 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.1//EN"
+  "http://www.w3.org/TR/xhtml11/DTD/xhtml11.dtd">
+
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+<title>Log Link vs Log Transformation in R — The Difference that Misleads Your Entire Data Analysis</title>
+<link href="../Styles/Style.css" type="text/css" rel="stylesheet"/>
+</head>
+<body>
+<h1>Log Link vs Log Transformation in R — The Difference that Misleads Your Entire Data Analysis</h1>
+<blockquote>原文：<a href="https://towardsdatascience.com/log-link-vs-log-transformation-in-r-the-difference-that-misleads-your-entire-data-analysis/">https://towardsdatascience.com/log-link-vs-log-transformation-in-r-the-difference-that-misleads-your-entire-data-analysis/</a></blockquote>
+<p class="wp-block-paragraph"><mdspan datatext="el1746831473941" class="mdspan-comment">Although normal</mdspan> distributions are the most commonly used, a lot of real-world data unfortunately is not normal. When faced with extremely skewed data, it’s tempting for us to utilize log transformations to normalize the distribution and stabilize the variance. I recently worked on a project analyzing the energy consumption of training AI models, using data from Epoch AI [1]. There is no official data on energy usage of each model, so I calculated it by multiplying each model’s power draw with its training time. The new variable, Energy (in kWh), was highly right-skewed, along with some extreme and overdispersed outliers (Fig. 1).</p>
+
+
+
+<figure class="wp-block-image size-large"><img decoding="async" src="../Images/624108444caa4dac7ada855b7ac9d020.png" alt="" class="wp-image-603697" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/05/1_dspTlkHEXMP_LFwoWiDHlg-1024x794.png"/><figcaption class="wp-element-caption">Figure 1. Histogram of Energy Consumption (kWh)</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">To address this skewness and heteroskedasticity, my first instinct was to apply a log transformation to the Energy variable. The distribution of log(Energy) looked much more normal (Fig. 2), and a Shapiro-Wilk test confirmed the borderline normality (p ≈ 0.5).</p>
+
+
+
+<figure class="wp-block-image size-large"><img decoding="async" src="../Images/f3ad61ffae5ed5edddefbd1364890f77.png" alt="" class="wp-image-603698" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/05/1_F74Q8av6o1-qKK9RAgle3g-1024x794.png"/><figcaption class="wp-element-caption">Figure 2. Histogram of log of Energy Consumption (kWh)</figcaption></figure>
+
+
+
+<h4 class="wp-block-heading"><strong>Modeling Dilemma: Log Transformation vs Log Link</strong></h4>
+
+
+
+<p class="wp-block-paragraph">The visualization looked good, but when I moved on to modeling, I faced a dilemma: Should I model the <strong>log-transformed response variable</strong> (<em><code>log(Y) ~ X</code></em>)<em>,</em> or should I model the <strong>original response variable</strong> using a <strong>log link function</strong> <em>(<code>Y ~ X, link = “log"</code>)</em>? I also considered two distributions — Gaussian (normal) and Gamma distributions — and combined each distribution with both log approaches. This gave me four different models as below, all fitted using R’s Generalized Linear Models (GLM):</p>
+
+
+
+<pre class="wp-block-prismatic-blocks" datatext=""><code class="language-r">all_gaussian_log_link &lt;- glm(Energy_kWh ~ Parameters +
+      Training_compute_FLOP +
+      Training_dataset_size +
+      Training_time_hour +
+      Hardware_quantity +
+      Training_hardware, 
+    family = gaussian(link = "log"), data = df)
+all_gaussian_log_transform &lt;- glm(log(Energy_kWh) ~ Parameters +
+                          Training_compute_FLOP +
+                          Training_dataset_size +
+                          Training_time_hour +
+                          Hardware_quantity +
+                          Training_hardware, 
+                         data = df)
+all_gamma_log_link  &lt;- glm(Energy_kWh ~ Parameters +
+                    Training_compute_FLOP +
+                    Training_dataset_size +
+                    Training_time_hour +
+                    Hardware_quantity +
+                    Training_hardware + 0, 
+                  family = Gamma(link = "log"), data = df)
+all_gamma_log_transform  &lt;- glm(log(Energy_kWh) ~ Parameters +
+                    Training_compute_FLOP +
+                    Training_dataset_size +
+                    Training_time_hour +
+                    Hardware_quantity +
+                    Training_hardware + 0, 
+                  family = Gamma(), data = df)</code></pre>
+
+
+
+<h4 class="wp-block-heading"><strong>Model Comparison: AIC and Diagnostic Plots</strong></h4>
+
+
+
+<p class="wp-block-paragraph">I compared the four models using Akaike Information Criterion (AIC), which is an estimator of prediction error. Typically, the lower the AIC, the better the model fits.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-r">AIC(all_gaussian_log_link, all_gaussian_log_transform, all_gamma_log_link, all_gamma_log_transform)
+
+                           df       AIC
+all_gaussian_log_link      25 2005.8263
+all_gaussian_log_transform 25  311.5963
+all_gamma_log_link         25 1780.8524
+all_gamma_log_transform    25  352.5450</code></pre>
+
+
+
+<p class="wp-block-paragraph">Among the four models, models using log-transformed outcomes have much lower AIC values than the ones using log links. Since the difference in AIC between log-transformed and log-link models was substantial (311 and 352 vs 1780 and 2005), I also examined the diagnostics plots to further validate that log-transformed models fit better:</p>
+
+
+
+<figure class="wp-block-image size-large"><img decoding="async" src="../Images/9d449d906a012426c2d57e67bf844e1b.png" alt="" class="wp-image-603699" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/05/1_sRtRTV53wWVmz1TXyWZ7jQ-1024x873.png"/><figcaption class="wp-element-caption">Figure 4. Diagnostic plots for the log-linked Gaussian model. The Residuals vs Fitted plot suggests linearity despite a few outliers. However, the Q-Q plot shows noticeable deviations from the theoretical line, suggesting non-normality.</figcaption></figure>
+
+
+
+<figure class="wp-block-image size-large"><img decoding="async" src="../Images/c127d3507472afff12d335fd4508853a.png" alt="" class="wp-image-603701" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/05/1_f1V-a6KfpqR9SNAvxiiGkA-1024x873.png"/><figcaption class="wp-element-caption">Figure 5. Diagnostics plots for the log-transformed Gaussian model. The Q-Q plot shows a much better fit, supporting normality. However, the Residuals vs Fitted plot has a dip to -2, which may suggest non-linearity. </figcaption></figure>
+
+
+
+<figure class="wp-block-image size-large"><img decoding="async" src="../Images/89c5b1b9093edaa4ba7f8d5f25085fab.png" alt="" class="wp-image-603700" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/05/1_U9XlDWDZ0LJc0YafhbRpHQ-1024x873.png"/><figcaption class="wp-element-caption">Figure 6. Diagnostic plots for the log-linked Gamma model. The Q-Q plot looks okay, yet the Residuals vs Fitted plot shows clear signs of non-linearity</figcaption></figure>
+
+
+
+<figure class="wp-block-image size-large"><img decoding="async" src="../Images/76925bce8e38859ae0bebee56554795a.png" alt="" class="wp-image-603702" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/05/1_PR2EhmWhA9jO7K7wj-lNzQ-1024x873.png"/><figcaption class="wp-element-caption">Figure 7. Diagnostic plots for the log-transformed Gamma model. The Residuals vs Fitted plot looks good, with a small dip of -0.25 at the beginning. However, the Q-Q plot shows some deviation at both tails.</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">Based on the AIC values and diagnostic plots, I decided to move forward with the log-transformed Gamma model, as it had the second-lowest AIC value and its Residuals vs Fitted plot looks better than that of the log-transformed Gaussian model. <br/>I proceeded to explore which explanatory variables were useful and which interactions may have been significant. The final model I selected was:</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-r">glm(formula = log(Energy_kWh) ~ Training_time_hour * Hardware_quantity + 
+    Training_hardware + 0, family = Gamma(), data = df)</code></pre>
+
+
+
+<h4 class="wp-block-heading">Interpreting Coefficients</h4>
+
+
+
+<p class="wp-block-paragraph">However, when I started interpreting the model’s coefficients, something felt off. Since only the response variable was log-transformed, the effects of the predictors are multiplicative, and we need to exponentiate the coefficients to convert them back to the original scale. A one-unit increase in 𝓍 multiplies the outcome 𝓎 by exp(β), or each additional unit in 𝓍 leads to a (exp(β) — 1) × 100 % change in 𝓎 [2]. </p>
+
+
+
+<p class="wp-block-paragraph">Looking at the results table of the model below, we have <em>Training_time_hour, Hardware_quantity,</em> and their interaction term <em>Training_time_hour:Hardware_quantity</em> are continuous variables, so their coefficients represent slopes. Meanwhile, since I specified +0 in the model formula, all levels of the categorical <em>Training_hardware</em> act as intercepts, meaning that each hardware type acted as the intercept β₀ when its corresponding dummy variable was active. </p>
+
+
+
+<pre class="wp-block-prismatic-blocks" datatext="el1746752936594"><code class="language-r">&gt; glm(formula = log(Energy_kWh) ~ Training_time_hour * Hardware_quantity + 
+    Training_hardware + 0, family = Gamma(), data = df)
+
+Coefficients:
+                                                 Estimate Std. Error t value Pr(&gt;|t|)    
+Training_time_hour                             -1.587e-05  3.112e-06  -5.098 5.76e-06 ***
+Hardware_quantity                              -5.121e-06  1.564e-06  -3.275  0.00196 ** 
+Training_hardwareGoogle TPU v2                  1.396e-01  2.297e-02   6.079 1.90e-07 ***
+Training_hardwareGoogle TPU v3                  1.106e-01  7.048e-03  15.696  &lt; 2e-16 ***
+Training_hardwareGoogle TPU v4                  9.957e-02  7.939e-03  12.542  &lt; 2e-16 ***
+Training_hardwareHuawei Ascend 910              1.112e-01  1.862e-02   5.969 2.79e-07 ***
+Training_hardwareNVIDIA A100                    1.077e-01  6.993e-03  15.409  &lt; 2e-16 ***
+Training_hardwareNVIDIA A100 SXM4 40 GB         1.020e-01  1.072e-02   9.515 1.26e-12 ***
+Training_hardwareNVIDIA A100 SXM4 80 GB         1.014e-01  1.018e-02   9.958 2.90e-13 ***
+Training_hardwareNVIDIA GeForce GTX 285         3.202e-01  7.491e-02   4.275 9.03e-05 ***
+Training_hardwareNVIDIA GeForce GTX TITAN X     1.601e-01  2.630e-02   6.088 1.84e-07 ***
+Training_hardwareNVIDIA GTX Titan Black         1.498e-01  3.328e-02   4.501 4.31e-05 ***
+Training_hardwareNVIDIA H100 SXM5 80GB          9.736e-02  9.840e-03   9.894 3.59e-13 ***
+Training_hardwareNVIDIA P100                    1.604e-01  1.922e-02   8.342 6.73e-11 ***
+Training_hardwareNVIDIA Quadro P600             1.714e-01  3.756e-02   4.562 3.52e-05 ***
+Training_hardwareNVIDIA Quadro RTX 4000         1.538e-01  3.263e-02   4.714 2.12e-05 ***
+Training_hardwareNVIDIA Quadro RTX 5000         1.819e-01  4.021e-02   4.524 3.99e-05 ***
+Training_hardwareNVIDIA Tesla K80               1.125e-01  1.608e-02   6.993 7.54e-09 ***
+Training_hardwareNVIDIA Tesla V100 DGXS 32 GB   1.072e-01  1.353e-02   7.922 2.89e-10 ***
+Training_hardwareNVIDIA Tesla V100S PCIe 32 GB  9.444e-02  2.030e-02   4.653 2.60e-05 ***
+Training_hardwareNVIDIA V100                    1.420e-01  1.201e-02  11.822 8.01e-16 ***
+Training_time_hour:Hardware_quantity            2.296e-09  9.372e-10   2.450  0.01799 *  
+---
+Signif. codes:  0 '***' 0.001 '**' 0.01 '*' 0.05 '.' 0.1 ' ' 1
+
+(Dispersion parameter for Gamma family taken to be 0.05497984)
+
+    Null deviance:    NaN  on 70  degrees of freedom
+Residual deviance: 3.0043  on 48  degrees of freedom
+AIC: 345.39</code></pre>
+
+
+
+<p class="wp-block-paragraph">When converting the slopes to percent change in response variable, the effect of each continuous variable was almost zero, even slightly negative:<br/><img decoding="async" src="../Images/3d9008df33e3c382e1ed3f3db1174ba4.png" data-original-src="https://cdn-images-1.medium.com/max/1600/0*T2K7Vg3_waH8Ma4p.png"/><br/>All the intercepts were also converted back to just around 1 kWh on the original scale. The results didn’t make any sense as at least one of the slopes should grow along with the enormous energy consumption. I wondered if using the log-linked model with the same predictors may yield different results, so I fit the model again:</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-r">glm(formula = Energy_kWh ~ Training_time_hour * Hardware_quantity + 
+    Training_hardware + 0, family = Gamma(link = "log"), data = df)
+
+Coefficients:
+                                                 Estimate Std. Error t value Pr(&gt;|t|)    
+Training_time_hour                              1.818e-03  1.640e-04  11.088 7.74e-15 ***
+Hardware_quantity                               7.373e-04  1.008e-04   7.315 2.42e-09 ***
+Training_hardwareGoogle TPU v2                  7.136e+00  7.379e-01   9.670 7.51e-13 ***
+Training_hardwareGoogle TPU v3                  1.004e+01  3.156e-01  31.808  &lt; 2e-16 ***
+Training_hardwareGoogle TPU v4                  1.014e+01  4.220e-01  24.035  &lt; 2e-16 ***
+Training_hardwareHuawei Ascend 910              9.231e+00  1.108e+00   8.331 6.98e-11 ***
+Training_hardwareNVIDIA A100                    1.028e+01  3.301e-01  31.144  &lt; 2e-16 ***
+Training_hardwareNVIDIA A100 SXM4 40 GB         1.057e+01  5.635e-01  18.761  &lt; 2e-16 ***
+Training_hardwareNVIDIA A100 SXM4 80 GB         1.093e+01  5.751e-01  19.005  &lt; 2e-16 ***
+Training_hardwareNVIDIA GeForce GTX 285         3.042e+00  1.043e+00   2.916  0.00538 ** 
+Training_hardwareNVIDIA GeForce GTX TITAN X     6.322e+00  7.379e-01   8.568 3.09e-11 ***
+Training_hardwareNVIDIA GTX Titan Black         6.135e+00  1.047e+00   5.862 4.07e-07 ***
+Training_hardwareNVIDIA H100 SXM5 80GB          1.115e+01  6.614e-01  16.865  &lt; 2e-16 ***
+Training_hardwareNVIDIA P100                    5.715e+00  6.864e-01   8.326 7.12e-11 ***
+Training_hardwareNVIDIA Quadro P600             4.940e+00  1.050e+00   4.705 2.18e-05 ***
+Training_hardwareNVIDIA Quadro RTX 4000         5.469e+00  1.055e+00   5.184 4.30e-06 ***
+Training_hardwareNVIDIA Quadro RTX 5000         4.617e+00  1.049e+00   4.401 5.98e-05 ***
+Training_hardwareNVIDIA Tesla K80               8.631e+00  7.587e-01  11.376 3.16e-15 ***
+Training_hardwareNVIDIA Tesla V100 DGXS 32 GB   9.994e+00  6.920e-01  14.443  &lt; 2e-16 ***
+Training_hardwareNVIDIA Tesla V100S PCIe 32 GB  1.058e+01  1.047e+00  10.105 1.80e-13 ***
+Training_hardwareNVIDIA V100                    9.208e+00  3.998e-01  23.030  &lt; 2e-16 ***
+Training_time_hour:Hardware_quantity           -2.651e-07  6.130e-08  -4.324 7.70e-05 ***
+---
+Signif. codes:  0 '***' 0.001 '**' 0.01 '*' 0.05 '.' 0.1 ' ' 1
+
+(Dispersion parameter for Gamma family taken to be 1.088522)
+
+    Null deviance: 2.7045e+08  on 70  degrees of freedom
+Residual deviance: 1.0593e+02  on 48  degrees of freedom
+AIC: 1775</code></pre>
+
+
+
+<p class="wp-block-paragraph">This time, <em>Training_time </em>and <em>Hardware_quantity</em> would increase the total energy consumption by 0.18% per additional hour and 0.07% per additional chip, respectively. Meanwhile, their interaction would decrease the energy use by 2 × 10⁵%. These results made more sense as <em>Training_time</em> can reach up to 7000 hours and <em>Hardware_quantity</em> up to 16000 units.</p>
+
+
+
+<figure class="wp-block-image"><img decoding="async" src="../Images/15cd35d6e735e60bde2bced5b62a8746.png" alt="" class="wp-image-603821" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/05/0SbWASUk3IDDi7vMA.png"/></figure>
+
+
+
+<p class="wp-block-paragraph">To visualize the differences better, I created two plots comparing the predictions (shown as dashed lines) from both models. The left panel used the log-transformed Gamma GLM model, where the dashed lines were nearly flat and close to zero, nowhere near the fitted solid lines of raw data. On the other hand, the right panel used log-linked Gamma GLM model, where the dashed lines aligned much more closely with the actual fitted lines. </p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-r">test_data &lt;- df[, c("Training_time_hour", "Hardware_quantity", "Training_hardware")]
+prediction_data &lt;- df %&gt;%
+  mutate(
+    pred_energy1 = exp(predict(glm3, newdata = test_data)),
+    pred_energy2 = predict(glm3_alt, newdata = test_data, type = "response"),
+  )
+y_limits &lt;- c(min(df$Energy_KWh, prediction_data$pred_energy1, prediction_data$pred_energy2),
+              max(df$Energy_KWh, prediction_data$pred_energy1, prediction_data$pred_energy2))
+
+p1 &lt;- ggplot(df, aes(x = Hardware_quantity, y = Energy_kWh, color = Training_time_group)) +
+  geom_point(alpha = 0.6) +
+  geom_smooth(method = "lm", se = FALSE) +
+  geom_smooth(data = prediction_data, aes(y = pred_energy1), method = "lm", se = FALSE, 
+              linetype = "dashed", size = 1) + 
+  scale_y_log10(limits = y_limits) +
+  labs(x="Hardware Quantity", y = "log of Energy (kWh)") +
+  theme_minimal() +
+  theme(legend.position = "none") 
+p2 &lt;- ggplot(df, aes(x = Hardware_quantity, y = Energy_kWh, color = Training_time_group)) +
+  geom_point(alpha = 0.6) +
+  geom_smooth(method = "lm", se = FALSE) +
+  geom_smooth(data = prediction_data, aes(y = pred_energy2), method = "lm", se = FALSE, 
+              linetype = "dashed", size = 1) + 
+  scale_y_log10(limits = y_limits) +
+  labs(x="Hardware Quantity", color = "Training Time Level") +
+  theme_minimal() +
+  theme(axis.title.y = element_blank()) 
+p1 + p2</code></pre>
+
+
+
+<figure class="wp-block-image size-large"><img decoding="async" src="../Images/50a5c91ce21b2b274461abe409470120.png" alt="" class="wp-image-603703" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/05/1_CFTUBsgU3-pCzxqD_MGy4A-1024x520.png"/><figcaption class="wp-element-caption"><em>Figure 8. Relationship between hardware quantity and log of energy consumption across training time groups. In both panels, raw data is shown as points, solid lines represent fitted values from linear models, and dashed lines represent predicted values from generalized linear models. The left panel uses a log-transformed Gamma GLM, while the right panel uses a log-linked Gamma GLM with the same predictors.</em></figcaption></figure>
+
+
+
+<h4 class="wp-block-heading">Why Log Transformation Fails</h4>
+
+
+
+<p class="wp-block-paragraph">To understand the reason why the log-transformed model can’t capture the underlying effects as the log-linked one, let’s walk through what happens when we apply a log transformation to the response variable:</p>
+
+
+
+<p class="wp-block-paragraph">Let’s say Y is equal to some function of X plus the error term:</p>
+
+
+
+<figure class="wp-block-image aligncenter"><img decoding="async" src="../Images/ccb67ec9147c2f856164320456fa877d.png" alt="" class="wp-image-603818" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/05/0dDeDuDyIZQVKJa6a.png"/></figure>
+
+
+
+<p class="wp-block-paragraph">When we apply a log transforming to Y, we are actually compressing both f(X) and the error:</p>
+
+
+
+<figure class="wp-block-image aligncenter"><img decoding="async" src="../Images/181cfc8db6c93a41b21b4650f94f7fd5.png" alt="" class="wp-image-603820" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/05/0_dZm4_nEpq21YQKm.png"/></figure>
+
+
+
+<p class="wp-block-paragraph">That means we are modeling a whole new response variable, log(Y). When we plug in our own function g(X)— in my case <em>g(X) = Training_time_hour*Hardware_quantity + Training_hardware </em>— it is trying to capture the combined effects of both the “shrunk” f(X) and error term.</p>
+
+
+
+<p class="wp-block-paragraph">In contrast, when we use a log link, we are still modeling the original Y, not the transformed version. Instead, the model exponentiates our own function g(X) to predict Y.</p>
+
+
+
+<figure class="wp-block-image aligncenter"><img decoding="async" src="../Images/17dca4209cfe72c2df581de0a0fc41e8.png" alt="" class="wp-image-603817" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/05/03fdMIoaVTEXTRoHC.png"/></figure>
+
+
+
+<p class="wp-block-paragraph">The model then minimizes the difference between the actual Y and the predicted Y. That way, the error terms remains intact on the original scale:</p>
+
+
+
+<figure class="wp-block-image aligncenter"><img decoding="async" src="../Images/62edbfbd2f9dd379cffb2108f3d324ad.png" alt="" class="wp-image-603819" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/05/0XVKZ2x6AdDD5BxuA.png"/></figure>
+
+
+
+<h4 class="wp-block-heading">Conclusion</h4>
+
+
+
+<p class="wp-block-paragraph">Log-transforming a variable is not the same as using a log link, and it may not always yield reliable results. Under the hood, a log transformation alters the variable itself and distorts both the variation and noise. Understanding this subtle mathematical difference behind your models is just as important as trying to find the best-fitting model. </p>
+
+
+
+<hr class="wp-block-separator has-alpha-channel-opacity is-style-dotted"/>
+
+
+
+<p class="wp-block-paragraph">[1] Epoch AI. <em>Data on Notable AI Models</em>. Retrieved from <a href="https://epoch.ai/data/notable-ai-models" rel="noreferrer noopener" target="_blank">https://epoch.ai/data/notable-ai-models</a></p>
+
+
+
+<p class="wp-block-paragraph">[2] University of Virginia Library. <em>Interpreting Log Transformations in a Linear Model.</em> Retrieved from <a href="https://library.virginia.edu/data/articles/interpreting-log-transformations-in-a-linear-model" rel="noreferrer noopener" target="_blank">https://library.virginia.edu/data/articles/interpreting-log-transformations-in-a-linear-model</a></p>
+    
+</body>
+</html>

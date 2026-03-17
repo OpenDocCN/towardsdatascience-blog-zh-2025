@@ -1,0 +1,612 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.1//EN"
+  "http://www.w3.org/TR/xhtml11/DTD/xhtml11.dtd">
+
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+<title>LLaVA on a Budget: Multimodal AI with Limited Resources</title>
+<link href="../Styles/Style.css" type="text/css" rel="stylesheet"/>
+</head>
+<body>
+<h1>LLaVA on a Budget: Multimodal AI with Limited Resources</h1>
+<blockquote>原文：<a href="https://towardsdatascience.com/llava-on-a-budget-multimodal-ai-with-limited-resources/">https://towardsdatascience.com/llava-on-a-budget-multimodal-ai-with-limited-resources/</a></blockquote>
+<h2 class="wp-block-heading"><mdspan datatext="el1750099237634" class="mdspan-comment">Introduction</mdspan></h2>
+
+
+
+<p class="wp-block-paragraph">In the last couple of years, I have worked mainly with large language models, training, fine-tuning, prompting and so on, since this was highly requested in the market and by users. But I believe that LLMs that work mainly on text is only the beginning of GenAI. At a certain point, everybody will want <strong>physical  AI</strong>, where models can see, hear, feel, and reason in a more grounded, human way.</p>
+
+
+
+<p class="wp-block-paragraph">So let’s get started with multimodality. In this notebook, I introduce LLaVA, an architecture capable of interpreting both images and text to generate multimodal responses.</p>
+
+
+
+<p class="wp-block-paragraph">In this tutorial, we are going to use a lighter-weight component suitable to run the notebook on a free-tier environment such as Google Colab.</p>
+
+
+
+<p class="wp-block-paragraph">The components we are going to use are:</p>
+
+
+
+<p class="wp-block-paragraph">1️⃣ <strong>CLIP-ViT B/32</strong> as the image encoder</p>
+
+
+
+<p class="wp-block-paragraph">2️⃣ <strong>TinyLlama-1.1B</strong> as the language model</p>
+
+
+
+<p class="wp-block-paragraph">3️⃣ A <strong>2-layer MLP adapter</strong> to bridge the two</p>
+
+
+
+<figure class="wp-block-image size-large"><img data-dominant-color="9d9c9a" data-has-transparency="false" style="--dominant-color: #9d9c9a;" decoding="async" src="../Images/03bb9b263c928512bcce0fb7ec9bfd33.png" alt="" class="wp-image-605971 not-transparent" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/06/llava_arch-1024x345.png"/><figcaption class="wp-element-caption">From the paper <a href="https://www.google.com/url?q=https%3A%2F%2Farxiv.org%2Fpdf%2F2304.08485" target="_blank" rel="noreferrer noopener">Visual Instruction Tuning</a> (NeurIPS 2023)</figcaption></figure>
+
+
+
+<h2 class="wp-block-heading">Setup</h2>
+
+
+
+<p class="wp-block-paragraph">Before we can dive into the code, let’s set up our environment.</p>
+
+
+
+<p class="wp-block-paragraph">Let’s first install the datasets library.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">!pip install -U datasets</code></pre>
+
+
+
+<p class="wp-block-paragraph">We now need to import the required packages from Hugging Face and PyTorch. These imports provide pre-trained models and utilities for multimodal processing.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">import json
+from pathlib import Path
+
+import requests
+import safetensors
+import torch
+from datasets import load_dataset
+from huggingface_hub import hf_hub_download
+from PIL import Image
+from transformers import (
+    AutoConfig,
+    AutoTokenizer,
+    LlamaTokenizer,
+    LlavaConfig,
+    LlavaForConditionalGeneration,
+    LlavaProcessor,
+    Seq2SeqTrainer,
+    Seq2SeqTrainingArguments,
+)
+from transformers.models.clip.modeling_clip import CLIPVisionModel
+from transformers.models.clip.image_processing_clip import CLIPImageProcessor</code></pre>
+
+
+
+<h2 class="wp-block-heading">Download pre-trained model components</h2>
+
+
+
+<p class="wp-block-paragraph">Our LLaVA model will be composed of:</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">A pre-trained <strong>CLIP</strong> encoder <a href="https://huggingface.co/openai/clip-vit-base-patch32">openai/clip-vit-base-patch32</a></li>
+</ul>
+
+
+
+<figure class="wp-block-image size-large"><img decoding="async" src="../Images/8e202e20a952f40f2e0903f10d5dfaa9.png" alt="" class="wp-image-605972" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/06/1_tg7akErlMSyCLQxrMtQIYw-1024x393.png"/><figcaption class="wp-element-caption">Image source: <a href="https://arxiv.org/pdf/2103.00020">https://arxiv.org/pdf/2103.00020</a></figcaption></figure>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">A pre-trained <strong>Tiny LLaMA</strong> decoder <a href="https://huggingface.co/TinyLlama/TinyLlama-1.1B-Chat-v1.0">TinyLlama/TinyLlama-1.1B-Chat-v1.0</a></li>
+
+
+
+<li class="wp-block-list-item">A 2-layer MLP projector between the two</li>
+</ul>
+
+
+
+<p class="wp-block-paragraph">The <code>hf_hub_download</code> is a hub we are exploring in order to retrieve pre-trained weights:</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">vision_backbone_name = "openai/clip-vit-base-patch32"
+text_backbone_name = "TinyLlama/TinyLlama-1.1B-Chat-v1.0"</code></pre>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">_ = hf_hub_download(
+    vision_backbone_name, filename="pytorch_model.bin", local_dir="/content"
+)
+_ = hf_hub_download(
+    text_backbone_name, filename="model.safetensors", local_dir="/content"
+)</code></pre>
+
+
+
+<h2 class="wp-block-heading">Model</h2>
+
+
+
+<h3 class="wp-block-heading">Instantiate a new LLaVA model</h3>
+
+
+
+<p class="wp-block-paragraph">Let’s now instantiate a new LlaVA model. As explained above, a LlaVA model is composed of two parts, a visual encoder and a textual decoder that we have just downloaded.</p>
+
+
+
+<p class="wp-block-paragraph"/>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">vision_config = AutoConfig.from_pretrained(vision_backbone_name).vision_config
+text_config = AutoConfig.from_pretrained(text_backbone_name)</code></pre>
+
+
+
+<p class="wp-block-paragraph">We specify the backbone models in the LlaVA config. We then instantiate the actual model with <strong><code>LlavaForConditionalGeneration(llava_config)</code></strong>.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">llava_config = LlavaConfig(vision_config=vision_config, text_config=text_config)</code></pre>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">model = LlavaForConditionalGeneration(llava_config).cuda()
+model</code></pre>
+
+
+
+<h3 class="wp-block-heading">Perform some surgical operations</h3>
+
+
+
+<figure class="wp-block-image size-large is-resized"><img decoding="async" src="../Images/67128520255e5c1bc575a12bf24bd264.png" alt="" class="wp-image-606284" style="width:321px;height:auto" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/06/jafar-ahmed-E285pJbC4uE-unsplash-1024x683.jpg"/><figcaption class="wp-element-caption"><em>Image source: <a href="https://unsplash.com/photos/doctor-having-operation-E285pJbC4uE">https://unsplash.com/photos/doctor-having-operation-E285pJbC4uE</a></em></figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">Previously, we said we could construct an LLaVA model by starting from a pre-trained image encoder and a pre-trained LLM. Let’s do just that!</p>
+
+
+
+<p class="wp-block-paragraph">The original LLaVA model is initialised from a <strong>CLIP-ViT L/14</strong> and a <strong>Vicuna v1.5 7B</strong>. To make things more manageable with the resources provided by the free plan of Google Colab, we’ll use a <strong>CLIP-ViT B/16</strong> and a <strong>TinyLlama 1.1B</strong>.</p>
+
+
+
+<p class="wp-block-paragraph"><strong>The only component we’ll train is a 2-layer MLP adapter in between them.</strong></p>
+
+
+
+<p class="wp-block-paragraph">In order to use the CLIP and TinyLlama models, we need to load their pre-trained weights. But these weights can come in different formats like .safetensors or .bin. The load_weights function handles this for us. It checks the file type and calls the right loading function.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">def load_weights(path_to_weights: str):
+    if path_to_weights.endswith(".safetensors"):
+        return load_safetensors_weights(path_to_weights)
+    elif path_to_weights.endswith(".bin"):
+        return load_bin_weights(path_to_weights)
+    else:
+        raise ValueError(f"Unsupported weights file: {path_to_weights}")
+
+def load_bin_weights(path_to_weights: str):
+    return torch.load(path_to_weights, weights_only=True)
+
+def load_safetensors_weights(path_to_weights: str):
+    return safetensors.torch.load_file(path_to_weights)</code></pre>
+
+
+
+<h3 class="wp-block-heading"/>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">vision_backbone_state_dict = load_weights("/content/pytorch_model.bin")
+text_backbone_state_dict = load_weights("/content/model.safetensors")</code></pre>
+
+
+
+<h3 class="wp-block-heading">Inject the vision backbone’s weights into the model 💉</h3>
+
+
+
+<p class="wp-block-paragraph">The next lines loads the weights into the vision part of the model. We set <em>strict=False</em> to be flexible since it allows us to skip any weights that don’t perfectly match the model’s expected structure.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">incompatible_keys = model.vision_tower.load_state_dict(
+    vision_backbone_state_dict, strict=False
+)
+
+assert len(incompatible_keys.missing_keys) == 0, (
+    f"Missing keys in state dict: {incompatible_keys.missing_keys}"
+)
+
+incompatible_keys.unexpected_keys</code></pre>
+
+
+
+<h3 class="wp-block-heading">Inject the text backbone’s weights into the model 💉</h3>
+
+
+
+<p class="wp-block-paragraph">Same logic as before, but also for the text model.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">incompatible_keys = model.language_model.load_state_dict(
+    text_backbone_state_dict, strict=True
+)</code></pre>
+
+
+
+<h3 class="wp-block-heading">Freeze the pre-trained components ❄️</h3>
+
+
+
+<p class="wp-block-paragraph">We want now to freeze the backbone visual and text models, because we don’t want to update their weights while training. </p>
+
+
+
+<p class="wp-block-paragraph">We will only train the small adapter (the MLP that connects vision and language), which is much lighter and faster to train.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">_ = model.vision_tower.requires_grad_(False)
+_ = model.language_model.requires_grad_(False)</code></pre>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python"># Then we define a helper function to count model parameters
+
+def count_parameters(model, trainable_only=False):
+    return sum(
+        p.numel()
+        for p in model.parameters()
+        if not trainable_only or p.requires_grad
+    )
+
+print(f"Total parameters: {count_parameters(model)}")
+print(f"Trainable parameters: {count_parameters(model, trainable_only=True)}")</code></pre>
+
+
+
+<h2 class="wp-block-heading">Processor</h2>
+
+
+
+<p class="wp-block-paragraph">Before feeding some text into our model, we need to convert words into numbers. This is what the tokenizer is needed for.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">tokenizer = LlamaTokenizer.from_pretrained(
+    text_backbone_name, additional_special_tokens=["&lt;image&gt;", "&lt;pad&gt;"]
+)
+tokenizer.pad_token_id = 32001</code></pre>
+
+
+
+<p class="wp-block-paragraph">Below is the format we’ll use to chat with our LLaVA model.</p>
+
+
+
+<p class="wp-block-paragraph">The first part is the so-called <em>system prompt</em>, which contains general guidelines for how the model should respond to the user.</p>
+
+
+
+<p class="wp-block-paragraph">The second part is a Jinja template (basically code) that determines how the conversation is rendered based on some structured input (see example below).</p>
+
+
+
+<p class="wp-block-paragraph"/>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">LLAVA_CHAT_TEMPLATE = (
+    "A chat between a curious user and an artificial intelligence assistant. The assistant gives helpful, detailed, and polite answers to the user's questions. "
+    "{% for message in messages %}{% if message['role'] == 'user' %}USER: {% else %}ASSISTANT: {% endif %}{% for item in message['content'] %}{% if item['type'] == 'text' %}{{ item['text'] }}{% elif item['type'] == 'image' %}&lt;image&gt;{% endif %}{% endfor %}{% if message['role'] == 'user' %} {% else %}{{eos_token}}{% endif %}{% endfor %}"
+)
+tokenizer.chat_template = LLAVA_CHAT_TEMPLATE</code></pre>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">sample_messages = [
+    {
+        "content": [
+            {
+                "index": 0,
+                "text": None,
+                "type": "image"
+            },
+            {
+                "index": None,
+                "text": "\nWhat potential activities might be popular at this location?",
+                "type": "text"
+            }
+        ],
+        "role": "user"
+    },
+    {
+        "content": [
+            {
+                "index": None,
+                "text": (
+                    "At this location, with a sandy path leading to the ocean where multiple boats, including "
+                    "sailboats, are moored, popular activities might include boating, sailing, swimming, and "
+                    "beachcombing. Additionally, the sandy path and shoreline provide an ideal setting for leisurely "
+                    "strolls and picnics, while the ocean view offers a serene environment for relaxation and "
+                    "photography. Depending on the specific area and available facilities, other water sports such as "
+                    "kayaking, paddleboarding, and snorkeling could also be prevalent."
+                ),
+                "type": "text"
+            }
+        ],
+        "role": "assistant"
+    }
+]</code></pre>
+
+
+
+<p class="wp-block-paragraph">Let’s apply the chat template to our samples.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">tokenizer.apply_chat_template(
+    sample_messages, tokenize=False, add_generation_prompt=False
+)</code></pre>
+
+
+
+<p class="wp-block-paragraph">At this point we’ve set up our tokenizer and downloaded the vision model. We bring them together into one unified <strong>processor</strong>.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">processor = LlavaProcessor(
+    image_processor=CLIPImageProcessor.from_pretrained(vision_backbone_name),
+    tokenizer=tokenizer,
+    patch_size=model.config.vision_config.patch_size,
+)
+processor.chat_template = LLAVA_CHAT_TEMPLATE</code></pre>
+
+
+
+<p class="wp-block-paragraph">Since we added special tokens like <code>&lt;image&gt;</code> and <code>&lt;pad&gt;</code> to our tokenizer earlier, the model needs to <strong>adjust its vocabulary</strong> to understand them too</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">model.resize_token_embeddings(len(tokenizer), pad_to_multiple_of=8)</code></pre>
+
+
+
+<h2 class="wp-block-heading">Dataset</h2>
+
+
+
+<p class="wp-block-paragraph">Let’s download the dataset we are going to use from Hugging Face.</p>
+
+
+
+<p class="wp-block-paragraph">The dataset containing samples of image-text couples is publicly available and can be found <a href="https://huggingface.co/datasets/HuggingFaceH4/llava-instruct-mix-vsft">here</a>.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">train_dataset = load_dataset(
+    "HuggingFaceH4/llava-instruct-mix-vsft", split="train", streaming=True
+)</code></pre>
+
+
+
+<h2 class="wp-block-heading"/>
+
+
+
+<p class="wp-block-paragraph">What do our training examples look like?</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">next(iter(train_dataset))</code></pre>
+
+
+
+<p class="wp-block-paragraph">How do we build a batch of examples?</p>
+
+
+
+<p class="wp-block-paragraph">The following function takes raw image-text examples and turns them into model-ready inputs. It formats the messages using the chat template, processes both the text and image with the <code>LlavaProcessor</code> we defined previously, and creates proper training labels while ignoring padding. </p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">def get_data_collator(processor, ignore_index):
+    def collate_examples(examples):
+        # Extract texts and images from the raw examples
+        texts = []
+        images = []
+        for example in examples:
+            messages = example["messages"]
+            text = processor.tokenizer.apply_chat_template(
+                messages, tokenize=False, add_generation_prompt=False
+            )
+            texts.append(text)
+            images.append(example["images"][0])
+
+        # Process the inputs (tokenize text and transform images)
+        batch = processor(texts, images, return_tensors="pt", padding=True)
+
+        # Create labels
+        labels = batch["input_ids"].clone()
+        if processor.tokenizer.pad_token_id is not None:
+            labels[labels == processor.tokenizer.pad_token_id] = ignore_index
+        batch["labels"] = labels
+
+        return batch
+
+    return collate_examples
+
+# NOTE: this does a bit more than a collate function should...</code></pre>
+
+
+
+<h2 class="wp-block-heading">Training</h2>
+
+
+
+<p class="wp-block-paragraph">Let’s finally define the training arguments, including batch size, learning rate, total steps, and use mixed precision (fp16) for speed. We also avoid saving checkpoints to keep things light. Then we wrap everything into a <code>Seq2SeqTrainer</code>passing in the model, dataset, and our custom collator for image-text inputs.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">args = Seq2SeqTrainingArguments(
+    output_dir="/content/training_output",
+    per_device_train_batch_size=2,
+    gradient_accumulation_steps=4,
+    learning_rate=2e-4,
+    max_steps=350,
+    lr_scheduler_type="cosine_with_min_lr",
+    lr_scheduler_kwargs={"min_lr": 2e-5},
+    warmup_ratio=0.05,
+    logging_strategy="steps",
+    logging_steps=5,
+    fp16=True,
+    remove_unused_columns=False,  # Important!
+    optim="adamw_torch",
+    report_to="none",
+    save_strategy="no",  # let's not save the checkpoint to disk, otherwise it'll take 5 mins
+)
+
+trainer = Seq2SeqTrainer(
+    model=model,
+    args=args,
+    data_collator=get_data_collator(
+        processor, ignore_index=model.config.ignore_index,
+    ),
+    train_dataset=train_dataset,
+)</code></pre>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">trainer.train()</code></pre>
+
+
+
+<h2 class="wp-block-heading">Inference </h2>
+
+
+
+<p class="wp-block-paragraph">To be noted that to make sure inference works as expected you should use heavier models, and train for longer time. </p>
+
+
+
+<p class="wp-block-paragraph">We’ll use this image for inference:</p>
+
+
+
+<figure class="wp-block-image size-large is-resized"><img decoding="async" src="../Images/4fe6cf46918b5b58370950f19adcc357.png" alt="" class="wp-image-605974" style="width:399px;height:auto" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/06/monalisa-1024x766.jpg"/><figcaption class="wp-element-caption"><em>Image source: <a href="https://it.wikipedia.org/wiki/Gioconda#/media/File:Mona_Lisa,_by_Leonardo_da_Vinci,_from_C2RMF_retouched.jpg">https://it.wikipedia.org/wiki/Gioconda#/media/File:Mona_Lisa,_by_Leonardo_da_Vinci,_from_C2RMF_retouched.jpg</a></em></figcaption></figure>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">conversation = [
+    {
+        "content": [
+            {
+                "type": "image"
+            },
+            {
+                "text": "\nWhat is represented in the image?",
+                "type": "text"
+            }
+        ],
+        "role": "user"
+    }
+]</code></pre>
+
+
+
+<p class="wp-block-paragraph">In this cell block as an example, we load an image from a URL and format a conversation using the chat template. The processor turns both into tensors. Then we move the input to the model’s device and generate a response, letting the model describe the image based on the user’s prompt.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">image_url = "https://llava-vl.github.io/static/images/monalisa.jpg"
+
+inputs_for_generation = processor(
+    images=Image.open(requests.get(image_url, stream=True).raw),
+    text=processor.apply_chat_template(conversation, add_generation_prompt=True),
+    return_tensors="pt",
+)
+
+inputs_for_generation = inputs_for_generation.to(device=model.device)
+output = trainer.model.generate(
+    **inputs_for_generation, max_new_tokens=200, do_sample=False
+)</code></pre>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">print(processor.decode(output[0], skip_special_tokens=True))</code></pre>
+
+
+
+<h2 class="wp-block-heading">Extensions and improvements</h2>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">Use a larger image encoder (e.g. <strong>CLIP-ViT Large</strong>) and LLM (e.g. <strong>Llama 3.1 8B</strong>)</li>
+
+
+
+<li class="wp-block-list-item">Train for longer. It takes some time for the model to figure out how to follow instructions in the presence of image features</li>
+
+
+
+<li class="wp-block-list-item">Follow the multi-stage training procedure adopted by the original LLaVA
+<ul class="wp-block-list">
+<li class="wp-block-list-item"><strong>Stage 1: Pre-training for Feature Alignment</strong> –&gt; train the model on single-turn instruction data, where it is asked to briefly describe the picture. Image encoder and LLM are frozen </li>
+
+
+
+<li class="wp-block-list-item"><strong>Stage 2: Fine-tuning End-to-End</strong> –&gt; train the model on multi-turn instruction data. Only the image encoder is frozen </li>
+</ul>
+</li>
+</ul>
+
+
+
+<p class="wp-block-paragraph">Working demo: <a href="https://www.google.com/url?q=https%3A%2F%2Fhuggingface.co%2Fspaces%2Fbadayvedat%2FLLaVA" target="_blank" rel="noreferrer noopener">huggingface.co/spaces/badayvedat/LLaVA</a></p>
+
+
+
+<h2 class="wp-block-heading">Conclusion</h2>
+
+
+
+<p class="wp-block-paragraph">I think this small project is interesting  to better understand how multimodal models like LLaVA work. Even if we used smaller models, the main idea is the same: combine vision and language into one system that can understand images and talk about them.</p>
+
+
+
+<p class="wp-block-paragraph">Of course, the results obtained in this toy example are not really good; there is a lot of space for improvement. But making LLaVA work in an environment with limited resources is quite challenging</p>
+
+
+
+<p class="wp-block-paragraph">Follow me on <a href="https://towardsdatascience.com/author/marcellopoliti/">TDS</a> if you like this article! 😁</p>
+
+
+
+<p class="wp-block-paragraph">💼 Linkedin ️| 🐦 X (Twitter) | 💻 Website</p>
+
+
+
+<p class="wp-block-paragraph"/>
+    
+</body>
+</html>

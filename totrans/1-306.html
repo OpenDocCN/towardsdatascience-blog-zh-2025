@@ -1,0 +1,861 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.1//EN"
+  "http://www.w3.org/TR/xhtml11/DTD/xhtml11.dtd">
+
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+<title>LangChain for EDA: Build a CSV Sanity-Check Agent in Python</title>
+<link href="../Styles/Style.css" type="text/css" rel="stylesheet"/>
+</head>
+<body>
+<h1>LangChain for EDA: Build a CSV Sanity-Check Agent in Python</h1>
+<blockquote>原文：<a href="https://towardsdatascience.com/langchain-for-eda-build-a-csv-sanity-check-agent-in-python/">https://towardsdatascience.com/langchain-for-eda-build-a-csv-sanity-check-agent-in-python/</a></blockquote>
+<p class="wp-block-paragraph"><mdspan datatext="el1757360600202" class="mdspan-comment">Chatbots answer questions</mdspan>, agents perform actions.</p>
+
+
+
+<p class="wp-block-paragraph">That’s exactly what we’re going to try out in today’s article.</p>
+
+
+
+<p class="wp-block-paragraph">In this article, we’ll use LangChain and Python to build our own CSV sanity check agent. With this agent, we’ll automate typical exploratory data analysis (EDA) tasks as displaying columns, detecting missing values (NaNs) and retrieving descriptive statistics.</p>
+
+
+
+<p class="wp-block-paragraph">Agents decide step by step which tool to call and when to answer a question about our data. This is a big difference from an application in the traditional sense, where the developer defines how the process works (e.g., via if-else loops). It also goes far beyond simple prompting because we are building a system that acts (albeit in a simple way) and doesn’t just talk.</p>
+
+
+
+<p class="wp-block-paragraph">This article is for you if you:</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">…work with Pandas and want to automate EDA.</li>
+
+
+
+<li class="wp-block-list-item">…find LLMs exciting, but have little experience with LangChain so far.</li>
+
+
+
+<li class="wp-block-list-item">…want to understand how agents really work (from setup to mini-evaluation) using a simple example.</li>
+</ul>
+
+
+
+<p class="wp-block-paragraph"><em><strong>Table of Contents</strong><br/><a href="#pagejump1" data-type="internal" data-id="#pagejump1">What we build &amp; why</a><br/><a href="#pagejump2" data-type="internal" data-id="#pagejump2">Hands-On-Example: CSV-Sanity-Check Agent with LangChain</a><br/><a href="#pagejump3" data-type="internal" data-id="#pagejump3">Mini-Evaluation</a><br/><a href="#pagejump4" data-type="internal" data-id="#pagejump4">Final Thoughts – Pitfalls, Tips and Next Steps</a><br/><a href="#pagejump5" data-type="internal" data-id="#pagejump5">Where Can You Continue Learning?</a></em></p>
+
+
+
+<h2 class="wp-block-heading" id="pagejump1">What we build &amp; why</h2>
+
+
+
+<p class="wp-block-paragraph">An agent is a system to which we assign tasks. The system then decides for itself which tools to use to solve these tasks.</p>
+
+
+
+<p class="wp-block-paragraph">This requires three components:</p>
+
+
+
+<p class="wp-block-paragraph"><strong>Agent = LLM + Tools + Control logic</strong></p>
+
+
+
+<p class="wp-block-paragraph">Let’s take a closer look at the three components:</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">The LLM provides the intelligence: It understands the question, plans steps, and decides what to do.</li>
+
+
+
+<li class="wp-block-list-item">The tools are small Python functions that the agent is allowed to call (e.g., <em>get_schema()</em> or <em>get_nulls())</em>: They provide specific information from the data, such as column names or statistics.</li>
+
+
+
+<li class="wp-block-list-item">The control logic (policy) ensures that the LLM does not respond immediately, but first decides whether it should use a tool. It thinks step by step: First, the question is analyzed, then the appropriate tool is selected, then the result is interpreted and, if necessary, a next step is selected, and finally a response is returned.</li>
+</ul>
+
+
+
+<p class="wp-block-paragraph">Instead of manually describing all data as in classic prompting, we transfer the responsibility to the agent: The system should act on its own, but only with the tools provided.</p>
+
+
+
+<p class="wp-block-paragraph">Let’s look at a simple example:</p>
+
+
+
+<p class="wp-block-paragraph">A user asks: “What is the average age in the CSV?”</p>
+
+
+
+<p class="wp-block-paragraph">At this point, the agent calls up the tool we have defined, <em>df.describe()</em>. The output is a clearly structured value (e.g., “mean”: 29.7). Here we can also see that this can reduce or minimize hallucinations, as the system knows what to apply and cannot return an answer such as “Probably between 20 and 40.”</p>
+
+
+
+<h3 class="wp-block-heading">LangChain as a framework</h3>
+
+
+
+<p class="wp-block-paragraph">We use the <a href="https://www.langchain.com/">LangChain framework</a> for the agent. This allows us to connect LLMs with tools and build systems with defined behavior. The system can perform actions instead of just providing answers or generating text. A detailed explanation would make this article too long. But in a previous article, you can find an explanation of LangChain and a comparison with Langflow: <a href="https://medium.com/data-science-collective/langchain-vs-langflow-build-a-simple-llm-app-with-code-or-drag-drop-cbace40c12b1">LangChain vs Langflow: Build a Simple LLM App with Code or Drag &amp; Drop</a>.</p>
+
+
+
+<h3 class="wp-block-heading">What the agent does for us</h3>
+
+
+
+<p class="wp-block-paragraph">When we receive a new CSV, we usually ask ourselves the following questions first (start of exploratory data analysis):</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">What columns are there?</li>
+
+
+
+<li class="wp-block-list-item">Where is data missing?</li>
+
+
+
+<li class="wp-block-list-item">What do the descriptive statistics look like?</li>
+</ul>
+
+
+
+<p class="wp-block-paragraph">This is exactly what we want the agent to do automatically.</p>
+
+
+
+<h3 class="wp-block-heading">Tools we define for the agent</h3>
+
+
+
+<p class="wp-block-paragraph">For the agent to work, it needs clearly defined tools. It is best to define them as small, specific, and controlled as possible. This way, we avoid errors, hallucinations or unclear outputs because they make the output deterministic. They also make the agent reproducible and testable because the same input should produce a consistent result.</p>
+
+
+
+<p class="wp-block-paragraph">In our example, we define three tools:</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item"><strong>schema:</strong> Returns column names and data types.</li>
+
+
+
+<li class="wp-block-list-item"><strong>nulls: </strong>Shows columns with missing values (including number).</li>
+
+
+
+<li class="wp-block-list-item"><strong>describe: </strong>Provides descriptive statistics for numeric columns.</li>
+</ul>
+
+
+
+<p class="wp-block-paragraph">Later, we will add a small mini-evaluation to ensure that our agent is working correctly.</p>
+
+
+
+<h3 class="wp-block-heading">Why is this an agent and not an app?</h3>
+
+
+
+<p class="wp-block-paragraph">We are not building a classic program with a fixed sequence (e.g., using if-else), but rather the model plans itself based on the question, selects the appropriate tool, and combines steps as necessary to arrive at an answer:</p>
+
+
+
+<figure class="wp-block-image size-large"><img decoding="async" src="../Images/c1a6ca970dccd2a96919f1b644fc3aef.png" alt="The image shows the difference between a traditional app and this agent." class="wp-image-619824" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/09/Agent-with-LangChain_Difference-between-a-traditional-process-Application-Function-vs.-an-agent-based-process-with-LLM-1-1024x867.png"/><figcaption class="wp-element-caption">Visualization by the author.</figcaption></figure>
+
+
+
+<h2 class="wp-block-heading" id="pagejump2">Hands-On-Example: CSV-Sanity-Check Agent with LangChain</h2>
+
+
+
+<h3 class="wp-block-heading">1) Setup</h3>
+
+
+
+<p class="wp-block-paragraph">Prerequisite: Python 3.10 or higher must be installed. Many packages in the AI tooling world require ≥ 3.10. You can find the code and the link to the repo below.</p>
+
+
+
+<p class="wp-block-paragraph"><em>Tip for newbies:</em><br/><em>You can check this by entering “python –version” in cmd.exe.</em></p>
+
+
+
+<p class="wp-block-paragraph">With the code below, we first create a new project, create an isolated Python environment and activate it. We do this so that packages and versions are reproducible and do not consolidate with other projects.</p>
+
+
+
+<p class="wp-block-paragraph"><em>Tip for newbies:</em><br/><em>I work with Windows. We open a terminal with Windows + R &gt; cmd and paste the following code</em>.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-bash">mkdir csv-agent
+
+cd csv-agent
+python -m venv .venv
+.venv\Scripts\activate</code></pre>
+
+
+
+<p class="wp-block-paragraph">Then we install the necessary packages:</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-bash">pip install "langchain&gt;=0.2,&lt;0.3" "langchain-openai&gt;=0.1.7" "langchain-community&gt;=0.2" pandas seaborn</code></pre>
+
+
+
+<p class="wp-block-paragraph">With this command, we pin LangChain to the 0.2 line and install the OpenAI connection and the community package. We also install pandas for the EDA functions and seaborn for loading the Titanic sample dataset.</p>
+
+
+
+<figure class="wp-block-image size-large"><img decoding="async" src="../Images/2b28d0222ef24dbf60e833cc58e8ca80.png" alt="The image shows creating an environment and installing packages." class="wp-image-619753" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/09/LangChain-Agent_Creating-environment-and-installing-packages-1024x232.png"/><figcaption class="wp-element-caption">Screenshot taken by the author.</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph"><em>Tip for newbies:</em><br/><em>If you don’t want to use OpenAI, you can work locally with Ollama (e.g., with Llama or Mistral). This option is available later in the code</em>.</p>
+
+
+
+<h3 class="wp-block-heading">2) Prepare the data set in prepare_data.py</h3>
+
+
+
+<p class="wp-block-paragraph">Next, we create a Python file called <em>prepare_data.py</em>. I use Visual Studio Code for this, but you can also use another IDE. In this file, we load the Titanic dataset, as it is publicly available.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python"># prepare_data.py
+import seaborn as sns
+df = sns.load_dataset("titanic")
+df.to_csv("titanic.csv", index=False)
+print("Saved titanic.csv")</code></pre>
+
+
+
+<p class="wp-block-paragraph">With <em>seaborn.load_dataset(“titanic”)</em>, we load the public dataset (891 rows + first row with column names) directly into memory and save it as titanic.csv. The dataset contains only numeric, Boolean and categorical columns, making it ideal for an EDA agent.</p>
+
+
+
+<p class="wp-block-paragraph"><em>Tips for newbies</em>:</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item"><em>sns.load_dataset() requires internet access (the data comes from the seaborn repo).</em></li>
+
+
+
+<li class="wp-block-list-item"><em>Save the file in the project folder (csv-agent) so htat main.py can find it.</em></li>
+</ul>
+
+
+
+<p class="wp-block-paragraph">In the terminal, we execute the Python file with the following command, so that the titanic.csv file is located in the project:</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-bash">python prepare_data.py</code></pre>
+
+
+
+<p class="wp-block-paragraph">We then see in the terminal that the csv has been saved and see the titanic.csv file in the folder:</p>
+
+
+
+<figure class="wp-block-image size-full"><img decoding="async" src="../Images/d57ffc543eccc46a2359cdb1c75df039.png" alt="The image shows the result in the terminal after the csv is saved." class="wp-image-619756" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/09/LangChain-Agent_Saved-Data.png"/><figcaption class="wp-element-caption">Screenshot taken by the author.</figcaption></figure>
+
+
+
+<figure class="wp-block-image size-full"><img decoding="async" src="../Images/dcf157da1cc2cbec5d182b4c824ebe2f.png" alt="The image shows the folder structure of the project." class="wp-image-619757" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/09/LangChain-Agent-for-CSV-Sanity-Check-with-Titanic-Data.png"/><figcaption class="wp-element-caption">Screenshot taken by the author.</figcaption></figure>
+
+
+
+<h4 class="wp-block-heading">Side Note – Titanic dataset</h4>
+
+
+
+<p class="wp-block-paragraph">The analysis is based on the Titanic dataset (<a href="https://www.openml.org/search?type=data&amp;sort=runs&amp;id=40945&amp;status=active" data-type="link" data-id="https://www.openml.org/search?type=data&amp;sort=runs&amp;id=40945&amp;status=active">OpenML ID 40945</a>), which is marked as public on OpenML.</p>
+
+
+
+<p class="wp-block-paragraph">When we open the file, we see the following 14 columns and 891 rows of data. The Titanic dataset is a classic example of exploratory data analysis (EDA). It contains information on 891 passengers of the Titanic and is often used to investigate the relationship between characteristics (e.g., gender, age, ticket class) and survival.</p>
+
+
+
+<figure class="wp-block-image size-large"><img decoding="async" src="../Images/91b322b1d04b64c9d501def1e9097f83.png" alt="The image shows the Titanic dataset in Excel." class="wp-image-619758" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/09/LangChain-Agent_CSV-Sanity-Check-Agent-with-Titanic-Dataset-1024x194.png"/><figcaption class="wp-element-caption">Screenshot taken by the author.</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">Here are the 14 columns with a brief explanation:</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item"><strong>survived</strong>: Survived (1) or did not survive (0).</li>
+
+
+
+<li class="wp-block-list-item"><strong>pclass</strong>: Ticket class (1 = 1st class, 2 = 2nd class, 3 = 3rd class).</li>
+
+
+
+<li class="wp-block-list-item"><strong>sex</strong>: Gender of the passenger.</li>
+
+
+
+<li class="wp-block-list-item"><strong>age</strong>: Age of the passenger (in years, may be missing).</li>
+
+
+
+<li class="wp-block-list-item"><strong>sibsp</strong>: Number of siblings/spouses on board.</li>
+
+
+
+<li class="wp-block-list-item"><strong>parch</strong>: Number of parents/children on board.</li>
+
+
+
+<li class="wp-block-list-item"><strong>fare</strong>: Fare paid by the passenger.</li>
+
+
+
+<li class="wp-block-list-item"><strong>embarked</strong>: Port of embarkation (C = Cherbourg, Q = Queenstown, S = Southampton).</li>
+
+
+
+<li class="wp-block-list-item"><strong>class</strong>: Ticket class as text (First, Second, Third). Corresponds to pclass.</li>
+
+
+
+<li class="wp-block-list-item"><strong>who</strong>: Categorization “man,” “woman,” “child.”</li>
+
+
+
+<li class="wp-block-list-item"><strong>adult_male</strong>: Boolean field: Was the passenger an adult male (True/False)?</li>
+
+
+
+<li class="wp-block-list-item"><strong>deck</strong>: Cabin deck (often missing).</li>
+
+
+
+<li class="wp-block-list-item"><strong>embark_town</strong>: City of port of embarkation (Cherbourg, Queenstown, Southampton).</li>
+
+
+
+<li class="wp-block-list-item"><strong>alone</strong>: Boolean field: Did the passenger travel alone (True/False)?</li>
+</ul>
+
+
+
+<p class="wp-block-paragraph"><em><strong>Optional for advanced readers</strong><br/>If you want to track and evaluate your agent runs later, you can use <a href="https://docs.langchain.com/langsmith/home">LangSmith</a>. </em></p>
+
+
+
+<h3 class="wp-block-heading">2) Define tools in main.py</h3>
+
+
+
+<p class="wp-block-paragraph">Next, we define the various tools. To do this, we create a new Python file called <em>main.py</em> and save it in the csv-agent folder as well. We add the following code to it:</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python"># main.py
+import os, json
+import pandas as pd
+
+# --- 0) Loading CSV ---
+DF_PATH = "titanic.csv"
+df = pd.read_csv(DF_PATH)
+
+# --- 1) Defining tools as small, concise commands ---
+# IMPORTANT: Tools return strings (in this case, JSON strings) so that the LLM sees clearly structured responses.
+
+from langchain_core.tools import tool
+
+@tool
+def tool_schema(dummy: str) -&gt; str:
+    """Returns column names and data types as JSON."""
+    schema = {col: str(dtype) for col, dtype in df.dtypes.items()}
+    return json.dumps(schema)
+
+@tool
+def tool_nulls(dummy: str) -&gt; str:
+    """Returns columns with the number of missing values as JSON (only columns with &gt;0 missing values)."""
+    nulls = df.isna().sum()
+    result = {col: int(n) for col, n in nulls.items() if n &gt; 0}
+    return json.dumps(result)
+
+@tool
+def tool_describe(input_str: str) -&gt; str:
+    """
+    Returns describe() statistics.
+    Optional: input_str can contain a comma-separated list of columns, e.g. "age, fare".
+    """
+    cols = None
+    if input_str and input_str.strip():
+        cols = [c.strip() for c in input_str.split(",") if c.strip() in df.columns]
+    stats = df[cols].describe() if cols else df.describe()
+    # describe() has a MultiIndex. Flatten it for the LLM to keep it readable:
+    return stats.to_csv(index=True)</code></pre>
+
+
+
+<p class="wp-block-paragraph">After importing the necessary packages, we load titanic.csv into <em>df</em> once and define three small, narrowly defined tools. Let’s take a closer look at each of these tools:</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item"><em>tool_schema</em> returns the column names and data types as JSON. This gives us an overview of what we are dealing with and is usually the first step in any data analysis. Even if a tool doesn’t need input (like schema), it must still accept one argument, because the agent always passes a string. We simply ignore it.</li>
+
+
+
+<li class="wp-block-list-item"><em>tool_nulls</em> counts missing values per column and returns only columns with missing values.</li>
+
+
+
+<li class="wp-block-list-item"><em>tool_describe</em> calls df.describe(). It is important to note that this tool only works for numeric columns. Strings or Booleans, on the other hand, are ignored. This is an important step in the sanity check or EDA. This allows us to quickly see the mean, min, max, etc. of the different columns. For large CSVs, describe() can take a long time. In this case, you could integrate <em>df.sample(n=10000)</em> as sampling logic, for example.</li>
+</ul>
+
+
+
+<p class="wp-block-paragraph">These tools are the controlled interfaces through which the LLM is allowed to access the data. They are deterministic and therefore reproducible. Tools should ideally be clear and limited: In other words, they should have only one function or task.</p>
+
+
+
+<hr class="wp-block-separator has-alpha-channel-opacity is-style-dotted"/>
+
+
+
+<h4 class="wp-block-heading">Why do we need tools at all?</h4>
+
+
+
+<p class="wp-block-paragraph"><em>An LLM can generate text, but it cannot directly “see” data. In order for the LLM to work meaningfully with a CSV, we need to provide interfaces.</em> <em>That’s exactly what tools are for:</em></p>
+
+
+
+<p class="wp-block-paragraph"><em>Tools are small Python functions that the agent is allowed to call. Instead of making everything free, we only allow very specific, reproducible actions.</em></p>
+
+
+
+<hr class="wp-block-separator has-alpha-channel-opacity is-style-dotted"/>
+
+
+
+<h4 class="wp-block-heading">What exactly does the code do?</h4>
+
+
+
+<p class="wp-block-paragraph">With the @tool decorator, LangChain automatically infers the tool’s name, description and argument schema from the function signature and docstring. This means we only need to write the function itself. LangChain takes care of the rest.</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">The model passes arguments that match the tool’s schema (often JSON). In this tutorial we keep things simple and accept a single string argument (e.g., <code>input_str: str</code> or a dummy string we ignore).</li>
+
+
+
+<li class="wp-block-list-item">Tools always return a string (text). JSON is ideal for structured data, which we define with <em>return json.dumps(…)</em>.</li>
+</ul>
+
+
+
+<figure class="wp-block-image size-large"><img decoding="async" src="../Images/df70afb61c2552613bac21a3f6e006e4.png" alt="This image shows how the agent uses multi-step reasoning with tools." class="wp-image-619826" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/09/Agent-with-LangChain_How-an-Agent-uses-multi-step-reasoning-with-tools-1-1024x973.png"/><figcaption class="wp-element-caption">Visualization by the author.</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">This is a multi-step thought process. The LLM plans iteratively. Instead of responding directly, it thinks step by step: it decides which tool to call, interprets the result, and may continue until it has enough information to respond.</p>
+
+
+
+<h3 class="wp-block-heading">4) Registering tools for LangChain in main.py</h3>
+
+
+
+<p class="wp-block-paragraph">We add the code below to the same <em>main.py</em> file to register the previously defined tools for the agent:</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python"># --- 2) Registering tools for LangChain ---
+
+tools = [tool_schema, tool_nulls, tool_describe]</code></pre>
+
+
+
+<p class="wp-block-paragraph">With this code, we simply collect the decorated functions into a list. Each function has already been converted into a LangChain tool by the @tool decorator.</p>
+
+
+
+<h3 class="wp-block-heading">5) Configuring LLM in main.py</h3>
+
+
+
+<p class="wp-block-paragraph">Next, we configure the LLM that the agent uses. Here, you can either use the variant for OpenAI or for an open-source tool with Ollama.</p>
+
+
+
+<p class="wp-block-paragraph">I used OpenAI, which is why we first need to set the API key:</p>
+
+
+
+<p class="wp-block-paragraph">At <a href="https://platform.openai.com/api-keys">OpenAI</a>, we create a new API key:</p>
+
+
+
+<figure class="wp-block-image size-large"><img decoding="async" src="../Images/a8434e3f3a33020358aaeb4c1260b1f8.png" alt="The image shows how to create an API-Key in OpenAI." class="wp-image-619762" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/09/LangChain-Agent_Creating-API-Key-1024x453.png"/><figcaption class="wp-element-caption">Screenshot taken by the author.</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">We then copy it directly (it will not be displayed later) and set it as an environment variable in the terminal with the following command.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-bash">setx OPENAI_API_KEY "your_key”</code></pre>
+
+
+
+<p class="wp-block-paragraph">It is important to restart cmd and reactivate .venv afterwards. We can use echo to check whether an API key has been saved.</p>
+
+
+
+<figure class="wp-block-image size-large"><img decoding="async" src="../Images/1e8643114bfae0bda613198c34a9e846.png" alt="The image shows how to check in the terminal, if the API-Key was saved." class="wp-image-619760" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/09/LangChain-Agent_OpenAI-Key-1024x336.png"/><figcaption class="wp-element-caption">Screenshot taken by the author.</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">Now we add the following code to the end of <em>main.py</em>:</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python"># --- 3) Configure LLM ---
+# Option A: OpenAI (simple)
+#   export OPENAI_API_KEY=...    # Windows: setx OPENAI_API_KEY "YOUR_KEY"
+#   Use a lower temperature for more stable tool usage
+USE_OPENAI = bool(os.getenv("OPENAI_API_KEY"))
+
+if USE_OPENAI:
+    from langchain_openai import ChatOpenAI
+    llm = ChatOpenAI(model="gpt-4o-mini", temperature=0.1)
+else:
+    # Option B: Local with Ollama (make sure to pull the model first, e.g. 'ollama run llama3')
+    from langchain_community.chat_models import ChatOllama
+    llm = ChatOllama(model="llama3.1:8b", temperature=0.1)</code></pre>
+
+
+
+<p class="wp-block-paragraph">The code uses OpenAI if an OpenAI_API_KEY is available, otherwise Ollama locally.</p>
+
+
+
+<p class="wp-block-paragraph">We set the temperature to 0.1. This ensures that the responses are more deterministic, which is important for the subsequent test.</p>
+
+
+
+<p class="wp-block-paragraph">We also use gpt-4o-mini as the LLM. This is a lightweight model from OpenAI with a focus on tool usage.</p>
+
+
+
+<p class="wp-block-paragraph"><em>Tip for Newbies:</em><br/><em>The temperature determines how creatively an LLM responds. If we enter 0.0, it responds deterministically. This means that the model almost always returns the same answer when the input is the same. This is good for structured tasks such as tool usage, code or facts, for example. If we specify 1.0, the model responds creatively and with a wide variety of options. This means that the model varies more and can suggest different formulations or solutions, which is good for brainstorming or text ideas, for example.</em></p>
+
+
+
+<h3 class="wp-block-heading">6) Defining the agent’s behavior in main.py using the policy</h3>
+
+
+
+<p class="wp-block-paragraph">In this step, we define how the agent should behave. The system prompt sets the policy.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python"># --- 4) Narrow Policy/Prompt (Agent Behavior) ---
+from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
+
+SYSTEM_PROMPT = (
+    "You are a data-focused assistant. "
+    "If a question requires information from the CSV, first use an appropriate tool. "
+    "Use only one tool call per step if possible. "
+    "Answer concisely and in a structured way. "
+    "If no tool fits, briefly explain why.\n\n"
+    "Available tools:\n{tools}\n"
+    "Use only these tools: {tool_names}."
+)
+
+prompt = ChatPromptTemplate.from_messages(
+    [
+        ("system", SYSTEM_PROMPT),
+        ("human", "{input}"),
+        MessagesPlaceholder(variable_name="agent_scratchpad"),
+    ]
+)
+
+_tool_desc = "\n".join(f"- {t.name}: {t.description}" for t in tools)
+_tool_names = ", ".join(t.name for t in tools)
+prompt = prompt.partial(tools=_tool_desc, tool_names=_tool_names)
+</code></pre>
+
+
+
+<p class="wp-block-paragraph">First, we import <em>ChatPromptTemplate</em> to structure our agent’s prompt. The most important part of the code is the system prompt: it defines the policy, i.e., the “rules of the game” for the agent. In it, we define that the agent may only use one tool per step, that it should be concise, and that it may only use the tools we have defined.</p>
+
+
+
+<p class="wp-block-paragraph">With the last two lines in the system prompt, we ensure that <em>{tools}</em> lists all available tools with their descriptions and with <em>{tool_names}</em>, we ensure that the agent can only use these names and cannot invent fantasy tools.</p>
+
+
+
+<p class="wp-block-paragraph">In addition, we use <em>MesagesPlaceholder(“agent_scratchpad”)</em>. This is where the agent stores intermediate steps: The agent stores which tools it has called and which results it has received. This allows it to continue its own chain of reasoning until it arrives at a final answer.</p>
+
+
+
+<h3 class="wp-block-heading">7) Create tool-calling agent in main.py</h3>
+
+
+
+<p class="wp-block-paragraph">In the last step, we define the agent:</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python"># --- 5) Create &amp; Run Tool-Calling Agent ---
+from langchain.agents import create_tool_calling_agent, AgentExecutor
+
+agent = create_tool_calling_agent(llm=llm, tools=tools, prompt=prompt)
+agent_executor = AgentExecutor(
+    agent=agent,
+    tools=tools,
+    verbose=False,   # optional: True for debug logs
+    max_iterations=3,
+)
+
+if __name__ == "__main__":
+    user_query = "Which columns have missing values? List 'Column: Count'."
+    result = agent_executor.invoke({"input": user_query})
+    print("\n=== AGENT ANSWER ===")
+    print(result["output"])</code></pre>
+
+
+
+<p class="wp-block-paragraph">With <em>create_tool_calling_agent</em>, we connect our LLM, the tools and the prompt to form a tool-calling agent.</p>
+
+
+
+<p class="wp-block-paragraph">To ensure that the process runs smoothly, we use the <em>AgentExecutor</em>. It takes care of the so-called agent loop: The agent first plans what needs to be done, then calls up a tool, receives the result and decides whether another tool is needed or whether it can provide the final answer. This cycle repeats until the result is ready.</p>
+
+
+
+<p class="wp-block-paragraph">With <em>verbose=True</em>, we can view the intermediate steps in the terminal, which is extremely helpful for debugging. For example, we can see which tool was called when or what data was returned. If everything is running smoothly, we can also set it to <em>=False</em> to keep the output clearer.</p>
+
+
+
+<p class="wp-block-paragraph">With <em>max_iterations=3</em>, we limit how many reasoning–tool–response cycles the agent may perform. This helps prevent infinite loops or excessive tool calls. In our example, the agent might reasonably call schema → nulls → describe before answering.</p>
+
+
+
+<p class="wp-block-paragraph">With the last part of the code, the agent is executed with the sample input “Which columns have missing values?”. The result is printed in the terminal.</p>
+
+
+
+<p class="wp-block-paragraph"><em>Tip for newbies:</em><br/><em>if name == “main”: is a standard Python pattern: If we execute the file directly in the terminal with python main.py, the code in this block will be started. However, if we only import the file (e.g., later in the mini_eval.py file), this block is skipped. This allows us to use the file as a standalone script or reuse it as a module in other projects.</em></p>
+
+
+
+<h3 class="wp-block-heading">8) Run the script: Run the file main.py in the terminal.</h3>
+
+
+
+<p class="wp-block-paragraph">Now we enter <em>python main.py</em> in the terminal to start the agent. We then see the final answer in the terminal:</p>
+
+
+
+<figure class="wp-block-image size-full"><img decoding="async" src="../Images/d35936b13da1ec02ed38712d0128883a.png" alt="The image shows the result that the agent shows in the terminal (how many missing values)." class="wp-image-619763" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/09/LangChainAgent_Result.png"/><figcaption class="wp-element-caption">Screenshot taken by the author.</figcaption></figure>
+
+
+
+<h2 class="wp-block-heading" id="pagejump3">Mini-Evaluation</h2>
+
+
+
+<p class="wp-block-paragraph">Finally, we want to check our agent, which we do with a small evaluation. This ensures that the agent behaves correctly and does not introduce any “regressions” when we change something in the code later on.</p>
+
+
+
+<p class="wp-block-paragraph">At the end of <em>main.py</em>, we add the code below:</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">def ask_agent(query: str) -&gt; str:
+    return agent_executor.invoke({"input": query})["output"]</code></pre>
+
+
+
+<p class="wp-block-paragraph">With <em>ask_agent</em>, we encapsulate the agent call in a function that simply returns a string. This allows us to call the agent later from other files.</p>
+
+
+
+<p class="wp-block-paragraph">The lower block ensures that a test run is performed when <em>main.py</em> is called directly. If, on the other hand, we import main into another file, only the function is provided.</p>
+
+
+
+<p class="wp-block-paragraph">Now we create the <em>mini_eval.py</em> file and insert the following code:</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python"># mini_eval.py
+
+from main import ask_agent
+
+tests = [
+    ("Which columns have missing values?", ["age", "embarked", "deck", "embark_town"]),
+    ("Show me the first 3 columns with their data types.", ["survived", "pclass", "sex"]),
+    ("Give me a statistical summary of the 'age' column.", ["mean", "min", "max"]),
+]
+
+def passed(q, out, must_include):
+    text = out.lower()
+    return all(any(tok in text for tok in (m.lower(), str(m).lower())) for m in must_include)
+
+if __name__ == "__main__":
+    ok = 0
+    for q, must in tests:
+        out = ask_agent(q)
+        result = passed(q, out, must)
+        print(f"[{'OK' if result else 'FAIL'}] {q}\n{out}\n")
+        ok += int(result)
+    print(f"Passed {ok}/{len(tests)}")
+</code></pre>
+
+
+
+<p class="wp-block-paragraph">In the code, we define three test cases. Each test consists of a question for the agent and a list of keywords that must appear in the answer. The <em>passed()</em> function checks whether these keywords are included.</p>
+
+
+
+<p class="wp-block-paragraph"><strong>Expected test results</strong></p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item"><strong>Test 1: “Which columns have missing values?”</strong><br/>Expected: Output mentions age, deck, embarked, embark_town.</li>
+
+
+
+<li class="wp-block-list-item"><strong>Test 2: “Show me the first 3 columns with their data types.” </strong>Expected: Output contains survived, pclass, sex with types such as int64 or object.</li>
+
+
+
+<li class="wp-block-list-item"><strong>Test 3: “Give me a statistical summary of the ‘age’ column.” </strong>Expected output: Output contains mean ≈ 29.7, min = 0.42, max = 80.</li>
+</ul>
+
+
+
+<p class="wp-block-paragraph">If everything runs correctly, the script reports “Passed 3/3” at the end.</p>
+
+
+
+<p class="wp-block-paragraph">We get this output in the terminal. So the test works:</p>
+
+
+
+<figure class="wp-block-image size-full"><img decoding="async" src="../Images/1312936a3f9c2490104bcd15f04fe0c2.png" alt="The image shows the result of the mini-evaluation." class="wp-image-619765" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/09/LangChain-Agent_Results-of-the-mini-evaluation.png"/><figcaption class="wp-element-caption">Screenshot taken by the author.</figcaption></figure>
+
+
+
+<hr class="wp-block-separator has-alpha-channel-opacity is-style-dotted"/>
+
+
+
+<p class="wp-block-paragraph">You can find the code &amp; the csv in the repo on <a href="https://github.com/Sari95/langchain-eda-with-csv-agent/tree/main">GitHub</a>. </p>
+
+
+
+<p class="wp-block-paragraph" id="5cc7"><em>On my </em><a href="https://sarahleaschrch.substack.com/" rel="noreferrer noopener" target="_blank"><em>Substack Data Science Espresso</em></a><em>, I share practical guides and bite-sized updates from the world of Data Science, Python, AI, Machine Learning, and Tech — made for curious minds like yours.</em></p>
+
+
+
+<p class="wp-block-paragraph" id="ec47"><em>Have a look and subscribe on <a href="https://medium.com/@schuerch_sarah">Medium</a> or on Substack if you want to stay in the loop.</em></p>
+
+
+
+<hr class="wp-block-separator has-alpha-channel-opacity is-style-dotted"/>
+
+
+
+<h2 class="wp-block-heading" id="pagejump4">Final Thoughts – Pitfalls, tips and next steps</h2>
+
+
+
+<p class="wp-block-paragraph">LangChain is very practical for this example because it already includes and nicely illustrates the entire agent loop (planning, tool calling, control). For small or clearly structured tasks, however, alternatives such as pure function calling (e.g., via the OpenAI API) or classic EDA frameworks like Great Expectations might be sufficient. That said, LangChain does add some overhead. If you only need fixed EDA checks, a plain Python script would be leaner and faster. LangChain is especially worthwhile when you want to extend things flexibly or orchestrate multiple tools and agents.</p>
+
+
+
+<p class="wp-block-paragraph">When working with agents, there are a few things you should keep in mind:</p>
+
+
+
+<p class="wp-block-paragraph">One common pitfall is unclear tool descriptions: If the descriptions are too vague, the model can easily choose the wrong tool (misrouting). With precise and concrete descriptions, we can greatly reduce this.</p>
+
+
+
+<p class="wp-block-paragraph">Another important point is testing: Even a small mini-evaluation with three simple tests is helpful in detecting regressions (errors that stay unnoticed due to subsequent changes) at an early stage.</p>
+
+
+
+<p class="wp-block-paragraph">It’s also worth starting small: In our example, we only worked with three clearly defined tools, but now we know that they work reliably.</p>
+
+
+
+<p class="wp-block-paragraph">With regard to this agent, it might also be useful to incorporate sampling (for example, <em>df.sample(n=10000))</em> for very large CSV files to avoid performance issues. Keep in mind that LLM agents can also become costly if every question triggers multiple tool calls.</p>
+
+
+
+<p class="wp-block-paragraph">In this article, we built a single agent that checks CSV files. In practice, multiple agents would often work together: For example, one agent could ensure data quality while a second agent creates visualizations. Such multi-agent systems are the next step in solving more complex tasks.</p>
+
+
+
+<p class="wp-block-paragraph">As a next step, we could also incorporate <a href="https://www.langchain.com/langgraph">LangGraph</a> to extend the agent loop with states and orchestration. This would allow us to assemble agents as in a flowchart, including interruptions, memory, or more flexible control logic.</p>
+
+
+
+<p class="wp-block-paragraph">Finally, in our example, we manually defined the three tools schema, nulls, and describe. With the <a href="https://www.anthropic.com/news/model-context-protocol">Model Context Protocol</a> (MCP), we could connect tools in a standardized way. For example, we could connect databases, APIs or IDEs.</p>
+
+
+
+<h2 class="wp-block-heading" id="pagejump5">Where Can You Continue Learning?</h2>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item"><a href="https://www.anthropic.com/news/model-context-protocol">Anthropic – Introducting the Model Context Protocol</a></li>
+
+
+
+<li class="wp-block-list-item"><a href="https://www.ibm.com/think/topics/model-context-protocol">IBM – What is the Model Context Protocol (MCP)?</a></li>
+
+
+
+<li class="wp-block-list-item"><a href="https://python.langchain.com/docs/introduction/">LangChain – Documentation</a></li>
+
+
+
+<li class="wp-block-list-item"><a href="https://langchain-ai.github.io/langgraph/">LangGraph – Documentation</a></li>
+
+
+
+<li class="wp-block-list-item"><a href="https://www.geeksforgeeks.org/artificial-intelligence/introduction-to-langchain/">GeeksForGeeks – Introduction to LangChain</a></li>
+
+
+
+<li class="wp-block-list-item"><a href="https://www.youtube.com/watch?v=1bUy-1hGZpI">IBM Technology Video – What is LangChain?</a></li>
+</ul>
+    
+</body>
+</html>

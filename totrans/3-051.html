@@ -1,0 +1,512 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.1//EN"
+  "http://www.w3.org/TR/xhtml11/DTD/xhtml11.dtd">
+
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+<title>Graph Neural Networks Part 4: Teaching Models to Connect the Dots</title>
+<link href="../Styles/Style.css" type="text/css" rel="stylesheet"/>
+</head>
+<body>
+<h1>Graph Neural Networks Part 4: Teaching Models to Connect the Dots</h1>
+<blockquote>原文：<a href="https://towardsdatascience.com/graph-neural-networks-part-4-teaching-graphs-to-connect-the-dots/">https://towardsdatascience.com/graph-neural-networks-part-4-teaching-graphs-to-connect-the-dots/</a></blockquote>
+<p class="wp-block-paragraph"><strong><mdspan datatext="el1745951325198" class="mdspan-comment">Have you</mdspan> ever wondered how it’s possible that Facebook knows who you might know? Or why it sometimes suggests a total stranger? This problem is called link prediction. In a social network graph, people are nodes and friendships are edges, the goal is to predict if a connection should exist between two nodes.</strong></p>
+
+
+
+<p class="wp-block-paragraph">Link prediction is a very popular topic! It can be used to recommend friends in social networks, suggest products on e-commerce sites or movies on Netflix, or predict protein interactions in biology. In this post, you will explore how link prediction works. First you will learn simple heuristics, and we end with powerful GNN-based methods like SEAL.</p>
+
+
+
+<blockquote class="wp-block-quote is-layout-flow wp-block-quote-is-layout-flow">
+<p class="wp-block-paragraph">The previous posts explained <a href="https://towardsdatascience.com/graph-neural-networks-part-1-graph-convolutional-networks-explained-9c6aaa8a406e/">GCNs</a>, <a href="https://towardsdatascience.com/graph-neural-networks-part-2-graph-attention-networks-vs-gcns-029efd7a1d92/">GATs</a>, and <a href="https://towardsdatascience.com/graph-neural-networks-part-3-how-graphsage-handles-changing-graph-structure/">GraphSage</a>. They mainly covered predicting node properties, so you can read this article standalone, because this time we shift focus to predicting edges. If you want to dive a bit deeper into node representations, I recommend to revisit the previous posts. The code setup can be found <a href="https://towardsdatascience.com/graph-neural-networks-part-1-graph-convolutional-networks-explained-9c6aaa8a406e/">here</a>.</p>
+</blockquote>
+
+
+
+<hr class="wp-block-separator has-alpha-channel-opacity is-style-dotted"/>
+
+
+
+<h2 class="wp-block-heading">What is Link Prediction?</h2>
+
+
+
+<p class="wp-block-paragraph">Link prediction is the task of forecasting missing or future connections (edges) between nodes in a graph. Given a graph <em>G = (V, E)</em>, the goal is to predict whether an edge should exist between two nodes (<em>u, v</em>) ∉ <em>E</em>.</p>
+
+
+
+<p class="wp-block-paragraph">To evaluate link prediction models, you can create a test set by hiding a portion of the existing edges and ask the model to predict them. Of course, the test set should have positive samples (real edges), and negative samples (random node pairs that are not connected). You can train the model on the remaining graph.</p>
+
+
+
+<p class="wp-block-paragraph">The output of the model is a link score or probability for each node pair. You can evaluate this with metrics like AUC or average precision.</p>
+
+
+
+<p class="wp-block-paragraph">We will take a look at simple heuristic-based methods, and then we move on to more complex methods.</p>
+
+
+
+<figure class="wp-block-image size-large"><img decoding="async" src="../Images/5f71ebe20f81d2d85bc73f816008706b.png" alt="" class="wp-image-601814" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/04/Screenshot-2025-04-18-at-11.40.03-1024x425.png"/><figcaption class="wp-element-caption">Graph with nodes and edges. We will use this graph as example for the heuristic-based methods. Image by author.</figcaption></figure>
+
+
+
+<h2 class="wp-block-heading">Heuristic-Based Methods</h2>
+
+
+
+<p class="wp-block-paragraph">We can divide these ‘easy’ methods into two categories: local and global. Local heuristics are based on local structure, while global heuristics use the whole graph. These approaches are rule-based and work well as baselines for link prediction tasks.</p>
+
+
+
+<h3 class="wp-block-heading">Local Heuristics</h3>
+
+
+
+<p class="wp-block-paragraph">As the name says, local heuristics rely on the <em>immediate neighborhood</em> of the two nodes you are testing for a potential link. And actually they can be surprisingly effective. Benefits of local heuristics are that they are fast and interpretable. But they only look at the close neighborhood, so capturing the complexity of relationships is limited.</p>
+
+
+
+<h4 class="wp-block-heading">Common Neighbors</h4>
+
+
+
+<p class="wp-block-paragraph">The idea is simple: if two nodes share many common neighbors, they are more likely to be connected.</p>
+
+
+
+<p class="wp-block-paragraph">For calculation you count the number of neighbors the nodes have in common. One issue here is that it does not take into account the relative number of common neighbors.</p>
+
+
+
+<p class="wp-block-paragraph">In the examples below, the number of common neighbors between A and B is 3, and the number of common neighbors between C and D is 1.</p>
+
+
+
+<figure class="wp-block-image size-large"><img decoding="async" src="../Images/9f95f985717d23ad20a40362dd08f076.png" alt="" class="wp-image-601816" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/04/Screenshot-2025-04-18-at-11.52.28-1024x446.png"/></figure>
+
+
+
+<h4 class="wp-block-heading">Jaccard Coefficient</h4>
+
+
+
+<p class="wp-block-paragraph">The Jaccard Coefficient fixes the issue of common neighbors and computes the relative number of neighbors in common.</p>
+
+
+
+<p class="wp-block-paragraph">You take the common neighbors and divide this by the total number of unique neighbors of the two nodes.</p>
+
+
+
+<p class="wp-block-paragraph">So now things change a bit: the Jaccard coefficient of nodes A and B is 3/5 = 0.6 (they have 3 common neighbors and 5 total unique neighbors), while the Jaccard coefficient of nodes C and D is 1/1 = 1 (they have 1 common neighbor and 1 unique neighbor). In this case the connection between C and D is more likely, because they only have 1 neighbor, and it’s also a common neighbor.</p>
+
+
+
+<figure class="wp-block-image size-large"><img decoding="async" src="../Images/4616f937d5ca3b32dff875d6ecd50483.png" alt="" class="wp-image-601819" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/04/Screenshot-2025-04-18-at-13.23.02-1024x446.png"/><figcaption class="wp-element-caption">Jaccard coefficient for 2 different edges. Image by author.</figcaption></figure>
+
+
+
+<h4 class="wp-block-heading">Adamic-Adar Index</h4>
+
+
+
+<p class="wp-block-paragraph">The Adamic-Adar index goes one step further than common neighbors: it uses the popularity of a common neighbor and gives less weight to more popular neighbors (they have more connections). The intuition behind this is that if a node is connected to everyone, it doesn’t tell us much about a specific connection.</p>
+
+
+
+<p class="wp-block-paragraph">What does that look like in a formula?</p>
+
+
+
+<figure class="wp-block-image size-large"><img decoding="async" src="../Images/58d12293e24fa54f2b619543a8239798.png" alt="" class="wp-image-601810" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/04/Screenshot-2025-04-18-at-11.21.52-1024x120.png"/></figure>
+
+
+
+<p class="wp-block-paragraph">So for each common neighbor <em>z</em>, we add a score of 1 divided by the log of the number of neighbors from <em>z</em>. By doing this, the more popular the common neighbor, the smaller its contribution.</p>
+
+
+
+<p class="wp-block-paragraph">Let’s calculate the Adamic-Adar index for our examples.</p>
+
+
+
+<figure class="wp-block-image size-large"><img decoding="async" src="../Images/d3b618db0d2c7e7e744d19bc38323b4f.png" alt="" class="wp-image-601820" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/04/Screenshot-2025-04-18-at-13.23.47-1024x393.png"/><figcaption class="wp-element-caption">Adamic-Adar index. If a common neighbor is popular, its contribution decreases. Image by author.</figcaption></figure>
+
+
+
+<h4 class="wp-block-heading">Preferential Attachment</h4>
+
+
+
+<p class="wp-block-paragraph">A different approach is preferential attachment. The idea behind it is that nodes with higher degrees are more likely to form links. Calculation is super easy, you just multiply the degrees (number of connections) of the two nodes.</p>
+
+
+
+<p class="wp-block-paragraph">For A and B, the degrees are respectively 5 and 3, so the score is 5*3 = 15. C and D have a score of 1*1 = 1. In this case A and B are more likely to have a connection, because they have more neighbors in general.</p>
+
+
+
+<figure class="wp-block-image size-large"><img decoding="async" src="../Images/3faf4659b2bbbdbf48cb345fd2e4f279.png" alt="" class="wp-image-601821" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/04/Screenshot-2025-04-18-at-13.26.35-1024x476.png"/><figcaption class="wp-element-caption">Preferential attachment score for the examples. Image by author.</figcaption></figure>
+
+
+
+<h3 class="wp-block-heading">Global Heuristics</h3>
+
+
+
+<p class="wp-block-paragraph">Global heuristics consider paths, walks, or the entire graph structure. They can capture richer patterns, but are more computationally expensive.</p>
+
+
+
+<h4 class="wp-block-heading">Katz Index</h4>
+
+
+
+<p class="wp-block-paragraph">The most well-known global heuristic for link prediction is the Katz Index. It takes all the different paths between two nodes (usually only paths up to three steps). Each path gets a weight that decays exponentially with its length. This makes sense intuitively, because the shorter a path, the more important it is (friends in common means a lot). On the other hand, indirect paths matter as well! They can hint at potential links.</p>
+
+
+
+<p class="wp-block-paragraph">The Katz Formula:</p>
+
+
+
+<figure class="wp-block-image size-large"><img decoding="async" src="../Images/29e56f087dbd49f917c9ba3e2c21f2f4.png" alt="" class="wp-image-601811" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/04/Screenshot-2025-04-18-at-11.23.42-1024x120.png"/></figure>
+
+
+
+<p class="wp-block-paragraph">We take two nodes, C and E, and count the paths between them. There are three paths with up to three steps: one path with two steps (orange), and two paths with three steps (blue and green). Now we can calculate the Katz index, let’s choose 0.1 for beta:</p>
+
+
+
+<figure class="wp-block-image size-large"><img decoding="async" src="../Images/cd50f6ea777a2ff3fbd550968d3a355a.png" alt="" class="wp-image-601822" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/04/Screenshot-2025-04-18-at-13.34.09-1024x438.png"/><figcaption class="wp-element-caption">Katz index calculation for nodes C and E. Shorter paths add more weight. Image by author.</figcaption></figure>
+
+
+
+<h4 class="wp-block-heading">Rooted PageRank</h4>
+
+
+
+<p class="wp-block-paragraph">This method uses random walks to determine how likely it is that a random walk from the first node, will end up in the second node. So you start in the first node, then you either walk to a random neighbor, or you jump back to the first node. The probability that you end up at the second node tells how closely the two nodes are. If the probability is high, there is a good chance the nodes should be linked.</p>
+
+
+
+<h2 class="wp-block-heading">ML-Based Link Prediction</h2>
+
+
+
+<p class="wp-block-paragraph">Machine learning approaches take link prediction beyond heuristics by learning patterns directly from the data. Instead of relying on predefined rules, ML models can learn complex features that signal whether a link should exist.</p>
+
+
+
+<p class="wp-block-paragraph">A basic approach is to treat link prediction as a binary classification task: for each node pair (u, v), we create a feature vector and train a model to predict 1 (link exists) or 0 (link doesn’t exist). You can add the heuristics we calculated before as features. The heuristics didn’t agree all the time on likelihood of edges, sometimes the edge between A and B was more likely, while for others the edge between C and D was the better choice. By including multiple scores as features we don’t have to choose one heuristic. Of course depending on the problem some heuristics might work better than others.</p>
+
+
+
+<p class="wp-block-paragraph">Another type of features you can add are aggregated features: for example node degree, node embeddings, attribute averages, etc.</p>
+
+
+
+<p class="wp-block-paragraph">Then use any classifier (e.g., logistic regression, random forest, XGBoost) to predict links. This already performs better than heuristics alone, especially when combined.</p>
+
+
+
+<p class="wp-block-paragraph">In this post we will use the Cora dataset to test different approaches to link prediction. The <a href="https://paperswithcode.com/dataset/cora">Cora dataset</a> contains scientific papers. The edges represent citations between papers. Let’s train a machine learning model as baseline, where we only add the Jaccard coefficient:</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">import os.path as osp
+
+from sklearn.linear_model import LogisticRegression
+from sklearn.metrics import roc_auc_score, average_precision_score
+from torch_geometric.datasets import Planetoid
+from torch_geometric.transforms import RandomLinkSplit
+from torch_geometric.utils import to_dense_adj
+
+# reproducibility
+from torch_geometric import seed_everything
+seed_everything(42)
+
+# load Cora dataset, create train/val/test splits
+path = osp.join(osp.dirname(osp.realpath(__file__)), '..', 'data', 'Planetoid')
+dataset = Planetoid(path, name='Cora')
+
+data_all = dataset[0]
+transform = RandomLinkSplit(num_val=0.05, num_test=0.1, is_undirected=True, split_labels=True)
+train_data, val_data, test_data = transform(data_all)
+
+# add Jaccard and train with Logistic Regression
+adj = to_dense_adj(train_data.edge_index, max_num_nodes=data_all.num_nodes)[0]
+
+def jaccard(u, v, adj):
+    u_neighbors = set(adj[u].nonzero().view(-1).tolist())
+    v_neighbors = set(adj[v].nonzero().view(-1).tolist())
+    inter = len(u_neighbors &amp; v_neighbors)
+    union = len(u_neighbors | v_neighbors)
+    return inter / union if union &gt; 0 else 0.0
+
+def extract_features(pairs, adj):
+    return [[jaccard(u, v, adj)] for u, v in pairs]
+
+train_pairs = train_data.pos_edge_label_index.t().tolist() + train_data.neg_edge_label_index.t().tolist()
+train_labels = [1] * train_data.pos_edge_label_index.size(1) + [0] * train_data.neg_edge_label_index.size(1)
+
+test_pairs = test_data.pos_edge_label_index.t().tolist() + test_data.neg_edge_label_index.t().tolist()
+test_labels = [1] * test_data.pos_edge_label_index.size(1) + [0] * test_data.neg_edge_label_index.size(1)
+
+X_train = extract_features(train_pairs, adj)
+clf = LogisticRegression().fit(X_train, train_labels)
+
+X_test = extract_features(test_pairs, adj)
+probs = clf.predict_proba(X_test)[:, 1]
+auc_ml = roc_auc_score(test_labels, probs)
+ap_ml = average_precision_score(test_labels, probs)
+print(f"[ML Heuristic] AUC: {auc_ml:.4f}, AP: {ap_ml:.4f}")
+</code></pre>
+
+
+
+<p class="wp-block-paragraph">We evaluate with AUC. This is the result:</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-markup">[ML Model] AUC: 0.6958, AP: 0.6890</code></pre>
+
+
+
+<p class="wp-block-paragraph">We can go a step further and use neural networks that operate directly on the graph structure.</p>
+
+
+
+<h2 class="wp-block-heading">VGAE: Encoding and Decoding</h2>
+
+
+
+<p class="wp-block-paragraph">A <a href="https://arxiv.org/abs/1611.07308">Variational Graph Auto-Encoder</a> is like a neural network that learns to guess the hidden structure of the graph. It can then use that hidden knowledge to predict missing links.</p>
+
+
+
+<p class="wp-block-paragraph">A VGAE is actually a combination of a GAE (Graph Auto-Encoder) and a <a href="https://en.wikipedia.org/wiki/Variational_autoencoder">VAE</a> (Variational Auto-Encoder). I’ll get back to the difference between a GAE and a VGAE later on. </p>
+
+
+
+<p class="wp-block-paragraph">The steps of a VGAE are as follows. First, the VGAE <strong>encodes nodes into latent vectors</strong>, and then it <strong>decodes node pairs</strong> to <strong>predict whether an edge exists</strong> between them. </p>
+
+
+
+<p class="wp-block-paragraph">How does the encoding work? Each node is mapped to a latent variable, that is a point in some hidden space. The encoder is a <a href="https://towardsdatascience.com/graph-neural-networks-part-1-graph-convolutional-networks-explained-9c6aaa8a406e/">Graph Convolutional Network</a> (GCN) that produces a mean and a variance vector for each node. It uses the node features and the adjacency matrix as input. Using the vectors, the VGAE samples a latent embedding from a normal distribution. It’s important to note that each node isn’t just mapped to a single point, but to a distribution! This is the difference between a GAE and a VGAE, in a GAE each node is mapped to one single point.</p>
+
+
+
+<figure class="wp-block-image size-full"><img decoding="async" src="../Images/acdea5774216f3b6f46a4e16215803c3.png" alt="" class="wp-image-602387" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/04/Screenshot-2025-04-26-at-12.14.17.png"/></figure>
+
+
+
+<p class="wp-block-paragraph">The next step is the decoding step. The VGAE will guess if there is an edge between two nodes. It does this by calculating the inner product between the embeddings of the two nodes:</p>
+
+
+
+<figure class="wp-block-image size-full"><img decoding="async" src="../Images/86a8211f282050a18b030ca1b14cec93.png" alt="" class="wp-image-602388" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/04/Screenshot-2025-04-26-at-12.14.42.png"/></figure>
+
+
+
+<p class="wp-block-paragraph">The thought behind it is: if the nodes are closer together in the hidden space, it’s more likely they are connected. </p>
+
+
+
+<p class="wp-block-paragraph">VGAE visualized:</p>
+
+
+
+<figure class="wp-block-image size-large"><img decoding="async" src="../Images/95f647fa7e13c092cd172b32ad4d3061.png" alt="" class="wp-image-602390" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/04/Screenshot-2025-04-26-at-13.59.11-1024x440.png"/></figure>
+
+
+
+<p class="wp-block-paragraph">How does the model learn? It optimizes two things:</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">Reconstruction Loss: Do the predicted edges match the real ones?</li>
+
+
+
+<li class="wp-block-list-item">KL Divergence Loss: Is the latent space nice and regular? </li>
+</ul>
+
+
+
+<p class="wp-block-paragraph">Let’s test the VGAE on the Cora dataset:</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">import os.path as osp
+
+import numpy as np
+import torch
+from sklearn.metrics import roc_auc_score, average_precision_score
+
+from torch_geometric.datasets import Planetoid
+from torch_geometric.nn import GCNConv, VGAE
+from torch_geometric.transforms import RandomLinkSplit
+
+# same as before
+from torch_geometric import seed_everything
+seed_everything(42)
+
+path = osp.join(osp.dirname(osp.realpath(__file__)), '..', 'data', 'Planetoid')
+dataset = Planetoid(path, name='Cora')
+
+data_all = dataset[0]
+transform = RandomLinkSplit(num_val=0.05, num_test=0.1, is_undirected=True, split_labels=True)
+train_data, val_data, test_data = transform(data_all)
+
+# VGAE
+class VGAEEncoder(torch.nn.Module):
+    def __init__(self, in_channels, out_channels):
+        super().__init__()
+        self.conv1 = GCNConv(in_channels, 2 * out_channels)
+        self.conv_mu = GCNConv(2 * out_channels, out_channels)
+        self.conv_logstd = GCNConv(2 * out_channels, out_channels)
+
+    def forward(self, x, edge_index):
+        x = self.conv1(x, edge_index).relu()
+        return self.conv_mu(x, edge_index), self.conv_logstd(x, edge_index)
+
+vgae = VGAE(VGAEEncoder(dataset.num_features, 32))
+vgae_optimizer = torch.optim.Adam(vgae.parameters(), lr=0.01)
+
+x = data_all.x
+edge_index = train_data.edge_index
+
+# train VGAE model
+for epoch in range(1, 101):
+    vgae.train()
+    vgae_optimizer.zero_grad()
+    z = vgae.encode(x, edge_index)
+    # reconstruction loss
+    loss = vgae.recon_loss(z, train_data.pos_edge_label_index)
+    # KL divergence
+    loss = loss + (1 / data_all.num_nodes) * vgae.kl_loss()
+    loss.backward()
+    vgae_optimizer.step()
+
+vgae.eval()
+z = vgae.encode(x, edge_index)
+
+@torch.no_grad()
+def score_edges(pairs):
+    edge_tensor = torch.tensor(pairs).t().to(z.device)
+    return vgae.decoder(z, edge_tensor).view(-1).cpu().numpy()
+
+vgae_scores = np.concatenate([score_edges(test_data.pos_edge_label_index.t().tolist()),
+                              score_edges(test_data.neg_edge_label_index.t().tolist())])
+vgae_labels = np.array([1] * test_data.pos_edge_label_index.size(1) +
+                       [0] * test_data.neg_edge_label_index.size(1))
+
+auc_vgae = roc_auc_score(vgae_labels, vgae_scores)
+ap_vgae = average_precision_score(vgae_labels, vgae_scores)
+print(f"[VGAE] AUC: {auc_vgae:.4f}, AP: {ap_vgae:.4f}")</code></pre>
+
+
+
+<p class="wp-block-paragraph">And the result (ML model added for comparison):</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-markup">[VGAE]     AUC: 0.9032, AP: 0.9179
+[ML Model] AUC: 0.6958, AP: 0.6890</code></pre>
+
+
+
+<p class="wp-block-paragraph">Wow! Massive improvement compared to the ML model!</p>
+
+
+
+<h2 class="wp-block-heading">SEAL: Learning from Subgraphs</h2>
+
+
+
+<p class="wp-block-paragraph">One of the most powerful GNN-based approaches is <a href="https://proceedings.neurips.cc/paper_files/paper/2018/file/53f0d7c537d99b3824f0f99d62ea2428-Paper.pdf">SEAL</a> (Subgraph Embedding-based Link prediction). The idea is simple and elegant: instead of looking at global node embeddings, SEAL looks at the<strong> local subgraph</strong> around each node pair.</p>
+
+
+
+<p class="wp-block-paragraph">Here’s a step by step explanation:</p>
+
+
+
+<ol start="1" class="wp-block-list">
+<li class="wp-block-list-item">For each node pair (u, v), extract a small enclosing subgraph. E.g., neighbors only (1-hop neighborhood) or neighbors and neighbors from neighbors (2-hop neighborhood).</li>
+
+
+
+<li class="wp-block-list-item">Label the nodes in this subgraph to reflect their role: which ones are u, v, and which ones are neighbors.</li>
+
+
+
+<li class="wp-block-list-item">Use a GNN (like DGCNN or GCN) to learn from the subgraph and predict if a link should exist.</li>
+</ol>
+
+
+
+<p class="wp-block-paragraph">Visualization of the steps:</p>
+
+
+
+<figure class="wp-block-image size-large"><img decoding="async" src="../Images/95ccdf44e351db8cb79cca03f3f50b4a.png" alt="" class="wp-image-601947" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/04/Screenshot-2025-04-21-at-08.18.42-766x1024.png"/><figcaption class="wp-element-caption">Three steps of SEAL. Image by author.</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">SEAL is very powerful because it learns structural patterns directly from examples, instead of relying on handcrafted rules. It also works well with sparse graphs and generalizes across different types of networks.</p>
+
+
+
+<p class="wp-block-paragraph">Let’s see if SEAL can improve the results of the VGAE on the Cora dataset. For the SEAL code, I took the <a href="https://github.com/pyg-team/pytorch_geometric/blob/master/examples/seal_link_pred.py">sample code from PyTorch geometric</a> (check it out by following the link), since SEAL requires quite some processing. You can recognize the different steps in the code (preparing the data, extracting the subgraphs, labeling the nodes). Training for 50 epochs gives the following result:</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-markup">[SEAL]     AUC: 0.9038, AP: 0.9176
+[VGAE]     AUC: 0.9032, AP: 0.9179
+[ML Model] AUC: 0.6958, AP: 0.6890</code></pre>
+
+
+
+<p class="wp-block-paragraph">Almost exactly the same result as the VGAE. So for this problem, VGAE might be the best choice (VGAE is significantly faster than SEAL). Of course this can vary, depending on your problem.</p>
+
+
+
+<hr class="wp-block-separator has-alpha-channel-opacity is-style-dotted"/>
+
+
+
+<h2 class="wp-block-heading">Conclusion</h2>
+
+
+
+<p class="wp-block-paragraph">In this post, we dived into the topic of link prediction, from heuristics to SEAL. Heuristic methods are fast and interpretable and can serve as good baselines, but ML and GNN-based methods like VGAE and SEAL can learn richer representations and offer better performance. Depending on your dataset size and task complexity, it’s worth exploring both!</p>
+
+
+
+<p class="wp-block-paragraph">Thanks for reading, until next time!</p>
+
+
+
+<h3 class="wp-block-heading">Related</h3>
+
+
+
+<blockquote class="wp-block-quote is-layout-flow wp-block-quote-is-layout-flow">
+<p class="wp-block-paragraph"><strong><a href="https://towardsdatascience.com/graph-neural-networks-part-1-graph-convolutional-networks-explained-9c6aaa8a406e/">Graph Neural Networks Part 1. Graph Convolutional Networks Explained</a></strong></p>
+
+
+
+<p class="wp-block-paragraph"><a href="https://towardsdatascience.com/graph-neural-networks-part-2-graph-attention-networks-vs-gcns-029efd7a1d92/"><strong>Graph Neural Networks Part 2. Graph Attention Networks vs. GCNs</strong></a></p>
+
+
+
+<p class="wp-block-paragraph"><a href="https://towardsdatascience.com/graph-neural-networks-part-3-how-graphsage-handles-changing-graph-structure/"><strong>Graph Neural Networks Part 3: How GraphSAGE Handles Changing Graph Structure</strong></a></p>
+</blockquote>
+    
+</body>
+</html>

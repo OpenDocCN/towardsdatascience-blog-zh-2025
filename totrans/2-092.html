@@ -1,0 +1,250 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.1//EN"
+  "http://www.w3.org/TR/xhtml11/DTD/xhtml11.dtd">
+
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+<title>How to Evaluate Graph Retrieval in MCP Agentic Systems</title>
+<link href="../Styles/Style.css" type="text/css" rel="stylesheet"/>
+</head>
+<body>
+<h1>How to Evaluate Graph Retrieval in MCP Agentic Systems</h1>
+<blockquote>原文：<a href="https://towardsdatascience.com/evaluating-graph-retrieval-in-mcp-agentic-systems/">https://towardsdatascience.com/evaluating-graph-retrieval-in-mcp-agentic-systems/</a></blockquote>
+<p class="wp-block-paragraph"><mdspan datatext="el1753746675649" class="mdspan-comment">These</mdspan> days, it’s all about agents, which I’m all for, an<mdspan datatext="el1753713352077" class="mdspan-comment">d pushing </mdspan>beyond basic vector search by giving LLMs access to a wide range of tools: </p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">Web search</li>
+
+
+
+<li class="wp-block-list-item">Various API calls</li>
+
+
+
+<li class="wp-block-list-item">Querying different databases</li>
+</ul>
+
+
+
+<p class="wp-block-paragraph">While there’s a surge in new MCP servers being developed, there’s surprisingly little evaluation happening. Sure, you can hook an LLM with various different tools, but do you really know how it’s going to behave? That’s why I’m planning a series of blog posts focused on evaluating both off-the-shelf and custom graph MCP servers, especially those that retrieve information from Neo4j.</p>
+
+
+
+<p class="wp-block-paragraph">Model Context Protocol (MCP) is Anthropic’s open standard that functions like “a USB-C port for AI applications,” standardizing how AI systems connect to external data sources through lightweight servers that expose specific capabilities to clients. The key insight is reusability. Instead of custom integrations for every data source, developers build reusable MCP servers once and share them across multiple AI applications.</p>
+
+
+
+<figure class="wp-block-image size-full"><img decoding="async" src="../Images/9385b8c4824726d344f5e890bb679061.png" alt="" class="wp-image-612600" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/07/image-346.png"/><figcaption class="wp-element-caption">Image from: https://modelcontextprotocol.io/introduction. Licensed under MIT.</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">An MCP server implements the Model Context Protocol, exposing tools and data to an AI client via structured JSON-RPC calls. It handles requests from the client and executes them against local or remote APIs, returning results to enrich the AI’s context.</p>
+
+
+
+<p class="wp-block-paragraph">To evaluate MCP servers and their retrieval methods, the first step is to generate an evaluation dataset, something we’ll use an LLM to help with. In the second stage, we’ll take an off-the-shelf <a href="https://neo4j.com/developer/genai-ecosystem/model-context-protocol-mcp/#_mcp_neo4j_cypher" target="_blank" rel="noreferrer noopener">mcp-neo4j-cypher</a> server and test it against the benchmark dataset we created.</p>
+
+
+
+<figure class="wp-block-image"><img decoding="async" src="../Images/4dd42dfdf71fd79527382d60f55baa86.png" alt="" data-original-src="https://cdn-images-1.medium.com/max/1600/1*iRROyMZODtQBWVz_E8HVjQ.png"/><figcaption class="wp-element-caption">Agenda of this blog post. Image by author.</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">The goal for now is to establish a solid dataset and framework so we can consistently compare different retrievers throughout the series.</p>
+
+
+
+<p class="wp-block-paragraph">Code is available on <a href="https://github.com/neo4j-contrib/grape" rel="noreferrer noopener" target="_blank">GitHub</a>.</p>
+
+
+
+<h2 class="wp-block-heading">Evaluation dataset</h2>
+
+
+
+<p class="wp-block-paragraph">Last year, Neo4j released the <a href="https://neo4j.com/blog/developer/introducing-neo4j-text2cypher-dataset/" rel="noreferrer noopener" target="_blank">Text2Cypher (2024) Dataset</a>, which was designed around a single-step approach to Cypher generation. In single-step Cypher generation, the system receives a natural language question and must produce one complete Cypher query that directly answers that question, essentially a one-shot translation from text to database query.</p>
+
+
+
+<p class="wp-block-paragraph">However, this approach doesn’t reflect how agents actually work with graph databases in practice. Agents operate through multi-step reasoning: they can execute multiple tools iteratively, generate several Cypher statements in sequence, analyze intermediate results, and combine findings from different queries to build up to a final answer. This iterative, exploratory approach represents a fundamentally different paradigm from the prescribed single-step model.</p>
+
+
+
+<figure class="wp-block-image"><img decoding="async" src="../Images/e00ad069902ec2620620638dc3452e2d.png" alt="" data-original-src="https://cdn-images-1.medium.com/max/2400/1*WfG8TA9qe64QN4g7OcJ1tw.png"/><figcaption class="wp-element-caption">Predefined text2cypher flow vs agentic approach, where multiple tools can be called. Image by author.</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">The current benchmark dataset fails to capture this difference of how MCP servers actually get used in agentic workflows. The benchmark needs updating to evaluate multi-step reasoning capabilities rather than just single-shot text2cypher translation. This would better reflect how agents navigate complex information retrieval tasks that require breaking down problems, exploring data relationships, and synthesizing results across multiple database interactions.</p>
+
+
+
+<h3 class="wp-block-heading">Evaluation metrics</h3>
+
+
+
+<p class="wp-block-paragraph">The most important shift when moving from single-step text2cypher evaluation to an agentic approach lies in how we measure accuracy.</p>
+
+
+
+<figure class="wp-block-image size-full"><img decoding="async" src="../Images/b800d00c929b5a63d3149c583c603e10.png" alt="" class="wp-image-612607" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/07/image-351.png"/><figcaption class="wp-element-caption">Difference between single-shot text2cypher and agentic evaluation. Image by author.</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">In traditional text2query tasks like text2cypher, evaluation typically involves comparing the database response directly to a predefined ground truth, often checking for <a href="https://neo4j.com/blog/developer/benchmarking-neo4j-text2cypher-dataset/" rel="noreferrer noopener" target="_blank">exact matches or equivalence</a>.</p>
+
+
+
+<p class="wp-block-paragraph">However, agentic approaches introduce a key change. The agent may perform multiple retrieval steps, choose different query paths, or even rephrase the original intent along the way. As a result, there may be no single correct query. Instead, we shift our focus to evaluating the final answer generated by the agent, regardless of the intermediate queries it used to arrive there.</p>
+
+
+
+<p class="wp-block-paragraph">To assess this, we use an LLM-as-a-judge setup, comparing the agent’s final answer against the expected answer. This lets us evaluate the semantic quality and usefulness of the output rather than the internal mechanics or specific query results.</p>
+
+
+
+<h3 class="wp-block-heading">Result Granularity and Agent Behavior</h3>
+
+
+
+<p class="wp-block-paragraph">Another important consideration in agentic evaluation is <strong>the amount of data returned from the database</strong>. In traditional text2cypher tasks, it’s common to allow or even expect large query results, since the goal is to test whether the correct data is retrieved. However, this approach doesn’t translate well to evaluating agentic workflows.</p>
+
+
+
+<p class="wp-block-paragraph">In an agentic setting, <strong>we’re not just testing whether the agent can access the correct data, but whether it can generate a concise, accurate final answer</strong>. If the database returns too much information, the evaluation becomes entangled with other variables, such as the agent’s ability to summarize or navigate large outputs, rather than focusing on whether it understood the user’s intent and retrieved the correct information.</p>
+
+
+
+<h3 class="wp-block-heading">Introducing Real-World Noise</h3>
+
+
+
+<p class="wp-block-paragraph">To further align the benchmark with <strong>real-world agentic usage</strong>, we also introduce <strong>controlled noise</strong> into the evaluation prompts.</p>
+
+
+
+<figure class="wp-block-image size-large"><img decoding="async" src="../Images/972906a0528770bf85ebd6bc474d5b1b.png" alt="" class="wp-image-612606" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/07/image-350-1024x1024.png"/><figcaption class="wp-element-caption">Introducing real-world noise to evaluation. Image by author.</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">This includes elements such as:</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item"><strong>Typographical errors</strong> in named entities (e.g., “Andrwe Carnegie” instead of “Andrew Carnegie”),</li>
+
+
+
+<li class="wp-block-list-item"><strong>Colloquial phrasing</strong> or informal language (e.g., “show me what’s up with Tesla’s board” instead of “list members of Tesla’s board of directors”),</li>
+
+
+
+<li class="wp-block-list-item"><strong>Overly broad or under-specified intents</strong> that require follow-up reasoning or clarification.</li>
+</ul>
+
+
+
+<p class="wp-block-paragraph">These variations reflect how users actually interact with agents in practice. In real deployments, agents must handle messy inputs, incomplete formulations, and conversational shorthand, which are conditions rarely captured by clean, canonical benchmarks.</p>
+
+
+
+<p class="wp-block-paragraph">To better reflect these insights around evaluating agentic approaches, I’ve <a href="https://github.com/neo4j-contrib/grape/blob/main/generate_eval_dataset/dataset_generation.ipynb" rel="noreferrer noopener" target="_blank">created a new benchmark using Claude 4.0</a>. Unlike traditional benchmarks that focus on Cypher query correctness, this one is designed to assess the quality of the <strong>final answers</strong> produced by multi-step agents</p>
+
+
+
+<h3 class="wp-block-heading">Databases</h3>
+
+
+
+<p class="wp-block-paragraph">To ensure a variety of evaluations, we use a couple of different databases that are available on the <a href="https://demo.neo4jlabs.com:7473/browser/">Neo4j demo server</a>. Examples include:</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item"><a href="https://en.wikiversity.org/wiki/Database_Examples/Northwind">Northwind</a>: Licensed under Microsoft Public License</li>
+
+
+
+<li class="wp-block-list-item">Network management: Generated by my friend, Michael Hunger</li>
+
+
+
+<li class="wp-block-list-item"><a href="https://github.com/MannLabs/CKG">Clinical Knowledge Graph</a>: Licensed under MIT</li>
+</ul>
+
+
+
+<figure class="wp-block-image alignwide size-large" datatext=""><img decoding="async" src="../Images/ec9356196327f2c21877e0e6ddce3e05.png" alt="" class="wp-image-612797" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/07/datasets-1024x836.png"/></figure>
+
+
+
+<h2 class="wp-block-heading">MCP-Neo4j-Cypher server</h2>
+
+
+
+<p class="wp-block-paragraph"><a href="https://neo4j.com/developer/genai-ecosystem/model-context-protocol-mcp/#_mcp_neo4j_cypher" target="_blank" rel="noreferrer noopener">mcp-neo4j-cypher</a> is a ready-to-use MCP tool interface that allows agents to interact with Neo4j through natural language. It supports three core functions: viewing the graph schema, running Cypher queries to read data, and executing write operations to update the database. Results are returned in a clean, structured format that agents can easily understand and use.</p>
+
+
+
+<figure class="wp-block-image"><img decoding="async" src="../Images/bc9b744a959868aa77aead1b0a9c12db.png" alt="" data-original-src="https://cdn-images-1.medium.com/max/1600/1*QRKoX4eo78Pu5DdqYBAigw.png"/><figcaption class="wp-element-caption">mcp-neo4j-cypher overview. Image by author.</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">It works out of the box with any framework that supports MCP servers, making it simple to plug into existing agent setups without extra integration work. Whether you’re building a chatbot, data assistant, or custom workflow, this tool lets your agent safely and intelligently work with graph data.</p>
+
+
+
+<h2 class="wp-block-heading">Benchmark</h2>
+
+
+
+<p class="wp-block-paragraph">Finally, let’s run the benchmark evaluation.<br/>We used LangChain to host the agent and connect it to the <code>mcp-neo4j-cypher</code> server, which is the only tool provided to the agent. This setup makes the evaluation simple and realistic: the agent must rely entirely on natural language interaction with the MCP interface to retrieve and manipulate graph data.</p>
+
+
+
+<p class="wp-block-paragraph">For the evaluation, we used <strong>Claude 3.7 Sonnet</strong> as the agent and <strong>GPT-4o Mini</strong> as the judge.<br/>The benchmark dataset includes approximately 200 natural language question-answer pairs, categorized by number of hops (1-hop, 2-hop, etc.) and whether the queries contain distracting or noisy information. This structure helps assess the agent’s reasoning accuracy and robustness in both clean and noisy contexts. The evaluation code is available on <a href="https://github.com/neo4j-contrib/grape/blob/main/servers/mcp-neo4j-cypher/evaluation.ipynb" target="_blank" rel="noreferrer noopener">GitHub</a>.</p>
+
+
+
+<p class="wp-block-paragraph">Let’s examine the results together.<br/></p>
+
+
+
+<figure class="wp-block-image alignwide size-large"><img decoding="async" src="../Images/f2c3e236d9008a1085edb4c8db01f7d4.png" alt="" class="wp-image-612609" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/07/image-353-1024x763.png"/><figcaption class="wp-element-caption">mcp-neo4j-cypher evaluation. Image by author</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">The evaluation shows that an agent using only the <code>mcp-neo4j-cypher</code> interface can effectively answer complex natural language questions over graph data. Across a benchmark of around 200 questions, the agent achieved an average score of 0.71, with performance dropping as question complexity increased. The presence of noise in the input significantly reduced accuracy, revealing the agent’s sensitivity to typos in named entities and such.</p>
+
+
+
+<p class="wp-block-paragraph">On the tool usage side, the agent averaged 3.6 tool calls per question. This is consistent with the current requirement to make at least one call to fetch the schema and another to execute the main Cypher query. Most queries fell within a 2–4 call range, showing the agent’s ability to reason and act efficiently. Notably, a small number of questions were answered with just one or even zero tool calls, anomalies that may suggest early stopping, incorrect planning, or agent bugs, and are worth further analysis. Looking ahead, tool count could be reduced further if schema access is embedded directly via MCP resources, eliminating the need for an explicit schema fetch step.</p>
+
+
+
+<p class="wp-block-paragraph">The real value of having a benchmark is that it opens the door to systematic iteration. Once baseline performance is established, you can start tweaking parameters, observing their impact, and making targeted improvements. For instance, if agent execution is costly, you might want to test whether capping the number of allowed steps to 10 using a LangGraph recursion limit has a measurable effect on accuracy. With the benchmark in place, these trade-offs between performance and efficiency can be explored quantitatively rather than guessed.</p>
+
+
+
+<figure class="wp-block-image alignwide size-large"><img decoding="async" src="../Images/c084d30b5ec25f79e1e69e8962c299a2.png" alt="" class="wp-image-612610" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/07/image-354-1024x762.png"/><figcaption class="wp-element-caption">mcp-neo4j-cypher evaluation with max 10 steps. Image by author.</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">With a 10-step limit in place, performance dropped noticeably. The mean evaluation score fell to <strong>0.535. </strong>Accuracy decreased sharply on more complex (3-hop+) questions, suggesting the step limit cut off deeper reasoning chains. Noise continued to degrade performance, with noisy questions averaging lower scores than clean ones.</p>
+
+
+
+<h2 class="wp-block-heading">Summary</h2>
+
+
+
+<p class="wp-block-paragraph">We’re living in an exciting moment for AI, with the rise of autonomous agents and emerging standards like MCP dramatically expanding what LLMs can do, especially when it comes to structured, multi-step tasks. But while the capabilities are growing fast, robust evaluation is still lagging behind. That’s where this <a href="https://github.com/neo4j-contrib/grape/tree/main" rel="noreferrer noopener" target="_blank">GRAPE</a> project comes in.</p>
+
+
+
+<p class="wp-block-paragraph">The goal is to build a practical, evolving benchmark for graph-based question answering using the MCP interface. Over time, I plan to refine the dataset, experiment with different retrieval strategies, and explore how to extend or adapt the Cypher MCP for better accuracy. There’s still a lot of work ahead from cleaning data, improving retrieval to tightening evaluation. However, having a clear benchmark means we can track progress meaningfully, test ideas systematically, and push the boundaries of what these agents can reliably do.</p>
+    
+</body>
+</html>

@@ -1,0 +1,561 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.1//EN"
+  "http://www.w3.org/TR/xhtml11/DTD/xhtml11.dtd">
+
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+<title>Learnings from a Machine Learning Engineer — Part 5: The Training</title>
+<link href="../Styles/Style.css" type="text/css" rel="stylesheet"/>
+</head>
+<body>
+<h1>Learnings from a Machine Learning Engineer — Part 5: The Training</h1>
+<blockquote>原文：<a href="https://towardsdatascience.com/learnings-from-a-machine-learning-engineer-part-5-the-training/">https://towardsdatascience.com/learnings-from-a-machine-learning-engineer-part-5-the-training/</a></blockquote>
+<p class="wp-block-paragraph" id="2f20">In this fifth part of my series, I will outline the steps for creating a Docker container for training your image classification model, evaluating performance, and preparing for deployment.</p>
+
+
+
+<p class="wp-block-paragraph" id="3852">AI/ML engineers would prefer to focus on model training and data engineering, but the reality is that we also need to understand the infrastructure and mechanics behind the scenes.</p>
+
+
+
+<p class="wp-block-paragraph" id="517e">I hope to share some tips, not only to get your training run running, but how to streamline the process in a cost efficient manner on cloud resources such as Kubernetes.</p>
+
+
+
+<p class="wp-block-paragraph" id="20fb">I will reference elements from my previous articles for getting the best model performance, so be sure to check out <a href="https://towardsdatascience.com/learnings-from-a-machine-learning-engineer-part-1-the-data/">Part 1</a> and <a href="https://towardsdatascience.com/learnings-from-a-machine-learning-engineer-part-2-the-data-sets/">Part 2</a> on the data sets, as well as <a href="https://towardsdatascience.com/learnings-from-a-machine-learning-engineer-part-3-the-evaluation/">Part 3</a> and <a href="https://towardsdatascience.com/learnings-from-a-machine-learning-engineer-part-4-the-model/">Part 4</a> on model evaluation.</p>
+
+
+
+<p class="wp-block-paragraph" id="393f">Here are the learnings that I will share with you:</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">Infrastructure overview</li>
+
+
+
+<li class="wp-block-list-item">Building your Docker container</li>
+
+
+
+<li class="wp-block-list-item">Executing your training run</li>
+
+
+
+<li class="wp-block-list-item">Deploying your model</li>
+</ul>
+
+
+
+<h2 class="wp-block-heading" id="f7d9">Infrastructure overview</h2>
+
+
+
+<p class="wp-block-paragraph" id="aa5f">First, let me provide a brief description of the setup that I created, specifically around Kubernetes. Your setup may be entirely different, and that is just fine. I simply want to set the stage on the infrastructure so that the rest of the discussion makes sense.</p>
+
+
+
+<h3 class="wp-block-heading" id="e86d">Image management system</h3>
+
+
+
+<p class="wp-block-paragraph" id="50ba">This is a server you deploy that provides a user interface to for your subject matter experts to label and evaluate images for the image classification application. The server can run as a pod on your Kubernetes cluster, but you may find that running a dedicated server with faster disk may be better.</p>
+
+
+
+<p class="wp-block-paragraph" id="0350">Image files are stored in a directory structure like the following, which is self-documenting and easily modified.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-">Image_Library/
+  - cats/
+    - image1001.png
+  - dogs/
+    - image2001.png</code></pre>
+
+
+
+<p class="wp-block-paragraph" id="ff20">Ideally, these files would reside on local server storage (instead of cloud or cluster storage) for better performance. The reason for this will become clear as we see what happens as the image library grows.</p>
+
+
+
+<h3 class="wp-block-heading" id="b539">Cloud storage</h3>
+
+
+
+<p class="wp-block-paragraph" id="07ce">Cloud storage allows for a virtually limitless and convenient way to share files between systems. In this case, the image library on your management system could access the same files as your Kubernetes cluster or Docker engine.</p>
+
+
+
+<p class="wp-block-paragraph" id="8ee6">However, the downside of cloud storage is the latency to open a file. Your image library will have <strong>thousands and thousands</strong> of images, and the latency to read each file will have a significant impact on your training run time. Longer training runs means more cost for using the expensive GPU processors!</p>
+
+
+
+<p class="wp-block-paragraph" id="450a">The way that I found to speed things up is to create a <em>tar</em> file of your image library on your management system and copy them to cloud storage. Even better would be to create multiple tar files <strong>in parallel</strong>, each containing 10,000 to 20,000 images.</p>
+
+
+
+<p class="wp-block-paragraph" id="8f19">This way you only have network latency on a handful of files (which contain thousands, once extracted) and you start your training run much sooner.</p>
+
+
+
+<h3 class="wp-block-heading" id="d386">Kubernetes or Docker engine</h3>
+
+
+
+<p class="wp-block-paragraph" id="3b96">A Kubernetes cluster, with proper configuration, will allow you to dynamically scale up/down nodes, so you can perform your model training on GPU hardware as needed. Kubernetes is a rather heavy setup, and there are other container engines that will work.</p>
+
+
+
+<blockquote class="wp-block-quote is-layout-flow wp-block-quote-is-layout-flow">
+<p class="wp-block-paragraph" id="a79b">The technology options change constantly!</p>
+</blockquote>
+
+
+
+<p class="wp-block-paragraph" id="3c5e">The main idea is that you want to spin up the resources you need — for only as long as you need them — then scale down to reduce your time (and therefore cost) of running expensive GPU resources.</p>
+
+
+
+<p class="wp-block-paragraph" id="16cb">Once your GPU node is started and your Docker container is running, you can extract the <em>tar</em> files above to <strong>local</strong> storage, such as an <em>emptyDir</em>, on your node. The node typically has high-speed SSD disk, ideal for this type of workload. There is one caveat — the storage capacity on your node must be able to handle your image library.</p>
+
+
+
+<p class="wp-block-paragraph" id="9f1c">Assuming we are good, let’s talk about building your Docker container so that you can train your model on your image library.</p>
+
+
+
+<h2 class="wp-block-heading" id="3fd5">Building your Docker container</h2>
+
+
+
+<p class="wp-block-paragraph" id="6e4e">Being able to execute a training run in a consistent manner lends itself perfectly to building a Docker container. You can “pin” the version of libraries so you know exactly how your scripts will run every time. You can version control your containers as well, and revert to a known good image in a pinch. What is really nice about Docker is you can run the container pretty much anywhere.</p>
+
+
+
+<p class="wp-block-paragraph" id="7815">The tradeoff when running in a container, especially with an image classification model, is the speed of file storage. You can attach any number of volumes to your container, but they are usually <em>network</em> attached, so there is latency on each file read. This may not be a problem if you have a small number of files. But when dealing with hundreds of thousands of files like image data, that latency adds up!</p>
+
+
+
+<p class="wp-block-paragraph" id="0209">This is why using the <em>tar</em> file method outlined above can be beneficial.</p>
+
+
+
+<p class="wp-block-paragraph" id="c1da">Also, keep in mind that Docker containers could be terminated unexpectedly, so you should make sure to store important information outside the container, on cloud storage or a database. I’ll show you how below.</p>
+
+
+
+<h3 class="wp-block-heading" id="e557">Dockerfile</h3>
+
+
+
+<p class="wp-block-paragraph" id="e3a1">Knowing that you will need to run on GPU hardware (here I will assume Nvidia), be sure to select the right base image for your Dockerfile, such as <strong>nvidia/cuda</strong> with the “devel<strong>”</strong> flavor that will contain the right drivers.</p>
+
+
+
+<p class="wp-block-paragraph" id="cb91">Next, you will add the script files to your container, along with a “batch” script to coordinate the execution. Here is an example Dockerfile, and then I’ll describe what each of the scripts will be doing.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">#####   Dockerfile   #####
+FROM nvidia/cuda:12.8.0-devel-ubuntu24.04
+
+# Install system software
+RUN apt-get -y update &amp;&amp; apg-get -y upgrade
+RUN apt-get install -y python3-pip python3-dev
+
+# Setup python
+WORKDIR /app
+COPY requirements.txt
+RUN python3 -m pip install --upgrade pip
+RUN python3 -m pip install -r requirements.txt
+
+# Pythong and batch scripts
+COPY ExtractImageLibrary.py .
+COPY Training.py .
+COPY Evaluation.py .
+COPY ScorePerformance.py .
+COPY ExportModel.py .
+COPY BulkIdentification.py .
+COPY BatchControl.sh .
+
+# Allow for interactive shell
+CMD tail -f /dev/null</code></pre>
+
+
+
+<p class="wp-block-paragraph" id="0cdd">Dockerfiles are declarative, almost like a cookbook for building a small server — you know what you’ll get every time. Python libraries benefit, too, from this declarative approach. Here is a sample <em>requirements.txt</em> file that loads the TensorFlow libraries with CUDA support for GPU acceleration.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">#####   requirements.txt   #####
+numpy==1.26.3
+pandas==2.1.4
+scipy==1.11.4
+keras==2.15.0
+tensorflow[and-cuda]</code></pre>
+
+
+
+<h3 class="wp-block-heading" id="3f93">Extract Image Library script</h3>
+
+
+
+<p class="wp-block-paragraph" id="5019">In Kubernetes, the Docker container can access local, high speed storage on the physical node. This can be achieved via the <em>emptyDir</em> volume type. As mentioned before, this will only work if the local storage on your node can handle the size of your library.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">#####   sample 25GB emptyDir volume in Kubernetes   #####
+containers:
+  - name: training-container
+    volumeMounts:
+      - name: image-library
+        mountPath: /mnt/image-library
+volumes:
+  - name: image-library
+    emptyDir:
+      sizeLimit: 25Gi</code></pre>
+
+
+
+<p class="wp-block-paragraph" id="4189">You would want to have another <em>volumeMount</em> to your cloud storage where you have the <em>tar</em> files. What this looks like will depend on your provider, or if you are using a persistent volume claim, so I won’t go into detail here.</p>
+
+
+
+<p class="wp-block-paragraph" id="22fa">Now you can extract the <em>tar</em> files — ideally in parallel for an added performance boost — to the local mount point.</p>
+
+
+
+<h3 class="wp-block-heading" id="37e5">Training script</h3>
+
+
+
+<p class="wp-block-paragraph" id="473b">As AI/ML engineers, the model training is where we want to spend most of our time.</p>
+
+
+
+<blockquote class="wp-block-quote is-layout-flow wp-block-quote-is-layout-flow">
+<p class="wp-block-paragraph" id="7a11">This is where the magic happens!</p>
+</blockquote>
+
+
+
+<p class="wp-block-paragraph" id="8270">With your image library now extracted, we can create our train-validation-test sets, load a pre-trained model or build a new one, fit the model, and save the results.</p>
+
+
+
+<p class="wp-block-paragraph" id="3d63">One key technique that has served me well is to load the most recently trained model as my base. I discuss this in more detail in <a href="https://towardsdatascience.com/learnings-from-a-machine-learning-engineer-part-4-the-model/">Part 4</a> under “Fine tuning”, this results in faster training time and significantly improved model performance.</p>
+
+
+
+<p class="wp-block-paragraph" id="068a">Be sure to take advantage of the local storage to checkpoint your model during training since the models are quite large and you are paying for the GPU even while it sits idle writing to disk.</p>
+
+
+
+<p class="wp-block-paragraph" id="ab07">This of course raises a concern about what happens if the Docker container dies part-way though the training. The risk is (hopefully) low from a cloud provider, and you may not want an incomplete training anyway. But if that does happen, you will at least want to understand <strong>why</strong>, and this is where saving the main log file to cloud storage (described below) or to a package like MLflow comes in handy.</p>
+
+
+
+<h3 class="wp-block-heading" id="96f5">Evaluation script</h3>
+
+
+
+<p class="wp-block-paragraph" id="db53">After your training run has completed and you have taken proper precaution on saving your work, it is time to see how well it performed.</p>
+
+
+
+<p class="wp-block-paragraph" id="9fcd">Normally this evaluation script will pick up on the model that just finished. But you may decide to point it at a previous model version through an interactive session. This is why have the script as stand-alone.</p>
+
+
+
+<p class="wp-block-paragraph" id="83c6">With it being a separate script, that means it will need to read the completed model from disk — ideally local disk for speed. I like having two separate scripts (training and evaluation), but you might find it better to combine these to avoid reloading the model.</p>
+
+
+
+<p class="wp-block-paragraph" id="cc99">Now that the model is loaded, the evaluation script should generate predictions on <strong>every</strong> image in the training, validation, test, and benchmark sets. I save the results as a <strong>huge</strong> matrix with the softmax confidence score for each class label. So, if there are 1,000 classes and 100,000 images, that’s a table with 100 million scores!</p>
+
+
+
+<p class="wp-block-paragraph" id="3a23">I save these results in <em>pickle</em> files that are then used in the score generation next.</p>
+
+
+
+<h3 class="wp-block-heading" id="a472">Score Performance script</h3>
+
+
+
+<p class="wp-block-paragraph" id="a938">Taking the matrix of scores produced by the evaluation script above, we can now create various metrics of model performance. Again, this process could be combined with the evaluation script above, but my preference is for independent scripts. For example, I might want to regenerate scores on previous training runs. See what works for you.</p>
+
+
+
+<p class="wp-block-paragraph" id="f9e5">Here are some of the <em>sklearn</em> functions that produce useful insights like F1, log loss, AUC-ROC, Matthews correlation coefficient.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">from sklearn.metrics import average_precision_score, classification_report
+from sklearn.metrics import log_loss, matthews_corrcoef, roc_auc_score</code></pre>
+
+
+
+<p class="wp-block-paragraph" id="4c46">Aside from these basic statistical analyses for each dataset (train, validation, test, and benchmark), it is also useful to identify:</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">Which <strong>ground truth</strong> labels get the most number of errors?</li>
+
+
+
+<li class="wp-block-list-item">Which <strong>predicted</strong> labels get the most number of incorrect guesses?</li>
+
+
+
+<li class="wp-block-list-item">How many <strong>ground-truth-to-predicted</strong> label pairs are there? In other words, which classes are easily confused?</li>
+
+
+
+<li class="wp-block-list-item">What is the <strong>accuracy</strong> when applying a minimum softmax confidence score threshold?</li>
+
+
+
+<li class="wp-block-list-item">What is the <strong>error rate</strong> above that softmax threshold?</li>
+
+
+
+<li class="wp-block-list-item">For the “difficult” benchmark sets, do you get a sufficiently <strong>high</strong> score?</li>
+
+
+
+<li class="wp-block-list-item">For the “out-of-scope” benchmark sets, do you get a sufficiently <strong>low</strong> score?</li>
+</ul>
+
+
+
+<p class="wp-block-paragraph" id="fde6">As you can see, there are multiple calculations and it’s not easy to come up with a single evaluation to decide if the trained model is good enough to be moved to production.</p>
+
+
+
+<p class="wp-block-paragraph" id="9087">In fact, for an image classification model, it is helpful to manually review the images that the model got wrong, as well as the ones that got a low softmax confidence score. Actually looking at what the model got wrong, you can get a gut-feel for how well it will perform in the real world.</p>
+
+
+
+<p class="wp-block-paragraph" id="cd2e">Check out <a href="https://towardsdatascience.com/learnings-from-a-machine-learning-engineer-part-3-the-evaluation/">Part 3</a> for more in-depth discussion on evaluation and scoring.</p>
+
+
+
+<h3 class="wp-block-heading" id="9931">Export Model script</h3>
+
+
+
+<p class="wp-block-paragraph" id="947c">All of the heavy lifting is done by this point. Since your Docker container will be shutdown soon, now is the time to copy the model artifacts to cloud storage and prepare them for being put to use.</p>
+
+
+
+<p class="wp-block-paragraph" id="175d">The example Python code snippet below is more geared to Keras and TensorFlow. This will take the trained model and export it as a <em>saved_model</em>. Later, I will show how this is used by TensorFlow Serving in the <strong>Deploy</strong> section below.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python"># Increment current version of model and create new directory
+next_version_dir, version_number = create_new_version_folder()
+
+# Copy model artifacts to the new directory
+copy_model_artifacts(next_version_dir)
+
+# Create the directory to save the model export
+saved_model_dir = os.path.join(next_version_dir, str(version_number))
+
+# Save the model export for use with TensorFlow Serving
+tf.keras.backend.set_learning_phase(0)
+model = tf.keras.models.load_model(keras_model_file)
+tf.saved_model.save(model, export_dir=saved_model_dir)</code></pre>
+
+
+
+<p class="wp-block-paragraph" id="c73b">This script also copies the other training run artifacts such as the model evaluation results, score summaries, and log files generated from model training. Don’t forget about your label map so you can give human readable names to your classes!</p>
+
+
+
+<h3 class="wp-block-heading" id="a3f6">Bulk Identification script</h3>
+
+
+
+<p class="wp-block-paragraph" id="d109">Your training run is complete, your model has been scored, and a new version is exported and ready to be served. Now is the time to use this latest model to assist you on trying to identify unlabeled images.</p>
+
+
+
+<p class="wp-block-paragraph" id="8c6d">As I described in <a href="https://towardsdatascience.com/learnings-from-a-machine-learning-engineer-part-4-the-model/">Part 4</a>, you may have a collection of “unknowns” — really good pictures, but no idea what they are. Let your new model provide a best guess on these and record the results to a file or a database. Now you can create filters based on closest match and by high/low scores. This allows your subject matter experts to leverage these filters to find new image classes, add to existing classes, or to remove images that have very low scores and are no good.</p>
+
+
+
+<p class="wp-block-paragraph" id="798a">By the way, I put this step inside the GPU container since you may have thousands of “unknown” images to process and the accelerated hardware will make light work of it. However, if you are not in a hurry, you could perform this step on a separate CPU node, and shutdown your GPU node sooner to save cost. This would especially make sense if your “unknowns” folder is on slower cloud storage.</p>
+
+
+
+<h3 class="wp-block-heading" id="94ab">Batch Control script</h3>
+
+
+
+<p class="wp-block-paragraph" id="e316">All of the scripts described above perform a specific task — from extracting your image library, executing model training, performing evaluation and scoring, exporting the model artifacts for deployment, and perhaps even bulk identification.</p>
+
+
+
+<blockquote class="wp-block-quote is-layout-flow wp-block-quote-is-layout-flow">
+<p class="wp-block-paragraph" id="e4d6">One script to rule them all</p>
+</blockquote>
+
+
+
+<p class="wp-block-paragraph" id="fc6a">To coordinate the entire show, this batch control script gives you the entry point for your container and an easy way to trigger everything. Be sure to produce a log file in case you need to analyze any failures along the way. Also, be sure to write the log to your cloud storage in case the container dies unexpectedly.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">#!/bin/bash
+# Main batch control script
+
+# Redirect standard output and standard error to a log file
+exec &gt; /cloud_storage/batch-logfile.txt 2&gt;&amp;1
+
+/app/ExtractImageLibrary.py
+/app/Training.py
+/app/Evaluation.py
+/app/ScorePerformance.py
+/app/ExportModel.py
+/app/BulkIdentification.py</code></pre>
+
+
+
+<h2 class="wp-block-heading" id="fb11">Executing your training run</h2>
+
+
+
+<p class="wp-block-paragraph" id="3fb5">So, now it’s time to put everything in motion…</p>
+
+
+
+<blockquote class="wp-block-quote is-layout-flow wp-block-quote-is-layout-flow">
+<p class="wp-block-paragraph" id="9d32">Start your engines!</p>
+</blockquote>
+
+
+
+<p class="wp-block-paragraph" id="d948">Let’s go through the steps to prepare your image library, fire up your Docker container to train your model, and then examine the results.</p>
+
+
+
+<h3 class="wp-block-heading" id="6787">Image library ‘tar’ files</h3>
+
+
+
+<p class="wp-block-paragraph" id="dbb7">Your image management system should now create a <em>tar</em> file backup of your data. Since <em>tar</em> is a single-threaded function, you will get significant speed improvement by creating multiple tar files in parallel, each with a portion of you data.</p>
+
+
+
+<p class="wp-block-paragraph" id="9c50">Now these files can be copied to your shared cloud storage for the next step.</p>
+
+
+
+<h3 class="wp-block-heading" id="6ae9">Start your Docker container</h3>
+
+
+
+<p class="wp-block-paragraph" id="d455">All the hard work you put into creating your container (described above) will be put to the test. If you are running Kubernetes, you can create a Job that will execute the <em>BatchControl.sh</em> script.</p>
+
+
+
+<p class="wp-block-paragraph" id="b527">Inside the Kubernetes Job definition, you can pass environment variables to adjust the execution of your script. For example, the batch size and number of epochs are set here and then pulled into your Python scripts, so you can alter the behavior without changing your code.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">#####   sample Job in Kubernetes   #####
+containers:
+  - name: training-job
+    env:
+      - name: BATCH_SIZE
+        value: 50
+      - name: NUM_EPOCHS
+        value: 30
+    command: ["/app/BatchControl.sh"]</code></pre>
+
+
+
+<p class="wp-block-paragraph" id="27cd">Once the Job is completed, be sure to verify that the GPU node properly scales back down to zero according to your scaling configuration in Kubernetes — you don’t want to be saddled with a huge bill over a simple configuration error.</p>
+
+
+
+<h3 class="wp-block-heading" id="a884">Manually review results</h3>
+
+
+
+<p class="wp-block-paragraph" id="0d40">With the training run complete, you should now have model artifacts saved and can examine the performance. Look through the metrics, such as F1 and log loss, and benchmark accuracy for high softmax confidence scores.</p>
+
+
+
+<p class="wp-block-paragraph" id="b6b5">As mentioned earlier, the reports only tell part of the story. It is worth the time and effort to manually review the images that the model got wrong or where it produced a low confidence score.</p>
+
+
+
+<p class="wp-block-paragraph" id="185d">Don’t forget about the bulk identification. Be sure to leverage these to locate new images to fill out your data set, or to find new classes.</p>
+
+
+
+<h2 class="wp-block-heading" id="92b8">Deploying your model</h2>
+
+
+
+<p class="wp-block-paragraph" id="94e1">Once you have reviewed your model performance and are satisfied with the results, it is time to modify your TensorFlow Serving container to put the new model into production.</p>
+
+
+
+<p class="wp-block-paragraph" id="a459">TensorFlow Serving is available as a Docker container and provides a very quick and convenient way to serve your model. This container can listen and respond to API calls for your model.</p>
+
+
+
+<p class="wp-block-paragraph" id="3f2f">Let’s say your new model is version 7, and your <strong>Export</strong> script (see above) has saved the model in your cloud share as <em>/image_application/models/007</em>. You can start the TensorFlow Serving container with that volume mount. In this example, the <em>shareName</em> points to folder for version 007.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">#####   sample TensorFlow pod in Kubernetes   #####
+containers:
+  - name: tensorflow-serving
+    image: bitnami/tensorflow-serving:2.18.0
+    ports:
+      - containerPort: 8501
+    env:
+      - name: TENSORFLOW_SERVING_MODEL_NAME
+        value: "image_application"
+    volumeMounts:
+      - name: models-subfolder
+        mountPath: "/bitnami/model-data"
+
+volumes:
+  - name: models-subfolder
+    azureFile:
+      shareName: "image_application/models/007"</code></pre>
+
+
+
+<p class="wp-block-paragraph" id="e446">A subtle note here — the export model script should create a sub-folder to models/007, also named 007, with the saved model export. This may seem a little redundant, but TensorFlow Serving will mount this share folder as /bitnami/model-data and detect the numbered sub-folder inside it for the version to serve. This will allow you to query the API for the model version (good for logging) as well as the identification.</p>
+
+
+
+<h2 class="wp-block-heading" id="43c5">Conclusion</h2>
+
+
+
+<p class="wp-block-paragraph" id="38be">As I mentioned at the start of this article, this setup has worked for my situation. This is certainly not the only way to approach this challenge, and I invite you to customize your own solution.</p>
+
+
+
+<p class="wp-block-paragraph" id="a893">I wanted to share my hard-fought learnings as I embraced cloud services in Kubernetes, with the desire to keep costs under control. Of course, doing all this while maintaining a high level of model performance is an added challenge, but one that you can achieve.</p>
+
+
+
+<p class="wp-block-paragraph" id="a086">I know that the information above is mostly an outline of the process, but I hope it provided enough information here so that you can fill in the rest, specific to your own application.<br/><br/>Happy learnings!<br/></p>
+
+
+
+<p class="wp-block-paragraph" id="a086"/>
+    
+</body>
+</html>

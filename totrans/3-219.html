@@ -1,0 +1,420 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.1//EN"
+  "http://www.w3.org/TR/xhtml11/DTD/xhtml11.dtd">
+
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+<title>LLaDA: The Diffusion Model That Could Redefine Language Generation</title>
+<link href="../Styles/Style.css" type="text/css" rel="stylesheet"/>
+</head>
+<body>
+<h1>LLaDA: The Diffusion Model That Could Redefine Language Generation</h1>
+<blockquote>原文：<a href="https://towardsdatascience.com/llada-the-diffusion-model-that-could-redefine-language-generation/">https://towardsdatascience.com/llada-the-diffusion-model-that-could-redefine-language-generation/</a></blockquote>
+<h2 class="wp-block-heading" id="c233">Introduction</h2>
+
+
+
+<p class="wp-block-paragraph" id="5b5a">What if we could make language models think<strong> more like humans</strong>? Instead of writing one word at a time, what if they could sketch out their thoughts first, and gradually refine them?</p>
+
+
+
+<p class="wp-block-paragraph" id="5735">This is exactly what Large Language Diffusion Models (LLaDA) introduces: a different approach to current text generation used in Large Language Models (LLMs). Unlike traditional autoregressive models (ARMs), which predict text sequentially, left to right, <strong>LLaDA leverages a diffusion-like process to generate text.</strong> Instead of generating tokens sequentially, it <strong>progressively refines masked text until it forms a coherent response</strong>.</p>
+
+
+
+<p class="wp-block-paragraph" id="401f">In this article, we will dive into how LLaDA works, why it matters, and how it could shape the next generation of LLMs.</p>
+
+
+
+<p class="wp-block-paragraph" id="6c28">I hope you enjoy the article!</p>
+
+
+
+<h2 class="wp-block-heading" id="f47a">The current state of LLMs</h2>
+
+
+
+<p class="wp-block-paragraph" id="d02e">To appreciate the innovation that LLaDA represents, we first need to understand how current large language models (LLMs) operate. Modern LLMs follow a two-step training process that has become an industry standard:</p>
+
+
+
+<ol class="wp-block-list">
+<li class="wp-block-list-item"><strong>Pre-training</strong>: The model learns general language patterns and knowledge by predicting the next token in massive text datasets through self-supervised learning.</li>
+
+
+
+<li class="wp-block-list-item"><strong>Supervised Fine-Tuning (SFT)</strong>: The model is refined on carefully curated data to improve its ability to follow instructions and generate useful outputs.</li>
+</ol>
+
+
+
+<p class="wp-block-paragraph" id="0b6d"><em>Note that current LLMs often use RLHF as well to further refine the weights of the model, but this is not used by LLaDA so we will skip this step here.</em></p>
+
+
+
+<p class="wp-block-paragraph" id="f93c">These models, primarily based on the Transformer architecture, generate text <strong>one token at a time</strong> using next-token prediction.</p>
+
+
+
+<figure class="wp-block-image size-large"><img data-dominant-color="ecf2f8" data-has-transparency="false" style="--dominant-color: #ecf2f8;" decoding="async" width="1024" height="683" src="../Images/548d831e2f61bd655d513a513536e78e.png" alt="" class="wp-image-598461 not-transparent" srcset="https://towardsdatascience.com/wp-content/uploads/2025/02/1_F6HkX1GkSF5WYOwZ4Afo_w-1024x683.webp 1024w, https://towardsdatascience.com/wp-content/uploads/2025/02/1_F6HkX1GkSF5WYOwZ4Afo_w-300x200.webp 300w, https://towardsdatascience.com/wp-content/uploads/2025/02/1_F6HkX1GkSF5WYOwZ4Afo_w-768x512.webp 768w, https://towardsdatascience.com/wp-content/uploads/2025/02/1_F6HkX1GkSF5WYOwZ4Afo_w-1536x1024.webp 1536w, https://towardsdatascience.com/wp-content/uploads/2025/02/1_F6HkX1GkSF5WYOwZ4Afo_w-2048x1366.webp 2048w" sizes="(max-width: 1024px) 100vw, 1024px" data-original-src="https://towardsdatascience.com/wp-content/uploads/2025/02/1_F6HkX1GkSF5WYOwZ4Afo_w-1024x683.webp"/><figcaption class="wp-element-caption">Simplified Transformer architecture for text generation (Image by the author)</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph" id="4a10">Here is a simplified illustration of how data passes through such a model. <strong>Each token is embedded into a vector and is transformed through successive transformer layers</strong>. In current LLMs (LLaMA, ChatGPT, DeepSeek, etc), a classification head is used only on the last token embedding to predict the next token in the sequence.</p>
+
+
+
+<p class="wp-block-paragraph" id="7436">This works thanks to the concept of <strong>masked self-attention</strong>: each token attends to all the tokens that come before it. We will see later how LLaDA can get rid of the mask in its attention layers.</p>
+
+
+
+<figure class="wp-block-image size-full"><img data-dominant-color="f4f4f4" data-has-transparency="false" style="--dominant-color: #f4f4f4;" decoding="async" width="899" height="220" src="../Images/b1a741aa7f12b3a298af2b2ca9bf1d5d.png" alt="" class="wp-image-598463 not-transparent" srcset="https://towardsdatascience.com/wp-content/uploads/2025/02/1_zVrq7u6Wo-i1pclptiU_xQ.webp 899w, https://towardsdatascience.com/wp-content/uploads/2025/02/1_zVrq7u6Wo-i1pclptiU_xQ-300x73.webp 300w, https://towardsdatascience.com/wp-content/uploads/2025/02/1_zVrq7u6Wo-i1pclptiU_xQ-768x188.webp 768w" sizes="(max-width: 899px) 100vw, 899px" data-original-src="https://towardsdatascience.com/wp-content/uploads/2025/02/1_zVrq7u6Wo-i1pclptiU_xQ.webp"/><figcaption class="wp-element-caption">Attention process: input embeddings are multiplied byQuery, Key, and Value matrices to generate new embeddings (Image by the author, inspired by [3])</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph" id="0ad5"><em>If you want to learn more about Transformers, check out my article <a href="https://towardsdatascience.com/transformers-how-do-they-transform-your-data-72d69e383e0d/#:~:text=We%20pass%20our%20data%20through,several%20(num_layers)%20encoder%20layers.">here</a></em>.</p>
+
+
+
+<p class="wp-block-paragraph" id="211c">While this approach has led to impressive results, it also comes with significant limitations, some of which have motivated the development of LLaDA.</p>
+
+
+
+<h2 class="wp-block-heading" id="e075">Current limitations of LLMs</h2>
+
+
+
+<p class="wp-block-paragraph" id="e4d6">Current LLMs face several critical challenges:</p>
+
+
+
+<h3 class="wp-block-heading" id="bff4">Computational Inefficiency</h3>
+
+
+
+<p class="wp-block-paragraph" id="a3d3">Imagine having to write a novel where <strong>you can only think about one word at a time,</strong> and for each word, you need to reread everything you’ve written so far. This is essentially how current LLMs operate — they predict one token at a time, requiring a complete processing of the previous sequence for each new token. Even with optimization techniques like KV caching, this process is <strong>quite computationally expensive and time-consuming</strong>.</p>
+
+
+
+<h3 class="wp-block-heading" id="2946">Limited Bidirectional Reasoning</h3>
+
+
+
+<p class="wp-block-paragraph" id="17ae">Traditional autoregressive models (ARMs) are like writers who could never look ahead or revise what they’ve written so far. <strong>They can only predict future tokens based on past ones, which limits their ability to reason about relationships between different parts of the text.</strong> As humans, we often have a general idea of what we want to say before writing it down, current LLMs lack this capability in some sense.</p>
+
+
+
+<h3 class="wp-block-heading" id="1e8f">Amount of data</h3>
+
+
+
+<p class="wp-block-paragraph" id="f0bb">Existing models require <strong>enormous amounts of training data</strong> to achieve good performance, making them resource-intensive to develop and potentially limiting their applicability in specialized domains with limited data availability.</p>
+
+
+
+<h2 class="wp-block-heading" id="fc37">What is LLaDA</h2>
+
+
+
+<p class="wp-block-paragraph" id="8cca">LLaDA introduces a fundamentally different approach to language generation by replacing traditional autoregression with a <strong>“diffusion-based”</strong> process (we will dive later into why this is called “diffusion”).</p>
+
+
+
+<p class="wp-block-paragraph" id="9020">Let’s understand how this works, step by step, starting with pre-training.</p>
+
+
+
+<h3 class="wp-block-heading" id="be3e">LLaDA pre-training</h3>
+
+
+
+<p class="wp-block-paragraph" id="f160">Remember that we don’t need any “labeled” data during the pre-training phase. The objective is to feed a very large amount of raw text data into the model. For each text sequence, we do the following:</p>
+
+
+
+<ol class="wp-block-list">
+<li class="wp-block-list-item">We fix a maximum length (similar to ARMs). Typically, this could be 4096 tokens. 1% of the time, the lengths of sequences are randomly sampled between 1 and 4096 and padded so that the model is also exposed to shorter sequences.</li>
+
+
+
+<li class="wp-block-list-item">We randomly choose a “masking rate”. For example, one could pick 40%.</li>
+
+
+
+<li class="wp-block-list-item">We mask each token with a probability of 0.4. What does “masking” mean exactly? Well, we simply replace the token <strong>with a special token</strong>: <strong>&lt;MASK&gt;</strong>. As with any other token, this token is associated with a particular index and embedding vector that the model can process and interpret during training.</li>
+
+
+
+<li class="wp-block-list-item">We then feed our entire sequence into our transformer-based model. This process transforms all the input embedding vectors into new embeddings. We <strong>apply the classification head to each of the masked tokens</strong> to get a prediction for each. Mathematically, our loss function averages cross-entropy losses over all the masked tokens in the sequence, as below:</li>
+</ol>
+
+
+
+<figure class="wp-block-image size-large"><img data-dominant-color="f6f6f3" data-has-transparency="false" style="--dominant-color: #f6f6f3;" loading="lazy" decoding="async" width="1024" height="655" src="../Images/98d91a7429712cc343b09388179ac2bb.png" alt="" class="wp-image-598460 not-transparent" srcset="https://towardsdatascience.com/wp-content/uploads/2025/02/1__DFxLzcQ9fskIlIymfuLBA-1024x655.webp 1024w, https://towardsdatascience.com/wp-content/uploads/2025/02/1__DFxLzcQ9fskIlIymfuLBA-300x192.webp 300w, https://towardsdatascience.com/wp-content/uploads/2025/02/1__DFxLzcQ9fskIlIymfuLBA-768x491.webp 768w, https://towardsdatascience.com/wp-content/uploads/2025/02/1__DFxLzcQ9fskIlIymfuLBA-1536x982.webp 1536w, https://towardsdatascience.com/wp-content/uploads/2025/02/1__DFxLzcQ9fskIlIymfuLBA-2048x1309.webp 2048w" sizes="auto, (max-width: 1024px) 100vw, 1024px" data-original-src="https://towardsdatascience.com/wp-content/uploads/2025/02/1__DFxLzcQ9fskIlIymfuLBA-1024x655.webp"/><figcaption class="wp-element-caption">Loss function used for LLaDA (Image by the author)</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph" id="39be">5. And… we repeat this procedure for billions or trillions of text sequences.</p>
+
+
+
+<blockquote class="wp-block-quote is-layout-flow wp-block-quote-is-layout-flow">
+<p class="wp-block-paragraph" id="e0e2"><strong><em>Note, that unlike ARMs, LLaDA can fully utilize bidirectional dependencies in the text: it doesn’t require masking in attention layers anymore. However, this can come at an increased computational cost.</em></strong></p>
+</blockquote>
+
+
+
+<p class="wp-block-paragraph" id="9fb6">Hopefully, you can see how the training phase itself (the flow of the data into the model) is very similar to any other LLMs. <strong>We simply predict randomly masked tokens instead of predicting what comes next.</strong></p>
+
+
+
+<h3 class="wp-block-heading" id="711c">LLaDA SFT</h3>
+
+
+
+<p class="wp-block-paragraph" id="dfcd">For <strong>auto-regressive models</strong>, SFT is very similar to pre-training, except that we have pairs of <em>(prompt, response) </em>and want to generate the response when giving the prompt as input.</p>
+
+
+
+<p class="wp-block-paragraph" id="fe6d">This is exactly the <strong>same concept for LLaDA</strong>! Mimicking the pre-training process: we simply pass the prompt and the response, mask random tokens <strong>from the response only</strong>, and feed the full sequence into the model, which <strong>will predict missing tokens from the response</strong>.</p>
+
+
+
+<h3 class="wp-block-heading" id="e0ed">The innovation in inference</h3>
+
+
+
+<p class="wp-block-paragraph" id="545f">Innovation is where LLaDA gets more interesting, and truly utilizes the “diffusion” paradigm.</p>
+
+
+
+<p class="wp-block-paragraph" id="c0e2">Until now, we always randomly masked some text as input and asked the model to predict these tokens. But during inference, <strong>we only have access to the prompt </strong>and we need to generate the entire response. You might think (and it’s not wrong), that the model has seen examples where the masking rate was very high (potentially 1) during SFT, and it had to learn, somehow, how to <strong>generate a full response from a prompt</strong>.</p>
+
+
+
+<p class="wp-block-paragraph" id="8753">However, generating the full response at once during inference will likely produce very poor results because the model lacks information. Instead, we need a method to <strong>progressively refine predictions</strong>, and that’s where the key idea of <strong>‘remasking’ </strong>comes in.</p>
+
+
+
+<p class="wp-block-paragraph" id="1c14">Here is how it works, at each step of the text generation process:</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">Feed the current input to the model (this is the prompt, followed by <strong>&lt;MASK&gt;</strong> tokens)</li>
+
+
+
+<li class="wp-block-list-item">The model generates one embedding for each input token. We get predictions for the <strong>&lt;MASK&gt;</strong> tokens only. And here is the important step: <strong>we remask a portion of them</strong>. In particular: we only keep the “best” tokens i.e. the ones <strong>with the best predictions</strong>, with the highest confidence.</li>
+
+
+
+<li class="wp-block-list-item">We can use this <strong>partially unmasked sequence</strong> as input in the next generation step and repeat until all tokens are unmasked.</li>
+</ul>
+
+
+
+<p class="wp-block-paragraph" id="ea3f">You can see that, interestingly, <strong>we have much more control</strong> over the generation process compared to ARMs: we could choose to remask 0 tokens (only one generation step), or we could decide to keep only the best token every time (as many steps as tokens in the response). Obviously, <strong>there is a trade-off here between the quality of the predictions and inference time.</strong></p>
+
+
+
+<p class="wp-block-paragraph" id="fd80">Let’s illustrate that with a simple example (in that case, I choose to keep the best 2 tokens at every step)</p>
+
+
+
+<figure class="wp-block-image size-large"><img data-dominant-color="e8ecda" data-has-transparency="false" style="--dominant-color: #e8ecda;" loading="lazy" decoding="async" width="1024" height="565" src="../Images/cd737e9eac23bfaa39d75bdd2d542b84.png" alt="" class="wp-image-598464 not-transparent" srcset="https://towardsdatascience.com/wp-content/uploads/2025/02/1_Jfxxelqbjz8u-QBLeXZYzA-1024x565.webp 1024w, https://towardsdatascience.com/wp-content/uploads/2025/02/1_Jfxxelqbjz8u-QBLeXZYzA-300x166.webp 300w, https://towardsdatascience.com/wp-content/uploads/2025/02/1_Jfxxelqbjz8u-QBLeXZYzA-768x424.webp 768w, https://towardsdatascience.com/wp-content/uploads/2025/02/1_Jfxxelqbjz8u-QBLeXZYzA-1536x848.webp 1536w, https://towardsdatascience.com/wp-content/uploads/2025/02/1_Jfxxelqbjz8u-QBLeXZYzA-2048x1130.webp 2048w" sizes="auto, (max-width: 1024px) 100vw, 1024px" data-original-src="https://towardsdatascience.com/wp-content/uploads/2025/02/1_Jfxxelqbjz8u-QBLeXZYzA-1024x565.webp"/><figcaption class="wp-element-caption">LLaDA generation process example (Image by the author)</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph" id="67ba">Note, in practice, the remasking step would work as follows. Instead of remasking a fixed number of tokens, <strong>we would remask a proportion of s/t tokens over time, from t=1 down to 0, where s is in [0, t].</strong> In particular, this means we remask fewer and fewer tokens as the number of generation steps increases.</p>
+
+
+
+<p class="wp-block-paragraph" id="3213"><em>Example</em>: if we want N sampling steps (so N discrete steps from t=1 down to t=1/N with steps of 1/N), taking s = (t-1/N) is a good choice, and ensures that s=0 at the end of the process.</p>
+
+
+
+<p class="wp-block-paragraph" id="ca92">The image below summarizes the 3 steps described above. “Mask predictor” simply denotes the LLM (LLaDA), predicting masked tokens.</p>
+
+
+
+<figure class="wp-block-image alignwide size-large"><img data-dominant-color="ecedec" data-has-transparency="false" style="--dominant-color: #ecedec;" loading="lazy" decoding="async" width="1024" height="298" src="../Images/62f3e98cfc4723145ee624b66f520c2a.png" alt="" class="wp-image-598465 not-transparent" srcset="https://towardsdatascience.com/wp-content/uploads/2025/02/1_00SyWDItOWMv0bUdKTye9A-1024x298.webp 1024w, https://towardsdatascience.com/wp-content/uploads/2025/02/1_00SyWDItOWMv0bUdKTye9A-300x87.webp 300w, https://towardsdatascience.com/wp-content/uploads/2025/02/1_00SyWDItOWMv0bUdKTye9A-768x223.webp 768w, https://towardsdatascience.com/wp-content/uploads/2025/02/1_00SyWDItOWMv0bUdKTye9A.webp 1251w" sizes="auto, (max-width: 1024px) 100vw, 1024px" data-original-src="https://towardsdatascience.com/wp-content/uploads/2025/02/1_00SyWDItOWMv0bUdKTye9A-1024x298.webp"/><figcaption class="wp-element-caption">Pre-training (a.), SFT (b.) and inference (c.) using LLaDA. (source: [1])</figcaption></figure>
+
+
+
+<h2 class="wp-block-heading" id="a6e5">Can autoregression and diffusion be combined?</h2>
+
+
+
+<p class="wp-block-paragraph" id="92f1">Another clever idea developed in LLaDA is <strong>to combine diffusion with traditional autoregressive generation to use the best of both worlds!</strong> This is called <strong>semi-autoregressive diffusion</strong>.</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">Divide the generation process into blocks (for instance, 32 tokens in each block).</li>
+
+
+
+<li class="wp-block-list-item">The objective is to <strong>generate one block at a time</strong> (like we would generate one token at a time in ARMs).</li>
+
+
+
+<li class="wp-block-list-item"><strong>For each block, we apply the diffusion logic</strong> by progressively unmasking tokens to reveal the entire block. Then move on to predicting the next block.</li>
+</ul>
+
+
+
+<figure class="wp-block-image alignwide size-large"><img data-dominant-color="e9e7e4" data-has-transparency="false" style="--dominant-color: #e9e7e4;" loading="lazy" decoding="async" width="1024" height="347" src="../Images/2c815bc543c2e7196f7bdf2ad7d261ce.png" alt="" class="wp-image-598466 not-transparent" srcset="https://towardsdatascience.com/wp-content/uploads/2025/02/1_zaZOcBVb5G4sqY60J68ulg-1024x347.webp 1024w, https://towardsdatascience.com/wp-content/uploads/2025/02/1_zaZOcBVb5G4sqY60J68ulg-300x102.webp 300w, https://towardsdatascience.com/wp-content/uploads/2025/02/1_zaZOcBVb5G4sqY60J68ulg-768x260.webp 768w, https://towardsdatascience.com/wp-content/uploads/2025/02/1_zaZOcBVb5G4sqY60J68ulg.webp 1142w" sizes="auto, (max-width: 1024px) 100vw, 1024px" data-original-src="https://towardsdatascience.com/wp-content/uploads/2025/02/1_zaZOcBVb5G4sqY60J68ulg-1024x347.webp"/><figcaption class="wp-element-caption">Semi-autoregressive process (source: [1])</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph" id="466f">This is a hybrid approach: we probably lose some of the “backward” generation and parallelization capabilities of the model, but <strong>we better “guide” the model</strong> towards the final output.</p>
+
+
+
+<p class="wp-block-paragraph" id="7145">I think this is a very interesting idea because it depends a lot on a hyperparameter (the number of blocks), that can be tuned. I imagine different tasks might benefit more from the backward generation process, while others might benefit more from the more “guided” generation from left to right (more on that in the last paragraph).</p>
+
+
+
+<h2 class="wp-block-heading" id="40eb">Why “Diffusion”?</h2>
+
+
+
+<p class="wp-block-paragraph" id="3e91">I think it’s important to briefly explain where this term actually comes from. It reflects a similarity with <strong>image diffusion models (like Dall-E)</strong>, which have been very popular for image generation tasks.</p>
+
+
+
+<p class="wp-block-paragraph" id="12b7">In image diffusion, a model first adds noise to an image until it’s unrecognizable, then learns to reconstruct it step by step. LLaDA applies this idea to text <strong>by masking tokens instead of adding noise</strong>, and then progressively <strong>unmasking them</strong> to generate coherent language. In the context of image generation, the masking step is often called “noise scheduling”, and the reverse (remasking) is the “denoising” step.</p>
+
+
+
+<figure class="wp-block-image size-full"><img data-dominant-color="b0aba8" data-has-transparency="false" style="--dominant-color: #b0aba8;" loading="lazy" decoding="async" width="700" height="243" src="../Images/30b0299d6d2c83905569492fc51f17f8.png" alt="" class="wp-image-598457 not-transparent" srcset="https://towardsdatascience.com/wp-content/uploads/2025/02/0_y1hRHhA3CaJkadBh.webp 700w, https://towardsdatascience.com/wp-content/uploads/2025/02/0_y1hRHhA3CaJkadBh-300x104.webp 300w" sizes="auto, (max-width: 700px) 100vw, 700px" data-original-src="https://towardsdatascience.com/wp-content/uploads/2025/02/0_y1hRHhA3CaJkadBh.webp"/><figcaption class="wp-element-caption">How do Diffusion Models work? (source: [2])</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph" id="9521">You can also see LLaDA as some type of <strong>discrete</strong> (non-continuous) diffusion model: we don’t add noise to tokens, but we “deactivate” some tokens by masking them, and the model learns how to unmask a portion of them.</p>
+
+
+
+<h2 class="wp-block-heading" id="7639">Results</h2>
+
+
+
+<p class="wp-block-paragraph" id="4727">Let’s go through <em>a few </em>of the interesting results of LLaDA.</p>
+
+
+
+<p class="wp-block-paragraph" id="8efa"><em>You can find all the results in the paper. I chose to focus on what I find the most interesting here.</em></p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item"><strong>Training efficiency</strong>: LLaDA shows similar performance to ARMs with the same number of parameters, but u<strong>ses much fewer tokens</strong> during training (and no RLHF)! For example, the 8B version uses around 2.3T tokens, compared to 15T for LLaMa3.</li>
+
+
+
+<li class="wp-block-list-item"><strong>Using different block and answer lengths for different tasks</strong>: for example, the block length is particularly large for the Math dataset, and the model demonstrates strong performance for this domain. This could suggest that mathematical reasoning may benefit more from the <strong>diffusion-based and backward process</strong>.</li>
+</ul>
+
+
+
+<figure class="wp-block-image aligncenter size-full"><img data-dominant-color="f0f0f0" data-has-transparency="false" style="--dominant-color: #f0f0f0;" loading="lazy" decoding="async" width="591" height="397" src="../Images/3dc977a788e10e83fdb75d37c66e3383.png" alt="" class="wp-image-598458 not-transparent" srcset="https://towardsdatascience.com/wp-content/uploads/2025/02/1_npIPih_7TGBiT6bEGnYfzA.webp 591w, https://towardsdatascience.com/wp-content/uploads/2025/02/1_npIPih_7TGBiT6bEGnYfzA-300x202.webp 300w" sizes="auto, (max-width: 591px) 100vw, 591px" data-original-src="https://towardsdatascience.com/wp-content/uploads/2025/02/1_npIPih_7TGBiT6bEGnYfzA.webp"/><figcaption class="wp-element-caption">Source: [1]</figcaption></figure>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">Interestingly, LLaDA does better on the “Reversal poem completion task”. This task requires the model to <strong>complete a poem in reverse order</strong>, starting from the last lines and working backward. As expected, ARMs struggle due to their strict left-to-right generation process.</li>
+</ul>
+
+
+
+<figure class="wp-block-image aligncenter size-full"><img data-dominant-color="e6e6e6" data-has-transparency="false" style="--dominant-color: #e6e6e6;" loading="lazy" decoding="async" width="475" height="161" src="../Images/6ae220f839128e0e85d75249d9050d3e.png" alt="" class="wp-image-598459 not-transparent" srcset="https://towardsdatascience.com/wp-content/uploads/2025/02/1_rO3FqBzTLRoXCElD0LxGfw.webp 475w, https://towardsdatascience.com/wp-content/uploads/2025/02/1_rO3FqBzTLRoXCElD0LxGfw-300x102.webp 300w" sizes="auto, (max-width: 475px) 100vw, 475px" data-original-src="https://towardsdatascience.com/wp-content/uploads/2025/02/1_rO3FqBzTLRoXCElD0LxGfw.webp"/><figcaption class="wp-element-caption">Source: [1]</figcaption></figure>
+
+
+
+<blockquote class="wp-block-quote is-layout-flow wp-block-quote-is-layout-flow">
+<p class="wp-block-paragraph" id="91a8">LLaDA is not just an experimental alternative to ARMs: it shows real advantages in efficiency, structured reasoning, and bidirectional text generation.</p>
+</blockquote>
+
+
+
+<h2 class="wp-block-heading" id="80ce">Conclusion</h2>
+
+
+
+<p class="wp-block-paragraph" id="b26b">I think LLaDA is a promising approach to language generation. Its ability to generate multiple tokens in parallel while maintaining global coherence could definitely lead to <strong>more efficient training</strong>, <strong>better reasoning</strong>, and <strong>improved context understanding</strong> with fewer computational resources.</p>
+
+
+
+<p class="wp-block-paragraph" id="ffab">Beyond efficiency, I think LLaDA also brings a lot of <strong>flexibility</strong>. By adjusting parameters like the number of blocks generated, and the number of generation steps, it can <strong>better adapt to different tasks and constraints</strong>, making it a versatile tool for various language modeling needs, and allowing <strong>more human control</strong>. Diffusion models could also play an important role in pro-active AI and agentic systems by being able to reason more holistically.</p>
+
+
+
+<p class="wp-block-paragraph" id="81ef">As research into diffusion-based language models advances, LLaDA could become a useful step toward <strong>more natural and efficient language models</strong>. While it’s still early, I believe this shift from sequential to parallel generation is an interesting direction for AI development.</p>
+
+
+
+<p class="wp-block-paragraph" id="ca70">Thanks for reading!</p>
+
+
+
+<hr class="wp-block-separator has-alpha-channel-opacity is-style-dotted"/>
+
+
+
+<p class="wp-block-paragraph" id="89f0">Check out my previous articles:</p>
+
+
+
+<figure class="wp-block-embed is-type-wp-embed is-provider-towards-data-science wp-block-embed-towards-data-science"><div class="wp-block-embed__wrapper">
+<blockquote class="wp-embedded-content" data-secret="0XRYAeiIZR"><a href="https://towardsdatascience.com/training-large-language-models-from-trpo-to-grpo/">Training Large Language Models: From TRPO to GRPO</a></blockquote>
+</div></figure>
+
+
+
+<figure class="wp-block-embed is-type-wp-embed is-provider-towards-data-science wp-block-embed-towards-data-science"><div class="wp-block-embed__wrapper">
+<blockquote class="wp-embedded-content" data-secret="x4KmLPIqU8"><a href="https://towardsdatascience.com/the-math-behind-the-curse-of-dimensionality-cf8780307d74/">The Math Behind “The Curse of Dimensionality”</a></blockquote>
+</div></figure>
+
+
+
+<hr class="wp-block-separator has-alpha-channel-opacity is-style-dotted"/>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">Feel free to connect on <a href="https://www.linkedin.com/in/maxime-wolf/" target="_blank" rel="noreferrer noopener">LinkedIn</a></li>
+
+
+
+<li class="wp-block-list-item">Follow me on <a href="https://github.com/maxime7770" target="_blank" rel="noreferrer noopener">GitHub</a> for more content</li>
+
+
+
+<li class="wp-block-list-item">Visit my website: <a href="http://maximewolf.com/" target="_blank" rel="noreferrer noopener">maximewolf.com</a></li>
+</ul>
+
+
+
+<hr class="wp-block-separator has-alpha-channel-opacity is-style-dotted"/>
+
+
+
+<h2 class="wp-block-heading" id="cd21">References:</h2>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">[1] Liu, C., Wu, J., Xu, Y., Zhang, Y., Zhu, X., &amp; Song, D. (2024). <strong>Large Language Diffusion Models</strong>. <em>arXiv preprint arXiv:2502.09992</em>. <a href="https://arxiv.org/pdf/2502.09992" target="_blank" rel="noreferrer noopener">https://arxiv.org/pdf/2502.09992</a></li>
+
+
+
+<li class="wp-block-list-item">[2] <a href="https://dl.acm.org/doi/10.1145/3626235" target="_blank" rel="noreferrer noopener">Yang, Ling, et al. “Diffusion models: A comprehensive survey of methods and applications.” ACM Computing Surveys 56.4 (2023): 1–39.</a></li>
+
+
+
+<li class="wp-block-list-item">[3] Alammar, J. (2018, June 27). <strong>The Illustrated Transformer</strong>. <em>Jay Alammar’s Blog</em>. <a href="https://jalammar.github.io/illustrated-transformer/" target="_blank" rel="noreferrer noopener">https://jalammar.github.io/illustrated-transformer/</a><a href="https://medium.com/tag/machine-learning?source=post_page-----950bcce4ec09---------------------------------------"/></li>
+</ul>
+    
+</body>
+</html>

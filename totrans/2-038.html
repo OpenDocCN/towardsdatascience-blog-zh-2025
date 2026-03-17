@@ -1,0 +1,1478 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.1//EN"
+  "http://www.w3.org/TR/xhtml11/DTD/xhtml11.dtd">
+
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+<title>LangGraph 101: Let’s Build A Deep Research Agent</title>
+<link href="../Styles/Style.css" type="text/css" rel="stylesheet"/>
+</head>
+<body>
+<h1>LangGraph 101: Let’s Build A Deep Research Agent</h1>
+<blockquote>原文：<a href="https://towardsdatascience.com/langgraph-101-lets-build-a-deep-research-agent/">https://towardsdatascience.com/langgraph-101-lets-build-a-deep-research-agent/</a></blockquote>
+<p class="wp-block-paragraph"><mdspan datatext="el1755215230074" class="mdspan-comment">Building LLM agents</mdspan> that actually work in practice is not an easy task.</p>
+
+
+
+<p class="wp-block-paragraph">You need to consider how to orchestrate the multi-step workflow, keep track of the agents’ states, implement necessary guardrails, and monitor decision processes as they happen.</p>
+
+
+
+<p class="wp-block-paragraph">Fortunately, <strong>LangGraph </strong>addresses exactly those pain points for you.</p>
+
+
+
+<p class="wp-block-paragraph">Recently, Google just demonstrated this perfectly by open-sourcing a full-stack implementation of a <strong>Deep Research Agent</strong> built with LangGraph and Gemini (with Apache-2.0 license).</p>
+
+
+
+<p class="wp-block-paragraph">This isn’t a toy implementation: the agent can not only search, but also dynamically evaluate the results to decide if more information is needed by doing further searches. This iterative workflow is exactly the kind of thing where LangGraph really shines.</p>
+
+
+
+<p class="wp-block-paragraph">So, if you want to learn how LangGraph works in practice, what better place to start than a real, working agent like this?</p>
+
+
+
+<p class="wp-block-paragraph"><strong>Here’s our game plan for this tutorial post</strong>: We’ll adopt a “<strong>problem-driven</strong>” learning approach. Instead of starting with lengthy, abstract concepts, we’ll jump right into the code and examine Google’s implementation. After that, we’ll connect each piece back to the core concepts of LangGraph.</p>
+
+
+
+<p class="wp-block-paragraph">By the end, you’ll not only have a working research agent but also enough LangGraph knowledge to build whatever comes next.</p>
+
+
+
+<blockquote class="wp-block-quote is-layout-flow wp-block-quote-is-layout-flow">
+<p class="wp-block-paragraph"><em>All the code we’ll be discussing in this post comes from the official Google Gemini repository, which you can find <a href="https://github.com/google-gemini/gemini-fullstack-langgraph-quickstart" data-type="link" data-id="https://github.com/google-gemini/gemini-fullstack-langgraph-quickstart">here</a>. Our focus will be on the backend logic (backend/src/agent/ directory) where the research agent is defined.</em></p>
+</blockquote>
+
+
+
+<p class="wp-block-paragraph">Here is the visual roadmap for this post:</p>
+
+
+
+<figure class="wp-block-image alignwide size-large"><img decoding="async" src="../Images/b650c207ac282ca5a34fe932f94a044c.png" alt="" class="wp-image-610946" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/07/image-245-1024x350.png"/><figcaption class="wp-element-caption">Figure 1. Table of Contents for this post. (Image by author)</figcaption></figure>
+
+
+
+<hr class="wp-block-separator has-alpha-channel-opacity is-style-dotted"/>
+
+
+
+<h2 class="wp-block-heading has-heading-5-font-size">1. The Big Picture — Modeling the Workflow with Graphs, Nodes, and Edges</h2>
+
+
+
+<h3 class="wp-block-heading has-heading-6-font-size">🎯 The problem</h3>
+
+
+
+<p class="wp-block-paragraph">In this case study, we’ll build something exciting: an <strong>LLM-based</strong> <strong>research-agumented</strong> <strong>agent</strong>, the minimal replication of the <em>Deep Research</em> features you’ve already seen in ChatGPT, Gemini, Claude, or Perplexity. That’s what we’re aiming for here.</p>
+
+
+
+<p class="wp-block-paragraph">Specifically, our agent will work like this:</p>
+
+
+
+<blockquote class="wp-block-quote is-layout-flow wp-block-quote-is-layout-flow">
+<p class="wp-block-paragraph"><em>It takes in a user query, autonomously searches the web, examines the search results it obtains, and then decide if enough information has been found. If that’s the case, it proceeds with creating a well-crafted mini-report with proper citations; Otherwise, it circles back to dig deeper with more searches.</em></p>
+</blockquote>
+
+
+
+<p class="wp-block-paragraph">First things first, let’s sketch out a high-level flowchart so that we are clear what we’re building here:</p>
+
+
+
+<figure class="wp-block-image size-full"><img decoding="async" src="../Images/3dee0c602e2d64afd37ae504db9aa2e7.png" alt="" class="wp-image-610524" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/07/image-221.png"/><figcaption class="wp-element-caption">Figure 2. High-level flowchart (Image by author)</figcaption></figure>
+
+
+
+<h3 class="wp-block-heading has-heading-6-font-size">💡LangGraph’s solution</h3>
+
+
+
+<p class="wp-block-paragraph">Now, how should we model this workflow in LangGraph? Well, as the name suggests, LangGraph uses <strong>graph </strong>representations. Ok, but why use graphs?</p>
+
+
+
+<p class="wp-block-paragraph">The short answer is this: graphs are great for modeling complex, stateful flows, just like the application we aim to build here. When you have branching decisions, loops that need to circle back, and all the other messy realities that real-world agentic workflow would throw at you, graphs give you one of the most natural ways to represent them all.</p>
+
+
+
+<p class="wp-block-paragraph">Technically, a graph is composed of <strong>nodes </strong>and <strong>edges. </strong>In LangGraph’s world,<strong> nodes are individual processing steps</strong> in the workflow, and <strong>edges define transitions between steps</strong>, that is, defining how control and state flow through the system.</p>
+
+
+
+<h3 class="wp-block-heading has-heading-6-font-size">&lt;/&gt; Let’s see some code!</h3>
+
+
+
+<p class="wp-block-paragraph">In LangGraph, the translation from flowchart to code is straightforward. Let’s look at <code>agent/graph.py</code> from the Google repository to see how this is done.</p>
+
+
+
+<p class="wp-block-paragraph">The first step is to create the graph itself:</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">from langgraph.graph import StateGraph
+from agent.state import (
+    OverallState,
+    QueryGenerationState,
+    ReflectionState,
+    WebSearchState,
+)
+from agent.configuration import Configuration
+
+# Create our Agent Graph
+builder = StateGraph(OverallState, config_schema=Configuration)</code></pre>
+
+
+
+<p class="wp-block-paragraph">Here, <code>StateGraph</code> is LangGraph’s builder class for a <strong>state-aware graph. </strong>It accepts an<code>OverallState</code> class that defines what information can move between nodes (this is the agent memory part we will discuss in the next section), and a <code>Configuration</code> class that defines runtime-tunable parameters, such as which LLM to call at individual steps, the number of initial queries to generate, etc. More details on this will follow in the next sections.</p>
+
+
+
+<p class="wp-block-paragraph">Once we have the graph container, we can add nodes to it:</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python"># Define the nodes we will cycle between
+builder.add_node("generate_query", generate_query)
+builder.add_node("web_research", web_research)
+builder.add_node("reflection", reflection)
+builder.add_node("finalize_answer", finalize_answer)</code></pre>
+
+
+
+<p class="wp-block-paragraph">The <code>add_node()</code> method takes the first argument as the <strong>node’s name</strong> and the second argument as the <strong>callable </strong>that is executed when the node runs.</p>
+
+
+
+<p class="wp-block-paragraph">Generally, this callable can be a plain function, an async function, a LangChain <code>Runnable</code>, or even another compiled StateGraph.</p>
+
+
+
+<p class="wp-block-paragraph">In our specific case:</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item"><code>generate_query</code> generates search queries based on the user’s question.</li>
+
+
+
+<li class="wp-block-list-item"><code>web_search</code> performs web research using the native Google Search API tool.</li>
+
+
+
+<li class="wp-block-list-item"><code>reflection</code> identifies knowledge gaps and generates potential follow-up queries.</li>
+
+
+
+<li class="wp-block-list-item"><code>finalize_answer</code> finalizes the research summary.</li>
+</ul>
+
+
+
+<p class="wp-block-paragraph">We will examine the detailed implementation of those functions later.</p>
+
+
+
+<p class="wp-block-paragraph">Ok, now that we have the nodes defined, the next step is to add edges to connect them and define execution order:</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">from langgraph.graph import START, END
+
+# Set the entrypoint as `generate_query`
+# This means that this node is the first one called
+builder.add_edge(START, "generate_query")
+
+# Add conditional edge to continue with search queries in a parallel branch
+builder.add_conditional_edges(
+    "generate_query", continue_to_web_research, ["web_research"]
+)
+
+# Reflect on the web research
+builder.add_edge("web_research", "reflection")
+
+# Evaluate the research
+builder.add_conditional_edges(
+    "reflection", evaluate_research, ["web_research", "finalize_answer"]
+)
+
+# Finalize the answer
+builder.add_edge("finalize_answer", END)</code></pre>
+
+
+
+<p class="wp-block-paragraph">A couple of things are worth pointing out here:</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">Notice how those node names we defined earlier (e.g., “generate_query”, “web_research”, etc.) now come in handy—we can reference them directly in our edge definitions.</li>
+
+
+
+<li class="wp-block-list-item">We see that two types of edges are used, i.e., the <strong>static edge</strong> and the <strong>conditional edge</strong>.</li>
+
+
+
+<li class="wp-block-list-item">When <code>builder.add_edge()</code> is used, a direct, unconditional connection between two nodes is created. In our case, <code>builder.add_edge("web_research", "reflection")</code> basically means that after web research is completed, the flow will <em>always</em> move to the reflection step.</li>
+
+
+
+<li class="wp-block-list-item">On the other hand, when <code>builder.add_conditional_edges()</code> is used, the flow may jump to different branches at runtime. We need three key arguments when creating a conditional edge: <strong>the source node</strong>, <strong>a <strong>routing </strong>function</strong>, and <strong>a list of possible destination nodes</strong>. The routing function examines the current state and returns the name of the next node to visit. For example, the <code>evaluate_research()</code> function determines whether the agent needs more research (in that case, go to the <code>"web_research"</code> node) or if the information is already sufficient that the agent can finalize the answer (go to the <code>"finalize_answer" node</code>). </li>
+</ul>
+
+
+
+<blockquote class="wp-block-quote is-layout-flow wp-block-quote-is-layout-flow">
+<p class="wp-block-paragraph"><em>But why do we need a conditional edge between “generate_query” and “web_research”? Shouldn’t it be a static edge since we always want to search after generating queries? Good catch! That actually has something to do with how LangGraph enables parallelization. We will discuss that later in-depth.</em></p>
+</blockquote>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">We also notice two special nodes: <code>START</code> and <code>END</code>. These are LangGraph’s built-in entry and exit points. Every graph needs exactly one starting point (where execution begins), but can have multiple ending points (where execution terminates).</li>
+</ul>
+
+
+
+<p class="wp-block-paragraph">Finally, it’s time to put everything together and compile the graph into an executable agent:</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">graph = builder.compile(name="pro-search-agent")</code></pre>
+
+
+
+<p class="wp-block-paragraph">And that’s it! We’ve successfully translated our flowchart into a LangGraph implementation.</p>
+
+
+
+<h3 class="wp-block-heading has-heading-6-font-size">🎁 Bonus Read: Why Do Graphs Truly Shine?</h3>
+
+
+
+<p class="wp-block-paragraph">Beyond being a natural fit for nonlinear workflows, LangGraph’s node/edge/graph representation brings several additional practical benefits that make building and managing agents easy in the real world:</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item"><strong>Fine-grained control &amp; observability</strong>. Because every node/edge has its own identity, you can easily checkpoint your progress and examine under the hood when something unexpected happens. This makes debugging and evaluation simple.</li>
+
+
+
+<li class="wp-block-list-item"><strong>Modularity &amp; reuse</strong>. You can bundle individual steps into <em>reusable subgraphs</em>, just<em> </em>like Lego bricks. Talking about software best practices in action.</li>
+
+
+
+<li class="wp-block-list-item"><strong>Parallel paths. </strong>When parts of your workflow are independent, graphs easily let them run concurrently. Obviously, this helps address latency issues and makes your system more robust to faults, which is especially critical when your pipelines are complex.</li>
+
+
+
+<li class="wp-block-list-item"><strong>Easily visualizable</strong>. Whether it’s debugging or presenting the approach, it’s always nice to be able to see the workflow logic. Graphs are just natural for visualization.</li>
+</ul>
+
+
+
+<h3 class="wp-block-heading has-heading-6-font-size">📌Key takeaways</h3>
+
+
+
+<p class="wp-block-paragraph">Let’s recap what we’ve covered in this foundational section:</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">LangGraph uses graphs to describe the agentic workflow, as graphs elegantly handle branching, looping, and other nonlinear procedures.</li>
+
+
+
+<li class="wp-block-list-item">In LangGraph, nodes represent processing steps and edges define transitions between steps.</li>
+
+
+
+<li class="wp-block-list-item">LangGraph implements two types of edges: static edges and conditional edges. When you have fixed transitions between nodes, use static edges. If the transition may change in runtime based on dynamic decision, use conditional edges.</li>
+
+
+
+<li class="wp-block-list-item">Building a graph in LangGraph is simple. You first create a StateGraph, then add nodes (with their functions), connect them with edges. Finally, you compile the graph. Done!</li>
+</ul>
+
+
+
+<figure class="wp-block-image alignwide size-large"><img decoding="async" src="../Images/b3713124be64528ca479b01639cb6200.png" alt="" class="wp-image-610958" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/07/image-249-1024x529.png"/><figcaption class="wp-element-caption">Figure 3. Building agentic graph in LangGraph. (Image by author)</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">Now that we understand the basic structure, you’re probably wondering: how does information flow between these nodes? This brings us to one of LangGraph’s most important concepts: <strong>state management</strong>.</p>
+
+
+
+<p class="wp-block-paragraph">Let’s check that out.</p>
+
+
+
+<hr class="wp-block-separator has-alpha-channel-opacity is-style-dotted"/>
+
+
+
+<h2 class="wp-block-heading has-heading-5-font-size">2. The Agent’s Memory — How Nodes Share Information with State</h2>
+
+
+
+<figure class="wp-block-image alignwide size-large"><img decoding="async" src="../Images/0aebf3b85d22e94f4b5664cba599d3a3.png" alt="" class="wp-image-610950" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/07/image-246-1024x350.png"/><figcaption class="wp-element-caption">Figure 4. The current progress. (Image by Author)</figcaption></figure>
+
+
+
+<h3 class="wp-block-heading has-heading-6-font-size">🎯 The problem</h3>
+
+
+
+<p class="wp-block-paragraph">As our agent walks through the graph we defined earlier, it needs to keep track of things it has generated/learned. For example:</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">The original question from the user.</li>
+
+
+
+<li class="wp-block-list-item">The list of search queries it has generated.</li>
+
+
+
+<li class="wp-block-list-item">The content it has retrieved from the web.</li>
+
+
+
+<li class="wp-block-list-item">Its own internal reflections about whether the gathered information is sufficient.</li>
+
+
+
+<li class="wp-block-list-item">The final, polished answer.</li>
+</ul>
+
+
+
+<p class="wp-block-paragraph">So, how should we maintain that information so that our nodes do not work in isolation but instead collaborate and build upon each other’s work?</p>
+
+
+
+<h3 class="wp-block-heading has-heading-6-font-size">💡 LangGraph’s solution</h3>
+
+
+
+<p class="wp-block-paragraph">The LangGraph way of solving this problem is by introducing a central <strong>state object</strong>, a shared whiteboard that every node in the graph can look at and write on.</p>
+
+
+
+<p class="wp-block-paragraph">Here’s how it works:</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">When a node is executed, it receives the current state of the graph.</li>
+
+
+
+<li class="wp-block-list-item">The node performs its task (e.g., calls an LLM, runs a tool) using information from the state.</li>
+
+
+
+<li class="wp-block-list-item">The node then returns a dictionary containing only the parts of the state it wants to <strong>update or add</strong>.</li>
+
+
+
+<li class="wp-block-list-item">LangGraph then takes this output and automatically merges it into the main state object, before passing it to the next node.</li>
+</ul>
+
+
+
+<p class="wp-block-paragraph">Since the state passing and merging are handled at the framework level by LangGraph, individual nodes don’t need to worry about how to access or update shared data.  They just need to focus on their specific task logic.</p>
+
+
+
+<p class="wp-block-paragraph">Also, this pattern makes your agent workflows highly modular. You can easily add, remove, or reorder nodes without breaking the state flow.</p>
+
+
+
+<h3 class="wp-block-heading has-heading-6-font-size">&lt;/&gt; Let’s see some code!</h3>
+
+
+
+<p class="wp-block-paragraph">Remember this line from the last section?</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python"># Create our Agent Graph
+builder = StateGraph(OverallState, config_schema=Configuration)</code></pre>
+
+
+
+<p class="wp-block-paragraph">We mentioned that <code>OverallState</code> defines the agent’s memory, but does not yet show how exactly it is implemented. Now it’s a good time to open the black box.</p>
+
+
+
+<p class="wp-block-paragraph">In the repo, <code>OverallState</code> is defined in<code>agent/state.py</code>:</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">from typing import TypedDict, Annotated, List
+from langgraph.graph.message import add_messages
+import operator
+
+class OverallState(TypedDict):
+    messages: Annotated[list, add_messages]
+    search_query: Annotated[list, operator.add]
+    web_research_result: Annotated[list, operator.add]
+    sources_gathered: Annotated[list, operator.add]
+    initial_search_query_count: int
+    max_research_loops: int
+    research_loop_count: int
+    reasoning_model: str</code></pre>
+
+
+
+<p class="wp-block-paragraph">Essentially, we can see that the so-called state is a <code>TypedDict</code><strong> </strong>that serves as a <strong>contract</strong>. It defines every field your workflow cares about and how those fields should be merged when multiple nodes write to them. Let’s break that down:</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item"><strong>Field purposes</strong>: <code>messages</code><strong> </strong>stores conversation history, <code>search_query</code>,<code>web_search_result</code> , and <code>source_gathered</code> track the agent’s research process. The other fields control agent behavior by setting limits and tracking progress.</li>
+
+
+
+<li class="wp-block-list-item"><strong>The Annotated pattern</strong>: We see some fields use <code>Annotated[list, add_messages]</code>or <code>Annotated[list, operator.add]</code>. This is meant to tell LangGraph <strong>how to do the merge update </strong>when multiple nodes modify the same field. Specifically, <code>add_messages</code> is LangGraph’s built-in function for intelligently merging conversation messages, while <code>operator.add</code> concatenates lists when nodes add new items.</li>
+
+
+
+<li class="wp-block-list-item"><strong>Merge behavior</strong>: Fields like <code>research_loop_count: int</code> simply replace the old value when updated. Annotated fields, on the other hand, are <em>cumulative</em>.  They build up over time as different nodes dump information into it.</li>
+</ul>
+
+
+
+<p class="wp-block-paragraph">While <code>OverallState</code> serves as the global memory, probably it is better to also define smaller, node-specific states to act as a clear “API contract” for what a node needs and produces. After all, it is often the case that one specific node will not require all the information from the entire <code>OverallState</code>, nor modify all the content in <code>OverallState</code>.</p>
+
+
+
+<p class="wp-block-paragraph">This is exactly what LangGraph did.</p>
+
+
+
+<p class="wp-block-paragraph">In<code>agent/state.py</code>, besides defining <code>OverallState</code>, three other states are also defined:</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">class ReflectionState(TypedDict):
+    is_sufficient: bool
+    knowledge_gap: str
+    follow_up_queries: Annotated[list, operator.add]
+    research_loop_count: int
+    number_of_ran_queries: int
+
+class QueryGenerationState(TypedDict):
+    query_list: list[Query]
+
+class WebSearchState(TypedDict):
+    search_query: str
+    id: str</code></pre>
+
+
+
+<p class="wp-block-paragraph">Those states are used by the nodes in the following way (<code>agent/graph.py</code>):</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">from agent.state import (
+    OverallState,
+    QueryGenerationState,
+    ReflectionState,
+    WebSearchState,
+)
+
+def generate_query(
+    state: OverallState, 
+    config: RunnableConfig
+) -&gt; QueryGenerationState:
+    # ...Some logic to generate search queries...
+    return {"query_list": result.query}
+
+def continue_to_web_research(
+    state: QueryGenerationState
+):
+    # ...Some logic to send out multiple search queries...
+
+def web_research(
+    state: WebSearchState, 
+    config: RunnableConfig
+) -&gt; OverallState:
+    # ...Some logic to performs web research...
+    return {
+        "sources_gathered": sources_gathered,
+        "search_query": [state["search_query"]],
+        "web_research_result": [modified_text],
+    }
+
+def reflection(
+    state: OverallState, 
+    config: RunnableConfig
+) -&gt; ReflectionState:
+    # ...Some logic to reflect on the results...
+    return {
+        "is_sufficient": result.is_sufficient,
+        "knowledge_gap": result.knowledge_gap,
+        "follow_up_queries": result.follow_up_queries,
+        "research_loop_count": state["research_loop_count"],
+        "number_of_ran_queries": len(state["search_query"]),
+    }
+
+def evaluate_research(
+    state: ReflectionState,
+    config: RunnableConfig,
+) -&gt; OverallState:
+    # ...Some logic to determine the next step in the research flow...
+
+def finalize_answer(
+    state: OverallState, 
+    config: RunnableConfig) -&gt; OverallState:
+    # ...Some logic to finalize the research summary...
+
+    return {
+        "messages": [AIMessage(content=result.content)],
+        "sources_gathered": unique_sources,
+    }</code></pre>
+
+
+
+<p class="wp-block-paragraph">Take the<code>reflection</code> node as an example: It reads from the <code>OverallState</code> but returns a dictionary that matches the <code>ReflectionState</code> contract. Afterward, LangGraph will handle the job of merging them into the main <code>OverallState</code>, making them available for the next nodes in the graph.</p>
+
+
+
+<h3 class="wp-block-heading has-heading-6-font-size">🎁 Bonus Read: Where Did My State Go?</h3>
+
+
+
+<p class="wp-block-paragraph">A common confusion when working with LangGraph is how <code>OverallState</code> and these smaller, node-specific states interact. Let’s clear that confusion here.</p>
+
+
+
+<p class="wp-block-paragraph">The crucial mental model we need to have is this: there is only <strong>one</strong> state dictionary at runtime, the <code>OverallState</code>.</p>
+
+
+
+<p class="wp-block-paragraph">Node-specific <code>TypedDict</code>s are not extra runtime data stores. Instead, they are just typed “views” onto the one underlying dictionary (<code>OverallState</code>), that temporarily zoom in on the parts a node should see or produce. The purpose of their existence is that the type checker and the LangGraph runtime can enforce clear contracts.</p>
+
+
+
+<figure class="wp-block-image size-large"><img decoding="async" src="../Images/9670213883ae6f2165e25be7a0c5786c.png" alt="" class="wp-image-610708" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/07/image-232-1024x305.png"/><figcaption class="wp-element-caption">Figure 5. A quick comparison of the two state types. (Image by Author)</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">Before a node runs, LangGraph can use its type hints to create a “slice” of the <code>OverallState</code> containing only the inputs that the node needs.</p>
+
+
+
+<p class="wp-block-paragraph">The node runs its logic and returns its small, specific output dictionary (e.g., a <code>ReflectionState</code> dict).</p>
+
+
+
+<p class="wp-block-paragraph">LangGraph takes the returned dictionary and runs <code>OverallState.update(return_dict)</code>. If any keys were defined with an aggregator (like <code>operator.add</code>), that logic is applied. The updated <code>OverallState</code> is then passed to the next node.</p>
+
+
+
+<p class="wp-block-paragraph">So why has LangGraph embraced this two-level state definition? Besides enforcing a clear contract for the node and making node operations self-documenting, there are two other benefits also worth mentioning:</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item"><strong>Drop-in reusability</strong>: Because a node only advertises the small slice of state it needs and produces, it becomes a modular, plug-and-play component. For example, a <code>generate_query</code> node that only needs <code>{user_query}</code> from the state and outputs <code>{queries}</code> can be dropped into another, completely different graph, so long as that graph’s <code>OverallState</code> can provide a <code>user_query</code>. If the node were coded against the <em>entire</em> global state (i.e., typed with <code>OverallState</code> for both its input and output), you can easily break the workflow if you rename any unrelated key. This modularity is quite essential for building complex systems.</li>
+
+
+
+<li class="wp-block-list-item"><strong>Efficiency in parallel flows</strong>: Imagine our agent needs to run 10 web searches simultaneously. If we are using a node-specific state as a small payload, we then just need to send the search query to each parallel branch. This is way more efficient than sending a copy of the entire agent memory (remember the full chat history is also stored in <code>OverallState</code>!) to all ten branches. This way, we can dramatically cut down on memory and serialization overhead.</li>
+</ul>
+
+
+
+<p class="wp-block-paragraph">So what does this mean for us in practice?</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item"><strong>✔</strong> Declare in <code>OverallState</code> every key that needs to persist or to be visible to multiple different nodes.</li>
+
+
+
+<li class="wp-block-list-item"><strong>✔</strong> Make the node-specific states as small as possible. They should contain <em>only</em> the fields that the node is responsible for producing.</li>
+
+
+
+<li class="wp-block-list-item"><strong>✔</strong> Every key you write must be declared in <strong>some</strong> state schema; otherwise, LangGraph raises <code>InvalidUpdateError</code> when the node tries to write it.</li>
+</ul>
+
+
+
+<h3 class="wp-block-heading has-heading-6-font-size">📌Key takeaways</h3>
+
+
+
+<p class="wp-block-paragraph" id="e8c3">Let’s recap what we’ve covered in this section:</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">LangGraph maintains states at two levels: At the global level, there is the OverallState object that serves as the central memory. At the individual node level, small, TypedDict-based objects store node-specific inputs/outputs. This keeps the state management clean and organized.</li>
+
+
+
+<li class="wp-block-list-item">After each step, nodes would return minimal output dicts, which is then merged back into the central memory (<code>OverallState</code>). This merging is done according to your custom rules (e.g., <code>operator.add</code> for lists).</li>
+
+
+
+<li class="wp-block-list-item">Nodes are self-contained and modular. You can easily resue them like building blocks to create new workflows.</li>
+</ul>
+
+
+
+<figure class="wp-block-image alignwide size-large"><img decoding="async" src="../Images/f10a853a5ea8e9dcfce7f5ff7f98884c.png" alt="" class="wp-image-610969" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/07/image-250-1024x656.png"/><figcaption class="wp-element-caption">Figure 6. Key points to remember in LangGraph state management. (Image by author)</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">Now we’ve understood the graph’s structure and how state flows through it, but what happens <em>inside</em> each node? Let’s now turn to the node operations.</p>
+
+
+
+<hr class="wp-block-separator has-alpha-channel-opacity is-style-dotted"/>
+
+
+
+<h2 class="wp-block-heading has-heading-5-font-size">3. Node Operations — Where The Real Work Happens</h2>
+
+
+
+<figure class="wp-block-image alignwide size-large"><img decoding="async" src="../Images/4685c5d473831ba08dea399f145b00cc.png" alt="" class="wp-image-610952" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/07/image-247-1024x418.png"/><figcaption class="wp-element-caption">Figure 7. The current progress. (Image by Author)</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph" id="8394">Our graph can route messages and hold state, but inside each node, we still need to:</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">Make sure the LLM outputs the right format.</li>
+
+
+
+<li class="wp-block-list-item">Call external APIs.</li>
+
+
+
+<li class="wp-block-list-item">Run multiple searches in parallel.</li>
+
+
+
+<li class="wp-block-list-item">Decide when to stop the loop.</li>
+</ul>
+
+
+
+<p class="wp-block-paragraph" id="d18a">Luckily, LangGraph has your back with several solid approaches for tackling these challenges. Let’s meet them one by one, each through a slice of our working codebase.</p>
+
+
+
+<h3 class="wp-block-heading has-heading-6-font-size">3.1 Structured output</h3>
+
+
+
+<h3 class="wp-block-heading">🎯 The problem</h3>
+
+
+
+<p class="wp-block-paragraph">Getting an LLM to return a JSON object is easy, but parsing free-text JSON is just unreliable in practice. As soon as LLMs use a different phrase, add unexpected formatting, or change the key order, our workflow can easily go off the rails. In short, we need guaranteed, validatable output structures at each processing step.</p>
+
+
+
+<h3 class="wp-block-heading">💡 LangGraph’s solution</h3>
+
+
+
+<p class="wp-block-paragraph">We constrain the LLM to generate output that conforms to a predefined schema. This can be done by attaching a <strong>Pydantic </strong>schema to the LLM call using <code>llm.with_structured_output()</code>, which is a helper method that is provided by every LangChain chat-model wrapper (e.g., <code>ChatGoogleGenerativeAI</code>, <code>ChatOpenAI</code>, etc.).</p>
+
+
+
+<h3 class="wp-block-heading">&lt;/&gt; Let’s see some code!</h3>
+
+
+
+<p class="wp-block-paragraph">Let’s look at the <code>generate_query</code> node, whose job is to create a list of search queries. Since we need this list to be a clean Python object, not a messy string, for the next node to parse, it would be a good idea to enforce the output schema, with <code>SearchQueryList</code> (defined in <code>agent/tools_and_schemas.py</code>):</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">from typing import List
+from pydantic import BaseModel, Field
+
+class SearchQueryList(BaseModel):
+    query: List[str] = Field(
+        description="A list of search queries to be used for web research."
+    )
+    rationale: str = Field(
+        description="A brief explanation of why these queries are relevant to the research topic."
+    )</code></pre>
+
+
+
+<p class="wp-block-paragraph">And here is how this schema is used in the <code>generate_query</code> node:</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">from langchain_google_genai import ChatGoogleGenerativeAI
+from agent.prompts import (
+    get_current_date,
+    query_writer_instructions,
+)
+
+def generate_query(
+    state: OverallState, 
+    config: RunnableConfig
+) -&gt; QueryGenerationState:
+    """LangGraph node that generates a search queries 
+       based on the User's question.
+
+    Uses Gemini 2.0 Flash to create an optimized search 
+    query for web research based on the User's question.
+
+    Args:
+        state: Current graph state containing the User's question
+        config: Configuration for the runnable, including LLM 
+                provider settings
+
+    Returns:
+        Dictionary with state update, including search_query key 
+        containing the generated query
+    """
+    configurable = Configuration.from_runnable_config(config)
+
+    # check for custom initial search query count
+    if state.get("initial_search_query_count") is None:
+        state["initial_search_query_count"] = configurable.number_of_initial_queries
+
+    # init Gemini 2.0 Flash
+    llm = ChatGoogleGenerativeAI(
+        model=configurable.query_generator_model,
+        temperature=1.0,
+        max_retries=2,
+        api_key=os.getenv("GEMINI_API_KEY"),
+    )
+    structured_llm = llm.with_structured_output(SearchQueryList)
+
+    # Format the prompt
+    current_date = get_current_date()
+    formatted_prompt = query_writer_instructions.format(
+        current_date=current_date,
+        research_topic=get_research_topic(state["messages"]),
+        number_queries=state["initial_search_query_count"],
+    )
+    # Generate the search queries
+    result = structured_llm.invoke(formatted_prompt)
+    return {"query_list": result.query}</code></pre>
+
+
+
+<p class="wp-block-paragraph">Here, <code>llm.with_structured_output(SearchQueryList)</code> wraps the Gemini model with LangChain’s structured-output helper. Under the hood, it uses the model’s preferred structured-output feature (JSON mode for Gemini 2.0 Flash) and automatically parses the reply into a <code>SearchQueryList</code> Pydantic instance, so <code>result</code> is already validated Python data.</p>
+
+
+
+<p class="wp-block-paragraph">It’s also interesting to check out the system prompt Google used for this node:</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">query_writer_instructions = """Your goal is to generate sophisticated and 
+diverse web search queries. These queries are intended for an advanced 
+automated web research tool capable of analyzing complex results, following 
+links, and synthesizing information.
+
+Instructions:
+- Always prefer a single search query, only add another query if the original 
+  question requests multiple aspects or elements and one query is not enough.
+- Each query should focus on one specific aspect of the original question.
+- Don't produce more than {number_queries} queries.
+- Queries should be diverse, if the topic is broad, generate more than 1 query.
+- Don't generate multiple similar queries, 1 is enough.
+- Query should ensure that the most current information is gathered. 
+  The current date is {current_date}.
+
+Format: 
+- Format your response as a JSON object with ALL three of these exact keys:
+   - "rationale": Brief explanation of why these queries are relevant
+   - "query": A list of search queries
+
+Example:
+
+Topic: What revenue grew more last year apple stock or the number of people 
+buying an iphone
+```json
+{{
+    "rationale": "To answer this comparative growth question accurately, 
+we need specific data points on Apple's stock performance and iPhone sales 
+metrics. These queries target the precise financial information needed: 
+company revenue trends, product-specific unit sales figures, and stock price 
+movement over the same fiscal period for direct comparison.",
+    "query": ["Apple total revenue growth fiscal year 2024", "iPhone unit 
+sales growth fiscal year 2024", "Apple stock price growth fiscal year 2024"],
+}}
+```
+
+Context: {research_topic}"""</code></pre>
+
+
+
+<p class="wp-block-paragraph">We see some prompt engineering best practices in action, like defining the model’s role, specifying constraints, providing an example for illustration, etc. </p>
+
+
+
+<h3 class="wp-block-heading has-heading-6-font-size">3.2 Tool calling</h3>
+
+
+
+<h3 class="wp-block-heading">🎯 The problem</h3>
+
+
+
+<p class="wp-block-paragraph">For our research agent to succeed, it needs up-to-date information from the web. To realize that, it needs a “tool” to search the web.</p>
+
+
+
+<h3 class="wp-block-heading">💡 LangGraph’s solution</h3>
+
+
+
+<p class="wp-block-paragraph">Nodes can execute tools. These can be native LLM tool-calling features (like in Gemini) or integrated through LangChain’s tool abstractions. Once the tool-calling results are gathered, they can be placed back into the agent’s state.</p>
+
+
+
+<h3 class="wp-block-heading">&lt;/&gt; Let’s see some code!</h3>
+
+
+
+<p class="wp-block-paragraph">For the tool-calling usage pattern, let’s look at the <code>web_research</code> node. This node uses Gemini’s native tool-calling feature to perform Google searches. Notice how the tool is specified directly in the model’s configuration.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">from langchain_google_genai import ChatGoogleGenerativeAI
+from agent.prompts import (
+    web_searcher_instructions,
+)
+from agent.utils import (
+    get_citations,
+    insert_citation_markers,
+    resolve_urls,
+)
+
+def web_research(
+    state: WebSearchState, 
+    config: RunnableConfig
+) -&gt; OverallState:
+    """LangGraph node that performs web research using the native Google 
+       Search API tool.
+
+    Executes a web search using the native Google Search API tool in 
+    combination with Gemini 2.0 Flash.
+
+    Args:
+        state: Current graph state containing the search query and 
+               research loop count
+        config: Configuration for the runnable, including search API settings
+
+    Returns:
+        Dictionary with state update, including sources_gathered, 
+        research_loop_count, and web_research_results
+    """
+    # Configure
+    configurable = Configuration.from_runnable_config(config)
+    formatted_prompt = web_searcher_instructions.format(
+        current_date=get_current_date(),
+        research_topic=state["search_query"],
+    )
+
+    # Uses the google genai client as the langchain client doesn't 
+    # return grounding metadata
+    response = genai_client.models.generate_content(
+        model=configurable.query_generator_model,
+        contents=formatted_prompt,
+        config={
+            "tools": [{"google_search": {}}],
+            "temperature": 0,
+        },
+    )
+    # resolve the urls to short urls for saving tokens and time
+    resolved_urls = resolve_urls(
+        response.candidates[0].grounding_metadata.grounding_chunks, state["id"]
+    )
+    # Gets the citations and adds them to the generated text
+    citations = get_citations(response, resolved_urls)
+    modified_text = insert_citation_markers(response.text, citations)
+    sources_gathered = [item for citation in citations for item in citation["segments"]]
+
+    return {
+        "sources_gathered": sources_gathered,
+        "search_query": [state["search_query"]],
+        "web_research_result": [modified_text],
+    }</code></pre>
+
+
+
+<p class="wp-block-paragraph">The LLM sees the <code>Google Search</code> tool and understands that it can use the tool to fulfill the prompt. A key benefit of this native integration is the <code>grounding_metadata</code> returned with the response. That metadata contains <em>grounding chunks</em> — essentially, snippets of the answer paired with the URL that justified them. This basically gives us citations for free.</p>
+
+
+
+<h3 class="wp-block-heading has-heading-6-font-size">3.3 Conditional routing</h3>
+
+
+
+<h3 class="wp-block-heading">🎯 The problem</h3>
+
+
+
+<p class="wp-block-paragraph">After the initial research, how does the agent know whether to stop or continue? We need a control mechanism to create a research loop that can terminate itself.</p>
+
+
+
+<h3 class="wp-block-heading">💡 LangGraph’s solution</h3>
+
+
+
+<p class="wp-block-paragraph">Conditional routing is handled by a special type of node: instead of returning state, this node returns the name of the <em>next</em> node to visit. Effectively, this node implements a routing function that inspects the current state and makes a decision regarding how to direct the traffic within the graph.</p>
+
+
+
+<h3 class="wp-block-heading">&lt;/&gt; Let’s see some code!</h3>
+
+
+
+<p class="wp-block-paragraph">The <code>evaluate_research</code> node is our agent’s decision-maker. It checks the <code>is_sufficient</code> flag set by the <code>reflection</code> node and compares the current <code>research_loop_count</code> value against a pre-configured maximum threshold value.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">def evaluate_research(
+    state: ReflectionState,
+    config: RunnableConfig,
+) -&gt; OverallState:
+    """LangGraph routing function that determines the next step in the 
+       research flow.
+
+    Controls the research loop by deciding whether to continue gathering 
+    information or to finalize the summary based on the configured maximum 
+    number of research loops.
+
+    Args:
+        state: Current graph state containing the research loop count
+        config: Configuration for the runnable, including max_research_loops 
+                setting
+
+    Returns:
+        String literal indicating the next node to visit 
+        ("web_research" or "finalize_summary")
+    """
+    configurable = Configuration.from_runnable_config(config)
+    max_research_loops = (
+        state.get("max_research_loops")
+        if state.get("max_research_loops") is not None
+        else configurable.max_research_loops
+    )
+    if state["is_sufficient"] or state["research_loop_count"] &gt;= max_research_loops:
+        return "finalize_answer"
+    else:
+        return [
+            Send(
+                "web_research",
+                {
+                    "search_query": follow_up_query,
+                    "id": state["number_of_ran_queries"] + int(idx),
+                },
+            )
+            for idx, follow_up_query in enumerate(state["follow_up_queries"])
+        ]</code></pre>
+
+
+
+<p class="wp-block-paragraph">If the condition to stop is met, it returns the string <code>"finalize_answer"</code>, and LangGraph proceeds to that node. If not, it returns a new list of <code>Send</code> objects containing the <code>follow_up_queries</code>, which spins up another parallel wave of web research, continuing the loop.</p>
+
+
+
+<p class="wp-block-paragraph"><code>Send</code> object…What is it then?</p>
+
+
+
+<p class="wp-block-paragraph">Well, it is LangGraph’s way of triggering parallel execution. Let’s turn to that now.</p>
+
+
+
+<h3 class="wp-block-heading has-heading-6-font-size">3.4 Parallel processing</h3>
+
+
+
+<h3 class="wp-block-heading">🎯 The problem</h3>
+
+
+
+<p class="wp-block-paragraph">To answer the user’s query as comprehensively as possible, we would need our <code>generate_query</code> node to produce multiple search queries. However, we don’t want to run those search queries one by one, as it would be very slow and inefficient. What we want is to execute the web searches for all queries concurrently.</p>
+
+
+
+<h3 class="wp-block-heading">💡 LangGraph’s solution</h3>
+
+
+
+<p class="wp-block-paragraph">To trigger parallel execution, a node can return a list of <code>Send</code> objects. <code>Send</code> is a special directive that tells the LangGraph scheduler to dispatch these tasks to the specified node (e.g.,<code>"web_research"</code>) concurrently, each with its own piece of state.</p>
+
+
+
+<h3 class="wp-block-heading">&lt;/&gt; Let’s see some code!</h3>
+
+
+
+<p class="wp-block-paragraph">To enable the parallel search, Google’s implementation introduces the <code>continue_to_web_research</code> node to act as a dispatcher. It takes the <code>query_list</code> from the state and creates a separate <code>Send</code> task for each query.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">from langgraph.types import Send
+
+def continue_to_web_research(
+    state: QueryGenerationState
+):
+    """LangGraph node that sends the search queries to the web research node.
+    This is used to spawn n number of web research nodes, one for each 
+    search query.
+    """
+    return [
+        Send("web_research", {"search_query": search_query, "id": int(idx)})
+        for idx, search_query in enumerate(state["query_list"])
+    ]</code></pre>
+
+
+
+<p class="wp-block-paragraph">And that’s all the code you need. The magic lives in what happens <em>after</em> this node returns. </p>
+
+
+
+<p class="wp-block-paragraph">When LangGraph receives this list, it’s smart enough not to simply loop through it. In fact, it triggers a sophisticated fan-out/fan-in process under the hood to handle things concurrently:</p>
+
+
+
+<p class="wp-block-paragraph">To begin with, each <code>Send</code> object carries only the tiny payload you gave it (<code>{"search_query": ..., "id": ...}</code>), not the entire <code>OverallState</code>. The purpose here is to have fast serialization.</p>
+
+
+
+<p class="wp-block-paragraph">Then, the graph scheduler spins off an <code>asyncio</code> task for every item in the list. This concurrency happens automatically, you as the workflow builder don’t need to worry anything about writing <code>async def</code> or managing a thread pool.</p>
+
+
+
+<p class="wp-block-paragraph">Finally, after all the parallel <code>web_research</code> branches are completed, their individually returned dictionaries are automatically merged back into the main <code>OverallState</code>. Remember the <code>Annotated[list, operator.add]</code> we discussed in the beginning? Now it becomes crucial: fields defined with this type of reducer, like <code>sources_gathered</code>, will have their results concatenated into a single list.</p>
+
+
+
+<p class="wp-block-paragraph">You may want to ask: what happens if one of the parallel searches <strong>fails or times out</strong>? This is exactly why we added a custom <code>id</code> to each <code>Send</code> payload. This ID flows directly into the trace logs, allowing you to pinpoint and debug the exact branch that failed.</p>
+
+
+
+<p class="wp-block-paragraph">If you remember from earlier, we have the following line in our graph definition:</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python"># Add conditional edge to continue with search queries in a parallel branch
+builder.add_conditional_edges(
+    "generate_query", continue_to_web_research, ["web_research"]
+)</code></pre>
+
+
+
+<p class="wp-block-paragraph">You might be wondering: why do we need to declare <code>continue_to_web_research</code> node as part of a conditional edge?</p>
+
+
+
+<p class="wp-block-paragraph">The crucial thing to realize is that: <code>continue_to_web_research</code> isn’t just another step in the pipeline—it’s a <strong>routing function</strong>.</p>
+
+
+
+<p class="wp-block-paragraph">The <code>generate_query</code> node can return <em>zero</em> queries (when the user asks something trivial) or twenty. A static edge would force the workflow to invoke <code>web_research</code> exactly once, even if there’s nothing to do. By implementing as a <em>conditional</em> edge <code>continue_to_web_research</code> decides at runtime, whether to dispatch—and, thanks to <code>Send</code>, how many parallel branches to spawn. If <code>continue_to_web_research</code> returns an empty list, LangGraph simply doesn’t follow the edge. That saves the round-trip to the search API.</p>
+
+
+
+<p class="wp-block-paragraph">Finally, this is again the software engineering best practice in action: <code>generate_query</code> focuses on <em>what to search</em>, <code>continue_to_web_research</code> on <em>whether and how to search</em>, and <code>web_research</code> on <em>doing the search</em>, a<em> </em>clean separation of concerns.</p>
+
+
+
+<h3 class="wp-block-heading has-heading-6-font-size">3.5 Configuration management</h3>
+
+
+
+<h3 class="wp-block-heading">🎯 The problem</h3>
+
+
+
+<p class="wp-block-paragraph">For nodes to properly do their jobs, they need to know, for example:</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">Which LLM to use with what parameter settings (e.g., temperature)?</li>
+
+
+
+<li class="wp-block-list-item">How many initial search queries should be generated?</li>
+
+
+
+<li class="wp-block-list-item">What’s the cap on total research loops and on per-run concurrency?</li>
+
+
+
+<li class="wp-block-list-item">And many others…</li>
+</ul>
+
+
+
+<p class="wp-block-paragraph">In short, we need a clean, centralized way to manage these settings without cluttering our core logic.</p>
+
+
+
+<h3 class="wp-block-heading">💡 LangGraph’s Solution</h3>
+
+
+
+<p class="wp-block-paragraph">LangGraph solves this by passing a single, standardized <code>config</code> into every node that needs it. This object acts as a universal container for run-specific settings.</p>
+
+
+
+<p class="wp-block-paragraph">Inside the node, LangGraph then uses a custom, typed helper class to intelligently parse this <code>config</code> object. This helper class implements a clear hierarchy for fetching values:</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">It first looks for overrides passed in the <code>config</code> object for the current run.</li>
+
+
+
+<li class="wp-block-list-item">If not found, it falls back to checking for environment variables.</li>
+
+
+
+<li class="wp-block-list-item">If still not found, it uses the defaults defined directly in this helper class.</li>
+</ul>
+
+
+
+<h3 class="wp-block-heading">&lt;/&gt; Let’s see some code!</h3>
+
+
+
+<p class="wp-block-paragraph">Let’s look at the implementation of the <code>reflection</code> node to see it in action.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">def reflection(
+    state: OverallState, 
+    config: RunnableConfig
+) -&gt; ReflectionState:
+    """LangGraph node that identifies knowledge gaps and generates 
+      potential follow-up queries.
+
+    Analyzes the current summary to identify areas for further research 
+    and generates potential follow-up queries. Uses structured output to 
+    extract the follow-up query in JSON format.
+
+    Args:
+        state: Current graph state containing the running summary and 
+               research topic
+        config: Configuration for the runnable, including LLM provider 
+                settings
+
+    Returns:
+        Dictionary with state update, including search_query key containing 
+        the generated follow-up query
+    """
+    configurable = Configuration.from_runnable_config(config)
+    # Increment the research loop count and get the reasoning model
+    state["research_loop_count"] = state.get("research_loop_count", 0) + 1
+    reasoning_model = state.get("reasoning_model") or configurable.reasoning_model
+
+    # Format the prompt
+    current_date = get_current_date()
+    formatted_prompt = reflection_instructions.format(
+        current_date=current_date,
+        research_topic=get_research_topic(state["messages"]),
+        summaries="\n\n---\n\n".join(state["web_research_result"]),
+    )
+    # init Reasoning Model
+    llm = ChatGoogleGenerativeAI(
+        model=reasoning_model,
+        temperature=1.0,
+        max_retries=2,
+        api_key=os.getenv("GEMINI_API_KEY"),
+    )
+    result = llm.with_structured_output(Reflection).invoke(formatted_prompt)
+
+    return {
+        "is_sufficient": result.is_sufficient,
+        "knowledge_gap": result.knowledge_gap,
+        "follow_up_queries": result.follow_up_queries,
+        "research_loop_count": state["research_loop_count"],
+        "number_of_ran_queries": len(state["search_query"]),
+    }</code></pre>
+
+
+
+<p class="wp-block-paragraph">Just one line of boilerplate is required in the node:</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">configurable = Configuration.from_runnable_config(config)</code></pre>
+
+
+
+<p class="wp-block-paragraph">There are quite a few “<em>config</em>-ish” terms floating around. Let’s unpack them one by one, starting with <code>Configuration</code>:</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">import os
+from pydantic import BaseModel, Field
+from typing import Any, Optional
+
+from langchain_core.runnables import RunnableConfig
+
+class Configuration(BaseModel):
+    """The configuration for the agent."""
+
+    query_generator_model: str = Field(
+        default="gemini-2.0-flash",
+        metadata={
+            "description": "The name of the language model to use for the agent's query generation."
+        },
+    )
+
+    reflection_model: str = Field(
+        default="gemini-2.5-flash-preview-04-17",
+        metadata={
+            "description": "The name of the language model to use for the agent's reflection."
+        },
+    )
+
+    answer_model: str = Field(
+        default="gemini-2.5-pro-preview-05-06",
+        metadata={
+            "description": "The name of the language model to use for the agent's answer."
+        },
+    )
+
+    number_of_initial_queries: int = Field(
+        default=3,
+        metadata={"description": "The number of initial search queries to generate."},
+    )
+
+    max_research_loops: int = Field(
+        default=2,
+        metadata={"description": "The maximum number of research loops to perform."},
+    )
+
+    @classmethod
+    def from_runnable_config(
+        cls, config: Optional[RunnableConfig] = None
+    ) -&gt; "Configuration":
+        """Create a Configuration instance from a RunnableConfig."""
+        configurable = (
+            config["configurable"] if config and "configurable" in config else {}
+        )
+
+        # Get raw values from environment or config
+        raw_values: dict[str, Any] = {
+            name: os.environ.get(name.upper(), configurable.get(name))
+            for name in cls.model_fields.keys()
+        }
+
+        # Filter out None values
+        values = {k: v for k, v in raw_values.items() if v is not None}
+
+        return cls(**values)</code></pre>
+
+
+
+<p class="wp-block-paragraph">This is the custom helper class we mentioned earlier. You can see Pydantic is heavily used to define all the parameters for the agent. One thing to notice is that this class also defines an alternative constructor method <code>from_runnable_config()</code>. This constructor method creates a <code>Configuration</code> instance by pulling values from different sources while enforcing the overriding hierarchy we discussed in “💡 LangGraph’s Solution” above.</p>
+
+
+
+<p class="wp-block-paragraph"><code>config</code> is the input to <code>from_runnable_config()</code> method. Technically, it’s a <code>RunnableConfig</code> type, but it’s really just a dictionary with optional metadata. In LangGraph, it’s mainly used as a structured way to carry contextual information across the graph. For example, it can carry things like tags, tracing options, and — most importantly—a nested dictionary of overrides under the <code>"configurable"</code> key.</p>
+
+
+
+<p class="wp-block-paragraph">Finally, by calling in every node:</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">configurable = Configuration.from_runnable_config(config)</code></pre>
+
+
+
+<p class="wp-block-paragraph">we create an instance of the <code>Configuration</code> class by combining data from three sources: first, the <code>config["configurable"]</code>, then environment variables, and finally the class defaults. So <code>configurable</code> is a fully initialized, ready-to-use object that gives the node access to all relevant settings, such as <code>configurable.reflection_model</code>.</p>
+
+
+
+<blockquote class="wp-block-quote is-layout-flow wp-block-quote-is-layout-flow">
+<p class="wp-block-paragraph"><em>There is a bug in Google’s original code (both in reflection node &amp; finalize_answer node):</em></p>
+</blockquote>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">reasoning_model = state.get("reasoning_model") or configurable.reasoning_model</code></pre>
+
+
+
+<blockquote class="wp-block-quote is-layout-flow wp-block-quote-is-layout-flow">
+<p class="wp-block-paragraph"><em>However, <code>reasoning_model</code> is never defined in the configuration.py. Instead, <code>reflect_model</code> and <code>answer_model</code> should be used per configuration.py definitions. Details see PR #46.</em></p>
+</blockquote>
+
+
+
+<p class="wp-block-paragraph">To recap: <code>Configuration</code> is the definition, <code>config</code> is the runtime input, and <code>configurable</code> is the result, i.e., the parsed configuration object your node uses.</p>
+
+
+
+<h2 class="wp-block-heading">🎁 Bonus Read: What Didn’t We Cover?</h2>
+
+
+
+<p class="wp-block-paragraph">LangGraph has a lot more to offer than what we can cover in this tutorial. As you build more complex agents, you’ll probably find yourself asking questions like these:</p>
+
+
+
+<p class="wp-block-paragraph">1. <strong>Can I make my application more responsive?</strong></p>
+
+
+
+<p class="wp-block-paragraph">LangGraph supports <strong>streaming</strong>, so you can output results token by token for a real-time user experience.</p>
+
+
+
+<p class="wp-block-paragraph">2. <strong>What happens when an API call fails?</strong></p>
+
+
+
+<p class="wp-block-paragraph">LangGraph implements <strong>retry and fallback mechanisms</strong> to handle errors. </p>
+
+
+
+<p class="wp-block-paragraph">3. <strong>How to avoid re-running expensive computations?</strong></p>
+
+
+
+<p class="wp-block-paragraph">If some of your nodes need to conduct expensive processing, you can use LangGraph’s <strong>caching </strong>mechanism to cache the node outputs.  Also, LangGraph supports <strong>checkpoints</strong>. This feature lets you save your graph’s state and pick up where you left off. This is especially important if you have a long-running process and you want to pause it and resume it later.</p>
+
+
+
+<p class="wp-block-paragraph">4. <strong>Can I implement <strong>human-in-the-loop</strong> workflows?</strong></p>
+
+
+
+<p class="wp-block-paragraph">Yes. LangGraph has built-in support for <strong>human-in-the-loop</strong> workflows. This enables you to pause the graph and wait for user input or approval before proceeding.</p>
+
+
+
+<p class="wp-block-paragraph">5. <strong>How can I trace my agent’s behavior?</strong></p>
+
+
+
+<p class="wp-block-paragraph">LangGraph integrates natively with <strong>LangSmith</strong>, which provides detailed traces and observability into your agent’s behaviors with minimal setup.</p>
+
+
+
+<p class="wp-block-paragraph">6. <strong>How can my agent automatically discover and use new tools?</strong></p>
+
+
+
+<p class="wp-block-paragraph">LangGraph supports <strong>MCP</strong> (Model Context Protocol)<strong> </strong>integrations. This allows it to auto-discover and use tools that follow this open standard.</p>
+
+
+
+<p class="wp-block-paragraph">Check out the LangGraph <a href="https://langchain-ai.github.io/langgraph/concepts/why-langgraph/" target="_blank" rel="noreferrer noopener">official docs</a> for more details.</p>
+
+
+
+<h2 class="wp-block-heading">📌Key takeaways</h2>
+
+
+
+<p class="wp-block-paragraph">Let’s recap what we’ve covered in this section:</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item"><strong>Structured output</strong>: Use .<code>with_structured_output</code> to force the AI’s response to fit a specific structure you define. This makes sure you always get clean, reliable data that your downstream steps can easily parse.</li>
+
+
+
+<li class="wp-block-list-item"><strong>Tool calling</strong>: You can embed tools in the model calls so that the agent can interact with the outside world.</li>
+
+
+
+<li class="wp-block-list-item"><strong>Conditional routing</strong>: This is how you build “choose your own adventure” logic. A node can decide where to go next simply by returning the name of the next node. This way, you can dynamically create loops and decision points, making your agent’s workflow much more intelligent.</li>
+
+
+
+<li class="wp-block-list-item"><strong>Parallel processing</strong>: LangGraph allows you to trigger multiple steps to run at the same time. All the heavy lifting of fanning out the jobs and fanning back in to collect the results are automatically handled by LangGraph.</li>
+
+
+
+<li class="wp-block-list-item"><strong>Configuration management</strong>: Instead of scattering settings throughout your code, you can use a dedicated Configuration class to manage runtime settings, environment variables, defaults, etc., in one clean, central place.</li>
+</ul>
+
+
+
+<figure class="wp-block-image alignwide size-large"><img decoding="async" src="../Images/58e3a166631d7a6b1d09a6e828f640ab.png" alt="" class="wp-image-610982" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/07/image-251-1024x822.png"/><figcaption class="wp-element-caption">Figure 8. Various aspects of enhancing LLM agent capabilities. (Image by author)</figcaption></figure>
+
+
+
+<hr class="wp-block-separator has-alpha-channel-opacity is-style-dotted"/>
+
+
+
+<h2 class="wp-block-heading">4. Conclusions</h2>
+
+
+
+<p class="wp-block-paragraph">We have covered a lot of ground in this post! Now we’ve seen how LangGraph’s core concepts come together to build a real-world research agent, let’s conclude our journey with a few key takeaways:</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item"><strong>Graphs naturally describe agentic workflows.</strong> Real-world workflows involve loops, branches, and dynamic decisions. LangGraph’s graph-based architecture (nodes, edges, and state) provides a clean and intuitive way to represent and manage this complexity.</li>
+
+
+
+<li class="wp-block-list-item"><strong>State is the agent’s memory.</strong> The central <code>OverallState</code> object is a shared whiteboard that every node in the graph can look at and write on. Together with node-specific state schemas, they create the agent’s memory system.</li>
+
+
+
+<li class="wp-block-list-item"><strong>Nodes are modular components that are reusable.</strong> In LangGraph, you should build nodes with clear responsibilities, e.g., generating queries, calling tools, or routing logic. This makes the agentic system easier to test, maintain, and extend.</li>
+
+
+
+<li class="wp-block-list-item"><strong>Control is in your hands.</strong> In LangGraph, you can direct the logical flow with <strong>conditional edges</strong>, enforce data reliability with <strong>structured outputs</strong>, use <strong>centralized configuration</strong> to tune parameters globally, or use <code>Send</code> to achieve parallel execution of tasks. Their combination gives you the power to build smart, efficient, and reliable agents.</li>
+</ul>
+
+
+
+<p class="wp-block-paragraph">Now with all the knowledge you have about LangGraph, what do you want to build next?</p>
+
+
+
+<p class="wp-block-paragraph"/>
+    
+</body>
+</html>

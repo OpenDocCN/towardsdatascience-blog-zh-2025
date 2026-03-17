@@ -1,0 +1,563 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.1//EN"
+  "http://www.w3.org/TR/xhtml11/DTD/xhtml11.dtd">
+
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+<title>Classical Computer Vision and Perspective Transformation for Sudoku Extraction</title>
+<link href="../Styles/Style.css" type="text/css" rel="stylesheet"/>
+</head>
+<body>
+<h1>Classical Computer Vision and Perspective Transformation for Sudoku Extraction</h1>
+<blockquote>原文：<a href="https://towardsdatascience.com/classical-computer-vision-and-perspective-transformation-for-sudoku-extraction/">https://towardsdatascience.com/classical-computer-vision-and-perspective-transformation-for-sudoku-extraction/</a></blockquote>
+<figure class="wp-block-image aligncenter size-full"><img decoding="async" src="../Images/a2ba2041473cc98049255c1bcd1da37d.png" alt="Animated perspective transformation warping the Sudoku grid" class="wp-image-623188" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/09/sudoku_extraction_004.gif"/></figure>
+
+
+
+<p class="wp-block-paragraph"><mdspan datatext="el1759535304447" class="mdspan-comment">In the current age</mdspan> of AI hype, it feels like everyone is using <em>Vision-Language Models</em> and large <em>Vision Transformers</em> for every problem in Computer Vision. Many people see these tools as one-size-fits-all solutions and immediately use the latest, shiniest model instead of <strong>understanding the underlying signal</strong> they want to extract. But oftentimes there’s beauty to simplicity. It’s one of the most important lessons I’ve learned as an engineer: don’t overcomplicate solutions to simple problems.</p>
+
+
+
+<figure class="wp-block-image aligncenter size-full"><img decoding="async" src="../Images/b5ecf0261006a3caa3d23fd622fd2cf3.png" alt="Animation of processing pipeline" class="wp-image-623187" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/09/sudoku_extraction_001.gif"/><figcaption class="wp-element-caption">Processing pipeline steps animated</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">Let me show you a practical application of some simple classical Computer Vision techniques to detect rectangular objects on flat surfaces and apply a perspective transformation to transform the skewed rectangle. Similar methods are widely used, for example, in document scanning and extraction applications.</p>
+
+
+
+<p class="wp-block-paragraph">Along the way you will learn some interesting concepts from standard classical Computer Vision techniques to how to order polygon points and why this is related to a combinatoric assignment problem.</p>
+
+
+
+<details class="wp-block-details is-layout-flow wp-block-details-is-layout-flow"><summary><strong><em>Overview</em></strong></summary>
+<ul class="wp-block-list">
+<li class="wp-block-list-item"><a href="#detection" data-type="internal" data-id="#detection">Detection</a>
+<ul class="wp-block-list">
+<li class="wp-block-list-item">Grayscale</li>
+
+
+
+<li class="wp-block-list-item">Edge Detection</li>
+
+
+
+<li class="wp-block-list-item">Dilation</li>
+
+
+
+<li class="wp-block-list-item">Contour Detection</li>
+</ul>
+</li>
+
+
+
+<li class="wp-block-list-item"><a href="#transformation">Perspective Transformation</a>
+<ul class="wp-block-list">
+<li class="wp-block-list-item"><strong>Variant A:</strong> Simple sort based on sum/diff</li>
+
+
+
+<li class="wp-block-list-item"><strong>Variant B: </strong>Assignment Optimization Problem</li>
+
+
+
+<li class="wp-block-list-item"><strong>Variant C:</strong> Cyclic sorting with anchor</li>
+
+
+
+<li class="wp-block-list-item">Applying the Perspective Transformation </li>
+</ul>
+</li>
+
+
+
+<li class="wp-block-list-item"><a href="#conclusion" data-type="internal" data-id="#conclusion">Conclusion</a></li>
+</ul>
+</details>
+
+
+
+<h2 class="wp-block-heading" id="detection">Detection</h2>
+
+
+
+<p class="wp-block-paragraph">To detect Sudoku grids I considered many different approaches ranging from simple thresholding, hough line transformations or some form of edge detection to training a deep learning model for segmentation or keypoint detection.</p>
+
+
+
+<p class="wp-block-paragraph">Let’s define some <strong><em>assumptions </em></strong>to scope the problem:</p>
+
+
+
+<ol class="wp-block-list">
+<li class="wp-block-list-item">The Sudoku grid is clearly and fully visible in the frame with a clear quadrilateral border, with strong contrast from the background.</li>
+
+
+
+<li class="wp-block-list-item">The surface on which the Sudoku grid is printed needs to be flat, but can be captured from an angle and appear skewed or rotated.</li>
+</ol>
+
+
+
+<figure class="wp-block-image size-large"><img decoding="async" src="../Images/9ffb64a0e3f2d0c6f77f97528f9e1778.png" alt="Examples for different image qualities" class="wp-image-623192" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/09/image-398-1024x394.png"/><figcaption class="wp-element-caption">Examples for different image qualities</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">I will show you a simple pipeline with some filtering steps to detect the bounds of our Sudoku grid. On a high level, the processing pipeline looks as follows:</p>
+
+
+
+<figure class="wp-block-image alignwide size-large"><img decoding="async" src="../Images/5503e73d8d460785d01e10ee4da7fe66.png" alt="Diagram of processing pipeline steps" class="wp-image-623190" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/09/image-396-1024x85.png"/></figure>
+
+
+
+<figure class="wp-block-image alignwide size-large"><img decoding="async" src="../Images/1d95c82b957847040738612530fa3067.png" alt="Visualization of processing pipeline steps" class="wp-image-623215" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/09/image-404-1024x213.png"/><figcaption class="wp-element-caption">Visualization of processing pipeline steps</figcaption></figure>
+
+
+
+<h3 class="wp-block-heading">Grayscale</h3>
+
+
+
+<p class="wp-block-paragraph">In this first step we simply convert the input image from its three color channels to a single channel grayscale image, as we don’t need any color information to process these images.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">def find_sudoku_grid(
+    image: np.ndarray,
+) -&gt; np.ndarray | None:
+    """
+    Finds the largest square-like contour in an image, likely the Sudoku grid.
+
+    Returns:
+        The contour of the found grid as a numpy array, or None if not found.
+    """
+
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)</code></pre>
+
+
+
+<h3 class="wp-block-heading">Edge Detection</h3>
+
+
+
+<p class="wp-block-paragraph">After converting the image to grayscale we can use the Canny edge detection algorithm to extract edges. There are two thresholds to choose for this algorithm that determine if pixels are accepted as edges:</p>
+
+
+
+<figure class="wp-block-image size-large"><img decoding="async" src="../Images/87af9412fe8ee80e6e1bc2d1df309bd1.png" alt="Canny edge thresholds explained" class="wp-image-623203" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/09/image-401-1024x347.png"/><figcaption class="wp-element-caption">Thresholds of Canny edge detection</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">In our case of detecting Sudoku grids, we assume very strong edges on the border lines of our grid. We can choose a high upper threshold to reject noise from appearing in our mask, and a lower threshold not too low to reject small noisy edges connected to the main border from showing up in our mask.</p>
+
+
+
+<p class="wp-block-paragraph">A blur filter is often used before passing images to Canny to reduce noise, but in this case the edges are very strong but narrow, hence the blur is omitted.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">def find_sudoku_grid(
+    image: np.ndarray,
+    canny_threshold_1: int = 100,
+    canny_threshold_2: int = 255,
+) -&gt; np.ndarray | None:
+    """
+    Finds the largest square-like contour in an image, likely the Sudoku grid.
+
+    Args:
+        image: The input image.
+        canny_threshold_1: Lower threshold for the Canny edge detector.
+        canny_threshold_2: Upper threshold for the Canny edge detector.
+
+    Returns:
+        The contour of the found grid as a numpy array, or None if not found.
+    """
+
+    ...
+
+    canny = cv2.Canny(gray, threshold1=canny_threshold_1, threshold2=canny_threshold_2)</code></pre>
+
+
+
+<figure class="wp-block-image aligncenter size-full is-resized"><img decoding="async" src="../Images/93f89182cb3834ef8d79732ed89a822f.png" alt="" class="wp-image-623212" style="width:340px;height:auto" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/09/image-402.png"/><figcaption class="wp-element-caption">Mask image after Canny edge</figcaption></figure>
+
+
+
+<h3 class="wp-block-heading">Dilation</h3>
+
+
+
+<p class="wp-block-paragraph">In this next step, we post-process the edge detection mask with a dilation kernel to close small gaps in the mask.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">def find_sudoku_grid(
+    image: np.ndarray,
+    canny_threshold_1: int = 100,
+    canny_threshold_2: int = 255,
+    morph_kernel_size: int = 3,
+) -&gt; np.ndarray | None:
+    """
+    Finds the largest square-like contour in an image, likely the Sudoku grid.
+
+    Args:
+        image: The input image.
+        canny_threshold_1: First threshold for the Canny edge detector.
+        canny_threshold_2: Second threshold for the Canny edge detector.
+        morph_kernel_size: Size of the morphological operation kernel.
+
+    Returns:
+        The contour of the found grid as a numpy array, or None if not found.
+    """
+
+    ...
+
+    kernel = cv2.getStructuringElement(
+        shape=cv2.MORPH_RECT, ksize=(morph_kernel_size, morph_kernel_size)
+    )
+    mask = cv2.morphologyEx(canny, op=cv2.MORPH_DILATE, kernel=kernel, iterations=1)</code></pre>
+
+
+
+<figure class="wp-block-image aligncenter size-full is-resized"><img decoding="async" src="../Images/684eb2a3e99ebaec4d9d74dea7668c68.png" alt="" class="wp-image-623216" style="width:315px;height:auto" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/09/image-405.png"/><figcaption class="wp-element-caption">Mask image after Dilation</figcaption></figure>
+
+
+
+<h3 class="wp-block-heading">Contour Detection</h3>
+
+
+
+<p class="wp-block-paragraph">Now that the binary mask is ready, we can run a contour detection algorithm to find coherent blobs and filter down to a single contour with four points. </p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">contours, _ = cv2.findContours(
+    mask, mode=cv2.RETR_EXTERNAL, method=cv2.CHAIN_APPROX_SIMPLE
+)</code></pre>
+
+
+
+<figure class="wp-block-image aligncenter size-full is-resized"><img decoding="async" src="../Images/7548069e80dab09aa55843caa88b5bf1.png" alt="" class="wp-image-623221" style="width:422px;height:auto" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/09/image-409.png"/><figcaption class="wp-element-caption">Detected contours on mask image</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">This initial contour detection will return a list of contours that contain every single pixel that is part of the contour. We can use the <strong>Douglas–Peucker</strong> algorithm to iteratively reduce the number of points in the contour and approximate the contour with a simple polygon. We can choose a minimum distance between points for the algorithm. </p>
+
+
+
+<figure class="wp-block-image size-large"><img decoding="async" src="../Images/8186aab4b9f2c448030839e9246140f3.png" alt="" class="wp-image-623219" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/09/image-407-1024x236.png"/></figure>
+
+
+
+<figure class="wp-block-image size-large"><img decoding="async" src="../Images/cb9165c5208e1e9f02543949e1f6f068.png" alt="" class="wp-image-623220" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/09/image-408-1024x142.png"/></figure>
+
+
+
+<p class="wp-block-paragraph">If we assume that even for some of the most skewed rectangle, the shortest side is at least 10% of the circumference of the shape, we can filter the contours down to polygons with exactly four points.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">contour_candidates: list[np.ndarray] = []
+for cnt in contours:
+    # Approximate the contour to a polygon
+    epsilon = 0.1 * cv2.arcLength(curve=cnt, closed=True)
+    approx = cv2.approxPolyDP(curve=cnt, epsilon=epsilon, closed=True)
+
+    # Keep only polygons with 4 vertices
+    if len(approx) == 4:
+        contour_candidates.append(approx)</code></pre>
+
+
+
+<p class="wp-block-paragraph">Finally we take the largest detected contour, presumably the final Sudoku grid. We sort the contours by area in reverse order and then take the first element, corresponding to the largest contour area.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">best_contour = sorted(contour_candidates, key=cv2.contourArea, reverse=True)[0]</code></pre>
+
+
+
+<figure class="wp-block-image size-full is-resized"><img decoding="async" src="../Images/d62ba9336fcd4097a11c54be452bd34c.png" alt="" class="wp-image-623222" style="width:557px;height:auto" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/09/image-410.png"/><figcaption class="wp-element-caption">Filtered contour highlighted on original image</figcaption></figure>
+
+
+
+<h3 class="wp-block-heading" id="transformation">Perspective Transformation</h3>
+
+
+
+<p class="wp-block-paragraph">Finally we need to transform the detected grid back to its square. To achieve this, we can use a perspective transformation. The transformation matrix can be calculated by specifying where the four points of our Sudoku grid contour need to be placed in the end: the four corners of the image.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">rect_dst = np.array(
+    [[0, 0], [width - 1, 0], [width - 1, height - 1], [0, height - 1]],
+)</code></pre>
+
+
+
+<figure class="wp-block-image aligncenter size-full is-resized has-custom-border"><img decoding="async" src="../Images/0821aea7a01b04a1d555caede6bd793f.png" alt="" class="has-border-color wp-image-623225" style="border-color:var(--wp--custom--color--text--secondary);border-width:2px;border-radius:10px;width:410px;height:auto" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/09/image-411.png"/></figure>
+
+
+
+<p class="wp-block-paragraph">To match the contour points to the corners, they need to be ordered first, so they can be assigned correctly. Let’s define the following order for our corner points:</p>
+
+
+
+<figure class="wp-block-image aligncenter size-full"><img decoding="async" src="../Images/fe4f0008214012152d278c7ad6b122d7.png" alt="" class="wp-image-623705" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/09/image-434.png"/></figure>
+
+
+
+<h4 class="wp-block-heading">Variant A: Simple sort based on sum/diff</h4>
+
+
+
+<p class="wp-block-paragraph">To sort the extracted corners and assign them to these target points, a simple algorithm could look at the <code>sum</code> and <code>differences</code> of the <code>x</code> and <code>y</code> coordinates for each corner.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">p_sum = p_x + p_y
+p_diff = p_x - p_y</code></pre>
+
+
+
+<p class="wp-block-paragraph">Based on these values, it is now possible to differentiate the corners:</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">The top left corner has both a small x and y value, it has the smallest sum <code>argmin(p_sum)</code></li>
+
+
+
+<li class="wp-block-list-item">Bottom right corner has the largest sum <code>argmax(p_sum)</code></li>
+
+
+
+<li class="wp-block-list-item">Top right corner has the largest diff <code>argmax(p_diff)</code></li>
+
+
+
+<li class="wp-block-list-item">Bottom left corner has the smallest difference <code>argmin(p_diff)</code></li>
+</ul>
+
+
+
+<p class="wp-block-paragraph">In the following animation, I tried to visualize this assignment of the four corners of a rotating square. The colored lines represent the respective image corner assigned to each square corner.</p>
+
+
+
+<figure class="wp-block-image aligncenter size-full is-resized has-custom-border"><img decoding="async" src="../Images/29163e12e9a6fc955b6d1c1301135bcb.png" alt="Animation of a rotating square, each corner with a different color and lines indicating the assignment to image corners" class="has-border-color has-text-secondary-border-color wp-image-623710" style="border-width:2px;border-radius:10px;width:360px;height:auto" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/09/rotating_rect.gif"/><figcaption class="wp-element-caption">Animation of a rotating square, each corner with a different color and lines indicating the assignment to image corners</figcaption></figure>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">def order_points(pts: np.ndarray) -&gt; np.ndarray:
+    """
+    Orders the four corner points of a contour in a consistent
+    top-left, top-right, bottom-right, bottom-left sequence.
+
+    Args:
+        pts: A numpy array of shape (4, 2) representing the four corners.
+
+    Returns:
+        A numpy array of shape (4, 2) with the points ordered.
+    """
+    # Reshape from (4, 1, 2) to (4, 2) if needed
+    pts = pts.reshape(4, 2)
+    rect = np.zeros((4, 2), dtype=np.float32)
+
+    # The top-left point will have the smallest sum, whereas
+    # the bottom-right point will have the largest sum
+    s = pts.sum(axis=1)
+    rect[0] = pts[np.argmin(s)]
+    rect[2] = pts[np.argmax(s)]
+
+    # The top-right point will have the smallest difference,
+    # whereas the bottom-left will have the largest difference
+    diff = np.diff(pts, axis=1)
+    rect[1] = pts[np.argmin(diff)]
+    rect[3] = pts[np.argmax(diff)]
+
+    return rect</code></pre>
+
+
+
+<p class="wp-block-paragraph">This works well unless the rectangle is heavily skewed, like the following one. In this case, you can clearly see that this method is flawed, as there the same rectangle corner is assigned multiple image corners.</p>
+
+
+
+<figure class="wp-block-image aligncenter size-full is-resized has-custom-border"><img decoding="async" src="../Images/13fee6fee91d04ff2315c2d80aa81553.png" alt="Same assignment procedure fails with a skewed rotating quadrilateral shape" class="has-border-color wp-image-623711" style="border-color:var(--wp--custom--color--text--secondary);border-width:2px;border-radius:10px;width:316px;height:auto" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/09/rotating_rect_skew.gif"/><figcaption class="wp-element-caption">Same assignment procedure fails with a skewed rotating quadrilateral shape</figcaption></figure>
+
+
+
+<h4 class="wp-block-heading">Variant B: Assignment Optimization Problem</h4>
+
+
+
+<p class="wp-block-paragraph">Another approach would be to minimize the distances between each point and its assigned corner. This can be implemented using a <code>pairwise_distances</code> calculation between each point and the corners and the <code>linear_sum_assignment</code> function from <a href="https://docs.scipy.org/doc/scipy/reference/generated/scipy.optimize.linear_sum_assignment.html">scipy</a>, which solves the assignment problem while minimizing a cost function.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">def order_points_simplified(pts: np.ndarray) -&gt; np.ndarray:
+    """
+    Orders a set of points to best match a target set of corner points.
+
+    Args:
+        pts: A numpy array of shape (N, 2) representing the points to order.
+
+    Returns:
+        A numpy array of shape (N, 2) with the points ordered.
+    """
+    # Reshape from (N, 1, 2) to (N, 2) if needed
+    pts = pts.reshape(-1, 2)
+
+    # Calculate the distance between each point and each target corner
+    D = pairwise_distances(pts, pts_corner)
+
+    # Find the optimal one-to-one assignment
+    # row_ind[i] should be matched with col_ind[i]
+    row_ind, col_ind = linear_sum_assignment(D)
+
+    # Create an empty array to hold the sorted points
+    ordered_pts = np.zeros_like(pts)
+
+    # Place each point in the correct slot based on the corner it was matched to.
+    # For example, the point matched to target_corners[0] goes into ordered_pts[0].
+    ordered_pts[col_ind] = pts[row_ind]
+
+    return ordered_pts</code></pre>
+
+
+
+<figure class="wp-block-image aligncenter size-full is-resized has-custom-border"><img decoding="async" src="../Images/c7f005b4bd0dcda9978e8ab96cadfeed.png" alt="Animated rotating skewed quadrilaterl with corners assigned correctly to image corners" class="has-border-color wp-image-623714" style="border-color:var(--wp--custom--color--text--secondary);border-width:2px;border-radius:10px;width:404px;height:auto" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/09/rotating_rect_skew_working.gif"/><figcaption class="wp-element-caption">Animated rotating skewed quadrilateral with corners assigned correctly to image corners</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">Even though this solution works, it is not ideal, as it relies on the image distance between the shape points and the corners and it is computationally more expensive because a distance matrix has to be constructed. Of course here in the case of four points assigned this is negligible, but this solution would not be well suited for a polygon with many points!</p>
+
+
+
+<h3 class="wp-block-heading">Variant C: Cyclic sorting with anchor</h3>
+
+
+
+<p class="wp-block-paragraph">This third variant is a very lightweight and efficient way to sort and assign the points of the shape to the image corners. The idea is to calculate an angle for each point of the shape based on the centroid position. </p>
+
+
+
+<figure class="wp-block-image aligncenter size-full is-resized"><img decoding="async" src="../Images/74678cac5e862eebecd682b135cb88f8.png" alt="Sketch of angles assigned to each corner" class="wp-image-623721" style="width:326px;height:auto" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/09/image-438.png"/><figcaption class="wp-element-caption">Sketch of angles assigned to each corner</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">Since the angles are <em>cyclic</em>, we need to choose an anchor to guarantee the absolute order of the points. We simply select the point with the lowest sum of x and y.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">def order_points(self, pts: np.ndarray) -&gt; np.ndarray:
+    """
+    Orders points by angle around the centroid, then rotates to start from top-left.
+
+    Args:
+        pts: A numpy array of shape (4, 2).
+
+    Returns:
+        A numpy array of shape (4, 2) with points ordered."""
+    pts = pts.reshape(4, 2)
+    center = pts.mean(axis=0)
+    angles = np.arctan2(pts[:, 1] - center[1], pts[:, 0] - center[0])
+    pts_cyclic = pts[np.argsort(angles)]
+    sum_of_coords = pts_cyclic.sum(axis=1)
+    top_left_idx = np.argmin(sum_of_coords)
+    return np.roll(pts_cyclic, -top_left_idx, axis=0)</code></pre>
+
+
+
+<figure class="wp-block-image aligncenter size-full has-custom-border"><img decoding="async" src="../Images/b752b72a29adafc39d93804b6be48511.png" alt="Animated rotating skewed quadrilaterl with corners assigned correctly with angle assignment method" class="has-border-color wp-image-623722" style="border-color:var(--wp--custom--color--text--secondary);border-width:2px;border-radius:10px" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/09/rotating_rect_skew_working_angles.gif"/><figcaption class="wp-element-caption">Animated rotating skewed quadrilaterl with corners assigned correctly with angle assignment method</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">We can now use this function to sort our contour points:</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">rect_src = order_points(grid_contour)</code></pre>
+
+
+
+<h3 class="wp-block-heading">Applying the Perspective Transformation</h3>
+
+
+
+<p class="wp-block-paragraph">Now that we know which points need to go where, we can finally move on to the most interesting part: creating and actually applying the perspective transformation to the image.</p>
+
+
+
+<figure class="wp-block-image aligncenter size-full"><img decoding="async" src="../Images/78afe87e9b6d8a7b64b0f29ab57507cc.png" alt="Animation of applying perspective transformation" class="wp-image-623224" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/09/sudoku_extraction_005.gif"/><figcaption class="wp-element-caption">Animation of applying perspective transformation</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">Since we already have our list of points for the detected quadrilateral sorted in <code>rect_src</code>, and we have our target corner points in <code>rect_dst</code>, we can use the <strong><a href="https://docs.opencv.org/4.x/da/d54/group__imgproc__transform.html#gae66ba39ba2e47dd0750555c7e986ab85">OpenCV</a></strong> method for calculating the transformation matrix:</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">warp_mat = cv2.getPerspectiveTransform(rect_src, rect_dst)</code></pre>
+
+
+
+<p class="wp-block-paragraph">The result is a <em>3×3 warp matrix</em>, defining how to transform from a skewed 3D perspective view to a 2D flat top-down view. To get this flat top-down view of our Sudoku grid, we can apply this perspective transformation to our original image:</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">warped = cv2.warpPerspective(img, warp_mat, (side_len, side_len))</code></pre>
+
+
+
+<p class="wp-block-paragraph">And voilà, we have our perfectly square Sudoku grid!</p>
+
+
+
+<figure class="wp-block-image aligncenter size-full is-resized"><img decoding="async" src="../Images/ee6f2fb0f4c4a108f8a270e8cb92e8ca.png" alt="" class="wp-image-623723" style="width:302px;height:auto" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/09/image-439.png"/><figcaption class="wp-element-caption">Final flat top-down view of Sudoku square after perspective transformation</figcaption></figure>
+
+
+
+<h2 class="wp-block-heading" id="conclusion">Conclusion</h2>
+
+
+
+<p class="wp-block-paragraph">In this project we walked through a simple pipeline using classical Computer Vision techniques to extract Sudoku grids from pictures. These methods provide a simple way to detect the bounds of the Sudoku grids. Of course due to its simplicity there are some limitations to how well this approach generalizes to different settings and extreme environments such as low light or hard shadows. Using a deep-learning based approach could make sense if the detection needs to generalize to a vast amount of different settings.</p>
+
+
+
+<p class="wp-block-paragraph">Next, a perspective transformation is used to get a flat top-down view of the grid. This image can now be used in further processing, such as extracting the numbers in the grid and actually solving the Sudoku. In a next article we will look further into these natural next steps in this project.</p>
+
+
+
+<p class="wp-block-paragraph">Check out the source code of the project below and let me know if you have any questions or thoughts on this project. Until then, happy coding!</p>
+
+
+
+<hr class="wp-block-separator has-alpha-channel-opacity is-style-dotted"/>
+
+
+
+<p class="has-text-align-center wp-block-paragraph">For more details and the full implementation including the code for the all the animations and visualizations, check out the source code of this project on my GitHub:</p>
+
+
+
+<p class="has-text-align-center wp-block-paragraph"><a href="https://github.com/trflorian/sudoku-extraction">https://github.com/trflorian/sudoku-extraction</a></p>
+
+
+
+<hr class="wp-block-separator has-alpha-channel-opacity is-style-dotted"/>
+
+
+
+<p class="has-text-align-center wp-block-paragraph">All visualizations in this post were created by the author.</p>
+
+
+
+<p class="wp-block-paragraph"/>
+    
+</body>
+</html>

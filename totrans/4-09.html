@@ -1,0 +1,332 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.1//EN"
+  "http://www.w3.org/TR/xhtml11/DTD/xhtml11.dtd">
+
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+<title>Fine-tuning Multimodal Embedding Models</title>
+<link href="../Styles/Style.css" type="text/css" rel="stylesheet"/>
+</head>
+<body>
+<h1>Fine-tuning Multimodal Embedding Models</h1>
+<blockquote>原文：<a href="https://towardsdatascience.com/fine-tuning-multimodal-embedding-models-bf007b1c5da5/">https://towardsdatascience.com/fine-tuning-multimodal-embedding-models-bf007b1c5da5/</a></blockquote><p class="wp-block-paragraph">This is the 4th article in a larger series on <a href="https://shawhin.medium.com/list/multimodal-ai-fe9521d0e77a">multimodal AI</a>. In the previous post, we discussed <a href="https://towardsdatascience.com/multimodal-rag-process-any-file-type-with-ai-e6921342c903">multimodal RAG</a> systems, which can retrieve and synthesize information from different data modalities (e.g. text, images, audio). There, we saw how we could implement such a system using CLIP. One issue with this approach, however, is that vector search results from a general-purpose embedding model (like CLIP) <strong>may perform poorly in domain-specific use cases</strong>. In this article, I’ll discuss how we can mitigate these issues via fine-tuning multimodal embedding models.</p>
+<figure class="wp-block-image size-large"><img data-dominant-color="77c4e1" data-has-transparency="false" style="--dominant-color: #77c4e1;" decoding="async" width="2560" height="1707" class="wp-image-595253 not-transparent" src="../Images/b28fab6f8a25febf6f9a4b4d0a1d74d0.png" alt="Photo by Markus Winkler on Unsplash" srcset="https://towardsdatascience.com/wp-content/uploads/2025/01/0Y524lLKsF5spVr0K-scaled.jpg 2560w, https://towardsdatascience.com/wp-content/uploads/2025/01/0Y524lLKsF5spVr0K-300x200.jpg 300w, https://towardsdatascience.com/wp-content/uploads/2025/01/0Y524lLKsF5spVr0K-1024x683.jpg 1024w, https://towardsdatascience.com/wp-content/uploads/2025/01/0Y524lLKsF5spVr0K-768x512.jpg 768w, https://towardsdatascience.com/wp-content/uploads/2025/01/0Y524lLKsF5spVr0K-1536x1024.jpg 1536w, https://towardsdatascience.com/wp-content/uploads/2025/01/0Y524lLKsF5spVr0K-2048x1365.jpg 2048w" sizes="(max-width: 2560px) 100vw, 2560px" data-original-src="https://towardsdatascience.com/wp-content/uploads/2025/01/0Y524lLKsF5spVr0K-scaled.jpg"/><figcaption class="wp-element-caption">Photo by <a href="https://unsplash.com/@markuswinkler?utm_source=medium&amp;utm_medium=referral">Markus Winkler</a> on <a href="https://unsplash.com?utm_source=medium&amp;utm_medium=referral">Unsplash</a></figcaption></figure>
+<hr class="wp-block-separator has-alpha-channel-opacity"/>
+<figure class="tds-iframe__wrapper"><div class="tds-iframe__wrapper-inner"/></figure>
+<p class="wp-block-paragraph"><strong>Multimodal embeddings</strong> represent multiple data modalities in the same vector space such that similar concepts are co-located. A visual example of this is shown below, where semantically <strong>similar items</strong> (e.g. a picture of a dog and its corresponding caption) <strong>are close</strong>, while <strong>dissimilar items</strong> (e.g. a picture of a cat and a caption describing a dog) <strong>are far apart</strong>.</p>
+<figure class="wp-block-image size-large"><img data-dominant-color="e2e3e1" data-has-transparency="true" style="--dominant-color: #e2e3e1;" loading="lazy" decoding="async" width="749" height="608" class="wp-image-595254 has-transparency" src="../Images/3db977ba0fb12a43ba67a232c2f0a1f9.png" alt="Stock photos from Canva. Image by author." srcset="https://towardsdatascience.com/wp-content/uploads/2025/01/1c6UUQUk10H61dy4lCjsrtA.png 749w, https://towardsdatascience.com/wp-content/uploads/2025/01/1c6UUQUk10H61dy4lCjsrtA-300x244.png 300w" sizes="auto, (max-width: 749px) 100vw, 749px" data-original-src="https://towardsdatascience.com/wp-content/uploads/2025/01/1c6UUQUk10H61dy4lCjsrtA.png"/><figcaption class="wp-element-caption">Stock photos from Canva. Image by author.</figcaption></figure>
+<p class="wp-block-paragraph">A popular multimodal embedding model is CLIP, which was trained on a massive corpus of image-caption pairs using <a href="https://towardsdatascience.com/multimodal-embeddings-an-introduction-5dc36975966f#09fe">contrastive learning</a>. The key insight from <strong>CLIP</strong> was that such a model <strong>unlocks 0-shot abilities such as image classification, search, and captioning</strong> [1].</p>
+<p class="wp-block-paragraph">One limitation here is that CLIP’s 0-shot abilities <strong>may not transfer well to domains involving specialized information</strong> e.g. architectural drawings, medical imaging, and technical jargon. In such cases, we can improve CLIP’s performance through fine-tuning.</p>
+<h2 class="wp-block-heading"><strong>Fine-tuning CLIP</strong></h2>
+<p class="wp-block-paragraph">Fine-tuning involves <strong>adapting a model to a particular use case through additional training</strong>. This is powerful because it enables us to build on top of existing state-of-the-art models to develop powerful specialized models with relatively small data.</p>
+<p class="wp-block-paragraph">We can do this with CLIP through the following key steps.</p>
+<ol class="wp-block-list">
+<li>Collect text-image training pairs</li>
+<li>Pre-process training data</li>
+<li>Define Evals</li>
+<li>Fine-tune the model</li>
+<li>Evaluate the model</li>
+</ol>
+<p class="wp-block-paragraph">I will discuss each of these steps in the context of a concrete example. If you are curious about what this looks like for text embedding (i.e. text-text pairs), I did that in a previous <a href="https://medium.com/@shawhin/fine-tuning-text-embeddings-f913b882b11c">blog post</a>.</p>
+<blockquote class="wp-block-quote is-layout-flow wp-block-quote-is-layout-flow"><p><a href="https://shawhin.medium.com/fine-tuning-text-embeddings-f913b882b11c"><strong>Fine-Tuning Text Embeddings For Domain-Specific Search</strong></a></p></blockquote>
+<h2 class="wp-block-heading"><strong>Example: Fine-tuning CLIP on YouTube Titles and Thumbnails</strong></h2>
+<p class="wp-block-paragraph">Here, I will fine-tune CLIP on titles and thumbnails from my <a href="https://www.youtube.com/@ShawhinTalebi">YouTube channel</a>. At the end of this, we will have a model that can take title-thumbnail pairs and return a similarity score. This can be used for practical applications such as <strong>matching title ideas to an existing thumbnai</strong>l or <strong>performing search over a thumbnail library</strong>.</p>
+<p class="wp-block-paragraph">The <a href="https://github.com/ShawhinT/YouTube-Blog/tree/main/multimodal-ai/4-ft-mm-embeddings">example code</a>, <a href="https://huggingface.co/datasets/shawhin/yt-title-thumbnail-pairs">dataset</a>, and <a href="https://huggingface.co/shawhin/clip-title-thumbnail-embeddings">fine-tuned model</a> are freely available on GitHub and the Hugging Face Hub, respectively. You can use this code and data to train your own models. If you end up publishing any work using this dataset, please cite the original source 🙂</p>
+<p class="wp-block-paragraph"><a href="https://github.com/ShawhinT/YouTube-Blog/tree/main/multimodal-ai/4-ft-mm-embeddings">GitHub Repo</a> | <a href="https://huggingface.co/datasets/shawhin/yt-title-thumbnail-pairs">Dataset</a> | <a href="https://huggingface.co/shawhin/clip-title-thumbnail-embeddings">Fine-tuned Model</a></p>
+<hr class="wp-block-separator has-alpha-channel-opacity"/>
+<h2 class="wp-block-heading"><strong>Step 1: Collect Text-Image Training Pairs</strong></h2>
+<p class="wp-block-paragraph">The first (and most important) step of any fine-tuning process is data collection. Here, I extracted title-thumbnail pairs from my channel in a 2-step process.</p>
+<p class="wp-block-paragraph">First, I used YouTube’s search API to <strong>extract the video IDs</strong> for all the videos on my channel. Second, I used YouTube’s video API to <strong>extract the title and thumbnail URL</strong> of each of my long-form videos (i.e. longer than 3 min).</p>
+<pre class="wp-block-prismatic-blocks"><code class="language-python"># imports
+from top_secret import my_key
+import requests
+from isodate import parse_duration
+
+import pandas as pd
+import numpy as np
+from sentence_transformers import SentenceTransformer
+from datasets import DatasetDict, Dataset</code></pre>
+<pre class="wp-block-prismatic-blocks"><code class="language-python">channel_id = 'UCa9gErQ9AE5jT2DZLjXBIdA' # my YouTube channel ID
+page_token = None # initialize page token
+url = 'https://www.googleapis.com/youtube/v3/search' # YouTube search API 
+
+# extract video data across multiple search result pages
+video_id_list = []
+
+while page_token != 0:
+    params = {
+        "key": my_key, 
+        'channelId': channel_id, 
+        'part': ["snippet","id"], 
+        'order': "date", 
+        'maxResults':50, 
+        'pageToken': page_token
+    }
+    response = requests.get(url, params=params)
+
+    for raw_item in dict(response.json())['items']:
+
+        # only execute for youtube videos
+        if raw_item['id']['kind'] != "youtube#video":
+            continue
+
+        # grab video ids
+        video_id_list.append(raw_item['id']['videoId'])
+
+    try:
+        # grab next page token
+        page_token = dict(response.json())['nextPageToken']
+    except:
+        # if no next page token kill while loop
+        page_token = 0</code></pre>
+<p class="wp-block-paragraph">Note that you will need a YouTube API key to run the above Python code, which you can create using the <a href="https://console.cloud.google.com/">Google Cloud Console</a>. To adapt this to your channel, you just need to change the _channel<em>id</em> variable.</p>
+<pre class="wp-block-prismatic-blocks"><code class="language-python"># extract video titles and thumbnails
+url = "https://www.googleapis.com/youtube/v3/videos"
+video_data_list = []
+
+for video_id in video_id_list:
+
+    params = {
+        "part": ["snippet","contentDetails"],
+        "id": video_id,  
+        "key": my_key,  
+    }
+    response = requests.get(url, params=params)
+
+    raw_dict = dict(response.json())['items'][0]
+
+    # only process videos longer than 3 minutes
+    iso_duration = raw_dict['contentDetails']["duration"]
+    if parse_duration(iso_duration).total_seconds() &lt; 180:
+        continue
+
+    # extract video data
+    video_data = {}
+    video_data['video_id'] = video_id
+    video_data['title'] = raw_dict['snippet']['title']
+    video_data['thumbnail_url'] = raw_dict['snippet']['thumbnails']['high']['url']
+
+    # append data to list
+    video_data_list.append(video_data)</code></pre>
+<p class="wp-block-paragraph">As an additional step, I <strong>created negative thumbnail-title pairs</strong>. We can use these during the training process to not only guide the model with examples of which embedding should be close together (i.e. positive pair), but also which embedding should be far apart (i.e. negative pairs).</p>
+<p class="wp-block-paragraph">To do this, I computed the similarity between all possible title pairs using the sentence transformer library. Then for each positive pair, I matched the least similar title as a negative example (ensuring there were no duplicates).</p>
+<pre class="wp-block-prismatic-blocks"><code class="language-python"># store data in dataframe
+df = pd.DataFrame(video_data_list)
+
+# Load the model
+model = SentenceTransformer("all-mpnet-base-v2")
+
+# Encode all titles
+embeddings = model.encode(df['title'].to_list())
+
+# compute similarities
+similarities = model.similarity(embeddings, embeddings)
+
+# match least JDs least similar to positive match as the negative match
+similarities_argsorted = np.argsort(similarities.numpy(), axis=1)
+negative_pair_index_list = []
+
+for i in range(len(similarities)):
+
+    # Start with the smallest similarity index for the current row
+    j = 0
+    index = int(similarities_argsorted[i][j])
+
+    # Ensure the index is unique
+    while index in negative_pair_index_list:
+        j += 1  # Move to the next smallest index
+        index = int(similarities_argsorted[i][j])  # Fetch next smallest index
+
+    negative_pair_index_list.append(index)
+
+# add negative pairs to df
+df['title_neg'] = df['title'].iloc[negative_pair_index_list].values</code></pre>
+<p class="wp-block-paragraph">Finally, I created a <strong>train-valid-test split</strong> and pushed the dataset to the Hugging Face Hub.</p>
+<pre class="wp-block-prismatic-blocks"><code class="language-makefile"># Shuffle the dataset
+df = df.sample(frac=1, random_state=42).reset_index(drop=True)
+
+# Split into train, validation, and test sets
+train_frac = 0.7
+valid_frac = 0.15
+test_frac = 0.15
+
+# define train and validation size
+train_size = int(train_frac * len(df))
+valid_size = int(valid_frac * len(df))
+
+# create train, validation, and test datasets
+df_train = df[:train_size]
+df_valid = df[train_size:train_size + valid_size]
+df_test = df[train_size + valid_size:]
+
+# Convert the pandas DataFrames back to Hugging Face Datasets
+train_ds = Dataset.from_pandas(df_train)
+valid_ds = Dataset.from_pandas(df_valid)
+test_ds = Dataset.from_pandas(df_test)
+
+# Combine into a DatasetDict
+dataset_dict = DatasetDict({
+    'train': train_ds,
+    'valid': valid_ds,
+    'test': test_ds
+})</code></pre>
+<pre class="wp-block-prismatic-blocks"><code class="language-python"># push data to hub
+dataset_dict.push_to_hub("shawhin/yt-title-thumbnail-pairs")</code></pre>
+<h2 class="wp-block-heading"><strong>Step 2: Pre-process Training Pairs</strong></h2>
+<p class="wp-block-paragraph">Although we have all the data we need for fine-tuning, it is still not a suitable format for training. More specifically, we need to <strong>convert our image URLs to PIL image objects</strong> and <strong>organize our data into (anchor, positive,</strong> <strong>negative) triplets</strong>, **** i.e., a thumbnail, its corresponding title, and negative title, respectively.</p>
+<p class="wp-block-paragraph">We can process all three data splits (i.e. train, valid, and test) in the following way using the Hugging Face Datasets library.</p>
+<pre class="wp-block-prismatic-blocks"><code class="language-python">from PIL import Image
+
+# load dataset
+dataset = load_dataset("shawhin/yt-title-thumbnail-pairs")
+
+# define preprocessing function
+def preprocess(batch):
+    """
+        Preprocessing data without augmentations for test set
+    """
+    # get images from urls
+    image_list = [Image.open(requests.get(url, stream=True).raw) 
+                      for url in batch["thumbnail_url"]]
+
+    # return columns with standard names
+    return {
+        "anchor": image_list,       
+        "positive": batch["title"],  
+        "negative": batch["title_neg"]
+    }
+
+# remove columns not relevant to training
+columns_to_remove = [col for col in dataset['train'].column_names 
+                        if col not in ['anchor', 'positive', 'negative']]
+# apply transformations
+dataset = dataset.map(preprocess, batched=True, 
+                         remove_columns=columns_to_remove)</code></pre>
+<p class="wp-block-paragraph">It’s important that we order our columns as (anchor, positive, negative) triplets because <strong>this is the format expected by the loss function</strong> we will use during training (which I learned the hard way).</p>
+<h2 class="wp-block-heading"><strong>Step 3: Define Evals</strong></h2>
+<p class="wp-block-paragraph">Training involves optimizing a model’s parameters to minimize a loss function. However, this value (i.e. a contrastive loss) is rarely helpful in <strong>assessing the model’s performance on a downstream task</strong> (e.g. matching titles to thumbnails).</p>
+<p class="wp-block-paragraph">A quantity that is more insightful, in this case, is the model’s ability to correctly <strong>match a given thumbnail to the correct title</strong> among several candidates. This is denoted <strong>Recall@1</strong>.</p>
+<p class="wp-block-paragraph">We can implement an evaluator compatible with the Sentence Transformers library to compute this metric. Since the code is quite long, I won’t paste it here, but the curious reader can find it in Cell 12 of <a href="https://github.com/ShawhinT/YouTube-Blog/blob/main/multimodal-ai/4-ft-mm-embeddings/2-finetune_clip_sbert.ipynb">this notebook</a>.</p>
+<pre class="wp-block-prismatic-blocks"><code class="language-python"># function to create new evaluator given data split
+def create_recall_evaluator(set_name, k=1):
+    """
+        Create triplet evaluator for "train", "valid", or "test" split
+    """
+
+    return ImageTextRetrievalEvaluator(
+        images=dataset[f"{set_name}"]["anchor"],
+        texts=dataset[f"{set_name}"]["positive"],
+        name=f"yt-title-thumbnail-{set_name}",
+        k=k
+    )
+
+# Create new evaluator with Recall@k
+evaluator_recall_train = create_recall_evaluator("train", k=1)
+evaluator_recall_valid = create_recall_evaluator("valid", k=1)
+
+print("Train:", evaluator_recall_train(model))
+print("Valid:", evaluator_recall_valid(model))
+
+# &gt;&gt; Train: {'yt-title-thumbnail-train_Recall@1': 0.660377358490566}
+# &gt;&gt; Valid: {'yt-title-thumbnail-valid_Recall@1': 0.6363636363636364}</code></pre>
+<p class="wp-block-paragraph">We can see the model already has decent performance out-of-the-box, with correct titles being matched 66% of the time.</p>
+<h2 class="wp-block-heading"><strong>Step 4: Fine-tune the Model</strong></h2>
+<p class="wp-block-paragraph">There are <strong>3 key things</strong> we must do before training the model. Namely, choose which parameters to train, pick a loss function, and set hyperparameters.</p>
+<h3 class="wp-block-heading"><strong>Trainable Parameters</strong></h3>
+<p class="wp-block-paragraph">The key limitation of this project is that I’ve only posted 76 YouTube videos (as of writing this). With the validation and test splits, this leaves <strong>only 53 examples for training</strong>.</p>
+<p class="wp-block-paragraph">Since we have so few training examples, <strong>limiting the number of parameters we train is a good idea</strong>. In this case, I only train the final projection layer of the model, which maps the text and image embeddings into a shared vector space. This is about 1M parameters total.</p>
+<pre class="wp-block-prismatic-blocks"><code class="language-python"># import model
+from sentence_transformers import SentenceTransformer
+model = SentenceTransformer("sentence-transformers/clip-ViT-L-14")
+
+# pick specific layers to train (note: you can add more layers to this list)
+trainable_layers_list = ['projection']
+
+# Apply freezing configuration
+for name, param in model.named_parameters():
+
+    # freeze all params
+    param.requires_grad = False
+
+    # unfreeze layers in trainable_layers_list
+    if any(layer in name for layer in trainable_layers_list):
+        param.requires_grad = True</code></pre>
+<pre class="wp-block-prismatic-blocks"><code class="language-python"># Count total and trainable parameters
+total_params = sum(p.numel() for p in model.parameters())
+trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+
+print(f"Total parameters: {total_params:,}")
+print(f"Trainable parameters: {trainable_params:,}")
+print(f"% of trainable parameters: {100*trainable_params/total_params:.2f}%")
+
+# &gt;&gt; Total parameters: 427,616,513
+# &gt;&gt; Trainable parameters: 1,376,256
+# &gt;&gt; % of trainable parameters: 0.32%</code></pre>
+<h3 class="wp-block-heading"><strong>Loss function</strong></h3>
+<p class="wp-block-paragraph">Here, I use the <a href="https://sbert.net/docs/package_reference/sentence_transformer/losses.html#multiplenegativesrankingloss">Multiple Negatives Ranking Loss</a> from the Sentence Transformers library (which works with single negatives like in this case). It works by <strong>maximizing the similarity between positive pairs</strong> while <strong>minimizing the similarity between negative pairs</strong>. Here’s what the loss function looks like for the single negative case [2].</p>
+<figure class="wp-block-image size-large"><img data-dominant-color="efefef" data-has-transparency="false" style="--dominant-color: #efefef;" loading="lazy" decoding="async" width="732" height="511" class="wp-image-595255 not-transparent" src="../Images/59d09d150440edc7315e93e16151aec8.png" alt="Mulitple negatives loss function (with only 1 negative). Image by author." srcset="https://towardsdatascience.com/wp-content/uploads/2025/01/15Rw76x_hN5cQUz5VAwILcQ.png 732w, https://towardsdatascience.com/wp-content/uploads/2025/01/15Rw76x_hN5cQUz5VAwILcQ-300x209.png 300w" sizes="auto, (max-width: 732px) 100vw, 732px" data-original-src="https://towardsdatascience.com/wp-content/uploads/2025/01/15Rw76x_hN5cQUz5VAwILcQ.png"/><figcaption class="wp-element-caption">Mulitple negatives loss function (with only 1 negative). Image by author.</figcaption></figure>
+<pre class="wp-block-prismatic-blocks"><code class="language-python">from sentence_transformers.losses import MultipleNegativesRankingLoss
+
+# define loss
+loss = MultipleNegativesRankingLoss(model)</code></pre>
+<h3 class="wp-block-heading"><strong>Hyperparameters</strong></h3>
+<p class="wp-block-paragraph">For hyperparameters, I experimented with a handful of choices manually and picked the choice with the best validation loss and Recall@1 performance. Here are the final choices.</p>
+<pre class="wp-block-prismatic-blocks"><code class="language-python">from sentence_transformers import SentenceTransformerTrainingArguments
+
+# hyperparameters
+num_epochs = 2
+batch_size = 16
+lr = 1e-4
+finetuned_model_name = "clip-title-thumbnail-embeddings"
+
+train_args = SentenceTransformerTrainingArguments(
+    output_dir=f"models/{finetuned_model_name}",
+    num_train_epochs=num_epochs,
+    per_device_train_batch_size=batch_size,
+    per_device_eval_batch_size=batch_size,
+    learning_rate=lr,
+    # Evaluation settings
+    eval_strategy="epoch",
+    eval_steps=1,
+    logging_steps=1,
+)</code></pre>
+<p class="wp-block-paragraph">With our loss and hyperparameters defined, we can train the model using the SentenceTransformersTrainer().</p>
+<pre class="wp-block-prismatic-blocks"><code class="language-python">from sentence_transformers import SentenceTransformerTrainer
+
+trainer = SentenceTransformerTrainer(
+    model=model,
+    args=train_args,
+    train_dataset=dataset["train"],
+    eval_dataset=dataset["valid"],
+    loss=loss,
+    evaluator=[evaluator_recall_train, evaluator_recall_valid],
+)
+trainer.train()</code></pre>
+<p class="wp-block-paragraph"><strong>Model training is an</strong> <strong>iterative process</strong> where you may explore dozens of models for different choices of trainable parameters, loss functions, and hyperparameters.</p>
+<p class="wp-block-paragraph">However, I highly recommend <strong>keeping these experiments as simple as possible</strong>. If you find yourself spending too much time tweaking training args to get your model to converge, there’s probably something fundamentally wrong with your data (speaking from experience 😅 ).</p>
+<h2 class="wp-block-heading"><strong>Step 5: Evaluate the Model</strong></h2>
+<p class="wp-block-paragraph">As a final step, we can evaluate the model’s Recall@1 score on the testing set. These data were not used for training or hyperparameter tuning, so it gives us an unbiased assessment of the model.</p>
+<pre class="wp-block-prismatic-blocks"><code class="language-python">evaluator_recall_test = create_recall_evaluator("test")
+
+print("Train:", evaluator_recall_train(model))
+print("Valid:", evaluator_recall_valid(model))
+print("Test:", evaluator_recall_test(model))
+
+# &gt;&gt; Train: {'yt-title-thumbnail-train_Recall@1': 0.8490566037735849}
+# &gt;&gt; Valid: {'yt-title-thumbnail-valid_Recall@1': 0.9090909090909091}
+# &gt;&gt; Test: {'yt-title-thumbnail-test_Recall@1': 0.75}</code></pre>
+<p class="wp-block-paragraph">We see that the model performs well across all three datasets with <strong>75% Recall@1 on the test set</strong>. In other words, 75% of the time, the model correctly matches a given thumbnail to its original title. Additionally, the recall for the validation dataset increases by 27%!</p>
+<h2 class="wp-block-heading"><strong>What’s Next?</strong></h2>
+<p class="wp-block-paragraph">Multimodal embedding models, like CLIP, unlock countless 0-shot use cases such as image classification and retrieval. Here, we saw how we can fine-tune such a model to adapt it to a specialized domain (i.e. my YouTube titles and thumbnails).</p>
+<p class="wp-block-paragraph">Although CLIP is a small model by today’s standards (~500M parameters) and our training dataset was tiny, <strong>the final model still demonstrated strong performance on this task</strong>. This highlights the power of fine-tuning.</p>
+<p class="wp-block-paragraph">If you have any questions or suggestions for future content, let me know in the comments 🙂</p>
+<p class="wp-block-paragraph"><strong>More on Multimodal AI 👇</strong></p>
+<blockquote class="wp-block-quote is-layout-flow wp-block-quote-is-layout-flow"><p><a href="https://shawhin.medium.com/list/fe9521d0e77a"><strong>Multimodal AI</strong></a></p></blockquote>
+<hr class="wp-block-separator has-alpha-channel-opacity"/>
+<p class="wp-block-paragraph"><strong>🗞 ️ Get exclusive access to AI resources and project ideas</strong>: <a href="https://the-data-entrepreneurs.kit.com/shaw">https://the-data-entrepreneurs.kit.com/shaw</a></p>
+<p class="wp-block-paragraph"><strong>🧑‍🎓  Learn AI in 6 weeks by building it:</strong> h<a href="https://maven.com/shaw-talebi/ai-builders-bootcamp?promoCode=AI25">ttps://maven.com/shaw-talebi/ai-builders-bootcamp?promoCode=AI25</a></p>
+<h2 class="wp-block-heading">References</h2>
+<p class="wp-block-paragraph">[1] <a href="https://arxiv.org/abs/2103.00020">arXiv:2103.00020</a> <strong>[cs.CV]</strong></p>
+<p class="wp-block-paragraph">[2] <a href="https://arxiv.org/abs/1705.00652">arXiv:1705.00652</a> <strong>[cs.CL]</strong></p>    
+</body>
+</html>

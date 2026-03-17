@@ -1,0 +1,632 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.1//EN"
+  "http://www.w3.org/TR/xhtml11/DTD/xhtml11.dtd">
+
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+<title>Model Compression: Make Your Machine Learning Models Lighter and Faster</title>
+<link href="../Styles/Style.css" type="text/css" rel="stylesheet"/>
+</head>
+<body>
+<h1>Model Compression: Make Your Machine Learning Models Lighter and Faster</h1>
+<blockquote>原文：<a href="https://towardsdatascience.com/model-compression-make-your-machine-learning-models-lighter-and-faster/">https://towardsdatascience.com/model-compression-make-your-machine-learning-models-lighter-and-faster/</a></blockquote>
+<h2 class="wp-block-heading"><mdspan datatext="el1746560110734" class="mdspan-comment">Introduction</mdspan></h2>
+
+
+
+<p class="wp-block-paragraph">Whether you’re preparing for interviews or building Machine Learning systems at your job, model compression has become a must-have skill. In the era of LLMs, where models are getting larger and larger, the challenges around compressing these models to make them more efficient, smaller, and usable on lightweight machines have never been more relevant.</p>
+
+
+
+<p class="wp-block-paragraph">In this article, I will go through four fundamental compression techniques that every ML practitioner should understand and master. I explore pruning, quantization, low-rank factorization, and knowledge distillation, each offering unique advantages. I will also add some minimal PyTorch code samples for each of these methods.</p>
+
+
+
+<p class="wp-block-paragraph">I hope you enjoy the article!</p>
+
+
+
+<p class="wp-block-paragraph"/>
+
+
+
+<hr class="wp-block-separator has-alpha-channel-opacity is-style-dotted"/>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">Feel free to connect on <a href="https://www.linkedin.com/in/maxime-wolf/" target="_blank" rel="noreferrer noopener">LinkedIn</a>!</li>
+
+
+
+<li class="wp-block-list-item">Follow me on <a href="https://github.com/maxime7770" target="_blank" rel="noreferrer noopener">GitHub</a> and visit <a href="http://maximewolf.com">my website</a> for more content.</li>
+</ul>
+
+
+
+<hr class="wp-block-separator has-alpha-channel-opacity is-style-dotted"/>
+
+
+
+<h2 class="wp-block-heading">Model pruning</h2>
+
+
+
+<p class="wp-block-paragraph">Pruning is probably the most intuitive compression technique. The idea is very simple: remove some of the weights of the network, either randomly or <strong>remove the “less important” ones</strong>. Of course, when we talk about “removing” weights in the context of neural networks, it means <strong>setting the weights to zero</strong>.</p>
+
+
+
+<figure class="wp-block-image size-large"><img decoding="async" src="../Images/b46bec96c5f9b48557a44a42c9f304ee.png" alt="" class="wp-image-603632" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/05/blog_img1-1024x557.png"/><figcaption class="wp-element-caption">Model pruning (Image by the author and ChatGPT | Inspiration: [3])</figcaption></figure>
+
+
+
+<h3 class="wp-block-heading">Structured vs unstructured pruning</h3>
+
+
+
+<p class="wp-block-paragraph">Let’s start with a <strong>simple heuristic</strong>: removing weights smaller than a threshold.</p>
+
+
+
+<p class="wp-block-paragraph">\[ w’_{ij} = \begin{cases} w_{ij} &amp; \text{if } |w_{ij}| \ge \theta_0 \\<br/>0 &amp; \text{if } |w_{ij}| &lt; \theta_0<br/>\end{cases} \]</p>
+
+
+
+<p class="wp-block-paragraph">Of course, this is not ideal because we would need to find a way to <strong>find the right threshold</strong> for our problem! A more practical approach is to remove a specified proportion of weights with <strong>the smallest magnitudes</strong> (norm) within one layer. There are 2 common ways of implementing pruning in one layer:</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item"><strong>Structured pruning</strong>: remove entire components of the network (e.g. a random row from the weight tensor, or a random channel in a convulational layer)</li>
+
+
+
+<li class="wp-block-list-item"><strong>Unstructured pruning</strong>: remove individual weights regardless of their positions and of the structure of the tensor</li>
+</ul>
+
+
+
+<p class="wp-block-paragraph">We can also use <strong>global pruning</strong> with either of the two above methods. This will remove the chosen proportion of weights across multiple layers, and potentially have different removal rates depending on the number of parameters in each layer.</p>
+
+
+
+<p class="wp-block-paragraph">PyTorch makes this pretty straightforward (by the way, you can find all code snippets in <a href="https://github.com/maxime7770/Model-Compression">my GitHub repo</a>).</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">import torch.nn.utils.prune as prune
+
+# 1. Random unstructured pruning (20% of weights at random)
+prune.random_unstructured(model.layer, name="weight", amount=0.2)                           
+
+# 2. L1‑norm unstructured pruning (20% of smallest weights)
+prune.l1_unstructured(model.layer, name="weight", amount=0.2)
+
+# 3. Global unstructured pruning (40% of all weights by L1 norm across layers)
+prune.global_unstructured(
+    [(model.layer1, "weight"), (model.layer2, "weight")],
+    pruning_method=prune.L1Unstructured,
+    amount=0.4
+)                                             
+
+# 4. Structured pruning (remove 30% of rows with lowest L2 norm)
+prune.ln_structured(model.layer, name="weight", amount=0.3, n=2, dim=0)</code></pre>
+
+
+
+<p class="wp-block-paragraph"><em>Note: if you have taken statistics classes, you probably learned regularization-induced methods that also implicitly prune some weights during training, by using L0 or L1 norm regularization. Pruning differs from that because it is applied as a <strong>post-model compression</strong> technique</em></p>
+
+
+
+<h3 class="wp-block-heading">Why does pruning work? The Lottery Ticket Hypothesis</h3>
+
+
+
+<figure class="wp-block-image size-large"><img decoding="async" src="../Images/1b815d1cfc5a7a67f29baa8c511d3e92.png" alt="" class="wp-image-603255" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/05/lottery-ticket-1-1024x683.png"/><figcaption class="wp-element-caption">Image generated by ChatGPT</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">I would like to conclude that section with a quick mention of the <strong>Lottery Ticket Hypothesis</strong>, which is both an application of pruning and an interesting explanation of how removing weights can often improve a model. I recommend reading the associated paper ([7]) for more details.</p>
+
+
+
+<p class="wp-block-paragraph">Authors use the following procedure:</p>
+
+
+
+<ol class="wp-block-list">
+<li class="wp-block-list-item">Train the full model to convergence</li>
+
+
+
+<li class="wp-block-list-item">Prune the smallest-magnitude weights (say 10%)</li>
+
+
+
+<li class="wp-block-list-item">Reset the remaining weights to their original initialization values</li>
+
+
+
+<li class="wp-block-list-item">Retrain this pruned network</li>
+
+
+
+<li class="wp-block-list-item">Repeat the process multiple times </li>
+</ol>
+
+
+
+<p class="wp-block-paragraph">After doing this 30 times, you end up with only 0.9<sup>30</sup> ~ 4% of the original parameters. And surprisingly, <strong>this network can do as well as the original one</strong>.</p>
+
+
+
+<p class="wp-block-paragraph">This suggests that there is important parameter redundancy. In other words, there exists a <strong>sub-network</strong> (“a lottery ticket”) that actually does most of the work! </p>
+
+
+
+<blockquote class="wp-block-quote is-layout-flow wp-block-quote-is-layout-flow">
+<p class="wp-block-paragraph">Pruning is one way to unveil this sub-network.</p>
+
+
+
+<blockquote class="wp-block-quote is-layout-flow wp-block-quote-is-layout-flow">
+<p class="wp-block-paragraph"/>
+</blockquote>
+</blockquote>
+
+
+
+<details class="wp-block-details is-layout-flow wp-block-details-is-layout-flow"><summary>I recommend this very good video that covers the topic!</summary>
+<figure class="wp-block-embed is-type-video is-provider-youtube wp-block-embed-youtube wp-embed-aspect-16-9 wp-has-aspect-ratio"><div class="wp-block-embed__wrapper">
+
+</div></figure>
+</details>
+
+
+
+<h2 class="wp-block-heading" style="border-style:none;border-width:0px">Quantization</h2>
+
+
+
+<p class="wp-block-paragraph">While pruning focuses on removing parameters entirely, quantization takes a different approach: <strong>reducing the precision</strong> of each parameter.</p>
+
+
+
+<p class="wp-block-paragraph">Remember that every number in a computer is stored as a sequence of bits. A float32 value uses 32 bits (see example picture below), whereas an 8-bit integer (int8) uses just 8 bits.</p>
+
+
+
+<figure class="wp-block-image aligncenter size-full"><img decoding="async" src="../Images/a0a18364d84b44b0752166a07648838d.png" alt="" class="wp-image-603631" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/05/blog_img2.png"/><figcaption class="wp-element-caption">An example of how float32 numbers are represented with 32 bits (Image by the author and ChatGPT | Inspiration: [2])</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">Most deep learning models are trained using 32-bit floating-point numbers (FP32). Quantization converts these high-precision values to <strong>lower-precision formats</strong> like 16-bit floating-point (FP16), 8-bit integers (INT8), or even 4-bit representations.</p>
+
+
+
+<p class="wp-block-paragraph">The savings here are obvious: <strong>INT8 requires 75% less memory than FP32</strong>. But how do we actually perform this conversion without destroying our model’s performance?</p>
+
+
+
+<h3 class="wp-block-heading">The math behind quantization</h3>
+
+
+
+<p class="wp-block-paragraph">To convert from floating-point to integer representation, we need to map the continuous range of values to a <strong>discrete set of integers</strong>. For INT8 quantization, we’re mapping to 256 possible values (from -128 to 127).</p>
+
+
+
+<p class="wp-block-paragraph">Suppose our weights are normalized between -1.0 and 1.0 (common in deep learning):</p>
+
+
+
+<p class="wp-block-paragraph">\[ \text{scale} = \frac{\text{float_max} – \text{float_min}}{\text{int8_max} – \text{int8_min}} = \frac{1.0 – (-1.0)}{127 – (-128)} = \frac{2.0}{255} \] </p>
+
+
+
+<p class="wp-block-paragraph">Then, the quantized value is given by</p>
+
+
+
+<p class="wp-block-paragraph">\[\text{quantized_value} = \text{round}(\frac{\text{original_value}}{\text{scale}} \] + \text{zero_point})</p>
+
+
+
+<p class="wp-block-paragraph">Here, <code>zero_point=0</code> because we want 0 to be mapped to 0. We can then round this value to the nearest integer to get integers between -127 and 128.</p>
+
+
+
+<p class="wp-block-paragraph">And, you guessed it: to get integers back to float, we can use the inverse operation: \[\text{float_value} = \text{integer_value} \times \text{scale} – \text{zero_point} \]</p>
+
+
+
+<p class="wp-block-paragraph"><em>Note: in practice, the scaling factor is determined based on the range values we quantize.</em></p>
+
+
+
+<h3 class="wp-block-heading">How to apply quantization?</h3>
+
+
+
+<p class="wp-block-paragraph">Quantization can be applied at <strong>different stages</strong> and with <strong>different strategies</strong>. Here are a few techniques worth knowing about: <em>(below, the word “activation” refers to the output values of each layer)</em></p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item"><strong>Post-training quantization (PTQ):</strong>
+<ul class="wp-block-list">
+<li class="wp-block-list-item"><strong>Static Quantization</strong>: quantize both weights and activations <strong>offline</strong> (after training and before inference)</li>
+
+
+
+<li class="wp-block-list-item"><strong>Dynamic Quantization</strong>: quantize <strong>weights offline</strong>, but <strong>activations on-the-fly</strong> during inference. This is different from offline quantization because the scaling factor is determined based on the values seen so far during inference.</li>
+</ul>
+</li>
+
+
+
+<li class="wp-block-list-item"><strong>Quantize-aware training (QAT):</strong> simulate quantization during training by rounding values, but calculations are still done with floating-point numbers. This makes the model learn weights that are more robust to quantization, which will be applied after training. Under the hood, the idea is to <strong>add “fake” operations</strong>: <code>x -&gt; dequantize(quantize(x))</code>: this new value is close to x, but it still helps the model <strong>tolerate the 8-bit rounding and clipping noise.</strong></li>
+</ul>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">import torch.quantization as tq
+
+# 1. Post‑training static quantization (weights + activations offline)
+model.eval()
+model.qconfig = tq.get_default_qconfig('fbgemm') # assign a static quantization config
+tq.prepare(model, inplace=True)
+# we need to use a calibration dataset to determine the ranges of values
+with torch.no_grad():
+    for data, _ in calibration_data:
+        model(data)
+tq.convert(model, inplace=True) # convert to a fully int8 model
+
+# 2. Post‑training dynamic quantization (weights offline, activations on‑the‑fly)
+dynamic_model = tq.quantize_dynamic(
+    model,
+    {torch.nn.Linear, torch.nn.LSTM}, # layers to quantize
+    dtype=torch.qint8
+)
+
+# 3. Quantization‑Aware Training (QAT)
+model.train()
+model.qconfig = tq.get_default_qat_qconfig('fbgemm')  # set up QAT config
+tq.prepare_qat(model, inplace=True) # insert fake‑quant modules
+# [here, train or fine‑tune the model as usual]
+qat_model = tq.convert(model.eval(), inplace=False) # convert to real int8 after QAT</code></pre>
+
+
+
+<p class="wp-block-paragraph"><strong>Quantization is very flexible!</strong> You can apply different precision levels to different parts of the model. For instance, you might quantize most linear layers to 8-bit for maximum speed and memory savings, while leaving critical components (e.g. attention heads, or batch-norm layers) at 16-bit or full-precision.</p>
+
+
+
+<h2 class="wp-block-heading">Low-Rank Factorization</h2>
+
+
+
+<p class="wp-block-paragraph">Now let’s talk about low-rank factorization — a method that has been popularized with the rise of LLMs.</p>
+
+
+
+<p class="wp-block-paragraph">The key observation: many weight matrices in neural networks have effective ranks much lower than their dimensions suggest. In plain English, that means there is a lot of <strong>redundancy</strong> in the parameters.</p>
+
+
+
+<p class="wp-block-paragraph"><em>Note: if you have ever used PCA for dimensionality reduction, you have already encountered a form of low-rank approximation. PCA decomposes large matrices into products of smaller, lower-rank factors that retain as much information as possible.</em></p>
+
+
+
+<h3 class="wp-block-heading">The linear algebra behind low-rank factorization</h3>
+
+
+
+<p class="wp-block-paragraph">Take a weight matrix W. Every real matrix can be represented using a <strong>Singular Value Decomposition</strong> (SVD):</p>
+
+
+
+<p class="wp-block-paragraph">\[ W = U\Sigma V^T \]</p>
+
+
+
+<p class="wp-block-paragraph">where Σ is a diagonal matrix with singular values in non-increasing order. The number of positive coefficients actually corresponds to the rank of the matrix W.</p>
+
+
+
+<figure class="wp-block-image size-full"><img decoding="async" src="../Images/031074294096431dbe455677efb1cb73.png" alt="" class="wp-image-603630" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/05/blog_img3.png"/><figcaption class="wp-element-caption">SVD visualized for a matrix of rank r (Image by the author and ChatGPT | Inspiration: [5])</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">To approximate W with a matrix of rank k &lt; r, <strong>we can select the k greatest elements of sigma</strong>, and the corresponding first k columns and first k rows of U and V respectively:</p>
+
+
+
+<p class="wp-block-paragraph">\[ \begin{aligned} W_k &amp;= U_k\,\Sigma_k\,V_k^T <br/>\\[6pt] &amp;= \underbrace{U_k\,\Sigma_k^{1/2}}_{A\in\mathbb{R}^{m\times k}} \underbrace{\Sigma_k^{1/2}\,V_k^T}_{B\in\mathbb{R}^{k\times n}}. \end{aligned} \]</p>
+
+
+
+<p class="wp-block-paragraph">See how the new matrix can be <strong>decomposed as the product of A and B</strong>, with the total number of parameters now being <code>m * k + k * n = k*(m+n)</code> instead of <code>m*n</code>! This is a <strong>huge improvement</strong>, especially when k is much smaller than <code>m</code> and <code>n</code>.</p>
+
+
+
+<p class="wp-block-paragraph">In practice, it’s equivalent to replacing a linear layer x → Wx with 2 consecutive ones: x → A(Bx).</p>
+
+
+
+<h3 class="wp-block-heading">In PyTorch</h3>
+
+
+
+<p class="wp-block-paragraph">We can either apply low-rank factorization <strong>before training</strong> (parameterizing each linear layer as <strong>two smaller matrices</strong> – not really a compression method, but a design choice) or <strong>after training</strong> (applying a <strong>truncated SVD</strong> on weight matrices). The second approach is by far the most common one and is implemented below.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks" datatext="el1746560007753"><code class="language-python">import torch
+
+# 1. Extract weight and choose rank
+W = model.layer.weight.data # (m, n)
+k = 64 # desired rank
+
+# 2. Approximate low-rank SVD
+U, S, V = torch.svd_lowrank(W, q=k) # U: (m, k), S: (k, k), V: (n, k)
+
+# 3. Form factors A and B
+A = U * S.sqrt() # [m, k]
+B = V.t() * S.sqrt().unsqueeze(1) # [k, n]
+
+# 4. Replace with two linear layers and insert the matrices A and B
+orig = model.layer
+model.layer = torch.nn.Sequential(
+    torch.nn.Linear(orig.in_features, k, bias=False),
+    torch.nn.Linear(k, orig.out_features, bias=False),
+)
+model.layer[0].weight.data.copy_(B)
+model.layer[1].weight.data.copy_(A)</code></pre>
+
+
+
+<h3 class="wp-block-heading">LoRA: an application of low-rank approximation</h3>
+
+
+
+<figure class="wp-block-image aligncenter size-full"><img decoding="async" src="../Images/4d0de28e59cafce6a605a48ccfdb5f6a.png" alt="" class="wp-image-603251" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/05/Screenshot-2025-05-03-at-4.29.38 PM.png"/><figcaption class="wp-element-caption">LoRA fine-tuning: W is fixed, A and B are trained (source: [1])</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">I think it’s crucial to mention <strong>LoRA</strong>: you have probably heard of LoRA (Low-Rank Adaptation) if you have been following <strong>LLM fine-tuning developments</strong>. Though not strictly a compression technique, LoRA has become extremely popular for efficiently adapting large language models and <strong>making fine-tuning very efficient</strong>.</p>
+
+
+
+<p class="wp-block-paragraph">The idea is simple: during fine-tuning, rather than modifying the original model weights W, LoRA freezes them and <strong>learn trainable low-rank updates</strong>:</p>
+
+
+
+<p class="wp-block-paragraph">$$W’ = W + \Delta W = W + AB$$</p>
+
+
+
+<p class="wp-block-paragraph">where A and B are low-rank matrices. This allows for task-specific adaptation with just a fraction of the parameters. </p>
+
+
+
+<p class="wp-block-paragraph">Even better: <strong>QLoRA</strong> takes this further by combining quantization with low-rank adaptation!</p>
+
+
+
+<p class="wp-block-paragraph">Again, this is a very flexible technique and can be applied at <strong>various stages</strong>. Usually, LoRA is applied only on specific layers (for example, Attention layers’ weights).</p>
+
+
+
+<h2 class="wp-block-heading">Knowledge Distillation</h2>
+
+
+
+<figure class="wp-block-image size-large"><img decoding="async" src="../Images/891102d780246633fbd6e6bf0221fa85.png" alt="" class="wp-image-603629" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/05/blog_img4-1-1024x496.png"/><figcaption class="wp-element-caption">Knowledge distillation process (Image by the author and ChatGPT | Inspiration: [4])</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">Knowledge distillation takes a fundamentally different approach from what we have seen so far. Instead of modifying an existing model’s parameters, it <strong>transfers the “knowledge”</strong> from a <strong>large</strong>, complex model (the “teacher”) to a <strong>smaller</strong>, more efficient model (the “student”). The goal is to train the student model to <strong>mimic the behavior</strong> and replicate the performance of the teacher, often an easier task than solving the original problem from scratch.</p>
+
+
+
+<h3 class="wp-block-heading">The distillation loss</h3>
+
+
+
+<p class="wp-block-paragraph">Let’s explain some concepts in the case of a classification problem:</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">The <strong>teacher model</strong> is usually a large, complex model that achieves high performance on the task at hand</li>
+
+
+
+<li class="wp-block-list-item">The <strong>student model</strong> is a second, smaller model with a different architecture, but tailored to the same task</li>
+
+
+
+<li class="wp-block-list-item"><strong>Soft targets</strong>: these are the teacher’s model predictions (<strong>probabilities</strong>, and not labels!). They will be used by the student model to mimic the teacher’s behaviors. Note that we use raw predictions and not labels because they also contain information about the confidence of the predictions</li>
+
+
+
+<li class="wp-block-list-item"><strong>Temperature</strong>: in addition to the teacher’s prediction, we also use a coefficient T (called temperature) in the softmax function to extract more information from the soft targets. Increasing T softens the distribution and helps the student model give more importance to wrong predictions.</li>
+</ul>
+
+
+
+<p class="wp-block-paragraph">In practice, it is pretty straightforward to train the student model. We <strong>combine the usual loss</strong> (standard cross-entropy loss based on hard labels) <strong>with the “distillation” loss</strong> (based on the teacher’s soft targets):</p>
+
+
+
+<p class="wp-block-paragraph">$$ L_{\text{total}} = \alpha L_{\text{hard}} + (1 – \alpha) L_{\text{distill}} $$</p>
+
+
+
+<p class="wp-block-paragraph">The distillation loss is nothing but the <strong>KL divergence</strong> between the teacher and student distribution (<em>you can see it as a measure of the distance between the 2 distributions</em>).</p>
+
+
+
+<p class="wp-block-paragraph">$$ L_{\text{distill}} = D{KL}(q_{\text{teacher}} | | q_{\text{student}}) = \sum_i q_{\text{teacher}, i} \log \left( \frac{q_{\text{teacher}, i}}{q_{\text{student}, i}} \right) $$</p>
+
+
+
+<p class="wp-block-paragraph">As for the other methods, it is possible and encouraged to <strong>adapt this framework depending on the use case</strong>: for example, one can also compare logits and activations from <strong>intermediate layers</strong> in the network between the student and teacher model, instead of only comparing the final outputs.</p>
+
+
+
+<h3 class="wp-block-heading">Knowledge distillation in practice</h3>
+
+
+
+<p class="wp-block-paragraph">Similar to the previous techniques, there are two options:</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item"><strong>Offline distillation</strong>: the pre-trained teacher model is fixed, and a separate student model is trained to mimic it. Both models are completely separate, and the <strong>teacher’s weights remain frozen</strong> during the distillation process.</li>
+
+
+
+<li class="wp-block-list-item"><strong>Online distillation</strong>: both models are trained <strong>simultaneously</strong>, with knowledge transfer happening during the joint training process.</li>
+</ul>
+
+
+
+<p class="wp-block-paragraph">And below, an easy way to apply offline distillation (the last code block of this article 🙂):</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">import torch.nn.functional as F
+
+def distillation_loss_fn(student_logits, teacher_logits, labels, temperature=2.0, alpha=0.5):
+    # Standard Cross-Entropy loss with hard labels
+    student_loss = F.cross_entropy(student_logits, labels)
+
+    # Distillation loss with soft targets (KL Divergence)
+    soft_teacher_probs = F.softmax(teacher_logits / temperature, dim=-1)
+    soft_student_log_probs = F.log_softmax(student_logits / temperature, dim=-1)
+
+		# kl_div expects log probabilities as input for the first argument!
+    distill_loss = F.kl_div(
+        soft_student_log_probs,
+        soft_teacher_probs.detach(), # don't calculate gradients for teacher
+        reduction='batchmean'
+    ) * (temperature ** 2) # optional, a scaling factor
+
+    # Combine losses according to formula
+    total_loss = alpha * student_loss + (1 - alpha) * distill_loss
+    return total_loss
+
+teacher_model.eval()
+student_model.train()
+with torch.no_grad():
+     teacher_logits = teacher_model(inputs)
+	 student_logits = student_model(inputs)
+	 loss = distillation_loss_fn(student_logits, teacher_logits, labels, temperature=T, alpha=alpha)
+	 loss.backward()
+	 optimizer.step()</code></pre>
+
+
+
+<h2 class="wp-block-heading">Conclusion</h2>
+
+
+
+<p class="wp-block-paragraph">Thanks for reading this article! In the era of LLMs, with billions or even trillions of parameters, model compression has become a fundamental concept, essential in almost every scenario to make models more efficient and easily deployable.</p>
+
+
+
+<p class="wp-block-paragraph">But as we have seen, model compression isn’t just about reducing the model size – it’s about making thoughtful <strong>design decisions</strong>. Whether choosing between online and offline methods, compressing the entire network, or targeting specific layers or channels, each choice <strong>significantly impacts performance and usability</strong>. Most models now <strong>combine</strong> several of these techniques (check out <a href="https://huggingface.co/RedHatAI/DeepSeek-R1-Distill-Llama-8B-quantized.w4a16" data-type="link" data-id="https://huggingface.co/RedHatAI/DeepSeek-R1-Distill-Llama-8B-quantized.w4a16">this model</a>, for instance). </p>
+
+
+
+<p class="wp-block-paragraph">Beyond introducing you to the main methods, I hope this article also inspires you to <strong>experiment and develop your own creative solutions</strong>!</p>
+
+
+
+<p class="wp-block-paragraph">Don’t forget to check out the <a href="https://github.com/maxime7770/Model-Compression">GitHub repository</a>, where you’ll find all the code snippets <strong>and a side-by-side comparison of the four compression methods</strong> discussed in this article.</p>
+
+
+
+<hr class="wp-block-separator has-alpha-channel-opacity is-style-dotted"/>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">Feel free to connect on <a href="https://www.linkedin.com/in/maxime-wolf/" target="_blank" rel="noreferrer noopener">LinkedIn</a></li>
+
+
+
+<li class="wp-block-list-item">Follow me on <a href="https://github.com/maxime7770" target="_blank" rel="noreferrer noopener">GitHub</a> for more content</li>
+
+
+
+<li class="wp-block-list-item">Visit my website: <a href="http://maximewolf.com/" target="_blank" rel="noreferrer noopener">maximewolf.com</a></li>
+</ul>
+
+
+
+<hr class="wp-block-separator has-alpha-channel-opacity is-style-dotted"/>
+
+
+
+<p class="wp-block-paragraph">Check out my previous articles:</p>
+
+
+
+<figure class="wp-block-embed is-type-wp-embed is-provider-towards-data-science wp-block-embed-towards-data-science"><div class="wp-block-embed__wrapper">
+<blockquote class="wp-embedded-content" data-secret="TQI4Uxokv2"><a href="https://towardsdatascience.com/llada-the-diffusion-model-that-could-redefine-language-generation/">LLaDA: The Diffusion Model That Could Redefine Language Generation</a></blockquote>
+</div></figure>
+
+
+
+<figure class="wp-block-embed is-type-wp-embed is-provider-towards-data-science wp-block-embed-towards-data-science" datatext="el1746410988225"><div class="wp-block-embed__wrapper">
+<blockquote class="wp-embedded-content" data-secret="YKP7vq5xJz"><a href="https://towardsdatascience.com/training-large-language-models-from-trpo-to-grpo/">Training Large Language Models: From TRPO to GRPO</a></blockquote>
+</div></figure>
+
+
+
+<hr class="wp-block-separator has-alpha-channel-opacity is-style-dotted"/>
+
+
+
+<h2 class="wp-block-heading">References</h2>
+
+
+
+<ul start="1" class="wp-block-list">
+<li class="wp-block-list-item">[1] <strong>Hu, E., et al.<em> </em></strong> (2021). <a href="https://arxiv.org/pdf/2106.09685">Low-rank Adaptation of Large Language Models</a>. <em>arXiv preprint arXiv:2106.09685</em>.</li>
+
+
+
+<li class="wp-block-list-item">[2] <strong>Lightning AI</strong>. <a href="https://lightning.ai/pages/community/tutorial/accelerating-large-language-models-with-mixed-precision-techniques/">Accelerating Large Language Models with Mixed Precision Techniques</a>. <em>Lightning AI Blog</em>.</li>
+
+
+
+<li class="wp-block-list-item">[3] <strong>TensorFlow Blog</strong>. <a href="https://blog.tensorflow.org/2019/05/tf-model-optimization-toolkit-pruning-API.html">Pruning API in TensorFlow Model Optimization Toolkit</a>. <em>TensorFlow Blog</em>, May 2019.</li>
+
+
+
+<li class="wp-block-list-item">[4] <strong>Toward AI</strong>. <a href="https://pub.towardsai.net/a-gentle-introduction-to-knowledge-distillation-6240bf8eb8ea">A Gentle Introduction to Knowledge Distillation</a>. <em>Towards AI</em>, Aug 2022.</li>
+
+
+
+<li class="wp-block-list-item">[5] <strong>Ju, A.</strong> <a href="https://www.linkedin.com/pulse/ml-algorithm-singular-value-decomposition-angela-ju/">ML Algorithm: Singular Value Decomposition (SVD)</a>. <em>LinkedIn Pulse</em>.</li>
+
+
+
+<li class="wp-block-list-item">[6] <strong><strong>Algorithmic Simplicity</strong></strong>. <a href="https://www.youtube.com/watch?v=UKcWu1l_UNw">THIS is why large language models can understand the world</a>. <em>YouTube</em>, Apr 2023.</li>
+
+
+
+<li class="wp-block-list-item">[7] <strong>Frankle, J., &amp; Carbin, M.</strong> (2019). <a href="https://arxiv.org/abs/1803.03635">The Lottery Ticket Hypothesis: Finding Sparse, Trainable Neural Networks</a>. <em>arXiv preprint arXiv:1803.03635</em>.</li>
+</ul>
+
+
+
+<p class="wp-block-paragraph"/>
+    
+</body>
+</html>

@@ -1,0 +1,707 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.1//EN"
+  "http://www.w3.org/TR/xhtml11/DTD/xhtml11.dtd">
+
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+<title>MobileNetV1 Paper Walkthrough: The Tiny Giant</title>
+<link href="../Styles/Style.css" type="text/css" rel="stylesheet"/>
+</head>
+<body>
+<h1>MobileNetV1 Paper Walkthrough: The Tiny Giant</h1>
+<blockquote>原文：<a href="https://towardsdatascience.com/the-tiny-giant-mobilenetv1/">https://towardsdatascience.com/the-tiny-giant-mobilenetv1/</a></blockquote>
+<h2 class="wp-block-heading">Introduction</h2>
+
+
+
+<p class="wp-block-paragraph"><mdspan datatext="el1756944029687" class="mdspan-comment">Deep learning engineers</mdspan> used to focus on improving accuracy. They kept pushing the limit higher and higher until they eventually realized that the computational complexity of their models became more and more expensive. This was definitely a problem researchers needed to address because we want deep learning models to be able to work not only on high-end computers but also on small devices. To overcome this issue, Howard <em>et al.</em> back in 2017 proposed an extremely lightweight neural network model referred to as MobileNet which they introduced in a paper titled <em>MobileNets: Efficient Convolutional Neural Networks for Mobile Vision Applications</em> [1]. In fact, the model proposed in the paper is the first version of MobileNet, which is commonly known as MobileNetV1. Currently we already have four MobileNet versions: MobileNetV1 all the way to MobileNetV4. However, in this article we are only going to focus on MobileNetV1, covering the idea behind the architecture and how to implement it from scratch with PyTorch — I’ll save the later MobileNet versions for my upcoming articles.</p>
+
+
+
+<hr class="wp-block-separator has-alpha-channel-opacity is-style-dotted"/>
+
+
+
+<h2 class="wp-block-heading">Depthwise Separable Convolution</h2>
+
+
+
+<p class="wp-block-paragraph">In order to achieve a lightweight model, MobileNet leverages the idea of <em>depthwise separable convolution</em>, which is used nearly throughout the entire network. Figure 1 below displays the structural difference between this layer (right) and a standard convolution layer (left). You can see in the figure that depthwise separable convolution basically comprises two types of convolution layers: <em>depthwise convolution</em> and <em>pointwise convolution</em>. In addition to that, we typically follow the <em>conv-BN-ReLU</em> structure when it comes to constructing CNN-based models. This is essentially the reason that in the illustration we have batch normalization and ReLU right after each conv layer. We are going to discuss depthwise and pointwise convolutions more deeply in the subsequent sections.</p>
+
+
+
+<figure class="wp-block-image aligncenter"><img decoding="async" src="../Images/39905ba8dc8117eb53a6665e197fc258.png" alt="" class="wp-image-618506" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/08/16WhmqbZcnnEl300tcWEKaA.png"/><figcaption class="wp-element-caption">Figure 1. The structure of a standard convolution layer (left) and a depthwise separable convolution layer (right) [1].</figcaption></figure>
+
+
+
+<h3 class="wp-block-heading">Depthwise Convolution</h3>
+
+
+
+<p class="wp-block-paragraph">A standard convolution layer is basically a convolution with the <em>group</em> parameter set to 1. It is important to remember that in this case using a 3×3 kernel actually means applying a kernel of shape <em>C</em>×3×3 to the input tensor, where <em>C</em> is the number of input channels. The use of this kernel shape allows us to aggregate information from all channels within each 3×3 patch at once. This is the reason why the standard convolution operation is computationally expensive, yet in return the output tensor contains a lot of information. If you take a closer look at Figure 2 below, a standard convolution layer corresponds to the one in the leftmost part of the tradeoff line.</p>
+
+
+
+<figure class="wp-block-image aligncenter"><img decoding="async" src="../Images/5b59231fe682dbac991943b11c79ac44.png" alt="" class="wp-image-618508" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/08/1T3MzD5izakd9OJGx6i2ctQ.png"/><figcaption class="wp-element-caption">Figure 2. The tradeoff between fewer and more convolution groups [2].</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">If you’re already familiar with <em>group convolution</em>, depthwise convolution should be easy for you to understand. Group convolution is a method where we divide the channels of the input tensor according to the number of groups used and apply convolution independently within each group. For instance, suppose we have an input tensor of 64 channels and want to process it with 128 kernels grouped into 2. In such a case, the first 64 kernels are responsible for processing the first 32 channels of the input tensor, while the remaining 64 kernels process the last 32 channels of the input tensor. This mechanism results in 64 output channels for each group. The final output tensor is obtained by concatenating the resulting tensors from all groups along the channel dimension, resulting in a total of 128 channels in this example.</p>
+
+
+
+<p class="wp-block-paragraph">As we continue increasing the number of groups, we eventually reach the extreme case known as depthwise convolution, which is a special case of group convolution where the number of groups is set equal to the number of input channels. With this configuration, we basically have each channel processed independently of each other, causing every channel in the input to produce only a single output channel. By concatenating all the resulting 1-channel tensors, the final number of output channels remains exactly the same as that of the input. This mechanism requires us to use a kernel of size 1×3×3 instead of <em>C</em>×3×3, preventing us to perform information aggregation along channel axis. This allows us to have extremely lightweight computation, yet in return causing the output tensor to contain less information due to the absence of channel-wise information aggregation.</p>
+
+
+
+<p class="wp-block-paragraph">Since the objective of MobileNet is to make the computation as fast as possible, we need to position ourselves at the rightmost part of the above tradeoff line despite capturing the least amount of information. This is definitely a problem that needs to be addressed, which is the reason why we employ pointwise convolution in the subsequent step.</p>
+
+
+
+<h3 class="wp-block-heading">Pointwise Convolution</h3>
+
+
+
+<p class="wp-block-paragraph">Pointwise convolution is basically just a standard convolution, except that it uses kernels of size 1×1 — or to be more precise, it is actually <em>C</em>×1×1. This kernel shape allows us to aggregate information along the channel axis without being influenced by spatial information, effectively compensating for the limitation of depthwise convolution. Furthermore, remember that depthwise convolution alone can only output a tensor of the same number of channels as its input, which limits our flexibility in designing the model architecture. By applying pointwise convolution in the next step, we can set it to return as many channels as we want, allowing us to adapt the layer to the subsequent one as needed.</p>
+
+
+
+<p class="wp-block-paragraph">We can think of depthwise convolution and pointwise convolution as two complementary processes, where the former focuses on capturing spatial relationships while the latter captures channel relationships. These two processes might seem a bit inefficient at first glance since we can basically do the two processes at once using a standard convolution layer. However, if we take a closer look at the computational complexity, depthwise separable convolution is a lot more lightweight compared to the traditional convolution layer counterpart. In the next section I’ll discuss in more detail how we can calculate the number of parameters in these two models which definitely also affects the computational complexity.</p>
+
+
+
+<h3 class="wp-block-heading">Parameters Count Calculation</h3>
+
+
+
+<p class="wp-block-paragraph">Suppose we have an image of size 3×<em>H</em>×<em>W</em>, where <em>H</em> and <em>W</em> are the height and width of an image, respectively. For the sake of this example, let’s assume that we are about to process the image with 16 kernels of size 5×5, where the stride is set to 1 and the padding is set to 2 (which in this case is equivalent to <em>padding = same</em>). With this configuration, the size of the output tensor is going to be 16×<em>H</em>×<em>W</em>. If we use a standard convolution layer, the number of parameters will be 5×5×3×16 = 1200 (without bias), in which this number is obtained based on the equation in Figure 3. The use of bias term is not strictly necessary in this case, but if we do the total number of parameters is going to be (5×5×3+1) × 16 = 1216.</p>
+
+
+
+<figure class="wp-block-image alignwide"><img decoding="async" src="../Images/e5156b28a2c24d3048b3b79d31161e12.png" alt="" class="wp-image-618502" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/08/1SC_JZ3uHcNLfyfGrp9UZcQ.png"/><figcaption class="wp-element-caption">Figure 3. Equation to calculate the number of parameters of a convolution layer [2].</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">Now let’s calculate the parameter count of the depthwise separable convolution counterpart to produce the exact same tensor dimension. Following the same formula, we will have 5×5×1×3 = 75 for the depthwise convolution part (without bias). Or if we also account for the biases, then we will have (5×5×1+1) × 3 = 78 trainable params. In the case of depthwise convolution like this, the number of input channels is considered 1 since each kernel is responsible for processing a single channel only. To the pointwise convolution part, the number of parameters will be 1×1×3×16 = 48 (without bias) or (1×1×3+1) × 16 = 64 (with bias). Now to obtain the total number of parameters in the entire depthwise separable convolution process, we can simply calculate 75+48 = 123 (without bias) or 78+64 = 142 (with bias) — that’s nearly 90% reduction in parameter count if we compare it with the standard convolution! In theory, such an extreme drop in parameter count causes the model to have much lower capacity. But that’s just the theory. Later I will show you how MobileNet manages to keep up with other models in terms of accuracy.</p>
+
+
+
+<hr class="wp-block-separator has-alpha-channel-opacity is-style-dotted"/>
+
+
+
+<h2 class="wp-block-heading">The Detailed MobileNetV1 Architecture</h2>
+
+
+
+<p class="wp-block-paragraph">Figure 4 below displays the entire MobileNetV1 architecture in detail. The depthwise convolution layers are the rows marked with <em>dw</em>, while the pointwise convolutions are the ones having 1×1 filter shape. Notice that each <em>dw</em> layer is always followed by a 1×1 convolution, indicating that the entire architecture mainly consists of depthwise separable convolutions. Furthermore, if you take a closer look at the architecture, you will see that spatial downsampling is done by the depthwise convolutions that have a stride of 2 (notice the rows with <em>s2</em> in the table). Here you can see that every time we reduce the spatial dimension by half, the number of channels doubles to compensate for the loss of spatial information.</p>
+
+
+
+<figure class="wp-block-image aligncenter"><img decoding="async" src="../Images/bbb9a65929f2a34fd900e556d24e93d4.png" alt="" class="wp-image-618509" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/08/1cSzBXFoKQEm3bmwG_7ttAA.png"/><figcaption class="wp-element-caption">Figure 4. The entire MobileNetV1 architecture [1].</figcaption></figure>
+
+
+
+<h3 class="wp-block-heading">Width and Resolution Multiplier</h3>
+
+
+
+<p class="wp-block-paragraph">The authors of MobileNet proposed a new parameter tuning mechanism by introducing the so-called <em>width</em> and <em>resolution multiplier</em>, which are formally denoted as <em>α</em> and <em>ρ</em>, respectively. The <em>α </em>parameter can technically be adjusted freely, but authors suggest using either 1.0, 0.75, 0.5, or 0.25. This parameter works by reducing the number of channels produced by all convolution layers. For instance, if we set <em>α</em> to 0.5, the first convolution layer in the network will turn 3-channel input into 16 instead of 32. On the other hand, <em>ρ</em> is used to adjust the spatial dimension of the input tensor. It is important to note that even though ideally we should assign a floating-point number to this parameter, yet in practice it is more preferable to directly determine the actual resolution for the input image. In this case, authors recommend using either 224, 192, 160 and 128, in which the input size of 224×224 corresponds to <em>ρ</em> = 1. The architecture displayed in Figure 4 above follows the default configuration where both <em>α</em> and <em>ρ</em> are set to 1.</p>
+
+
+
+<hr class="wp-block-separator has-alpha-channel-opacity is-style-dotted"/>
+
+
+
+<h2 class="wp-block-heading">Experimental Results</h2>
+
+
+
+<p class="wp-block-paragraph">Authors conducted plenty of experiments to prove the robustness of MobileNet. The first result to discuss is the one displayed in Figure 5 below, where in this experiment they tried to find out how the use of depthwise separable convolution layers affects performance. The second row of the table shows the result obtained by the architecture I showed you earlier in Figure 4, whereas the first row is the result when the layers are replaced with traditional convolutions. Here we can see that the accuracy of MobileNet with traditional CNN is indeed higher than that of the one using depthwise separable convolutions. However, if we take into account the number of multiplications and additions (<em>mult-adds</em>) as well as the parameter count, we can clearly see that the one with traditional convolution layers requires much more computational cost and memory usage just to make a slight improvement in accuracy. Thus, with depthwise separable convolutions, even though the model complexity of MobileNet significantly gets reduced, authors proved that the model capacity remains high.</p>
+
+
+
+<figure class="wp-block-image aligncenter"><img decoding="async" src="../Images/6f0b3655a5ce19a344f6c108c439143f.png" alt="" class="wp-image-618503" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/08/1lcuIPVr_F_pCv86-bJw52A.png"/><figcaption class="wp-element-caption">Figure 5. Performance comparison between MobileNet with depthwise separable convolution layers (second row) and its full-convolution counterpart (first row) [1].</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">The <em>α</em> and <em>ρ</em> parameters I explained earlier are mainly used to provide flexibility, considering that not all tasks require the highest MobileNet capability. Authors originally conducted experiments on 1000-class ImageNet dataset, but in practice, we might probably only need the model to perform classification on a dataset with fewer number of classes. In such a case, selecting lower values for the two parameters might be preferable as it can speed up the inference process while at the same time the model still has enough capacity to accommodate the classification task. Talking more specifically about <em>α</em>, using smaller value for this parameter causes MobileNet to have lower accuracy. But that’s the result on 1000-class dataset. If our dataset is simpler and has fewer classes, using smaller <em>α</em> might still be fine. In Figure 6 below the values 1.0, 0.75, 0.5, and 0.25 written next to each model correspond to the <em>α</em> used.</p>
+
+
+
+<figure class="wp-block-image aligncenter"><img decoding="async" src="../Images/995543f486b3ae328a778290ac19dede.png" alt="" class="wp-image-618507" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/08/17wGywvUtfwFEiZXIXASxEQ.png"/><figcaption class="wp-element-caption">Figure 6. How width multiplier affects model accuracy, number of operations, and parameter count [1].</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">The same thing also applies to the <em>ρ</em> parameter, which is responsible for changing the resolution of the input image. Figure 7 below displays what the experimental results look like when we use different input resolutions. The results are somewhat similar to the ones in the previous figure, where the accuracy score decreases as we make the input image smaller. It is important to keep in mind that reducing input resolution like this also reduces the number of operations but does not affect the parameter count. This is essentially because the ones counted as parameters are the weights and biases, where in the case of CNN they correspond to the values inside the kernel. So, the parameter count will remain the same as long as we don’t change the configuration of the convolution layers. The number of operations, on the other hand, gets reduced in accordance with the decrease in input resolution since the number of pixels to be processed in smaller images is fewer than in larger images.</p>
+
+
+
+<figure class="wp-block-image aligncenter"><img decoding="async" src="../Images/869581d6c8f5fab7cd4ed0bbd2b02d38.png" alt="" class="wp-image-618510" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/08/1swa0c5z2uWFt2dlTU38EOQ.png"/><figcaption class="wp-element-caption">Figure 7. How input resolution affects model accuracy, number of operations, and parameter count [1].</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">Instead of just comparing different values for <em>α</em> and <em>ρ</em>, authors also compared MobileNet with other popular models. We can see in Figure 8 that the largest MobileNet variant (the one using maximum <em>α</em> and <em>ρ</em>) achieved comparable accuracy with GoogLeNet (InceptionV1) and VGG16 while maintaining the lowest computational complexity. This is basically the reason that I named this article <em>The Tiny Giant </em>— lightweight yet powerful.</p>
+
+
+
+<figure class="wp-block-image aligncenter"><img decoding="async" src="../Images/70b0426bbdd9b0c42bedcd77feb2b055.png" alt="" class="wp-image-618504" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/08/1Xcwg07330OEAIY9N8u002w.png"/><figcaption class="wp-element-caption">Figure 8. MobileNet achieves comparable accuracy to popular models while maintaining a much lower computational complexity and parameter count [1].</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">Additionally, authors also compared the smaller MobileNet variant with other small models. What’s to me interesting in Figure 9 is that even though the parameter count of SqueezeNet is lower than MobileNet, the number of operations in MobileNet is over 22 times smaller than SqueezeNet while still maintaining higher accuracy.</p>
+
+
+
+<figure class="wp-block-image aligncenter"><img decoding="async" src="../Images/8ed2b5a33be052439f136975571bd1aa.png" alt="" class="wp-image-618505" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/08/1s7ZbSQEYZmWgNaD_Es7OMw.png"/><figcaption class="wp-element-caption">Figure 9. The performance of the smaller MobileNet variant compared to popular models [1].</figcaption></figure>
+
+
+
+<hr class="wp-block-separator has-alpha-channel-opacity is-style-dotted"/>
+
+
+
+<h2 class="wp-block-heading">MobileNetV1 Implementation</h2>
+
+
+
+<p class="wp-block-paragraph">As we have understood the idea behind MobileNetV1, we can now jump into the code. The architecture I am about to implement is based on the table in Figure 4. As always, the first thing we need to do is to import the required modules.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python"># Codeblock 1
+import torch
+import torch.nn as nn
+from torchinfo import summary</code></pre>
+
+
+
+<p class="wp-block-paragraph">Next, we initialize several configurable parameters so that we can adjust the model size according to our needs. In Codeblock 2 below, I denote <em>α </em>as <code>ALPHA</code>, which the value can be changed to 0.75, 0.5 or 0.25 if we want the model to be smaller. We don’t specify any variable for <em>ρ</em> since we can directly change <code>IMAGE_SIZE</code> to 192, 160 or 128 as we discussed earlier.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python"># Codeblock 2
+BATCH_SIZE  = 1
+IMAGE_SIZE  = 224
+IN_CHANNELS = 3
+NUM_CLASSES = 1000
+ALPHA       = 1</code></pre>
+
+
+
+<hr class="wp-block-separator has-alpha-channel-opacity is-style-dotted"/>
+
+
+
+<h3 class="wp-block-heading">First Convolution</h3>
+
+
+
+<p class="wp-block-paragraph">If we go back to Figure 4, we can see that MobileNet essentially only consists of repeating patterns, i.e., a depthwise separable convolution followed by pointwise convolution. However, notice that the first row in the figure does not follow this pattern as it is actually just a standard convolution layer. Due to this reason, we need to create a separate class for this, which I refer to as <code>FirstConv</code> in Codeblock 3 below.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python"># Codeblock 3
+class FirstConv(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.conv = nn.Conv2d(in_channels=3, 
+                              out_channels=int(32*ALPHA),    #(1)
+                              kernel_size=3,    #(2)
+                              stride=2,         #(3)
+                              padding=1,        #(4)
+                              bias=False)       #(5)
+        self.bn = nn.BatchNorm2d(num_features=int(32*ALPHA))
+        self.relu = nn.ReLU()
+    
+    def forward(self, x):
+        x = self.relu(self.bn(self.conv(x)))
+        return x</code></pre>
+
+
+
+<p class="wp-block-paragraph">Remember that MobileNet follows the <em>conv-BN-ReLU</em> structure. Thus, we need to initialize these three layers within the <code>__init__()</code> method of this class. The convolution layer itself is set to accept 3 input channels and output 32 channels. Since we want this number of output channels to be adjustable, we need to multiply it with <code>ALPHA</code> at the line marked with <code>#(1)</code>. Keep in mind that we need to change the datatype to integer after the multiplication since having a floating-point number for channel count is just nonsense. Next, at line <code>#(2)</code> and <code>#(3)</code> we set the kernel size to 3 and the stride to 2. With this configuration, the spatial dimension of the resulting tensor is going to be half that of the input. Additionally, using kernel of size 3×3 like this implicitly requires us to set the padding to 1 to implement <em>padding = same</em> (<code>#(4)</code>). In this case we are not going to utilize the bias term, which is the reason that we set the <code>bias</code> parameter to <code>False</code> (<code>#(5)</code>). This is actually a standard practice when we use the <em>conv-BN-ReLU</em> structure, since at the end of the day the value distribution of the convolution kernels will be centered around 0 again by the batch normalization layer, cancelling out the biases applied within the convolution kernel.</p>
+
+
+
+<p class="wp-block-paragraph">In order to find out whether the <code>FirstConv</code> class works properly, we are going to test it with the Codeblock 4 below. Here we initialize the layer and pass a tensor simulating a single RGB image of size 224×224. You can see in the resulting output that our convolution layer successfully downsampled the spatial dimension to 112×112 while at the same time expanding the number of channels to 32.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python"># Codeblock 4
+first_conv = FirstConv()
+x = torch.randn((1, 3, 224, 224))
+
+out = first_conv(x)
+out.shape</code></pre>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-"># Codeblock 4 Output
+torch.Size([1, 32, 112, 112])</code></pre>
+
+
+
+<hr class="wp-block-separator has-alpha-channel-opacity is-style-dotted"/>
+
+
+
+<h3 class="wp-block-heading">Depthwise Separable Convolutions</h3>
+
+
+
+<p class="wp-block-paragraph">As the first convolution is done, we can now work on the repeating depthwise-pointwise layers. Since this pattern is the core idea of depthwise separable convolution, in the following code I wrap the two types of conv layers in a class called <code>DepthwiseSeparableConv</code>.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python"># Codeblock 5
+class DepthwiseSeparableConv(nn.Module):
+    def __init__(self, in_channels, out_channels, downsample=False):  #(1)
+        super().__init__()
+        
+        in_channels  = int(in_channels*ALPHA)    #(2)
+        out_channels = int(out_channels*ALPHA)   #(3)       
+        
+        if downsample:    #(4)
+            stride = 2
+        else:
+            stride = 1
+        
+        self.dwconv = nn.Conv2d(in_channels=in_channels,
+                                out_channels=in_channels,     #(5)
+                                kernel_size=3,                #(6)
+                                stride=stride,                #(7)
+                                padding=1,
+                                groups=in_channels,           #(8)
+                                bias=False)
+        self.bn0 = nn.BatchNorm2d(num_features=in_channels)   #(9)
+        
+        self.pwconv = nn.Conv2d(in_channels=in_channels,   
+                                out_channels=out_channels,    #(10)
+                                kernel_size=1,                #(11)
+                                stride=1,                     #(12)
+                                padding=0,                    #(13)
+                                groups=1,                     #(14)
+                                bias=False)
+        self.bn1 = nn.BatchNorm2d(num_features=out_channels)  #(15)
+        
+        self.relu = nn.ReLU()    #(16)
+
+    def forward(self, x):
+        print(f'original\t: {x.size()}')
+        
+        x = self.relu(self.bn0(self.dwconv(x)))
+        print(f'after dw conv\t: {x.size()}')
+        
+        x = self.relu(self.bn1(self.pwconv(x)))
+        print(f'after pw conv\t: {x.size()}')
+        
+        return x</code></pre>
+
+
+
+<p class="wp-block-paragraph">Different from <code>FirstConv</code> which does not take any input argument in the initialization phase, here we set the <code>DepthwiseSeparableConv</code> class to take several inputs as shown at line <code>#(1)</code> in Codeblock 5 above. I do this because we want the class to be reusable across all depthwise separable convolution layers throughout the entire network, in which each of them has slightly different behaviors from one another.</p>
+
+
+
+<p class="wp-block-paragraph">We can see in Figure 4 that after the 3-channel image is expanded to 32 by the first layer, this channel count increases to 64, 128, and so on all the way to 1024 in the subsequent processes. This is basically the reason that I set this class to accept the number of input and output channels (<code>in_channels</code> and <code>out_channels</code>) so that we can initialize the layer with flexible channel configurations. It is also important to keep in mind that we need to adjust this channel counts based on <code>ALPHA</code>. This can simply be done using the code at line <code>#(2)</code> and <code>#(3)</code>. Furthermore, here I also create a flag called <code>downsample</code> as the input parameter which by default is set to <code>False</code>. This flag is responsible to determine whether the layer will reduce the spatial dimension. Again, if you go back to Figure 4, you will notice that there are conditions where we reduce the spatial dimension by half and there are also some other conditions where the dimension is preserved. Every time we want to perform downsampling, we need to set the stride to 2, but if we don’t, we will set this parameter to 1 instead (<code>#(4)</code>).</p>
+
+
+
+<p class="wp-block-paragraph">Still with the Codeblock 5 above, the next thing we need to do is to initialize the layers themselves. As we have discussed earlier, the depthwise convolution is responsible to capture spatial relationships between pixels, which is actually the reason that the kernel size is set to 3×3 (<code>#(6)</code>). In order for the input channels to be processed independently of each other, we can simply set the <code>groups</code> and <code>out_channels</code> parameters to be the same as the number of input channels itself (<code>#(8)</code> and <code>#(5)</code>). It is worth noting that if we set <code>out_channels</code> to be more than the number of input channels — say, twice as large — then we will have each channel processed by 2 kernels. Lastly for the depthwise convolution layer, the <code>stride</code> parameter at line <code>#(7)</code> can either be 1 or 2 which is determined according to the <code>downsampling</code> flag we discussed earlier.</p>
+
+
+
+<p class="wp-block-paragraph">Meanwhile, the pointwise convolution uses 1×1 kernel (<code>#(11)</code>) since it is not intended to capture spatial information. This is actually the reason that we set the padding to 0 (<code>#(13)</code>) because there is no way this kernel size can reduce spatial dimension on its own. The <code>groups</code> parameter, on the other hand, is set to 1 (<code>#(14)</code>) because we want this layer to capture information from all channels at once. Unlike the depthwise convolution layer, here we can employ as many kernels as needed which corresponds to the number of channels in the resulting output tensor (<code>#(10)</code>). Meanwhile, the stride is set fixed to 1 (<code>#(12)</code>) since we will never perform downsampling with this layer.</p>
+
+
+
+<p class="wp-block-paragraph">Here we need to initialize two separate batch normalization layers to be placed after the depthwise and pointwise convs (<code>#(9)</code> and <code>#(15)</code>). As for the ReLU activation function, we only need to initialize it once (<code>#(16)</code>) since it is just a mapping function without any trainable parameters. Thanks to this, we can reuse the same ReLU instance multiple times within the network.</p>
+
+
+
+<p class="wp-block-paragraph">Now let’s see if our <code>DepthwiseSeparableConv</code> class works properly by passing a dummy tensor through it. Here I have prepared two test cases for this class. The first one is when we don’t perform downsampling and the second one is when we do. In Figure 10 below, the two tests I want to perform involve the use of the layers highlighted in green and blue, respectively.</p>
+
+
+
+<figure class="wp-block-image aligncenter"><img decoding="async" src="../Images/48871eb735c0e34108f6241b46e5ea57.png" alt="" class="wp-image-618511" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/08/1E94NEh0QuFm_LiQRnp5VTw.png"/><figcaption class="wp-element-caption">Figure 10. The layers highlighted in green and blue are the ones we are going to simulate to test the DepthwiseSeparableConv class [1][2].</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">To create the green part, we can simply use the <code>DepthwiseSeparableConv</code> class and set the number of input and output channels to 32 and 64 as seen in Codeblock 6 below (<code>#(1–2)</code>). Passing <code>downsample = False</code> is not quite necessary since we already set it as the default configuration (<code>#(3)</code>) — but I do this anyway just for the sake of clarity. The shape of the dummy tensor <code>x</code> is also configured to have the size of 32×112×112, in which it matches exactly with the input shape of the layer (<code>#(4)</code>).</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python"># Codeblock 6
+depthwise_sep_conv = DepthwiseSeparableConv(in_channels=32,     #(1)
+                                            out_channels=64,    #(2)
+                                            downsample=False)   #(3)
+x = torch.randn((1, int(32*ALPHA), 112, 112))                   #(4)
+
+x = depthwise_sep_conv(x)</code></pre>
+
+
+
+<p class="wp-block-paragraph">If you run the above code, the following output should appear on your screen. Here you can see that the depthwise convolution layer returns a tensor of the exact same shape as the input (<code>#(1)</code>). The number of channels then doubles from 32 to 64 after the tensor being processed by the pointwise convolution (<code>#(2)</code>). This result proves that our <code>DepthwiseSeparableConv</code> class works properly for non-downsampling process. We will use this output tensor in the subsequent test as the input for the blue layer.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-"># Codeblock 6 Output
+original       : torch.Size([1, 32, 112, 112])
+after dw conv  : torch.Size([1, 32, 112, 112])    #(1)
+after pw conv  : torch.Size([1, 64, 112, 112])    #(2)</code></pre>
+
+
+
+<p class="wp-block-paragraph">The second test is quite similar to the first one, except that here we need to configure the model based on the number of input and output channels of the blue layer. Not only that, the <code>downsample</code> parameter also needs to be set to <code>True</code> since we want the layer to reduce the spatial dimension by half. See Codeblock 7 below for the details.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python"># Codeblock 7
+depthwise_sep_conv = DepthwiseSeparableConv(in_channels=64, 
+                                            out_channels=128,
+                                            downsample=True)
+
+x = depthwise_sep_conv(x)</code></pre>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-"># Codeblock 7 Output
+original       : torch.Size([1, 64, 112, 112])
+after dw conv  : torch.Size([1, 64, 56, 56])    #(1)
+after pw conv  : torch.Size([1, 128, 56, 56])   #(2)</code></pre>
+
+
+
+<p class="wp-block-paragraph">We can see in the above output that the spatial downsampling works properly as the depthwise convolution layer successfully converted the 112×112 image to 56×56 (<code>#(1)</code>). The channel axis is finally expanded to 128 with the help of the pointwise convolution layer (<code>#(2)</code>), making it ready to be fed into the subsequent layer. </p>
+
+
+
+<p class="wp-block-paragraph">Based on the two tests I demonstrated above, it is proven that our <code>DepthwiseSeparableConv</code> class is correct and thus ready to be used to construct the entire MobileNetV1 architecture.</p>
+
+
+
+<hr class="wp-block-separator has-alpha-channel-opacity is-style-dotted"/>
+
+
+
+<h3 class="wp-block-heading">The Entire MobileNetV1 Architecture</h3>
+
+
+
+<p class="wp-block-paragraph">I wrap everything within a class which I refer to as <code>MobileNetV1</code>. Since this class is quite long, I break it down into Codeblock 8a and 8b. If you want to run this code yourself, just ensure that these two codeblocks are written within the same notebook cell.</p>
+
+
+
+<p class="wp-block-paragraph">Now let’s start from the <code>__init__()</code> method of this class. The first thing to do here is to initialize the <code>FirstConv</code> layer we created earlier (<code>#(1)</code>). The next layers we need to initialize are the core idea of MobileNet, i.e., the depthwise separable convolutions, in which every single of those layers consists of depthwise and pointwise convs. In this implementation I decided to name these pairs starting from <code>depthwise_sep_conv0</code> all the way to <code>depthwise_sep_conv8</code>. If you go back to Figure 4, you will notice that the downsampling process is done alternately with the non-downsampling layers. This can simply be implemented by setting the <code>downsample</code> flag to <code>True</code> for the layers number 1, 3, 5 and 7. The <code>depthwise_sep_conv6</code> is a bit special since it is actually not a standalone layer. Rather, it is a bunch of depthwise separable convolutions of the exact same specification repeated 5 times.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python"># Codeblock 8a
+class MobileNetV1(nn.Module):
+    def __init__(self):
+        super().__init__()
+        
+        self.first_conv = FirstConv()    #(1)
+        
+        self.depthwise_sep_conv0 = DepthwiseSeparableConv(in_channels=32, 
+                                                          out_channels=64)
+        
+        self.depthwise_sep_conv1 = DepthwiseSeparableConv(in_channels=64, 
+                                                          out_channels=128, 
+                                                          downsample=True)
+        
+        self.depthwise_sep_conv2 = DepthwiseSeparableConv(in_channels=128, 
+                                                          out_channels=128)
+        
+        self.depthwise_sep_conv3 = DepthwiseSeparableConv(in_channels=128, 
+                                                          out_channels=256, 
+                                                          downsample=True)
+        
+        self.depthwise_sep_conv4 = DepthwiseSeparableConv(in_channels=256, 
+                                                          out_channels=256)
+        
+        self.depthwise_sep_conv5 = DepthwiseSeparableConv(in_channels=256, 
+                                                          out_channels=512, 
+                                                          downsample=True)
+        
+        self.depthwise_sep_conv6 = nn.ModuleList(
+            [DepthwiseSeparableConv(in_channels=512, out_channels=512) for _ in range(5)]
+        )
+        
+        self.depthwise_sep_conv7 = DepthwiseSeparableConv(in_channels=512, 
+                                                          out_channels=1024, 
+                                                          downsample=True)
+        
+        self.depthwise_sep_conv8 = DepthwiseSeparableConv(in_channels=1024,  #(2)
+                                                          out_channels=1024)
+        
+        num_out_channels = self.depthwise_sep_conv8.pwconv.out_channels      #(3)
+        
+        self.avgpool = nn.AdaptiveAvgPool2d(output_size=(1,1))      #(4)
+        self.fc = nn.Linear(in_features=num_out_channels,           #(5)
+                            out_features=NUM_CLASSES)
+        self.softmax = nn.Softmax(dim=1)                            #(6)</code></pre>
+
+
+
+<p class="wp-block-paragraph">As we have reached the very last <code>DepthwiseSeparableConv</code> layer (<code>#(2)</code>), what we need to do next is to initialize three more layers: an average pooling layer (<code>#(4)</code>), a fully-connected layer (<code>#(5)</code>), and a softmax activation function layer (<code>#(6)</code>). One thing that you need to keep in mind is that the number of output channels produced by the <code>depthwise_sep_conv8</code> is not always 1024 even though it appears to be fixed to that number. In fact, this output channel count will be different if we change the <code>ALPHA</code>. In order to make our implementation adaptive to such changes, we need to take the actual number of output channels generated using the code at line <code>#(3)</code>, which will then be used as the input size of the fully-connected layer (<code>#(5)</code>).</p>
+
+
+
+<p class="wp-block-paragraph">Regarding the <code>forward()</code> method in Codeblock 8b, I think there is nothing I need to explain since what we basically do here is just to pass a tensor from one layer to the subsequent ones.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python"># Codeblock 8b
+    def forward(self, x):
+        x = self.first_conv(x)
+        print(f"after first_conv\t\t: {x.shape}")
+        
+        x = self.depthwise_sep_conv0(x)
+        print(f"after depthwise_sep_conv0\t: {x.shape}")
+        
+        x = self.depthwise_sep_conv1(x)
+        print(f"after depthwise_sep_conv1\t: {x.shape}")
+        
+        x = self.depthwise_sep_conv2(x)
+        print(f"after depthwise_sep_conv2\t: {x.shape}")
+        
+        x = self.depthwise_sep_conv3(x)
+        print(f"after depthwise_sep_conv3\t: {x.shape}")
+        
+        x = self.depthwise_sep_conv4(x)
+        print(f"after depthwise_sep_conv4\t: {x.shape}")
+        
+        x = self.depthwise_sep_conv5(x)
+        print(f"after depthwise_sep_conv5\t: {x.shape}")
+        
+        for i, layer in enumerate(self.depthwise_sep_conv6):
+            x = layer(x)
+            print(f"after depthwise_sep_conv6 #{i}\t: {x.shape}")
+        
+        x = self.depthwise_sep_conv7(x)
+        print(f"after depthwise_sep_conv7\t: {x.shape}")
+        
+        x = self.depthwise_sep_conv8(x)
+        print(f"after depthwise_sep_conv8\t: {x.shape}")
+        
+        x = self.avgpool(x)
+        print(f"after avgpool\t\t\t: {x.shape}")
+        
+        x = torch.flatten(x, start_dim=1)
+        print(f"after flatten\t\t\t: {x.shape}")
+        
+        x = self.fc(x)
+        print(f"after fc\t\t\t: {x.shape}")
+        
+        x = self.softmax(x)
+        print(f"after softmax\t\t\t: {x.shape}")
+        
+        return x</code></pre>
+
+
+
+<p class="wp-block-paragraph">Now let’s see if our MobileNetV1 works properly by running the following test code.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python"># Codeblock 9
+mobilenetv1 = MobileNetV1()
+x = torch.randn((BATCH_SIZE, IN_CHANNELS, IMAGE_SIZE, IMAGE_SIZE))
+
+out = mobilenetv1(x)</code></pre>
+
+
+
+<p class="wp-block-paragraph">And below is what the output looks like. Here we can see that our dummy image tensor successfully went through the <code>first_conv</code> layer all the way to the final output layer. During the convolution phase, we can see that the spatial dimension decreased as we get into the deeper layers while at the same time the number of channels increased. Afterwards, we apply an average pooling layer which works by taking the average value from each channel. We can say that at this point every single channel of size 7×7 is now represented as a single value, which is actually the reason that the spatial dimension dropped to 1×1 (<code>#(1)</code>). This tensor is then flattened (<code>#(2)</code>) so that we can process it further with the fully-connected layer (<code>#(3)</code>).</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-"># Codeblock 9 Output
+after first_conv             : torch.Size([1, 32, 112, 112])
+after depthwise_sep_conv0    : torch.Size([1, 64, 112, 112])
+after depthwise_sep_conv1    : torch.Size([1, 128, 56, 56])
+after depthwise_sep_conv2    : torch.Size([1, 128, 56, 56])
+after depthwise_sep_conv3    : torch.Size([1, 256, 28, 28])
+after depthwise_sep_conv4    : torch.Size([1, 256, 28, 28])
+after depthwise_sep_conv5    : torch.Size([1, 512, 14, 14])
+after depthwise_sep_conv6 #0 : torch.Size([1, 512, 14, 14])
+after depthwise_sep_conv6 #1 : torch.Size([1, 512, 14, 14])
+after depthwise_sep_conv6 #2 : torch.Size([1, 512, 14, 14])
+after depthwise_sep_conv6 #3 : torch.Size([1, 512, 14, 14])
+after depthwise_sep_conv6 #4 : torch.Size([1, 512, 14, 14])
+after depthwise_sep_conv7    : torch.Size([1, 1024, 7, 7])
+after depthwise_sep_conv8    : torch.Size([1, 1024, 7, 7])
+after avgpool                : torch.Size([1, 1024, 1, 1])    #(1)
+after flatten                : torch.Size([1, 1024])          #(2)
+after fc                     : torch.Size([1, 1000])          #(3)
+after softmax                : torch.Size([1, 1000])</code></pre>
+
+
+
+<p class="wp-block-paragraph">If you want an even more detailed architecture, we can use the <code>summary()</code> function from <code>torchinfo</code> we imported earlier. If you scroll down the resulting output below, we can see that this model contains approximately 4.2 million trainable parameters, in which this number matches with the one written in Figure 5, 6, 7 and 8. I also tried to initialize the same model with different <code>ALPHA</code>, and I found that the numbers match with the table in Figure 6. Thanks to this reason, I think our MobileNetV1 implementation is correct.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python"># Codeblock 10
+mobilenetv1 = MobileNetV1()
+summary(mobilenetv1, input_size=(BATCH_SIZE, IN_CHANNELS, IMAGE_SIZE, IMAGE_SIZE))</code></pre>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-"># Codeblock 10 Output
+==========================================================================================
+Layer (type:depth-idx)                   Output Shape              Param #
+==========================================================================================
+MobileNetV1                              [1, 1000]                 --
+├─FirstConv: 1-1                         [1, 32, 112, 112]         --
+│    └─Conv2d: 2-1                       [1, 32, 112, 112]         864
+│    └─BatchNorm2d: 2-2                  [1, 32, 112, 112]         64
+│    └─ReLU: 2-3                         [1, 32, 112, 112]         --
+├─DepthwiseSeparableConv: 1-2            [1, 64, 112, 112]         --
+│    └─Conv2d: 2-4                       [1, 32, 112, 112]         288
+│    └─BatchNorm2d: 2-5                  [1, 32, 112, 112]         64
+│    └─ReLU: 2-6                         [1, 32, 112, 112]         --
+│    └─Conv2d: 2-7                       [1, 64, 112, 112]         2,048
+│    └─BatchNorm2d: 2-8                  [1, 64, 112, 112]         128
+│    └─ReLU: 2-9                         [1, 64, 112, 112]         --
+├─DepthwiseSeparableConv: 1-3            [1, 128, 56, 56]          --
+│    └─Conv2d: 2-10                      [1, 64, 56, 56]           576
+│    └─BatchNorm2d: 2-11                 [1, 64, 56, 56]           128
+│    └─ReLU: 2-12                        [1, 64, 56, 56]           --
+│    └─Conv2d: 2-13                      [1, 128, 56, 56]          8,192
+│    └─BatchNorm2d: 2-14                 [1, 128, 56, 56]          256
+│    └─ReLU: 2-15                        [1, 128, 56, 56]          --
+├─DepthwiseSeparableConv: 1-4            [1, 128, 56, 56]          --
+│    └─Conv2d: 2-16                      [1, 128, 56, 56]          1,152
+│    └─BatchNorm2d: 2-17                 [1, 128, 56, 56]          256
+│    └─ReLU: 2-18                        [1, 128, 56, 56]          --
+│    └─Conv2d: 2-19                      [1, 128, 56, 56]          16,384
+│    └─BatchNorm2d: 2-20                 [1, 128, 56, 56]          256
+│    └─ReLU: 2-21                        [1, 128, 56, 56]          --
+├─DepthwiseSeparableConv: 1-5            [1, 256, 28, 28]          --
+│    └─Conv2d: 2-22                      [1, 128, 28, 28]          1,152
+│    └─BatchNorm2d: 2-23                 [1, 128, 28, 28]          256
+│    └─ReLU: 2-24                        [1, 128, 28, 28]          --
+│    └─Conv2d: 2-25                      [1, 256, 28, 28]          32,768
+│    └─BatchNorm2d: 2-26                 [1, 256, 28, 28]          512
+│    └─ReLU: 2-27                        [1, 256, 28, 28]          --
+├─DepthwiseSeparableConv: 1-6            [1, 256, 28, 28]          --
+│    └─Conv2d: 2-28                      [1, 256, 28, 28]          2,304
+│    └─BatchNorm2d: 2-29                 [1, 256, 28, 28]          512
+│    └─ReLU: 2-30                        [1, 256, 28, 28]          --
+│    └─Conv2d: 2-31                      [1, 256, 28, 28]          65,536
+│    └─BatchNorm2d: 2-32                 [1, 256, 28, 28]          512
+│    └─ReLU: 2-33                        [1, 256, 28, 28]          --
+├─DepthwiseSeparableConv: 1-7            [1, 512, 14, 14]          --
+│    └─Conv2d: 2-34                      [1, 256, 14, 14]          2,304
+│    └─BatchNorm2d: 2-35                 [1, 256, 14, 14]          512
+│    └─ReLU: 2-36                        [1, 256, 14, 14]          --
+│    └─Conv2d: 2-37                      [1, 512, 14, 14]          131,072
+│    └─BatchNorm2d: 2-38                 [1, 512, 14, 14]          1,024
+│    └─ReLU: 2-39                        [1, 512, 14, 14]          --
+├─ModuleList: 1-8                        --                        --
+│    └─DepthwiseSeparableConv: 2-40      [1, 512, 14, 14]          --
+│    │    └─Conv2d: 3-1                  [1, 512, 14, 14]          4,608
+│    │    └─BatchNorm2d: 3-2             [1, 512, 14, 14]          1,024
+│    │    └─ReLU: 3-3                    [1, 512, 14, 14]          --
+│    │    └─Conv2d: 3-4                  [1, 512, 14, 14]          262,144
+│    │    └─BatchNorm2d: 3-5             [1, 512, 14, 14]          1,024
+│    │    └─ReLU: 3-6                    [1, 512, 14, 14]          --
+│    └─DepthwiseSeparableConv: 2-41      [1, 512, 14, 14]          --
+│    │    └─Conv2d: 3-7                  [1, 512, 14, 14]          4,608
+│    │    └─BatchNorm2d: 3-8             [1, 512, 14, 14]          1,024
+│    │    └─ReLU: 3-9                    [1, 512, 14, 14]          --
+│    │    └─Conv2d: 3-10                 [1, 512, 14, 14]          262,144
+│    │    └─BatchNorm2d: 3-11            [1, 512, 14, 14]          1,024
+│    │    └─ReLU: 3-12                   [1, 512, 14, 14]          --
+│    └─DepthwiseSeparableConv: 2-42      [1, 512, 14, 14]          --
+│    │    └─Conv2d: 3-13                 [1, 512, 14, 14]          4,608
+│    │    └─BatchNorm2d: 3-14            [1, 512, 14, 14]          1,024
+│    │    └─ReLU: 3-15                   [1, 512, 14, 14]          --
+│    │    └─Conv2d: 3-16                 [1, 512, 14, 14]          262,144
+│    │    └─BatchNorm2d: 3-17            [1, 512, 14, 14]          1,024
+│    │    └─ReLU: 3-18                   [1, 512, 14, 14]          --
+│    └─DepthwiseSeparableConv: 2-43      [1, 512, 14, 14]          --
+│    │    └─Conv2d: 3-19                 [1, 512, 14, 14]          4,608
+│    │    └─BatchNorm2d: 3-20            [1, 512, 14, 14]          1,024
+│    │    └─ReLU: 3-21                   [1, 512, 14, 14]          --
+│    │    └─Conv2d: 3-22                 [1, 512, 14, 14]          262,144
+│    │    └─BatchNorm2d: 3-23            [1, 512, 14, 14]          1,024
+│    │    └─ReLU: 3-24                   [1, 512, 14, 14]          --
+│    └─DepthwiseSeparableConv: 2-44      [1, 512, 14, 14]          --
+│    │    └─Conv2d: 3-25                 [1, 512, 14, 14]          4,608
+│    │    └─BatchNorm2d: 3-26            [1, 512, 14, 14]          1,024
+│    │    └─ReLU: 3-27                   [1, 512, 14, 14]          --
+│    │    └─Conv2d: 3-28                 [1, 512, 14, 14]          262,144
+│    │    └─BatchNorm2d: 3-29            [1, 512, 14, 14]          1,024
+│    │    └─ReLU: 3-30                   [1, 512, 14, 14]          --
+├─DepthwiseSeparableConv: 1-9            [1, 1024, 7, 7]           --
+│    └─Conv2d: 2-45                      [1, 512, 7, 7]            4,608
+│    └─BatchNorm2d: 2-46                 [1, 512, 7, 7]            1,024
+│    └─ReLU: 2-47                        [1, 512, 7, 7]            --
+│    └─Conv2d: 2-48                      [1, 1024, 7, 7]           524,288
+│    └─BatchNorm2d: 2-49                 [1, 1024, 7, 7]           2,048
+│    └─ReLU: 2-50                        [1, 1024, 7, 7]           --
+├─DepthwiseSeparableConv: 1-10           [1, 1024, 7, 7]           --
+│    └─Conv2d: 2-51                      [1, 1024, 7, 7]           9,216
+│    └─BatchNorm2d: 2-52                 [1, 1024, 7, 7]           2,048
+│    └─ReLU: 2-53                        [1, 1024, 7, 7]           --
+│    └─Conv2d: 2-54                      [1, 1024, 7, 7]           1,048,576
+│    └─BatchNorm2d: 2-55                 [1, 1024, 7, 7]           2,048
+│    └─ReLU: 2-56                        [1, 1024, 7, 7]           --
+├─AdaptiveAvgPool2d: 1-11                [1, 1024, 1, 1]           --
+├─Linear: 1-12                           [1, 1000]                 1,025,000
+├─Softmax: 1-13                          [1, 1000]                 --
+==========================================================================================
+Total params: 4,231,976
+Trainable params: 4,231,976
+Non-trainable params: 0
+Total mult-adds (Units.MEGABYTES): 568.76
+==========================================================================================
+Input size (MB): 0.60
+Forward/backward pass size (MB): 80.69
+Params size (MB): 16.93
+Estimated Total Size (MB): 98.22
+==========================================================================================</code></pre>
+
+
+
+<hr class="wp-block-separator has-alpha-channel-opacity is-style-dotted"/>
+
+
+
+<h2 class="wp-block-heading">Ending</h2>
+
+
+
+<p class="wp-block-paragraph">That was pretty much everything about MobileNetV1. I do encourage you to play around with the above model. If you want to train it for image classification, you can adjust the number of neurons in the output layer according to the number of classes available in your dataset. You can also try to explore different <em>α</em> and <em>ρ</em> to find the values that suit best for your case in terms of accuracy and efficiency. Furthermore, since this implementation is literally done from scratch, it is also possible to change other things that are not explicitly mentioned in the paper, such as the number of repeats of the <code>depthwise_sep_conv6</code> layer, or even using <em>α</em> and <em>ρ</em> greater than 1. And well, there are basically lots of things to explore from our MobileNetV1 implementation! You can also access the code used in this article in my GitHub repository [3].</p>
+
+
+
+<p class="wp-block-paragraph">Feel free to comment if you spot any mistake in my explanation or the code. Thanks for reading!</p>
+
+
+
+<hr class="wp-block-separator has-alpha-channel-opacity is-style-dotted"/>
+
+
+
+<h2 class="wp-block-heading">References</h2>
+
+
+
+<p class="wp-block-paragraph">[1] Andrew G. Howard <em>et al.</em> MobileNets: Efficient Convolutional Neural Networks for Mobile Vision Applications. Arxiv. <a href="https://arxiv.org/abs/1704.04861" rel="noreferrer noopener" target="_blank">https://arxiv.org/abs/1704.04861</a> [Accessed April 7, 2025].</p>
+
+
+
+<p class="wp-block-paragraph">[2] Image created originally by author.</p>
+
+
+
+<p class="wp-block-paragraph">[3] MuhammadArdiPutra. The Tiny Giant — MobileNetV1. GitHub. <a href="https://github.com/MuhammadArdiPutra/medium_articles/blob/main/The%20Tiny%20Giant%20-%20MobileNetV1.ipynb" rel="noreferrer noopener" target="_blank">https://github.com/MuhammadArdiPutra/medium_articles/blob/main/The%20Tiny%20Giant%20-%20MobileNetV1.ipynb</a> [Accessed April 7, 2025].</p>
+    
+</body>
+</html>

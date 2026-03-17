@@ -1,0 +1,504 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.1//EN"
+  "http://www.w3.org/TR/xhtml11/DTD/xhtml11.dtd">
+
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+<title>Anatomy of a Parquet File</title>
+<link href="../Styles/Style.css" type="text/css" rel="stylesheet"/>
+</head>
+<body>
+<h1>Anatomy of a Parquet File</h1>
+<blockquote>原文：<a href="https://towardsdatascience.com/anatomy-of-a-parquet-file/">https://towardsdatascience.com/anatomy-of-a-parquet-file/</a></blockquote>
+<p class="wp-block-paragraph">In recent years, Parquet has become a standard format for data storage in Big Data ecosystems. Its column-oriented format offers several advantages:</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">Faster query execution when only a subset of columns is being processed</li>
+
+
+
+<li class="wp-block-list-item">Quick calculation of statistics across all data</li>
+
+
+
+<li class="wp-block-list-item">Reduced storage volume thanks to efficient compression</li>
+</ul>
+
+
+
+<p class="wp-block-paragraph">When combined with storage frameworks like Delta Lake or Apache Iceberg, it seamlessly integrates with query engines (e.g., Trino) and data warehouse compute clusters (e.g., Snowflake, BigQuery). In this article, the content of a Parquet file is dissected using mainly standard Python tools to better understand its structure and how it contributes to such performances.</p>
+
+
+
+<h2 class="wp-block-heading">Writing Parquet file(s)</h2>
+
+
+
+<p class="wp-block-paragraph">To produce Parquet files, we use PyArrow, a Python binding for Apache Arrow that stores dataframes in memory in columnar format. PyArrow allows fine-grained parameter tuning when writing the file. This makes PyArrow ideal for Parquet manipulation (one can also simply use <a href="https://pandas.pydata.org/docs/reference/api/pandas.DataFrame.to_parquet.html">Pandas</a>).</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python"># generator.py
+
+import pyarrow as pa
+import pyarrow.parquet as pq
+from faker import Faker
+
+fake = Faker()
+Faker.seed(12345)
+num_records = 100
+
+# Generate fake data
+names = [fake.name() for _ in range(num_records)]
+addresses = [fake.address().replace("\n", ", ") for _ in range(num_records)]
+birth_dates = [
+    fake.date_of_birth(minimum_age=67, maximum_age=75) for _ in range(num_records)
+]
+cities = [addr.split(", ")[1] for addr in addresses]
+birth_years = [date.year for date in birth_dates]
+
+# Cast the data to the Arrow format
+name_array = pa.array(names, type=pa.string())
+address_array = pa.array(addresses, type=pa.string())
+birth_date_array = pa.array(birth_dates, type=pa.date32())
+city_array = pa.array(cities, type=pa.string())
+birth_year_array = pa.array(birth_years, type=pa.int32())
+
+# Create schema with non-nullable fields
+schema = pa.schema(
+    [
+        pa.field("name", pa.string(), nullable=False),
+        pa.field("address", pa.string(), nullable=False),
+        pa.field("date_of_birth", pa.date32(), nullable=False),
+        pa.field("city", pa.string(), nullable=False),
+        pa.field("birth_year", pa.int32(), nullable=False),
+    ]
+)
+
+table = pa.Table.from_arrays(
+    [name_array, address_array, birth_date_array, city_array, birth_year_array],
+    schema=schema,
+)
+
+print(table)</code></pre>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-markup">pyarrow.Table
+name: string not null
+address: string not null
+date_of_birth: date32[day] not null
+city: string not null
+birth_year: int32 not null
+----
+name: [["Adam Bryan","Jacob Lee","Candice Martinez","Justin Thompson","Heather Rubio"]]
+address: [["822 Jennifer Field Suite 507, Anthonyhaven, UT 98088","292 Garcia Mall, Lake Belindafurt, IN 69129","31738 Jonathan Mews Apt. 024, East Tammiestad, ND 45323","00716 Kristina Trail Suite 381, Howelltown, SC 64961","351 Christopher Expressway Suite 332, West Edward, CO 68607"]]
+date_of_birth: [[1955-06-03,1950-06-24,1955-01-29,1957-02-18,1956-09-04]]
+city: [["Anthonyhaven","Lake Belindafurt","East Tammiestad","Howelltown","West Edward"]]
+birth_year: [[1955,1950,1955,1957,1956]]</code></pre>
+
+
+
+<p class="wp-block-paragraph">The output clearly reflects a columns-oriented storage, unlike Pandas, which usually displays a traditional “row-wise” table.</p>
+
+
+
+<h2 class="wp-block-heading">How is a Parquet file stored?</h2>
+
+
+
+<p class="wp-block-paragraph">Parquet files are generally stored in cheap object storage databases like S3 (AWS) or GCS (GCP) to be easily accessible by data processing pipelines. These files are usually organized with a partitioning strategy by leveraging directory structures:</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python"># generator.py
+
+num_records = 100
+
+# ...
+
+# Writing the parquet files to disk
+pq.write_to_dataset(
+    table,
+    root_path='dataset',
+    partition_cols=['birth_year', 'city']
+)</code></pre>
+
+
+
+<p class="wp-block-paragraph">If <code>birth_year</code> and <code>city columns</code> are defined as partitioning keys, PyArrow creates such a tree structure in the directory dataset:</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-markup">dataset/
+├─ birth_year=1949/
+├─ birth_year=1950/
+│ ├─ city=Aaronbury/
+│ │ ├─ 828d313a915a43559f3111ee8d8e6c1a-0.parquet
+│ │ ├─ 828d313a915a43559f3111ee8d8e6c1a-0.parquet
+│ │ ├─ …
+│ ├─ city=Alicialand/
+│ ├─ …
+├─ birth_year=1951 ├─ ...
+</code></pre>
+
+
+
+<p class="wp-block-paragraph">The strategy enables partition pruning: when a query filters on these columns, the engine can use folder names to read only the necessary files. This is why the partitioning strategy is crucial for limiting delay, I/O, and compute resources when handling large volumes of data (as has been the case for decades with traditional relational databases).</p>
+
+
+
+<p class="wp-block-paragraph">The pruning effect can be easily verified by counting the files opened by a Python script that filters the birth year:</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python"># query.py
+import duckdb
+
+duckdb.sql(
+    """
+    SELECT * 
+    FROM read_parquet('dataset/*/*/*.parquet', hive_partitioning = true)
+    where birth_year = 1949
+    """
+).show()</code></pre>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-markup">&gt; strace -e trace=open,openat,read -f python query.py 2&gt;&amp;1 | grep "dataset/.*\.parquet"
+
+[pid    37] openat(AT_FDCWD, "dataset/birth_year=1949/city=Box%201306/e1ad1666a2144fbc94892d4ac1234c64-0.parquet", O_RDONLY) = 3
+[pid    37] openat(AT_FDCWD, "dataset/birth_year=1949/city=Box%201306/e1ad1666a2144fbc94892d4ac1234c64-0.parquet", O_RDONLY) = 3
+[pid    39] openat(AT_FDCWD, "dataset/birth_year=1949/city=Box%201306/e1ad1666a2144fbc94892d4ac1234c64-0.parquet", O_RDONLY) = 4
+[pid    39] openat(AT_FDCWD, "dataset/birth_year=1949/city=Box%203487/e1ad1666a2144fbc94892d4ac1234c64-0.parquet", O_RDONLY) = 5
+[pid    39] openat(AT_FDCWD, "dataset/birth_year=1949/city=Box%203487/e1ad1666a2144fbc94892d4ac1234c64-0.parquet", O_RDONLY) = 3
+[pid    39] openat(AT_FDCWD, "dataset/birth_year=1949/city=Clarkemouth/e1ad1666a2144fbc94892d4ac1234c64-0.parquet", O_RDONLY) = 4
+[pid    39] openat(AT_FDCWD, "dataset/birth_year=1949/city=Clarkemouth/e1ad1666a2144fbc94892d4ac1234c64-0.parquet", O_RDONLY) = 5
+[pid    39] openat(AT_FDCWD, "dataset/birth_year=1949/city=DPO%20AP%2020198/e1ad1666a2144fbc94892d4ac1234c64-0.parquet", O_RDONLY) = 3
+[pid    39] openat(AT_FDCWD, "dataset/birth_year=1949/city=DPO%20AP%2020198/e1ad1666a2144fbc94892d4ac1234c64-0.parquet", O_RDONLY) = 4
+[pid    39] openat(AT_FDCWD, "dataset/birth_year=1949/city=East%20Morgan/e1ad1666a2144fbc94892d4ac1234c64-0.parquet", O_RDONLY) = 5
+[pid    39] openat(AT_FDCWD, "dataset/birth_year=1949/city=East%20Morgan/e1ad1666a2144fbc94892d4ac1234c64-0.parquet", O_RDONLY) = 3
+[pid    39] openat(AT_FDCWD, "dataset/birth_year=1949/city=FPO%20AA%2006122/e1ad1666a2144fbc94892d4ac1234c64-0.parquet", O_RDONLY) = 4
+[pid    39] openat(AT_FDCWD, "dataset/birth_year=1949/city=FPO%20AA%2006122/e1ad1666a2144fbc94892d4ac1234c64-0.parquet", O_RDONLY) = 5
+[pid    39] openat(AT_FDCWD, "dataset/birth_year=1949/city=New%20Michelleport/e1ad1666a2144fbc94892d4ac1234c64-0.parquet", O_RDONLY) = 3
+[pid    39] openat(AT_FDCWD, "dataset/birth_year=1949/city=New%20Michelleport/e1ad1666a2144fbc94892d4ac1234c64-0.parquet", O_RDONLY) = 4
+[pid    39] openat(AT_FDCWD, "dataset/birth_year=1949/city=North%20Danielchester/e1ad1666a2144fbc94892d4ac1234c64-0.parquet", O_RDONLY) = 5
+[pid    39] openat(AT_FDCWD, "dataset/birth_year=1949/city=North%20Danielchester/e1ad1666a2144fbc94892d4ac1234c64-0.parquet", O_RDONLY) = 3
+[pid    39] openat(AT_FDCWD, "dataset/birth_year=1949/city=Port%20Chase/e1ad1666a2144fbc94892d4ac1234c64-0.parquet", O_RDONLY) = 4
+[pid    39] openat(AT_FDCWD, "dataset/birth_year=1949/city=Port%20Chase/e1ad1666a2144fbc94892d4ac1234c64-0.parquet", O_RDONLY) = 5
+[pid    39] openat(AT_FDCWD, "dataset/birth_year=1949/city=Richardmouth/e1ad1666a2144fbc94892d4ac1234c64-0.parquet", O_RDONLY) = 3
+[pid    39] openat(AT_FDCWD, "dataset/birth_year=1949/city=Richardmouth/e1ad1666a2144fbc94892d4ac1234c64-0.parquet", O_RDONLY) = 4
+[pid    39] openat(AT_FDCWD, "dataset/birth_year=1949/city=Robbinsshire/e1ad1666a2144fbc94892d4ac1234c64-0.parquet", O_RDONLY) = 5
+[pid    39] openat(AT_FDCWD, "dataset/birth_year=1949/city=Robbinsshire/e1ad1666a2144fbc94892d4ac1234c64-0.parquet", O_RDONLY) = 3</code></pre>
+
+
+
+<p class="wp-block-paragraph">Only 23 files are read out of 100.</p>
+
+
+
+<h2 class="wp-block-heading">Reading a raw Parquet file</h2>
+
+
+
+<p class="wp-block-paragraph">Let’s decode a raw Parquet file without specialized libraries. For simplicity, the dataset is dumped into a single file without compression or encoding.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python"># generator.py
+
+# ...
+
+pq.write_table(
+    table,
+    "dataset.parquet",
+    use_dictionary=False,
+    compression="NONE",
+    write_statistics=True,
+    column_encoding=None,
+)</code></pre>
+
+
+
+<p class="wp-block-paragraph">The first thing to know is that the binary file is framed by 4 bytes whose ASCII representation is “PAR1”. The file is corrupted if this is not the case.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python"># reader.py
+
+with open("dataset.parquet", "rb") as file:
+    parquet_data = file.read()
+
+assert parquet_data[:4] == b"PAR1", "Not a valid parquet file"
+assert parquet_data[-4:] == b"PAR1", "File footer is corrupted"</code></pre>
+
+
+
+<p class="wp-block-paragraph">As indicated in the <a href="https://parquet.apache.org/docs/file-format/">documentation</a>, the file is divided into two parts: the “row groups” containing actual data, and the footer containing metadata (schema below).</p>
+
+
+
+<figure class="wp-block-image aligncenter size-full is-resized"><img decoding="async" src="../Images/75b045e4fccf317e1162173e45997edf.png" alt="" class="wp-image-599620" style="width:327px;height:auto" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/03/file.png"/></figure>
+
+
+
+<h3 class="wp-block-heading">The footer</h3>
+
+
+
+<p class="wp-block-paragraph">The size of the footer is indicated in the 4 bytes preceding the end marker as an unsigned integer written in “little endian” format (noted “&lt;I” for the <code>unpack</code> function).</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python"># reader.py
+
+import struct
+
+# ...
+
+footer_length = struct.unpack("&lt;I", parquet_data[-8:-4])[0]
+print(f"Footer size in bytes: {footer_length}")
+
+footer_start = len(parquet_data) - footer_length - 8
+footer_data = parquet_data[footer_start:-8]</code></pre>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-markup">Footer size in bytes: 1088</code></pre>
+
+
+
+<p class="wp-block-paragraph">The footer information is encoded in a cross-language serialization format called <a href="https://thrift.apache.org/">Apache Thrift</a>. Using a human-readable but verbose format like JSON and then translating it into binary would be less efficient in terms of memory usage. With Thrift, one can declare data structures as follows:</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">struct Customer {
+	1: required string name,
+	2: optional i16 birthYear,
+	3: optional list&lt;string&gt; interests
+}</code></pre>
+
+
+
+<p class="wp-block-paragraph">On the basis of this declaration, Thrift can generate Python code to decode byte strings with such data structure (it also generates code to perform the encoding part). The thrift file containing all the data structures implemented in a Parquet file can be downloaded <a href="https://github.com/apache/parquet-format/blob/master/src/main/thrift/parquet.thrift">here</a>. After having installed the thrift binary, let’s run:</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-bash">thrift -r --gen py parquet.thrift</code></pre>
+
+
+
+<p class="wp-block-paragraph">The generated Python code is placed in the “gen-py” folder. The footer’s data structure is represented by the FileMetaData class – a Python class automatically generated from the Thrift schema. Using Thrift’s Python utilities, binary data is parsed and populated into an instance of this FileMetaData class.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python"># reader.py
+
+import sys
+
+# ...
+
+# Add the generated classes to the python path
+sys.path.append("gen-py")
+from parquet.ttypes import FileMetaData, PageHeader
+from thrift.transport import TTransport
+from thrift.protocol import TCompactProtocol
+
+def read_thrift(data, thrift_instance):
+    """
+    Read a Thrift object from a binary buffer.
+    Returns the Thrift object and the number of bytes read.
+    """
+    transport = TTransport.TMemoryBuffer(data)
+    protocol = TCompactProtocol.TCompactProtocol(transport)
+    thrift_instance.read(protocol)
+    return thrift_instance, transport._buffer.tell()
+
+# The number of bytes read is not used for now
+file_metadata_thrift, _ = read_thrift(footer_data, FileMetaData())
+
+print(f"Number of rows in the whole file: {file_metadata_thrift.num_rows}")
+print(f"Number of row groups: {len(file_metadata_thrift.row_groups)}")
+
+Number of rows in the whole file: 100
+Number of row groups: 1</code></pre>
+
+
+
+<p class="wp-block-paragraph">The footer contains extensive information about the file’s structure and content. For instance, it accurately tracks the number of rows in the generated dataframe. These rows are all contained within a single “row group.” <em>But what is a “row group?”</em></p>
+
+
+
+<h3 class="wp-block-heading"><strong>Row groups</strong></h3>
+
+
+
+<p class="wp-block-paragraph">Unlike purely column-oriented formats, Parquet employs a hybrid approach. Before writing column blocks, the dataframe is first partitioned vertically into row groups (the parquet file we generated is too small to be split in multiple row groups).</p>
+
+
+
+<figure class="wp-block-image size-large"><img data-dominant-color="55534c" data-has-transparency="false" style="--dominant-color: #55534c;" decoding="async" src="../Images/d64902ec96b88a88ec01847543bfac74.png" alt="" class="wp-image-599594 not-transparent" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/03/Parquet-2-1024x612.png"/></figure>
+
+
+
+<p class="wp-block-paragraph">This hybrid structure offers several advantages:</p>
+
+
+
+<p class="wp-block-paragraph">Parquet calculates statistics (such as min/max values) for each column within each row group. These statistics are crucial for query optimization, allowing query engines to skip entire row groups that don’t match filtering criteria. For example, if a query filters for <code>birth_year &gt; 1955</code> and a row group’s maximum birth year is 1954, the engine can efficiently skip that entire data section. This optimisation is called “predicate pushdown”. Parquet also stores other useful statistics like distinct value counts and null counts.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python"># reader.py
+# ...
+
+first_row_group = file_metadata_thrift.row_groups[0]
+birth_year_column = first_row_group.columns[4]
+
+min_stat_bytes = birth_year_column.meta_data.statistics.min
+max_stat_bytes = birth_year_column.meta_data.statistics.max
+
+min_year = struct.unpack("&lt;I", min_stat_bytes)[0]
+max_year = struct.unpack("&lt;I", max_stat_bytes)[0]
+
+print(f"The birth year range is between {min_year} and {max_year}")</code></pre>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-bash">The birth year range is between 1949 and 1958</code></pre>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">Row groups enable parallel processing of data (particularly valuable for frameworks like Apache Spark). The size of these row groups can be configured based on the computing resources available (using the <code>row_group_size</code> property in function <code>write_table</code> when using PyArrow).<br/></li>
+</ul>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python"># generator.py
+
+# ...
+
+pq.write_table(
+    table,
+    "dataset.parquet",
+    row_group_size=100,
+)
+
+# /!\ Keep the default value of "row_group_size" for the next parts</code></pre>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">Even if this is not the primary objective of a column format, Parquet’s hybrid structure maintains reasonable performance when reconstructing complete rows. Without row groups, rebuilding an entire row might require scanning the entirety of each column which would be extremely inefficient for large files.</li>
+</ul>
+
+
+
+<h3 class="wp-block-heading"><strong>Data Pages</strong></h3>
+
+
+
+<p class="wp-block-paragraph">The smallest substructure of a Parquet file is the page. It contains a sequence of values from the same column and, therefore, of the same type. The choice of page size is the result of a trade-off:</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">Larger pages mean less metadata to store and read, which is optimal for queries with minimal filtering.<br/></li>
+
+
+
+<li class="wp-block-list-item">Smaller pages reduce the amount of unnecessary data read, which is better when queries target small, scattered data ranges.</li>
+</ul>
+
+
+
+<figure class="wp-block-image size-full"><img decoding="async" src="../Images/2ff8865e4ebf5ccf50d957ed95996b3d.png" alt="" class="wp-image-599595" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/03/Parquet-3.png"/></figure>
+
+
+
+<p class="wp-block-paragraph">Now let’s decode the contents of the first page of the column dedicated to addresses whose location can be found in the footer (given by the <code>data_page_offset</code> attribute of the right <code>ColumnMetaData</code>) . Each page is preceded by a Thrift <code>PageHeader</code> object containing some metadata. The offset actually points to a Thrift binary representation of the page metadata that precedes the page itself. The Thrift class is called a <code>PageHeader</code> and can also be found in the <code>gen-py</code> directory.</p>
+
+
+
+<blockquote class="wp-block-quote is-layout-flow wp-block-quote-is-layout-flow">
+<p class="wp-block-paragraph">💡<em> Between the PageHeader and the actual values contained within the page, there may be a few bytes dedicated to implementing the </em><a href="https://static.googleusercontent.com/media/research.google.com/fr//pubs/archive/36632.pdf"><em>Dremel</em></a><em> format, which allows encoding </em><a href="https://parquet.apache.org/docs/file-format/nestedencoding/"><em>nested data structures</em></a><em>. Since our data has a regular tabular format and the values are not nullable, these bytes are skipped when writing the file (</em><a href="https://parquet.apache.org/docs/file-format/data-pages/"><em>https://parquet.apache.org/docs/file-format/data-pages/</em></a><em>).</em></p>
+</blockquote>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python"># reader.py
+# ...
+
+address_column = first_row_group.columns[1]
+column_start = address_column.meta_data.data_page_offset
+column_end = column_start + address_column.meta_data.total_compressed_size
+column_content = parquet_data[column_start:column_end]
+
+page_thrift, page_header_size = read_thrift(column_content, PageHeader())
+page_content = column_content[
+    page_header_size : (page_header_size + page_thrift.compressed_page_size)
+]
+print(column_content[:100])</code></pre>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-markup">b'6\x00\x00\x00481 Mata Squares Suite 260, Lake Rachelville, KY 874642\x00\x00\x00671 Barker Crossing Suite 390, Mooreto'</code></pre>
+
+
+
+<p class="wp-block-paragraph">The generated values finally appear, in plain text and not encoded (as specified when writing the Parquet file). However, to optimize the columnar format, it is recommended to use one of the following encoding algorithms: dictionary encoding, run length encoding (RLE), or delta encoding (the latter being reserved for int32 and int64 types), followed by compression using gzip or snappy (available codecs are listed <a href="https://parquet.apache.org/docs/file-format/data-pages/compression/">here</a>). Since encoded pages contain similar values (all addresses, all decimal numbers, etc.), compression ratios can be particularly advantageous.</p>
+
+
+
+<p class="wp-block-paragraph">As documented in the <a href="https://parquet.apache.org/docs/file-format/data-pages/encodings/">specification</a>, when character strings (BYTE_ARRAY) are not encoded, each value is preceded by its size represented as a 4-byte integer. This can be observed in the previous output:</p>
+
+
+
+<figure class="wp-block-image size-large"><img decoding="async" src="../Images/a8be0e719ef5e64a21420ddb32463c99.png" alt="" class="wp-image-599672" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/03/Screenshot-2025-03-13-at-5.52.46 PM-1024x395.png"/></figure>
+
+
+
+<p class="wp-block-paragraph">To read all the values (for example, the first 10), the loop is rather simple:</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">idx = 0
+for _ in range(10):
+    str_size = struct.unpack("&lt;I", page_content[idx : (idx + 4)])[0]
+    print(page_content[(idx + 4) : (idx + 4 + str_size)].decode())
+    idx += 4 + str_size</code></pre>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-markup">481 Mata Squares Suite 260, Lake Rachelville, KY 87464
+671 Barker Crossing Suite 390, Mooretown, MI 21488
+62459 Jordan Knoll Apt. 970, Emilyfort, DC 80068
+948 Victor Square Apt. 753, Braybury, RI 67113
+365 Edward Place Apt. 162, Calebborough, AL 13037
+894 Reed Lock, New Davidmouth, NV 84612
+24082 Allison Squares Suite 345, North Sharonberg, WY 97642
+00266 Johnson Drives, South Lori, MI 98513
+15255 Kelly Plains, Richardmouth, GA 33438
+260 Thomas Glens, Port Gabriela, OH 96758</code></pre>
+
+
+
+<p class="wp-block-paragraph">And there we have it! We have successfully recreated, in a very simple way, how a specialized library would read a Parquet file. By understanding its building blocks including headers, footers, row groups, and data pages, we can better appreciate how features like predicate pushdown and partition pruning deliver such impressive performance benefits in data-intensive environments. I am convinced knowing how Parquet works under the hood helps making better decisions about storage strategies, compression choices, and performance optimization.</p>
+
+
+
+<p class="wp-block-paragraph">All the code used in this article is available on my GitHub repository at <a href="https://github.com/kili-mandjaro/anatomy-parquet">https://github.com/kili-mandjaro/anatomy-parquet</a>, where you can explore more examples and experiment with different Parquet file configurations.</p>
+
+
+
+<p class="wp-block-paragraph">Whether you are building data pipelines, optimizing query performance, or simply curious about data storage formats, I hope this deep dive into Parquet’s inner structures has provided valuable insights for your data engineering journey.</p>
+
+
+
+<p class="wp-block-paragraph"><em>All images are by the author.</em></p>
+    
+</body>
+</html>

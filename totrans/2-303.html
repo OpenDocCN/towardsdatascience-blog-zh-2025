@@ -1,0 +1,461 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.1//EN"
+  "http://www.w3.org/TR/xhtml11/DTD/xhtml11.dtd">
+
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+<title>Multi-Agent Communication with the A2A Python SDK</title>
+<link href="../Styles/Style.css" type="text/css" rel="stylesheet"/>
+</head>
+<body>
+<h1>Multi-Agent Communication with the A2A Python SDK</h1>
+<blockquote>原文：<a href="https://towardsdatascience.com/multi-agent-communication-with-the-a2a-python-sdk/">https://towardsdatascience.com/multi-agent-communication-with-the-a2a-python-sdk/</a></blockquote>
+<p class="wp-block-paragraph">If<mdspan datatext="el1748462464521" class="mdspan-comment"> you’re not living</mdspan> under a rock and you work with AI, you’ve probably heard about Agent2Agent (A2A) Protocol, “an open standard designed to enable communication and collaboration between AI agents”. It’s still pretty new, but it’s already getting a lot of buzz. Since it plays so nicely with MCP (which looks like it’s becoming the industry’s standard), A2A is shaping up to be <em>the</em> go-to standard for multi-agent communication in the industry.</p>
+
+
+
+<p class="wp-block-paragraph">When Google first dropped the <a href="https://google.github.io/A2A/specification/" target="_blank" rel="noreferrer noopener">Protocol Specification</a>, my first reaction was basically: “Okay, cool… but what am I supposed to do with this?” Thankfully, this week they released the official Python SDK for the protocol, so now it finally speaks a language I understand.</p>
+
+
+
+<p class="wp-block-paragraph">In this article we’re going to dive into how the protocol actually sets up communication between agents and clients. Spoiler: it’s all in a task-oriented manner. To make things less abstract, let’s build a little toy example together.</p>
+
+
+
+<h2 class="wp-block-heading">Communication between the Event Detector Agent and an A2A Client</h2>
+
+
+
+<p class="wp-block-paragraph">In our systems we have an <strong>Event Detector AI Agent</strong> (responsible for detecting events) and an <strong>Alert AI Agent</strong> (responsible for alerting the user of the events). Since I’m focusing on the A2A protocol here, both agents are mocked as simple Python methods that return strings. But in real life you can build your agents with any framework you like (LangGraph, Google ADK, CrewAI and so on).</p>
+
+
+
+<p class="wp-block-paragraph">We have three characters in our system, the <strong>user</strong>, the <strong>Event Agent</strong> and the <strong>Alert Agent</strong>. They all communicate using <strong><code>Messages</code></strong>. A <strong><code>Message</code> </strong>represents a single turn of communication in the A2A protocol. We wrap the agents into <strong>A2A Servers</strong>. The servers expose an HTTP endpoint implementing the protocol. Each A2A Server has <strong><code>Event queues</code></strong> that act as a buffer between the agent’s asynchronous execution and the server’s response handling.</p>
+
+
+
+<p class="wp-block-paragraph">The <strong>A2A Client</strong> initiates communication, and if two agents need to communicate an <strong>A2A Server</strong> can also play the role of a <strong>A2A Client</strong>. The diagram below shows how a Client and a Server communicate within the protocol.</p>
+
+
+
+<figure class="wp-block-image"><img decoding="async" src="../Images/f774f32c5ec16518e1f26f2b4032ac4a.png" alt="" class="wp-image-604844" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/05/1EbxgkV9GPy87TMSvNyvfhg.png"/><figcaption class="wp-element-caption"><em>Image by author</em></figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">The <code>EventQueue</code> stores <strong><code>Messages</code></strong>, <strong><code>Tasks</code></strong>, <strong><code>TaskStatusUpdateEvent</code></strong>, <strong><code>TaskArtifactUpdateEvent</code></strong>, <strong><code>A2AError</code></strong><code> </code>and <strong><code>JSONRPCError </code></strong>objects. The <strong><code>Task</code></strong> might be the most important object to understand how to build multi-agent systems with A2A. According to the <a href="https://google.github.io/A2A/topics/key-concepts/#fundamental-communication-elements" target="_blank" rel="noreferrer noopener">A2A documentation</a>:</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">When a client sends a message to an agent, the agent might determine that fulfilling the request requires a stateful task to be completed (e.g., “generate a report,” “book a flight,” “answer a question”).</li>
+
+
+
+<li class="wp-block-list-item">Each task has a unique ID defined by the agent and progresses through a defined lifecycle (e.g., <code>submitted</code>, <code>working</code>, <code>input-required</code>, <code>completed</code>, <code>failed</code>).</li>
+
+
+
+<li class="wp-block-list-item">Tasks are stateful and can involve multiple exchanges (messages) between the client and the server.</li>
+</ul>
+
+
+
+<p class="wp-block-paragraph">Think of a <code>Task</code> as something in your multi-agent system that has a <strong>clear</strong> and <strong>unique </strong>goal. We have two tasks in our system:</p>
+
+
+
+<ol class="wp-block-list">
+<li class="wp-block-list-item">Detect an event</li>
+
+
+
+<li class="wp-block-list-item">Alert the user</li>
+</ol>
+
+
+
+<p class="wp-block-paragraph">Each Agent does its own thing (task). Let’s build the A2A Server for the Event Agent so things become more tangible.</p>
+
+
+
+<h2 class="wp-block-heading">Building the A2A Server for the Event Agent</h2>
+
+
+
+<p class="wp-block-paragraph">First up: the <strong>Agent Card</strong>. The Agent Card is JSON document used to get to know other agents available. <mdspan datatext="el1748462266520" class="mdspan-comment">It describes the following</mdspan>:</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">Server’s identity</li>
+
+
+
+<li class="wp-block-list-item">Capabilities</li>
+
+
+
+<li class="wp-block-list-item">Skills</li>
+
+
+
+<li class="wp-block-list-item">Service endpoint </li>
+
+
+
+<li class="wp-block-list-item">URL</li>
+
+
+
+<li class="wp-block-list-item">How clients should authenticate and interact with the agent</li>
+</ul>
+
+
+
+<p class="wp-block-paragraph">Let’s first define the Agent Card for the Event Detector AI Agent (I’ve defined the skills based on <a href="https://github.com/google/a2a-python/tree/main/examples/google_adk" target="_blank" rel="noreferrer noopener">this example</a> from Google):</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">agent_card = AgentCard(  
+    name='Event Detection Agent',  
+    description='Detects relevant events and alerts the user',  
+    url='http://localhost:10008/',  
+    version='1.0.0',  
+    defaultInputModes=['text'],  
+    defaultOutputModes=['text'],  
+    capabilities=AgentCapabilities(streaming=False),  
+    authentication={ "schemes": ["basic"] },  
+    skills=[  
+        AgentSkill(  
+            id='detect_events',  
+            name='Detect Events',  
+            description='Detects events and alert the user',  
+            tags=['event'],  
+        ),  
+    ],  
+)</code></pre>
+
+
+
+<p class="wp-block-paragraph">You can learn more about the Agent Card object structure here: <a href="https://google.github.io/A2A/specification/#55-agentcard-object-structure" rel="noreferrer noopener" target="_blank">https://google.github.io/A2A/specification/#55-agentcard-object-structure</a></p>
+
+
+
+<p class="wp-block-paragraph">The agent itself will actually be a Uvicorn server, so let’s build the <code>main()</code> method to get it up and running. All the request will be handled by the <code>DefaultRequestHandler</code> of the a2a-python SDK. The handler needs a <code>TaskStore</code> to store the Tasks and an <code>AgentExecutor</code> which has the implementation of the core logic of the agent (we’ll build the <code>EventAgentExecutor</code> in a minute).</p>
+
+
+
+<p class="wp-block-paragraph">The last component of the <code>main()</code> method is the <code>A2AStarletteApplication</code>, which is the <a href="https://www.starlette.io/" target="_blank" rel="noreferrer noopener">Starlette</a> application that implements the A2A protocol server endpoints. We need to provide the <code>Agent Card</code> and the <code>DefaultRequestHandler</code> to initialize it. Now the last step is to run the app using uvicorn. Here is the full code of the <code>main()</code> method:</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">import click  
+import uvicorn  
+from a2a.types import (  
+    AgentCard, AgentCapabilities, AgentSkill
+) 
+from a2a.server.request_handlers import DefaultRequestHandler  
+from a2a.server.tasks import InMemoryTaskStore  
+from a2a.server.apps import A2AStarletteApplication 
+ 
+@click.command()  
+@click.option('--host', default='localhost')  
+@click.option('--port', default=10008)  
+def main(host: str, port: int):  
+    agent_executor = EventAgentExecutor()
+
+    agent_card = AgentCard(  
+        name='Event Detection Agent',  
+        description='Detects relevant events and alerts the user',  
+        url='http://localhost:10008/',  
+        version='1.0.0',  
+        defaultInputModes=['text'],  
+        defaultOutputModes=['text'],  
+        capabilities=AgentCapabilities(streaming=False),  
+        authentication={ "schemes": ["basic"] },  
+        skills=[              AgentSkill(                  id='detect_events',                  name='Detect Events',                  description='Detects events and alert the user',                  tags=['event'],  
+            ),  
+        ],  
+    )
+      
+    request_handler = DefaultRequestHandler(  
+        agent_executor=agent_executor,  
+        task_store=InMemoryTaskStore()  
+    ) 
+ 
+    a2a_app = A2AStarletteApplication(  
+        agent_card=agent_card,  
+        http_handler=request_handler  
+    )  
+
+    uvicorn.run(a2a_app.build(), host=host, port=port)</code></pre>
+
+
+
+<h3 class="wp-block-heading">Creating the EventAgentExecutor</h3>
+
+
+
+<p class="wp-block-paragraph">Now it’s time to build the core of our agent and finally see how to use the Tasks to make the agents interact with each other. The <code>EventAgentExecutor</code> class inherits from <a href="https://github.com/google/a2a-python/blob/main/src/a2a/server/agent_execution/agent_executor.py" target="_blank" rel="noreferrer noopener"><code>AgentExecutor</code></a> interface and thus we need to implement the <code>execute()</code> and the <code>cancel()</code> methods. Both take a <code>RequestContext</code> and an <code>EventQueue</code> object as parameters. The <a href="https://github.com/google/a2a-python/blob/20f0826a2cb9b77b89b85189fd91e7cd62318a30/src/a2a/server/agent_execution/context.py#L15" target="_blank" rel="noreferrer noopener"><code>RequestContext</code></a> holds information about the current request being processed by the server and the <a href="https://github.com/google/a2a-python/blob/main/src/a2a/server/events/event_queue.py" target="_blank" rel="noreferrer noopener"><code>EventQueue</code></a> acts as a buffer between the agent’s asynchronous execution and the server’s response handling.</p>
+
+
+
+<p class="wp-block-paragraph">Our agent will just check if the string “<code>event</code>” is in the message the user have sent (<a href="https://www.interaction-design.org/literature/topics/keep-it-simple-stupid" target="_blank" rel="noreferrer noopener">KISS</a> ✨). If the “<code>event</code>” is there then we should call the Alert Agent. We’ll do that by sending a <code>Message</code> to this other Alert agent. This is the <a href="https://google.github.io/A2A/topics/agent-discovery/#2-curated-registries-catalog-based-discovery" target="_blank" rel="noreferrer noopener">Direct Configuration</a> strategy, meaning we’ll configure the agent with a URL to fetch the Agent Card of the Alert Agent. To do that our Event Agent will act like a A2A Client. </p>
+
+
+
+<p class="wp-block-paragraph">Let’s build the Executor step by step. First let’s create the main Task (the task to detect the events). We need to instantiate a <code>TaskUpdater</code> object (a helper class for agents to publish updates to a task’s event queue), then submit the task and announce we are working on it with the <code>start_work()</code> method:</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">from a2a.server.agent_execution import AgentExecutor
+
+class EventAgentExecutor(AgentExecutor):  
+    async def execute(self, context: RequestContext, event_queue: EventQueue):  
+        task_updater = TaskUpdater(event_queue, context.task_id, context.context_id)  
+        task_updater.submit()  
+        task_updater.start_work()</code></pre>
+
+
+
+<p class="wp-block-paragraph">The message the user will send to the agent will look like this:</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-">send_message_payload = {  
+        'message': {  
+            'role': 'user',  
+            'parts': [{'type': 'text', 'text': f'it has an event!'}],  
+            'messageId': uuid4().hex,  
+        }  
+    }</code></pre>
+
+
+
+<p class="wp-block-paragraph">A <strong><code>Part</code></strong> represents a distinct piece of content within a <code>Message</code>, representing exportable content as either <code>TextPart</code>, <code>FilePart</code>, or <code>DataPart</code>. We’ll use a <code>TextPart</code> so we need to unwrap it in the executor:</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">from a2a.server.agent_execution import AgentExecutor
+
+class EventAgentExecutor(AgentExecutor):  
+    async def execute(self, context: RequestContext, event_queue: EventQueue):  
+        task_updater = TaskUpdater(event_queue, context.task_id, context.context_id)  
+        task_updater.submit()  
+        task_updater.start_work()
+
+        await asyncio.sleep(1) #let's pretend we're actually doing something
+
+        user_message = context.message.parts[0].root.text # unwraping the TextPart</code></pre>
+
+
+
+<p class="wp-block-paragraph">Time to create the super advanced logic of our agent. If the message doesn’t have the string “<code>event</code>” we don’t need to call the Alert Agent and the task is done:</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">from a2a.server.agent_execution import AgentExecutor
+
+class EventAgentExecutor(AgentExecutor):  
+    async def execute(self, context: RequestContext, event_queue: EventQueue):  
+        task_updater = TaskUpdater(event_queue, context.task_id, context.context_id)  
+        task_updater.submit()  
+        task_updater.start_work()
+
+        await asyncio.sleep(1) #let's pretend we're actually doing something
+
+        user_message = context.message.parts[0].root.text # unwraping the TextPart
+
+        if "event" not in user_message:  
+            task_updater.update_status(  
+                TaskState.completed,  
+                message=task_updater.new_agent_message(parts=[TextPart(text=f"No event detected")]),
+            )</code></pre>
+
+
+
+<h3 class="wp-block-heading">Creating an A2A Client for the User</h3>
+
+
+
+<p class="wp-block-paragraph">Let’s create an A2A Client so we can test the agent as it is. The client uses the <code>get_client_from_agent_card_url()</code> method from <code>A2AClient</code> class to (guess what) get the agent card. Then we wrap the message in a <code>SendMessageRequest</code> object and send it to the agent using the <code>send_message()</code> method of the client. Here is the full code:</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">import httpx  
+import asyncio  
+from a2a.client import A2AClient  
+from a2a.types import SendMessageRequest, MessageSendParams  
+from uuid import uuid4  
+from pprint import pprint
+  
+async def main():    
+    send_message_payload = {  
+        'message': {  
+            'role': 'user',  
+            'parts': [{'type': 'text', 'text': f'nothing happening here'}],  
+            'messageId': uuid4().hex,  
+        }  
+    }  
+
+    async with httpx.AsyncClient() as httpx_client:  
+        client = await A2AClient.get_client_from_agent_card_url(  
+            httpx_client, 'http://localhost:10008'  
+        )  
+        request = SendMessageRequest(  
+            params=MessageSendParams(**send_message_payload)  
+        )  
+        response = await client.send_message(request)  
+        pprint(response.model_dump(mode='json', exclude_none=True))  
+  
+if __name__ == "__main__":  
+    asyncio.run(main())</code></pre>
+
+
+
+<p class="wp-block-paragraph">This is what happens in the terminal that is running the EventAgent server:</p>
+
+
+
+<figure class="wp-block-image"><img decoding="async" src="../Images/a3e0965e661274530c95fdb86bfdf52e.png" alt="" class="wp-image-604847" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/05/14cjR5rcP3kfIdiIh50X6hQ.png"/><figcaption class="wp-element-caption"><em>Image by author</em></figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">And this is the message the client sees:</p>
+
+
+
+<figure class="wp-block-image"><img decoding="async" src="../Images/90615a6a782a80c065d2131f49b6727f.png" alt="" class="wp-image-604845" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/05/1BUQOvz8HGbPHdk6mwIh6ew.png"/><figcaption class="wp-element-caption"><em>Image by author</em></figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">The task to detect the event was created and no event was detected, nice! But the whole point of A2A is to make Agents communicate with each other, so let’s make the Event Agent talk to the Alert Agent. </p>
+
+
+
+<h3 class="wp-block-heading">Making the Event Agent talk to the Alert Agent</h3>
+
+
+
+<p class="wp-block-paragraph">To make the Event Agent talk to the Alert Agent the Event Agent will act as a client as well:</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">from a2a.server.agent_execution import AgentExecutor
+
+ALERT_AGENT_URL = "http://localhost:10009/" 
+
+class EventAgentExecutor(AgentExecutor):  
+    async def execute(self, context: RequestContext, event_queue: EventQueue):  
+        task_updater = TaskUpdater(event_queue, context.task_id, context.context_id)  
+        task_updater.submit()  
+        task_updater.start_work()
+
+        await asyncio.sleep(1) #let's pretend we're actually doing something
+
+        user_message = context.message.parts[0].root.text # unwraping the TextPart
+
+        if "event" not in user_message:  
+            task_updater.update_status(  
+                TaskState.completed,  
+                message=task_updater.new_agent_message(parts=[TextPart(text=f"No event detected")]),
+            )
+        else:
+            alert_message = task_updater.new_agent_message(parts=[TextPart(text="Event detected!")])
+
+            send_alert_payload = SendMessageRequest(  
+                params=MessageSendParams(  
+                    message=alert_message  
+                )  
+            )  
+
+            async with httpx.AsyncClient() as client:  
+                alert_agent = A2AClient(httpx_client=client, url=ALERT_AGENT_URL)  
+                response = await alert_agent.send_message(send_alert_payload)  
+
+                if hasattr(response.root, "result"):  
+                    alert_task = response.root.result  
+                    # Polling until the task is done
+                    while alert_task.status.state not in (  
+                        TaskState.completed, TaskState.failed, TaskState.canceled, TaskState.rejected  
+                    ):  
+                        await asyncio.sleep(0.5)  
+                        get_resp = await alert_agent.get_task(  
+                            GetTaskRequest(params=TaskQueryParams(id=alert_task.id))  
+                        )  
+                        if isinstance(get_resp.root, GetTaskSuccessResponse):  
+                            alert_task = get_resp.root.result  
+                        else:  
+                            break  
+  
+                    # Complete the original task  
+                    if alert_task.status.state == TaskState.completed:  
+                        task_updater.update_status(  
+                            TaskState.completed,  
+                            message=task_updater.new_agent_message(parts=[TextPart(text="Event detected and alert sent!")]),  
+                        )  
+                    else:  
+                        task_updater.update_status(  
+                            TaskState.failed,  
+                            message=task_updater.new_agent_message(parts=[TextPart(text=f"Failed to send alert: {alert_task.status.state}")]),  
+                        )  
+                else:  
+                    task_updater.update_status(  
+                        TaskState.failed,  
+                        message=task_updater.new_agent_message(parts=[TextPart(text=f"Failed to create alert task")]),  
+                    )</code></pre>
+
+
+
+<p class="wp-block-paragraph">We call the Alert Agent just as we called the Event Agent as the user, and when the Alert Agent task is done, we complete the original Event Agent task. Let’s call the Event Agent again but this time with an event:</p>
+
+
+
+<figure class="wp-block-image"><img decoding="async" src="../Images/ac0430c875d47de9798e923328703225.png" alt="" class="wp-image-604846" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/05/1GScPO10LQnd4Y-l30te2wQ.png"/><figcaption class="wp-element-caption"><em>Image by author</em></figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">The beauty here is that we simply called the Alert Agent and we don’t need to know anything about how it alerts the user. We just send a message to it and wait for it to finish.</p>
+
+
+
+<p class="wp-block-paragraph">The Alert Agent is super similar to the Event Agent. You can check the whole code here: <a href="https://github.com/dmesquita/multi-agent-communication-a2a-python" target="_blank" rel="noreferrer noopener">https://github.com/dmesquita/multi-agent-communication-a2a-python</a></p>
+
+
+
+<h2 class="wp-block-heading">Final Thoughts</h2>
+
+
+
+<p class="wp-block-paragraph">Understanding how to build multi-agent systems with A2A might be daunting at first, but in the end you just <strong>send messages to let the agents do their thing</strong>. All you need to do to integrate you agents with A2A is to create a class with the agent’s logic that inherit from the <code>AgentExecutor</code> and run the agent as a server.</p>
+
+
+
+<p class="wp-block-paragraph">I hope this article have helped you in your A2A journey, thanks for reading!</p>
+
+
+
+<h3 class="wp-block-heading">References</h3>
+
+
+
+<p class="wp-block-paragraph">[1] Padgham, Lin, and Michael Winikoff. <em>Developing intelligent agent systems: A practical guide</em>. John Wiley &amp; Sons, 2005.</p>
+
+
+
+<p class="wp-block-paragraph">[2] <a href="https://github.com/google/a2a-python" rel="noreferrer noopener" target="_blank">https://github.com/google/a2a-python</a></p>
+
+
+
+<p class="wp-block-paragraph">[3] <a href="https://github.com/google/a2a-python/tree/main/examples/google_adk" rel="noreferrer noopener" target="_blank">https://github.com/google/a2a-python/tree/main/examples/google_adk</a></p>
+
+
+
+<p class="wp-block-paragraph">[4] <a href="https://developers.googleblog.com/en/agents-adk-agent-engine-a2a-enhancements-google-io/" rel="noreferrer noopener" target="_blank">https://developers.googleblog.com/en/agents-adk-agent-engine-a2a-enhancements-google-io/</a></p>
+
+
+
+<p class="wp-block-paragraph"/>
+    
+</body>
+</html>

@@ -1,0 +1,737 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.1//EN"
+  "http://www.w3.org/TR/xhtml11/DTD/xhtml11.dtd">
+
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+<title>Help Your Model Learn the True Signal</title>
+<link href="../Styles/Style.css" type="text/css" rel="stylesheet"/>
+</head>
+<body>
+<h1>Help Your Model Learn the True Signal</h1>
+<blockquote>原文：<a href="https://towardsdatascience.com/help-your-model-learn-the-true-signal/">https://towardsdatascience.com/help-your-model-learn-the-true-signal/</a></blockquote>
+<p class="has-subtitle-2-font-size wp-block-paragraph"><mdspan datatext="el1755662653859" class="mdspan-comment"><strong>Imagine this:</strong> You’re modelling</mdspan> loan default risk using features such as income and credit history. A few borrowers with relatively low incomes seem to repay large loans just fine, which could mislead the model. In reality, they had submitted their income in US dollars rather than your local currency, but this was missed during data entry, making them appear less creditworthy than they actually were.</p>
+
+
+
+<p class="wp-block-paragraph">Or you’re building a model to predict patient recovery times. Most patients follow expected recovery trajectories, but a few experienced very rare complications that weren’t recorded. These cases sit far from the rest in terms of the relationship between symptoms, treatments, and outcomes. They’re not necessarily “wrong,” but they are <strong>disruptive</strong>, causing the model to generalise poorly to the majority of future patients.</p>
+
+
+
+<p class="wp-block-paragraph">In both scenarios, the issue isn’t just noise or classic anomalies. The problem is more subtle:</p>
+
+
+
+<blockquote class="wp-block-quote is-layout-flow wp-block-quote-is-layout-flow">
+<p class="wp-block-paragraph"><strong>Some observations disproportionately disrupt the model’s ability to learn the dominant signal.</strong></p>
+</blockquote>
+
+
+
+<p class="wp-block-paragraph">These data points may:</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">Have a <strong>disproportionate influence</strong> on the learned parameters,</li>
+
+
+
+<li class="wp-block-list-item">Come from <strong>unusual or unmodeled contexts</strong> (e.g., rare complications or data entry issues),</li>
+
+
+
+<li class="wp-block-list-item">And most importantly, <strong>reduce the model’s ability to generalise</strong>.</li>
+</ul>
+
+
+
+<p class="wp-block-paragraph">A model’s trustworthiness and predictive accuracy can be significantly compromised by these data points that exert undue influence on its parameters or predictions. Understanding and effectively managing these influential observations is not merely a statistical formality, but a cornerstone of building models that are robust and reliable.</p>
+
+
+
+<p class="has-heading-6-font-size wp-block-paragraph"><strong>🎯 What I Seek to Achieve in This Article</strong></p>
+
+
+
+<p class="wp-block-paragraph">In this article, I’ll walk you through a simple yet powerful technique to <strong>effectively identify and manage these disruptive data points</strong>, so the model can better capture the stable, generalizable patterns in the data. This method is <strong>algorithm-agnostic</strong>, making it directly adaptable to any algorithm or analytical framework you’ve chosen for your use case. I will also offer the full code for you to implement it easily.</p>
+
+
+
+<p class="wp-block-paragraph">Sounds good? Let’s get started. </p>
+
+
+
+<hr class="wp-block-separator has-alpha-channel-opacity is-style-dotted"/>
+
+
+
+<h2 class="wp-block-heading">Inspiration: Cook’s Distance, Reimagined</h2>
+
+
+
+<p class="wp-block-paragraph"><strong>Cook’s Distance</strong> is a classic diagnostic tool from linear regression. It quantifies how much a single data point influences the model by:</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">Training the model on the full dataset</li>
+
+
+
+<li class="wp-block-list-item">Retraining it with one observation left out</li>
+
+
+
+<li class="wp-block-list-item">Measuring how much the predictions change by calculating the sum of all the changes in the regression model with vs without  the observation, using the formula below:</li>
+</ul>
+
+
+
+<figure class="wp-block-image size-large"><img decoding="async" src="../Images/c20942c07daf1742263dea5ec145c98d.png" alt="Cook's distance formula" class="wp-image-614100" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/08/image-41-1024x809.png"/></figure>
+
+
+
+<p class="wp-block-paragraph">A large Cook’s Distance means that an observation has high influence and is possibly distorting the model, and should be checked for validity. </p>
+
+
+
+<h2 class="wp-block-heading">Why Cook’s D?</h2>
+
+
+
+<p class="wp-block-paragraph">The Cook ‘s-D influence approach is uniquely suited for identifying data points that distort a model’s learned patterns, a gap often left by other outlier detection techniques.</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item"><strong>Univariate Detection:</strong> Univariate methods (like Z-scores or IQR rules) identify extreme values within individual features or the target variable alone. However, points that significantly influence a complex model’s prediction may appear perfectly ordinary when each of their features is examined in isolation. They are “outliers” not by their individual values, but by their <em>relationship</em> to the overall data and the model’s structure.</li>
+
+
+
+<li class="wp-block-list-item"><strong>Feature-Focused Anomaly Detection:</strong> Techniques such as Isolation Forest or Local Outlier Factor (LOF) excel at detecting anomalies purely based on the distribution and density of input features (<em>X</em>). While valuable for identifying unusual data entries, they inherently <strong>do not consider the role of the target variable (<em>Y</em>) or how a model uses features to predict it.</strong> Consequently, a data point flagged as an outlier in the feature space might not necessarily have a disproportionate impact on your model’s predictive performance or overall learned pattern. Conversely, a point not flagged by these methods might still be highly influential on the model’s predictions.</li>
+
+
+
+<li class="wp-block-list-item"><strong>Standard Residual-Based Methods:</strong> Residuals, the difference between actual and predicted values, highlight where the model performs poorly. While this indicates a deviation, it doesn’t distinguish between whether the point is simply noisy (e.g., unpredictable but harmless) or truly <em>disrupting</em>, that is, “pulling” the model’s entire predictive surface away from the general pattern established by the majority of the data. We could have points with high residuals but little influence, or those with moderate residuals but disproportionately warp the model’s predictions.</li>
+</ul>
+
+
+
+<p class="wp-block-paragraph">This is where a Cook’s-D-style influence metric truly shines. It goes beyond the size of the prediction error to ask:</p>
+
+
+
+<blockquote class="wp-block-quote is-layout-flow wp-block-quote-is-layout-flow">
+<p class="wp-block-paragraph"><strong>How structurally destabilizing is a single data point to the entire model’s learned relationships?</strong></p>
+</blockquote>
+
+
+
+<p class="wp-block-paragraph">Such an approach enables us to surgically identify and manage data points that disproportionately pull the model’s predictions away from the “general pattern” reflected in the rest of the data. </p>
+
+
+
+<p class="wp-block-paragraph">This is crucial when robustness and generalisation are paramount yet hard to guarantee — for example, in diagnostic tools where a few unusual patient records could bias predictions for the wider population, or in fraud detection modelling, where the training set contains false negatives because not every transaction or claim has been audited.</p>
+
+
+
+<blockquote class="wp-block-quote is-layout-flow wp-block-quote-is-layout-flow">
+<p class="wp-block-paragraph"><strong>In essence, while other methods help us find “weird” data, the Cook’s-like approach helps us find data points that make our model itself “weird” in its overall behaviour.</strong></p>
+</blockquote>
+
+
+
+<hr class="wp-block-separator has-alpha-channel-opacity is-style-dotted"/>
+
+
+
+<h2 class="wp-block-heading">The Algorithm-Agnostic Adaptation of Cook’s D</h2>
+
+
+
+<p class="wp-block-paragraph">Powerful as it is, this classic technique has its limitations:</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">The original formula applies directly only to <strong>Ordinary Least Squares (OLS)</strong> regression, and</li>
+
+
+
+<li class="wp-block-list-item">For large datasets, it becomes computationally expensive because it requires repeated model fitting</li>
+</ul>
+
+
+
+<p class="wp-block-paragraph"><strong>But the underlying logic is much broader.</strong> Following Cook’s idea, one can extend this foundational concept to <em>any</em> machine learning algorithm.</p>
+
+
+
+<h2 class="wp-block-heading">The Metric</h2>
+
+
+
+<p class="wp-block-paragraph"><strong>The Core Idea:</strong> At its heart, this approach asks: </p>
+
+
+
+<blockquote class="wp-block-quote is-layout-flow wp-block-quote-is-layout-flow">
+<p class="wp-block-paragraph">🔬If we remove a single data point from the training set and re-train the model, how much do the predictions for <em>all data points</em> change compared to when that point was included?</p>
+</blockquote>
+
+
+
+<p class="wp-block-paragraph"><strong>Extensions beyond OLS:</strong> Researchers have developed modified versions of Cook’s D for other contexts. For example:</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item"><strong>Generalised Cook’s Distance for GLMs</strong> (e.g., logistic regression, Poisson regression), which redefines leverage and residuals in terms of the model’s score and information matrix.</li>
+
+
+
+<li class="wp-block-list-item"><strong>Cook’s Distance for linear mixed models</strong>, which accounts for both fixed and random effects.</li>
+</ul>
+
+
+
+<p class="wp-block-paragraph"><strong>Algorithm-agnostic approach:</strong> Here, we aim to adapt Cook’s core principle to work with <em>any</em> machine learning model, with a workflow like this:</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item"><strong>Train</strong> your chosen model (e.g., LightGBM, Random Forest, Neural Network, Linear Regression, etc) on the full dataset and record predictions.</li>
+
+
+
+<li class="wp-block-list-item">For each data point in the dataset:
+<ul class="wp-block-list">
+<li class="wp-block-list-item"><strong>LOO (Leave-One-Out):</strong> Remove the data point to create a new dataset.</li>
+
+
+
+<li class="wp-block-list-item"><strong>Retrain</strong> the model on this reduced dataset.</li>
+
+
+
+<li class="wp-block-list-item"><strong>Predict</strong> outcomes for <em>all </em>observations in the original dataset.</li>
+
+
+
+<li class="wp-block-list-item"><strong>Measure divergence</strong> between the two sets of predictions. A direct analogue to Cook’s Distance is the <em><strong>mean squared difference</strong> in predictions</em></li>
+</ul>
+</li>
+</ul>
+
+
+
+<figure class="wp-block-image size-large"><img decoding="async" src="../Images/bbef22b277d40df11c9868ad4dccddaf.png" alt="" class="wp-image-615117" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/08/image-98-1024x498.png"/></figure>
+
+
+
+<h2 class="wp-block-heading">Address the Computational Challenge</h2>
+
+
+
+<p class="wp-block-paragraph">Another limitation of this powerful metric is its computational cost, as it requires <em>N</em> full model retrainings. For large datasets, this can be prohibitively expensive.</p>
+
+
+
+<p class="wp-block-paragraph">To make the method practical, we can make a <strong>strategic compromise</strong>: instead of processing every single observation, we can focus on a subset of data points. These points can be selected based on their high absolute residuals when predicted by the initial full model. This effectively focuses the computationally intensive step on the most likely influential candidates.</p>
+
+
+
+<blockquote class="wp-block-quote is-layout-flow wp-block-quote-is-layout-flow">
+<p class="wp-block-paragraph">💡Pro Tip: Add a <code>max_loo_points</code><strong> </strong><em>(integer, optional)</em> parameter to your implementation. If specified, the LOO calculation is performed only for these many data points. This provides a balance between thoroughness and computational efficiency.</p>
+</blockquote>
+
+
+
+<h2 class="wp-block-heading">Smart Detection of Influential Points</h2>
+
+
+
+<p class="wp-block-paragraph">Once the influence scores have been calculated, let’s identify specific influential points that warrant further investigation and management. The detection strategy should adapt based on whether we’re working with the full dataset or a subset (when <code>max_loo_points</code> is set):</p>
+
+
+
+<blockquote class="wp-block-quote is-layout-flow wp-block-quote-is-layout-flow">
+<p class="wp-block-paragraph">💡Pro Tip: Add <code>influence_outlier_method</code> and <code>influence_outlier_threshold</code> parameters to your implementation so its easy to specify the the most appropriate detection approach for each use case.</p>
+</blockquote>
+
+
+
+<p class="wp-block-paragraph"><strong>Full Dataset Analysis:</strong></p>
+
+
+
+<p class="wp-block-paragraph">When analysing the complete dataset, the influence scores represent a comprehensive picture of each point’s impact on the model’s learned patterns. This allows us to leverage a wide variety of distribution-based detection methods:</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item"><strong>Percentile Method</strong> (<code>influence_outlier_method="percentile"</code>)
+<ul class="wp-block-list">
+<li class="wp-block-list-item">Selects points above a percentile threshold</li>
+
+
+
+<li class="wp-block-list-item">Example: <code>threshold=95</code> identifies points in the top 5% of influence scores</li>
+
+
+
+<li class="wp-block-list-item">Good for: Maintaining a consistent proportion of influential points</li>
+</ul>
+</li>
+</ul>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item"><strong>Z-Score Method</strong> (<code>influence_outlier_method="zscore"</code>):
+<ul class="wp-block-list">
+<li class="wp-block-list-item">Selects points beyond N standard deviations from the mean</li>
+
+
+
+<li class="wp-block-list-item">Example: <code>threshold=3</code> flags points more than 3 standard deviations away</li>
+
+
+
+<li class="wp-block-list-item">Good for: Normal or approximately normal distributions</li>
+</ul>
+</li>
+
+
+
+<li class="wp-block-list-item"><strong>Top K Method</strong> (<code>influence_outlier_method="top_k"</code>):   
+<ul class="wp-block-list">
+<li class="wp-block-list-item">Selects the K points with highest influence scores</li>
+
+
+
+<li class="wp-block-list-item">Example: `threshold=50` selects the 50 most influential points</li>
+
+
+
+<li class="wp-block-list-item">Good for: When you need a specific number of points to investigate.</li>
+</ul>
+</li>
+
+
+
+<li class="wp-block-list-item"><strong>IQR Method</strong> (<code>influence_outlier_method="iqr"</code>):
+<ul class="wp-block-list">
+<li class="wp-block-list-item">Selects points above Q3 + k * IQR threshold</li>
+
+
+
+<li class="wp-block-list-item">Example: <code>threshold=1.5</code> uses the standard boxplot outlier definition</li>
+
+
+
+<li class="wp-block-list-item">Good for: Robust to outliers, works well with skewed distributions</li>
+</ul>
+</li>
+
+
+
+<li class="wp-block-list-item"><strong>Mean Multiple Method</strong> (<code>influence_outlier_method="mean_multiple"</code>):
+<ul class="wp-block-list">
+<li class="wp-block-list-item">Selects points with influence scores &gt; N times the mean score</li>
+
+
+
+<li class="wp-block-list-item">Example: <code>threshold=3</code> implements the recommendation from the literature (e.g., <a href="https://hummedia.manchester.ac.uk/institutes/cmist/archive-publications/working-papers/2020/multiple-linear-regression.pdf">Tranmer, Murphy, Elliot, &amp; Pampaka, 2020</a>) </li>
+
+
+
+<li class="wp-block-list-item">Good for: Following established statistical practices, especially when using linear models</li>
+</ul>
+</li>
+</ul>
+
+
+
+<p class="wp-block-paragraph"><strong>Subset Analysis:</strong></p>
+
+
+
+<p class="wp-block-paragraph">For computational efficiency with large datasets, we can specify a <code>max_loo_points</code> value to analyze a subset of points:</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item"><strong> Initial Filtering:</strong>
+<ul class="wp-block-list">
+<li class="wp-block-list-item">Uses absolute residuals to identify <code>n = max_loo_points</code> candidate points</li>
+
+
+
+<li class="wp-block-list-item">Only these candidates are evaluated for their influence scores</li>
+
+
+
+<li class="wp-block-list-item">Remaining points (with lower residuals) are implicitly considered non-influential</li>
+</ul>
+</li>
+
+
+
+<li class="wp-block-list-item"><strong>Available Methods</strong>:
+<ul class="wp-block-list">
+<li class="wp-block-list-item"><strong>Percentile</strong>: Select top percentage of points (capped at <code>max_loo_points</code>)</li>
+
+
+
+<li class="wp-block-list-item"><strong>Top K</strong>: Select K most influential points (K ≤ max_loo_points)</li>
+
+
+
+<li class="wp-block-list-item">Note: Other distribution-based methods (z-score, IQR) are not applicable here due to the pre-filtered nature of the scores.</li>
+</ul>
+</li>
+</ul>
+
+
+
+<p class="wp-block-paragraph">This flexible approach allows users to choose the most appropriate detection method based on </p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">the dataset size and computational constraints</li>
+
+
+
+<li class="wp-block-list-item">Distribution characteristics of influence scores</li>
+
+
+
+<li class="wp-block-list-item">Specific requirements for the number of points to investigate</li>
+</ul>
+
+
+
+<h2 class="wp-block-heading">Diagnostic Visuals</h2>
+
+
+
+<blockquote class="wp-block-quote is-layout-flow wp-block-quote-is-layout-flow">
+<p class="wp-block-paragraph">💡Pro Tip: The detection of influential observations should be seen as a starting point for investigation 🔍 rather than an automatic removal criterion 🗑️</p>
+</blockquote>
+
+
+
+<p class="wp-block-paragraph">Each flagged point deserves careful examination within the context of the specific use case. Some of these points may be <strong>high-leverage but valid</strong> representations of unusual phenomena — removing them could hurt performance. Others could be <strong>data errors or noise</strong> — these are the ones we’d want to filter out. To assist with decision-making on influential points, the code below provides comprehensive diagnostic visualisations to support the investigation:</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item"><strong>Influence Score Distribution</strong>
+<ul class="wp-block-list">
+<li class="wp-block-list-item">Shows the distribution of influence scores across all points</li>
+
+
+
+<li class="wp-block-list-item">Highlights the threshold used for flagging influential points</li>
+
+
+
+<li class="wp-block-list-item">Helps assess if the influential points are clear outliers or part of a continuous spectrum</li>
+</ul>
+</li>
+</ul>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item"><strong>Target Distribution View</strong>
+<ul class="wp-block-list">
+<li class="wp-block-list-item">Shows the overall distribution of the target variable</li>
+
+
+
+<li class="wp-block-list-item">Highlights influential points with distinct markers</li>
+
+
+
+<li class="wp-block-list-item">Helps identify if influential points are concentrated in specific value ranges</li>
+</ul>
+</li>
+</ul>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item"><strong>Feature-Target Relationships</strong>
+<ul class="wp-block-list">
+<li class="wp-block-list-item">Creates scatter plots for each feature against the target</li>
+
+
+
+<li class="wp-block-list-item">Automatically adapts visualisation for categorical features</li>
+
+
+
+<li class="wp-block-list-item">Highlights influential points to reveal potential feature-specific patterns</li>
+
+
+
+<li class="wp-block-list-item">Helps understand if influence is driven by specific feature values or combinations</li>
+</ul>
+</li>
+</ul>
+
+
+
+<p class="wp-block-paragraph">These visualisations can guide several key decisions:</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">Whether to treat influential points as errors requiring removal</li>
+
+
+
+<li class="wp-block-list-item">Whether to collect additional observations in similar regions so the model can learn to handle relevant influential points</li>
+
+
+
+<li class="wp-block-list-item">Whether the influence patterns suggest underlying data quality issues</li>
+
+
+
+<li class="wp-block-list-item">Whether the influential points represent valuable edge cases worth preserving</li>
+
+
+
+<li class="wp-block-list-item">What’s the best method/threshold to filter out influential points for this use case based on influence score distribution.</li>
+</ul>
+
+
+
+<p class="wp-block-paragraph">All in all, the visual diagnostics, combined with domain expertise, enable more informed decisions about how to handle influential observations in your specific context.</p>
+
+
+
+<hr class="wp-block-separator has-alpha-channel-opacity is-style-dotted"/>
+
+
+
+<h2 class="wp-block-heading">Source Code &amp; Demo</h2>
+
+
+
+<p class="wp-block-paragraph">This approach, including all the functionalities discussed above, has been implemented as a utility function <code>calculate_cooks_d_like_influence</code> in the <code>stats_utils</code> module by the <code>MLarena</code> Python package, with the source code <a href="https://github.com/MenaWANG/mlarena">available on GitHub</a> 🔗. Now let’s check out this function in action 😎.</p>
+
+
+
+<h2 class="wp-block-heading">Synthetic Data with Built-In Disruptors</h2>
+
+
+
+<p class="wp-block-paragraph">I have created a synthetic dataset of housing prices as a function of age, size and number of bedrooms, then split it into train (n=800) and test (n=200). In the code below, I planted 50 disruptors into the training set like below (full code of the demo available in <a href="https://github.com/MenaWANG/mlarena/blob/master/examples/5.case_cooks_like_influence_demo.ipynb">this notebook</a> in the same repo).</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python"># Plant different types of currency errors
+n_disruptive = 50
+for i, idx in enumerate(disruptive_indices):
+    if i &lt;= n_disruptive//2:  # Currency conversion error: prices too low 
+        y_with_disruptors.iloc[idx] = y_with_disruptors.iloc[idx] * 0.5  # Much lower
+    else:  # Currency conversion error: prices too high (different scale)
+        y_with_disruptors.iloc[idx] = y_with_disruptors.iloc[idx] * 1.5  # Much higher</code></pre>
+
+
+
+<figure class="wp-block-image size-large"><img decoding="async" src="../Images/7e8d9d3659d30bae3963a02aafcaddaf.png" alt="The distribution of the original dataset and new dataset with planted disruptive points.  " class="wp-image-614930" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/08/image-72-1024x852.png"/></figure>
+
+
+
+<h2 class="wp-block-heading">Calculate the Influence Score</h2>
+
+
+
+<p class="wp-block-paragraph">Now, let’s calculate the influence score for all observations in the training set. As discussed above, the <code>calculate_cooks_d_like_influence</code> function is an algorithm-agnostic solution; it accepts any sklearn-style regressor that provides the <code>fit</code> and <code>predict</code> methods. For example, in the code below, I passed in <code>LinearRegression</code> as the estimator. </p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">from mlarena.utils.stats_utils import calculate_cooks_d_like_influence
+
+influence_scores, influential_indices, normal_indices = calculate_cooks_d_like_influence(
+    model_class = LinearRegression,
+    X = X_with_disruptors,
+    y = y_with_disruptors,
+    visualize = True,
+    influence_outlier_method = "percentile",
+    influence_outlier_threshold = 95,  
+    random_state = 42
+)</code></pre>
+
+
+
+<p class="wp-block-paragraph">In the code above, I have also set the method for influential points detection to be by <code>percentile</code>. Because the training set contains 800 samples, the 95% cutoff gave us 40 influential points. As shown in the <em><strong>Distribution of Influence Scores</strong> </em>plot below, most observations cluster around small influence values, but a handful stand out with much larger scores. This is expected, since we deliberately planted 50 disruptors in the dataset. Follow-up analysis, available in the linked notebook in the repo, confirms that the top 50 most influential points align exactly with our 50 planted disruptors. 🥂</p>
+
+
+
+<figure class="wp-block-image size-large"><img decoding="async" src="../Images/34b9b274dafa9e05a8c9e0563f30a235.png" alt="" class="wp-image-615421" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/08/image-116-1024x542.png"/></figure>
+
+
+
+<p class="wp-block-paragraph">The top 5% high-influence points are highlighted in the <strong><em>Target Distribution</em></strong> plot below. Consistent with how we planted these disruptors, only some of these observations can be considered as univariate outliers.</p>
+
+
+
+<figure class="wp-block-image size-large"><img decoding="async" src="../Images/ad509a4cf8b451d16cf4a700d8f9ead7.png" alt="" class="wp-image-615427" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/08/image-117-1024x584.png"/></figure>
+
+
+
+<p class="wp-block-paragraph">The scatterplots below show the relationship between each feature and the target variable, with influential points highlighted in red. These diagnostic plots serve as powerful tools for analysing influential observations and shaping informed decisions about their treatment by facilitating discussions regarding key questions such as:</p>
+
+
+
+<ol class="wp-block-list">
+<li class="wp-block-list-item">Are these points rare but valid cases that should be preserved to maintain important edge cases?</li>
+
+
+
+<li class="wp-block-list-item">Do these points indicate areas where additional data collection would be beneficial to better represent the full range of scenarios?</li>
+
+
+
+<li class="wp-block-list-item">Do these points represent errors or outliers that, if removed, would help the model learn more generalizable patterns?</li>
+</ol>
+
+
+
+<figure class="wp-block-image size-large"><img decoding="async" src="../Images/e7c086eed423ee7bad759b121144224f.png" alt="" class="wp-image-615734" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/08/image-143-1024x892.png"/></figure>
+
+
+
+<h2 class="wp-block-heading">Focused Search and Easy Change of Algorithms</h2>
+
+
+
+<p class="wp-block-paragraph">Next, let’s test the function on another algorithm, the LightGBM regressor. As shown in the code below, you can easily configure the algorithm via the <code>model_params</code> parameter. </p>
+
+
+
+<p class="wp-block-paragraph">In addition, by setting up <code>max_loo_points</code>, we can optimize the computation by focusing only on the most promising candidates. For example, instead of performing leave-one-out (LOO) analysis on all 800 training points, we can configure the function to intelligently select 200 points with the highest absolute residuals. This effectively targets the search to the ‘danger zone’ where influential points are most likely to be found.</p>
+
+
+
+<p class="wp-block-paragraph">You can also specify the method and threshold for identifying influential points that is the most suitable for your use case. In the code below, I chose the <code>top_k</code> method to identify the 50 most influential points based on their influence scores.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">model_params={'verbose': -1, 'n_estimators': 50}
+
+influence_scores, influential_indices, normal_indices = calculate_cooks_d_like_influence(
+    model_class = lgb.LGBMRegressor,
+    X = X_with_disruptors,
+    y = y_with_disruptors,
+    visualize = True,
+    max_loo_points = 200,  # Focus on top n high-residual points
+    influence_outlier_method = "top_k",
+    influence_outlier_threshold = 50,  
+    random_state = 42,
+    **model_params
+)</code></pre>
+
+
+
+<h2 class="wp-block-heading">Retrain Using the Cleaned Data</h2>
+
+
+
+<p class="wp-block-paragraph">After careful investigation of the influential points, say if you decide to remove them from your training set and retrain the model. Below is the code to get the cleaned training set using the <code>normal_indices</code> conveniently returned from <code>calculate_cooks_d_like_influence</code> function from the code cell above.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">X_clean = X_with_disruptors.iloc[normal_indices]
+y_clean = y_with_disruptors.iloc[normal_indices]</code></pre>
+
+
+
+<p class="wp-block-paragraph">In addition, if you are interested in checking out the impact of the cleaning on different algorithms, you can swap algorithms easily using <code>MLarena</code> like below. </p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">from mlarena import MLPipeline, PreProcessor
+
+# Train model on the training set
+pipeline = MLPipeline(
+    model=lgb.LGBMRegressor(n_estimators=100, random_state=42, verbose=-1),
+    # model = LinearRegression(), # swap algorithms easily
+    # model = RandomForestRegressor(n_estimators=50, random_state=42), 
+    preprocessor=PreProcessor()
+)
+pipeline.fit(X_train, y_train)
+
+# Evaluate on test set
+results = pipeline.evaluate(
+    X_test, y_test
+)</code></pre>
+
+
+
+<h2 class="wp-block-heading">Comparison Across Algorithms</h2>
+
+
+
+<p class="wp-block-paragraph">We can easily loop the workflow above over the disrupted and cleaned training set and across different algorithms. Pls see the performance comparisons in the following plot.</p>
+
+
+
+<p class="wp-block-paragraph">In our demo, Linear Regression shows the modest improvement primarily due to the linear nature of our synthetic data. In reality, it is always worthwhile experimenting with different algorithms to find the most suitable approach for your use case. The experimentation or migration between algorithms doesn’t need to be disruptive; more on the algorithm-agnostic ML workflow in <a href="https://towardsdatascience.com/build-algorithm-agnostic-ml-pipelines-in-a-breeze/">this article</a> 🔗. </p>
+
+
+
+<figure class="wp-block-image alignwide size-large"><img decoding="async" src="../Images/7fcead4ccb9445d24ca9ae7878d5c621.png" alt="" class="wp-image-615594" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/08/image-137-1024x406.png"/></figure>
+
+
+
+<hr class="wp-block-separator has-alpha-channel-opacity is-style-dotted"/>
+
+
+
+<p class="wp-block-paragraph">There you have it, the helper function <code>calculate_cooks_d_like_influence</code> that you can conveniently add to your ML workflow to identify influential observations. While our demonstration used synthetic data with deliberately planted disruptors, real-world applications require much more nuanced investigation. The diagnostic visualisations provided by this function are designed to facilitate careful analysis and meaningful discussions about influential points. </p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">Each influential point might represent a valid edge case in your domain</li>
+
+
+
+<li class="wp-block-list-item">Patterns in influential points could reveal important gaps in your training data</li>
+
+
+
+<li class="wp-block-list-item">The decision to remove or retain points should be based on domain expertise and business context</li>
+</ul>
+
+
+
+<p class="wp-block-paragraph">🔬 Think of this function as a <strong>diagnostic tool </strong>that highlights areas for investigation, not as an automatic outlier removal mechanism. Its true value lies in helping you understand your data better so your model can learn and generalise better 🏆.</p>
+
+
+
+<hr class="wp-block-separator has-alpha-channel-opacity is-style-dotted"/>
+
+
+
+<p class="wp-block-paragraph">I write about data, ML, and AI for problem-solving. You can also find me on 💼<a href="https://www.linkedin.com/in/mena-ning-wang/" target="_blank" rel="noreferrer noopener">LinkedIn</a> | 😺<a href="https://github.com/MenaWANG" target="_blank" rel="noreferrer noopener">GitHub</a> | 🕊️<a href="https://x.com/mena_wang" target="_blank" rel="noreferrer noopener">Twitter/</a> 🤗</p>
+
+
+
+<hr class="wp-block-separator has-alpha-channel-opacity is-style-dotted"/>
+
+
+
+<p class="wp-block-paragraph">Unless otherwise noted, all images are by the author.</p>
+    
+</body>
+</html>

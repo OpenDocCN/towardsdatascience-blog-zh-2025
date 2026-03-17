@@ -1,0 +1,453 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.1//EN"
+  "http://www.w3.org/TR/xhtml11/DTD/xhtml11.dtd">
+
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+<title>Tutorial: Semantic Clustering of User Messages with LLM Prompts</title>
+<link href="../Styles/Style.css" type="text/css" rel="stylesheet"/>
+</head>
+<body>
+<h1>Tutorial: Semantic Clustering of User Messages with LLM Prompts</h1>
+<blockquote>原文：<a href="https://towardsdatascience.com/tutorial-semantic-clustering-of-user-messages-with-llm-prompts/">https://towardsdatascience.com/tutorial-semantic-clustering-of-user-messages-with-llm-prompts/</a></blockquote>
+<p class="wp-block-paragraph">As a Developer Advocate, it’s challenging to keep up with user forum messages and understand the big picture of what users are saying. There’s plenty of valuable content — but how can you quickly spot the key conversations? In this tutorial, I’ll show you an AI hack to perform semantic clustering simply by prompting LLMs!</p>
+
+
+
+<p class="wp-block-paragraph">TL;DR 🔄 this blog post is about how to go from (data science + code) → (AI prompts + LLMs) for the same results — just faster and with less effort! 🤖⚡. It is organized as follows:</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">Inspiration and Data Sources</li>
+
+
+
+<li class="wp-block-list-item">Exploring the Data with Dashboards</li>
+
+
+
+<li class="wp-block-list-item">LLM Prompting to produce KNN Clusters</li>
+
+
+
+<li class="wp-block-list-item">Experimenting with Custom Embeddings</li>
+
+
+
+<li class="wp-block-list-item">Clustering Across Multiple Discord Servers</li>
+</ul>
+
+
+
+<h2 class="wp-block-heading"><strong>Inspiration and Data Sources</strong></h2>
+
+
+
+<p class="wp-block-paragraph">First, I’ll give <strong>props to the December 2024 paper </strong><a href="https://arxiv.org/abs/2412.13678"><strong>Clio</strong></a><strong> (Claude insights and observations)</strong>, a privacy-preserving platform that uses AI assistants to analyze and surface aggregated usage patterns across millions of conversations. Reading this paper inspired me to try this.</p>
+
+
+
+<p class="wp-block-paragraph"><strong>Data</strong>. I used only publicly available <a href="https://discord.com/">Discord</a> messages, specifically “forum threads”, where users ask for tech help. In addition, I aggregated and anonymized content for this blog.  Per thread, I formatted the data into conversation turn format, with user roles identified as either “user”, asking the question or “assistant”, anyone answering the user’s initial question. I also added a simple, hard-coded binary sentiment score (0 for “not happy” and 1 for “happy”) based on whether the user said thank you anytime in their thread. For vectorDB vendors I used Zilliz/Milvus, Chroma, and Qdrant.</p>
+
+
+
+<p class="wp-block-paragraph">The first step was to convert the data into a pandas data frame. Below is an excerpt. You can see for thread_id=2, a user only asked 1 question. But for thread_id=3, a user asked 4 different questions in the same thread (other 2 questions at farther down timestamps, not shown below).</p>
+
+
+
+<figure class="wp-block-image alignwide size-full"><img data-dominant-color="1b1b1b" data-has-transparency="false" style="--dominant-color: #1b1b1b;" decoding="async" width="512" height="79" src="../Images/378d7f3eb398b2fc199b45e15f9f2923.png" alt="" class="wp-image-598036 not-transparent" srcset="https://towardsdatascience.com/wp-content/uploads/2025/02/unnamed-1.png 512w, https://towardsdatascience.com/wp-content/uploads/2025/02/unnamed-1-300x46.png 300w" sizes="(max-width: 512px) 100vw, 512px" data-original-src="https://towardsdatascience.com/wp-content/uploads/2025/02/unnamed-1.png"/><figcaption class="wp-element-caption">The first step was to convert the anonymized data into a pandas data frame with columns: score, user, role, message, timestamp, thread, user_turns.<br/></figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">I added a naive sentiment 0|1 scoring function.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">def calc_score(df):
+   # Define the target words
+   target_words = ["thanks", "thank you", "thx", "🙂", "😉", "👍"]
+
+
+   # Helper function to check if any target word is in the concatenated message content
+   def contains_target_words(messages):
+       concatenated_content = " ".join(messages).lower()
+       return any(word in concatenated_content for word in target_words)
+
+
+   # Group by 'thread_id' and calculate score for each group
+   thread_scores = (
+       df[df['role_name'] == 'user']
+       .groupby('thread_id')['message_content']
+       .apply(lambda messages: int(contains_target_words(messages)))
+   )
+   # Map the calculated scores back to the original DataFrame
+   df['score'] = df['thread_id'].map(thread_scores)
+   return df
+
+
+...
+
+
+if __name__ == "__main__":
+  
+   # Load parameters from YAML file
+   config_path = "config.yaml"
+   params = load_params(config_path)
+   input_data_folder = params['input_data_folder']
+   processed_data_dir = params['processed_data_dir']
+   threads_data_file = os.path.join(processed_data_dir, "thread_summary.csv")
+  
+   # Read data from Discord Forum JSON files into a pandas df.
+   clean_data_df = process_json_files(
+       input_data_folder,
+       processed_data_dir)
+  
+   # Calculate score based on specific words in message content
+   clean_data_df = calc_score(clean_data_df)
+
+
+   # Generate reports and plots
+   plot_all_metrics(processed_data_dir)
+
+
+   # Concat thread messages &amp; save as CSV for prompting.
+   thread_summary_df, avg_message_len, avg_message_len_user = \
+   concat_thread_messages_df(clean_data_df, threads_data_file)
+   assert thread_summary_df.shape[0] == clean_data_df.thread_id.nunique()
+</code></pre>
+
+
+
+<h2 class="wp-block-heading"><strong>Exploring the Data with Dashboards</strong></h2>
+
+
+
+<p class="wp-block-paragraph">From the processed data above, I built traditional dashboards:</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item"><strong>Message Volumes:</strong> One-off peaks in vendors like Qdrant and Milvus (possibly due to marketing events).</li>
+
+
+
+<li class="wp-block-list-item"><strong>User Engagement:</strong> <em>Top users bar charts and scatterplots of response time vs. number of user turns show that, in general, more user turns mean higher satisfaction. But, satisfaction does NOT look correlated with response time</em>. Scatterplot dark dots seem random with regard to y-axis (response time). Maybe users are not in production, their questions are not very urgent? Outliers exist, such as Qdrant and Chroma, which may have bot-driven anomalies.</li>
+
+
+
+<li class="wp-block-list-item"><strong>Satisfaction Trends:</strong> Around 70% of users appear happy to have any interaction. <em>Data note: make sure to check emojis per vendor, sometimes users respond using emojis instead of words! Example Qdrant and Chroma.</em></li>
+</ul>
+
+
+
+<figure class="wp-block-image alignwide size-full"><img data-dominant-color="f0f0ec" data-has-transparency="false" style="--dominant-color: #f0f0ec;" decoding="async" width="512" height="279" src="../Images/2543521796c48f94e3428a25f09c2c7a.png" alt="" class="wp-image-598037 not-transparent" srcset="https://towardsdatascience.com/wp-content/uploads/2025/02/unnamed-2.png 512w, https://towardsdatascience.com/wp-content/uploads/2025/02/unnamed-2-300x163.png 300w" sizes="(max-width: 512px) 100vw, 512px" data-original-src="https://towardsdatascience.com/wp-content/uploads/2025/02/unnamed-2.png"/><figcaption class="wp-element-caption">Image by author of aggregated, anonymized data. Top lefts: Charts display Chroma’s highest message volume, followed by Qdrant, and then Milvus. Top rights: Top messaging users, Qdrant + Chroma possible bots (see top bar in top messaging users chart). Middle rights: Scatterplots of Response time vs Number of user turns shows no correlation with respect to dark dots and y-axis (response time). Usually higher satisfaction w.r.t. x-axis (user turns), except Chroma. Bottom lefts: Bar charts of satisfaction levels, make sure you catch possible emoji-based feedback, see Qdrant and Chroma.</figcaption></figure>
+
+
+
+<h2 class="wp-block-heading"><strong>LLM Prompting to produce KNN Clusters</strong></h2>
+
+
+
+<p class="wp-block-paragraph">For prompting, the next step was to aggregate data by thread_id. For LLMs, you need the texts concatenated together. I separate out user messages from entire thread messages, to see if one or the other would produce better clusters. I ended up using just user messages.</p>
+
+
+
+<figure class="wp-block-image alignwide size-full"><img data-dominant-color="171717" data-has-transparency="false" style="--dominant-color: #171717;" loading="lazy" decoding="async" width="512" height="103" src="../Images/e3dd265d3c31da56ff52150a93bb2679.png" alt="" class="wp-image-598038 not-transparent" srcset="https://towardsdatascience.com/wp-content/uploads/2025/02/unnamed-3.png 512w, https://towardsdatascience.com/wp-content/uploads/2025/02/unnamed-3-300x60.png 300w" sizes="auto, (max-width: 512px) 100vw, 512px" data-original-src="https://towardsdatascience.com/wp-content/uploads/2025/02/unnamed-3.png"/><figcaption class="wp-element-caption">Example anonymized data for prompting. All message texts concatenated together.</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">With a CSV file for prompting, you’re ready to get started using a LLM to do data science!</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">!pip install -q google.generativeai
+import os
+import google.generativeai as genai
+
+
+# Get API key from local system
+api_key=os.environ.get("GOOGLE_API_KEY")
+
+
+# Configure API key
+genai.configure(api_key=api_key)
+
+
+# List all the model names
+for m in genai.list_models():
+   if 'generateContent' in m.supported_generation_methods:
+       print(m.name)
+
+
+# Try different models and prompts
+GEMINI_MODEL_FOR_SUMMARIES = "gemini-2.0-pro-exp-02-05"
+model = genai.GenerativeModel(GEMINI_MODEL_FOR_SUMMARIES)
+# Combine the prompt and CSV data.
+full_input = prompt + "\n\nCSV Data:\n" + csv_data
+# Inference call to Gemini LLM
+response = model.generate_content(full_input)
+
+
+# Save response.text as .json file...
+
+
+# Check token counts and compare to model limit: 2 million tokens
+print(response.usage_metadata)
+</code></pre>
+
+
+
+<figure class="wp-block-image alignwide size-full"><img data-dominant-color="151515" data-has-transparency="false" style="--dominant-color: #151515;" loading="lazy" decoding="async" width="512" height="133" src="../Images/e6c8813b9546c2bd6aea1e9227514ae0.png" alt="" class="wp-image-598039 not-transparent" srcset="https://towardsdatascience.com/wp-content/uploads/2025/02/unnamed-4.png 512w, https://towardsdatascience.com/wp-content/uploads/2025/02/unnamed-4-300x78.png 300w" sizes="auto, (max-width: 512px) 100vw, 512px" data-original-src="https://towardsdatascience.com/wp-content/uploads/2025/02/unnamed-4.png"/><figcaption class="wp-element-caption">Image by author. Top: Example LLM model names. Bottom: Example inference call to Gemini LLM token counts: prompt_token_count = input tokens; candidates_token_count = output tokens; total_token_count = sum total tokens used.</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">Unfortunately Gemini API kept cutting short the <code>response.text</code>. I had better luck using <a href="https://aistudio.google.com/">AI Studio</a> directly.</p>
+
+
+
+<figure class="wp-block-image alignwide size-full"><img data-dominant-color="dfe1f0" data-has-transparency="false" style="--dominant-color: #dfe1f0;" loading="lazy" decoding="async" width="512" height="249" src="../Images/424ee13a7ccdab8d98e1edf832988253.png" alt="" class="wp-image-598040 not-transparent" srcset="https://towardsdatascience.com/wp-content/uploads/2025/02/unnamed-5.png 512w, https://towardsdatascience.com/wp-content/uploads/2025/02/unnamed-5-300x146.png 300w" sizes="auto, (max-width: 512px) 100vw, 512px" data-original-src="https://towardsdatascience.com/wp-content/uploads/2025/02/unnamed-5.png"/><figcaption class="wp-element-caption">Image by author: Screenshot of example outputs from Google <a href="https://aistudio.google.com/">AI Studio</a>.</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">My 5 prompts to <a href="https://ai.google.dev/gemini-api/docs/models/gemini">Gemini Flash &amp; Pro</a> (temperature set to 0) are below.</p>
+
+
+
+<h3 class="wp-block-heading"><strong>Prompt#1: Get thread Summaries:</strong></h3>
+
+
+
+<blockquote class="wp-block-quote is-layout-flow wp-block-quote-is-layout-flow">
+<p class="wp-block-paragraph"><em>Given this .csv file, per row, add 3 columns:</em><em><br/></em><em>– thread_summary = 205 characters or less summary of the row’s column ‘message_content’</em><em><br/></em><em>– user_thread_summary = 126 characters or less summary of the row’s column ‘message_content_user’</em><em><br/></em><em>– thread_topic = 3–5 word super high-level category</em><em><br/></em><em>Make sure the summaries capture the main content without losing too much detail. Make user thread summaries straight to the point, capture the main content without losing too much detail, skip the intro text. If a shorter summary is good enough prefer the shorter summary. Make sure the topic is general enough that there are fewer than 20 high-level topics for all the data. Prefer fewer topics. Output JSON columns: thread_id, thread_summary, user_thread_summary, thread_topic.</em></p>
+</blockquote>
+
+
+
+<h3 class="wp-block-heading"><strong>Prompt#2: Get cluster stats:</strong></h3>
+
+
+
+<blockquote class="wp-block-quote is-layout-flow wp-block-quote-is-layout-flow">
+<p class="wp-block-paragraph"><em>Given this CSV file of messages, use column=’user_thread_summary’ to perform semantic clustering of all the rows. Use technique = Silhouette, with linkage method = ward, and distance_metric = Cosine Similarity. Just give me the stats for the method Silhouette analysis for now.</em></p>
+</blockquote>
+
+
+
+<h3 class="wp-block-heading"><strong>Prompt#3: Perform initial clustering:</strong></h3>
+
+
+
+<blockquote class="wp-block-quote is-layout-flow wp-block-quote-is-layout-flow">
+<p class="wp-block-paragraph"><em>Given this CSV file of messages, use column=’user_thread_summary’ to perform semantic clustering of all the rows into N=6 clusters using the Silhouette method. Use column=”thread_topic” to summarize each cluster topic in 1–3 words. Output JSON with columns: thread_id, level0_cluster_id, level0_cluster_topic.</em></p>
+</blockquote>
+
+
+
+<p class="wp-block-paragraph"><strong>Silhouette Score </strong>measures how similar an object is to its own cluster (cohesion) versus other clusters (separation). Scores range from -1 to 1. A higher average silhouette score generally indicates better-defined clusters with good separation. For more details, check out the <a href="https://scikit-learn.org/stable/modules/generated/sklearn.metrics.silhouette_score.html">scikit-learn silhouette score documentation</a>.</p>
+
+
+
+<p class="wp-block-paragraph"><strong>Applying it to Chroma Data. </strong>Below, I show results from Prompt#2, as a plot of silhouette scores. I chose <strong>N=6 clusters</strong> as a compromise between high score and fewer clusters. Most LLMs these days for data analysis take input as CSV and output JSON.</p>
+
+
+
+<figure class="wp-block-image alignwide size-full"><img data-dominant-color="f2f3f3" data-has-transparency="false" style="--dominant-color: #f2f3f3;" loading="lazy" decoding="async" width="512" height="186" src="../Images/bf8c200f189c3fcdba2dc0d7f0c4a13f.png" alt="" class="wp-image-598041 not-transparent" srcset="https://towardsdatascience.com/wp-content/uploads/2025/02/unnamed-6.png 512w, https://towardsdatascience.com/wp-content/uploads/2025/02/unnamed-6-300x109.png 300w" sizes="auto, (max-width: 512px) 100vw, 512px" data-original-src="https://towardsdatascience.com/wp-content/uploads/2025/02/unnamed-6.png"/><figcaption class="wp-element-caption">Image by author of aggregated, anonymized data. Left: I chose N=6 clusters as compromise between higher score and fewer clusters. Right: The actual clusters using N=6. Highest sentiment (highest scores) are for topics about Query. Lowest sentiment (lowest scores) are for topics about “Client Problems”.</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">From the plot above, you can see we are finally getting into the meat of what users are saying!</p>
+
+
+
+<h3 class="wp-block-heading"><strong>Prompt#4: Get hierarchical cluster stats:</strong></h3>
+
+
+
+<blockquote class="wp-block-quote is-layout-flow wp-block-quote-is-layout-flow">
+<p class="wp-block-paragraph"><em>Given this CSV file of messages, use the column=’thread_summary_user’ to perform semantic clustering of all the rows into Hierarchical Clustering (Agglomerative) with 2 levels. Use Silhouette score. What is the optimal number of next Level0 and Level1 clusters? How many threads per Level1 cluster? Just give me the stats for now, we’ll do the actual clustering later.</em></p>
+</blockquote>
+
+
+
+<h3 class="wp-block-heading"><strong>Prompt#5: Perform hierarchical clustering:</strong></h3>
+
+
+
+<blockquote class="wp-block-quote is-layout-flow wp-block-quote-is-layout-flow">
+<p class="wp-block-paragraph"><em>Accept this clustering with 2-levels. Add cluster topics that summarize text column “thread_topic”. Cluster topics should be as short as possible without losing too much detail in the cluster meaning.</em><em><br/></em><em>– Level0 cluster topics ~1–3 words.</em><em><br/></em><em>– Level1 cluster topics ~2–5 words.</em><em><br/></em><em>Output JSON with columns: thread_id, level0_cluster_id, level0_cluster_topic, level1_cluster_id, level1_cluster_topic.</em></p>
+</blockquote>
+
+
+
+<p class="wp-block-paragraph">I also prompted to generate Streamlit code to visualize the clusters (since I’m not a JS expert 😄). Results for the same Chroma data are shown below.</p>
+
+
+
+<figure class="wp-block-image alignwide size-full"><img data-dominant-color="f3f3f3" data-has-transparency="false" style="--dominant-color: #f3f3f3;" loading="lazy" decoding="async" width="512" height="241" src="../Images/641c8558fe8291805f42191aeebc0400.png" alt="" class="wp-image-598042 not-transparent" srcset="https://towardsdatascience.com/wp-content/uploads/2025/02/unnamed-7.png 512w, https://towardsdatascience.com/wp-content/uploads/2025/02/unnamed-7-300x141.png 300w" sizes="auto, (max-width: 512px) 100vw, 512px" data-original-src="https://towardsdatascience.com/wp-content/uploads/2025/02/unnamed-7.png"/><figcaption class="wp-element-caption">Image by author of aggregated, anonymized data. Left image: Each scatterplot dot is a thread with hover-info. Right image: Hierarchical clustering with raw data drill-down capabilities. Api and Package Errors looks like Chroma’s most urgent topic to fix, because sentiment is low and volume of messages is high.</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">I found this very insightful. For Chroma, clustering revealed that while users were happy with topics like Query, Distance, and Performance, they were unhappy about areas such as Data, Client, and Deployment.</p>
+
+
+
+<h2 class="wp-block-heading"><strong>Experimenting with Custom Embeddings</strong></h2>
+
+
+
+<p class="wp-block-paragraph">I repeated the above clustering prompts, using just the numerical embedding (“user_embedding”) in the CSV instead of the raw text summaries (“user_text”).I’ve explained embeddings in detail in previous <a href="https://zilliz.com/blog/choosing-the-right-embedding-model-for-your-data">blogs</a> before, and the risks of overfit models on leaderboards. OpenAI has reliable <a href="https://openai.com/index/new-embedding-models-and-api-updates/">embeddings</a> which are extremely affordable by API call. Below is an example code snippet how to create embeddings.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">from openai import OpenAI
+
+
+EMBEDDING_MODEL = "text-embedding-3-small"
+EMBEDDING_DIM = 512 # 512 or 1536 possible
+
+
+# Initialize client with API key
+openai_client = OpenAI(
+   api_key=os.environ.get("OPENAI_API_KEY"),
+)
+
+
+# Function to create embeddings
+def get_embedding(text, embedding_model=EMBEDDING_MODEL,
+                 embedding_dim=EMBEDDING_DIM):
+   response = openai_client.embeddings.create(
+       input=text,
+       model=embedding_model,
+       dimensions=embedding_dim
+   )
+   return response.data[0].embedding
+
+
+# Function to call per pandas df row in .apply()
+def generate_row_embeddings(row):
+   return {
+       'user_embedding': get_embedding(row['user_thread_summary']),
+   }
+
+
+# Generate embeddings using pandas apply
+embeddings_data = df.apply(generate_row_embeddings, axis=1)
+# Add embeddings back into df as separate columns
+df['user_embedding'] = embeddings_data.apply(lambda x: x['user_embedding'])
+display(df.head())
+
+
+# Save as CSV ...
+</code></pre>
+
+
+
+<figure class="wp-block-image alignwide size-full"><img data-dominant-color="191919" data-has-transparency="false" style="--dominant-color: #191919;" loading="lazy" decoding="async" width="512" height="102" src="../Images/11e08e73ba1d85ec80c04e57f20eeaad.png" alt="" class="wp-image-598043 not-transparent" srcset="https://towardsdatascience.com/wp-content/uploads/2025/02/unnamed-8.png 512w, https://towardsdatascience.com/wp-content/uploads/2025/02/unnamed-8-300x60.png 300w" sizes="auto, (max-width: 512px) 100vw, 512px" data-original-src="https://towardsdatascience.com/wp-content/uploads/2025/02/unnamed-8.png"/><figcaption class="wp-element-caption">Example data for prompting. Column “user_embedding” is an array length=512 of floating point numbers.</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">Interestingly, both Perplexity Pro and Gemini 2.0 Pro sometimes hallucinated cluster topics (e.g., misclassifying a question about slow queries as “Personal Matter”).</p>
+
+
+
+<p class="wp-block-paragraph"><strong><em>Conclusion: When performing NLP with prompts, let the LLM generate its own embeddings — externally generated embeddings seem to confuse the model.</em></strong></p>
+
+
+
+<figure class="wp-block-image alignwide size-full"><img data-dominant-color="f5f7f7" data-has-transparency="false" style="--dominant-color: #f5f7f7;" loading="lazy" decoding="async" width="512" height="240" src="../Images/69393cbc5dc6bb80cbb9d179e85222af.png" alt="" class="wp-image-598044 not-transparent" srcset="https://towardsdatascience.com/wp-content/uploads/2025/02/unnamed-9.png 512w, https://towardsdatascience.com/wp-content/uploads/2025/02/unnamed-9-300x141.png 300w" sizes="auto, (max-width: 512px) 100vw, 512px" data-original-src="https://towardsdatascience.com/wp-content/uploads/2025/02/unnamed-9.png"/><figcaption class="wp-element-caption">Image by author of aggregated, anonymized data. Both Perplexity Pro and Google’s Gemini 1.5 Pro hallucinated Cluster Topics when given an externally-generated embedding column. Conclusion — when performing NLP with prompts, just keep the raw text and let the LLM create its own embeddings behind the scenes. Feeding in externally-generated embeddings seems to confuse the LLM!</figcaption></figure>
+
+
+
+<h2 class="wp-block-heading"><strong>Clustering Across Multiple Discord Servers</strong></h2>
+
+
+
+<p class="wp-block-paragraph">Finally, I broadened the analysis to include Discord messages from three different VectorDB vendors. The resulting visualization highlighted common issues — like both Milvus and Chroma facing authentication problems.</p>
+
+
+
+<figure class="wp-block-image alignwide size-full"><img data-dominant-color="f2f1f1" data-has-transparency="false" style="--dominant-color: #f2f1f1;" loading="lazy" decoding="async" width="512" height="255" src="../Images/b0cc3862ec606d013a01b292b5357048.png" alt="" class="wp-image-598045 not-transparent" srcset="https://towardsdatascience.com/wp-content/uploads/2025/02/unnamed-10.png 512w, https://towardsdatascience.com/wp-content/uploads/2025/02/unnamed-10-300x149.png 300w" sizes="auto, (max-width: 512px) 100vw, 512px" data-original-src="https://towardsdatascience.com/wp-content/uploads/2025/02/unnamed-10.png"/><figcaption class="wp-element-caption">Image by author of aggregated, anonymized data: A multi-vendor VectorDB dashboard displays top issues across many companies. One thing that stands out is both Milvus and Chroma are having trouble with Authentication.</figcaption></figure>
+
+
+
+<h2 class="wp-block-heading"><strong>Summary</strong></h2>
+
+
+
+<p class="wp-block-paragraph">Here’s a summary of the steps I followed to perform semantic clustering using LLM prompts:</p>
+
+
+
+<ol class="wp-block-list">
+<li class="wp-block-list-item">Extract Discord threads.</li>
+
+
+
+<li class="wp-block-list-item">Format data into conversation turns with roles (“user”, “assistant”).</li>
+
+
+
+<li class="wp-block-list-item">Score sentiment and save as CSV.</li>
+
+
+
+<li class="wp-block-list-item">Prompt Google Gemini 2.0 flash for thread summaries.</li>
+
+
+
+<li class="wp-block-list-item">Prompt Perplexity Pro or Gemini 2.0 Pro for clustering based on thread summaries using the same CSV.</li>
+
+
+
+<li class="wp-block-list-item">Prompt Perplexity Pro or Gemini 2.0 Pro to write <a href="https://streamlit.io/">Streamlit</a> code to visualize clusters (because I’m not a JS expert 😆).</li>
+</ol>
+
+
+
+<p class="wp-block-paragraph">By following these steps, you can quickly transform raw forum data into actionable insights — what used to take days of coding can now be done in just one afternoon!</p>
+
+
+
+<h3 class="wp-block-heading"><strong>References</strong></h3>
+
+
+
+<ol class="wp-block-list">
+<li class="wp-block-list-item">Clio: Privacy-Preserving Insights into Real-World AI Use, <a href="https://arxiv.org/abs/2412.13678">https://arxiv.org/abs/2412.13678</a></li>
+
+
+
+<li class="wp-block-list-item">Anthropic blog about Clio, <a href="https://www.anthropic.com/research/clio">https://www.anthropic.com/research/clio</a></li>
+
+
+
+<li class="wp-block-list-item"><a href="https://discord.com/invite/8uyFbECzPX">Milvus Discord Server</a>, last accessed Feb 7, 2025<br/><a href="https://discord.com/invite/chromadb">Chroma Discord Server</a>, last accessed Feb 7, 2025<br/><a href="https://discord.com/invite/qdrant">Qdrant Discord Server</a>, last accessed Feb 7, 2025</li>
+
+
+
+<li class="wp-block-list-item">Gemini models, <a href="https://ai.google.dev/gemini-api/docs/models/gemini">https://ai.google.dev/gemini-api/docs/models/gemini</a></li>
+
+
+
+<li class="wp-block-list-item">Blog about Gemini 2.0 models, <a href="https://blog.google/technology/google-deepmind/gemini-model-updates-february-2025/">https://blog.google/technology/google-deepmind/gemini-model-updates-february-2025/</a></li>
+
+
+
+<li class="wp-block-list-item"><a href="https://scikit-learn.org/stable/modules/generated/sklearn.metrics.silhouette_score.html">Scikit-learn Silhouette Score</a></li>
+
+
+
+<li class="wp-block-list-item"><a href="https://openai.com/index/new-embedding-models-and-api-updates/">OpenAI Matryoshka embeddings</a></li>
+
+
+
+<li class="wp-block-list-item"><a href="https://streamlit.io/">Streamlit</a></li>
+</ol>
+
+
+
+<p class="wp-block-paragraph"/>
+    
+</body>
+</html>

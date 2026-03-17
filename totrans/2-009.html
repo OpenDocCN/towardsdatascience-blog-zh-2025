@@ -1,0 +1,316 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.1//EN"
+  "http://www.w3.org/TR/xhtml11/DTD/xhtml11.dtd">
+
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+<title>How to Benchmark Classical Machine Learning Workloads on Google Cloud</title>
+<link href="../Styles/Style.css" type="text/css" rel="stylesheet"/>
+</head>
+<body>
+<h1>How to Benchmark Classical Machine Learning Workloads on Google Cloud</h1>
+<blockquote>原文：<a href="https://towardsdatascience.com/benchmarking-classical-machine-learning-workloads-on-google-cloud/">https://towardsdatascience.com/benchmarking-classical-machine-learning-workloads-on-google-cloud/</a></blockquote>
+<h2 class="wp-block-heading"><mdspan datatext="el1755898002223" class="mdspan-comment">Why Classical</mdspan> Machine Learning Still Matters</h2>
+
+
+
+<p class="wp-block-paragraph">In an era of GPU supremacy, why do real-world business cases depend so much on classical machine learning and CPU-based training? The answer is that the data most important to real-world business applications is still overwhelmingly <strong>tabular, structured, and relational</strong>—think fraud detection, insurance risk scoring, churn prediction, and operational telemetry. Empirical results (e.g., <a href="https://papers.neurips.cc/paper_files/paper/2022/file/0378c7692da36807bdec87ab043cdadc-Paper-Datasets_and_Benchmarks.pdf">Grinsztajn et al<em>.,</em> <em>Why do tree-based models still outperform deep learning on typical tabular data?</em> (2022), NeurIPS 2022 Track on Datasets and Benchmarks</a>) show that for these domains <strong>random forest</strong>, <strong>gradient boosting</strong>, and <strong>logistic regression</strong> outperform neural nets in both accuracy and reliability. They also offer explainability which is critical in regulated industries like banking and healthcare.</p>
+
+
+
+<p class="wp-block-paragraph">GPUs often lose their edge here due to <strong>data transfer latency</strong> (<a href="https://www.intel.com/content/www/us/en/gaming/resources/what-is-pcie-4-and-why-does-it-matter.html">PCIe</a> overhead) and <strong>poor scaling</strong> of some tree-based algorithms. Consequently, <strong>CPU-based training</strong> remains the most cost-effective choice for small-medium structured data workloads on cloud platforms.</p>
+
+
+
+<p class="wp-block-paragraph">In this article, I’ll walk you through the steps for benchmarking traditional machine learning algorithms on <a href="https://cloud.google.com/">Google Cloud Platform (GCP)</a> CPU offerings, including the <a href="https://www.intel.com/content/www/us/en/products/details/processors/xeon.html">Intel® Xeon® 6</a> that was recently made generally available. (Full disclosure: I am affiliated with Intel as a Senior AI Software Solutions Engineer.)</p>
+
+
+
+<p class="wp-block-paragraph">By systematically comparing runtime, scalability, and cost across algorithms, we can make evidence-based decisions about which approaches deliver the best trade-off between accuracy, speed, and operational cost.</p>
+
+
+
+<h2 class="wp-block-heading">Machine Configuration on Google Cloud</h2>
+
+
+
+<p class="wp-block-paragraph">Go to <a href="https://console.cloud.google.com/">console.cloud.google.com</a>, set up your billing, and head to “Compute Engine.” Then click on “Create instance” to configure your virtual machine (VM). The figure below shows the <a href="https://cloud.google.com/compute/docs/general-purpose-machines#c4_series">C4 VM series</a> powered by Intel® Xeon® 6 (code-named Granite Rapids) and the 5th Gen Intel® Xeon® (code-named Emerald Rapids) CPUs.</p>
+
+
+
+<figure class="wp-block-image size-large"><img decoding="async" src="../Images/cdf48f4b9a3b9d5b1f90e2e54dda8027.png" alt="" class="wp-image-616426" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/08/machine-configuration-1024x462.png"/><figcaption class="wp-element-caption">Setting up a virtual machine on Google Cloud</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">Hyperthreading can introduce performance variability because two threads compete for the same core’s execution resources. For consistent benchmark results, setting “vCPUs to core ratio” to 1 eliminates that variable—more on this in the next section.</p>
+
+
+
+<figure class="wp-block-image size-full"><img decoding="async" src="../Images/fb4eb1a69d476ab0b80e2f11230ff163.png" alt="" class="wp-image-616427" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/08/advanced-configurations.png"/><figcaption class="wp-element-caption">vCPUs to core ratio and visible core counts can be set under “Advanced configurations”</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">Before creating the VM, increase the boot disk size from the left-hand panel—200 GB will be more than enough to install the packages needed for this blog.</p>
+
+
+
+<figure class="wp-block-image size-large"><img decoding="async" src="../Images/9a6fcae3c1ca194239f5b10497a291fc.png" alt="" class="wp-image-616428" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/08/storage-1024x512.png"/><figcaption class="wp-element-caption">Increasing the boot disk size for the virtual machine on Google Cloud</figcaption></figure>
+
+
+
+<h2 class="wp-block-heading">Non-uniform Memory Access (NUMA) Awareness</h2>
+
+
+
+<p class="wp-block-paragraph">Memory access is non-uniform on multi-core, multi-socket CPUs. This means the latency and bandwidth of memory operations depend on which CPU core is accessing which region of memory. If you don’t control for NUMA, you’re benchmarking the scheduler, not the CPU and the results can appear inconsistent. <strong>Memory affinity</strong> is exactly what eliminates that problem by controlling which CPU cores access which memory regions. The Linux scheduler is aware of the NUMA topology of the platform and attempts to improve performance by scheduling threads on processors that are in the same node as the memory being used, rather than letting the scheduler randomly assign work across the system. However, without explicit affinity controls, you can’t guarantee consistent placement for reliable benchmarking.</p>
+
+
+
+<p class="wp-block-paragraph">Let’s do a hands-on NUMA experiment with XGBoost and a synthetic dataset that is large enough to stress memory.</p>
+
+
+
+<p class="wp-block-paragraph">First, provision a VM that spans multiple NUMA nodes, SSH into the instance, and install the dependencies.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-bash">sudo apt update &amp;&amp; sudo apt install -y python3-venv numactl</code></pre>
+
+
+
+<p class="wp-block-paragraph">Then create and activate a Python virtual environment to install <code>scikit-learn</code>, <code>numpy</code>, and <code>xgboost</code>. Save the script below as <code>xgb_bench.py</code>.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">import numpy as np
+import xgboost as xgb
+from sklearn.datasets import make_classification
+from time import time
+
+# 10M samples, 100 features
+X, y = make_classification(n_samples=10_000_000, n_features=100, random_state=42)
+dtrain = xgb.DMatrix(X, label=y)
+
+params = {
+    "objective": "binary:logistic",
+    "tree_method": "hist",
+    "max_depth": 8,
+    "nthread": 0,  # use all available threads
+}
+
+start = time()
+xgb.train(params, dtrain, num_boost_round=100)
+print("Elapsed:", time() - start, "seconds")</code></pre>
+
+
+
+<p class="wp-block-paragraph">Next, run this script in three modes (<code>baseline / numa0 / interleave</code>). Repeat each experiment at least 5 times and report the mean and standard deviation. (This calls for another simple script!)</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-bash"># Run without NUMA binding
+python3 xgb_bench.py</code></pre>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-bash"># Run with NUMA binding to a single node
+numactl --cpunodebind=0 --membind=0 python3 xgb_bench.py</code></pre>
+
+
+
+<p class="wp-block-paragraph">When assigning tasks to specific physical cores, use the <code>--physcpubind</code> or <code>-C</code> option rather than <code>--cpunodebind</code>.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-bash"># Run with interleaved memory across nodes
+numactl --interleave=all python3 xgb_bench.py</code></pre>
+
+
+
+<p class="wp-block-paragraph">Which experiment had the smallest mean? How about the standard deviation? For interpreting these numbers, keep in mind that</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">Lower standard deviation for <code>numa0</code> indicates more stable locality.</li>
+
+
+
+<li class="wp-block-list-item">Lower mean for <code>numa0</code> vs <code>baseline</code> suggests cross-node traffic was hurting you, and</li>
+
+
+
+<li class="wp-block-list-item">If <code>interleave</code> narrows the gap vs <code>baseline</code>, your workload is bandwidth sensitive and benefits from spreading pages—at potential cost to latency.</li>
+</ul>
+
+
+
+<p class="wp-block-paragraph">If none of these apply to a benchmark, the workload may be compute-bound (e.g., shallow trees, small dataset), or the VM might expose a single NUMA node.</p>
+
+
+
+<h2 class="wp-block-heading">Choosing the Right Benchmarks</h2>
+
+
+
+<p class="wp-block-paragraph">When benchmarking classical machine learning algorithms on CPUs, you should build your own testing framework, or leverage existing benchmark suites, or use a hybrid approach if appropriate.</p>
+
+
+
+<p class="wp-block-paragraph">Existing test suites such as <a href="https://github.com/IntelPython/scikit-learn_bench">scikit-learn_bench</a> and <a href="https://github.com/phoronix-test-suite/phoronix-test-suite">Phoronix Test Suite (PTS)</a> are helpful when you need standardized, reproducible results that others can validate and compare against. They work particularly well if you’re evaluating well-established algorithms like random forest, SVM, or XGBoost where standard datasets provide meaningful insights. Custom benchmarks excel at revealing implementation-specific performance characteristics. For instance, they can measure how different sparse matrix formats affect SVM training times, or how feature preprocessing pipelines impact overall throughput on your specific CPU architecture. The datasets you use directly influence what your benchmark reveals. Feel free to consult the official <a href="https://github.com/scikit-learn/scikit-learn/tree/main/benchmarks">scikit-learn benchmarks</a> for inspiration. Here’s also a sample set that you can use to create a custom test.</p>
+
+
+
+<figure class="wp-block-table"><table class="has-fixed-layout"><tbody><tr><td><strong>Dataset</strong></td><td><strong>Size</strong></td><td><strong>Task</strong></td><td><strong>Source</strong></td></tr><tr><td>Higgs</td><td>11M rows</td><td>Binary classification</td><td><a href="https://archive.ics.uci.edu/dataset/280/higgs">UCI ML Repo</a></td></tr><tr><td>Airline Delay</td><td>Variable</td><td>Multi-class classification</td><td><a href="https://www.transtats.bts.gov/ot_delay/ot_delaycause1.asp">BTS</a></td></tr><tr><td>California Housing</td><td>20K rows</td><td>Regression</td><td><code>sklearn.datasets.fetch_california_housing</code></td></tr><tr><td>Synthetic</td><td>Variable</td><td>Scaling tests</td><td><code>sklearn.datasets.make_classification</code></td></tr></tbody></table></figure>
+
+
+
+<p class="wp-block-paragraph">Synthetic scaling datasets are especially useful to expose differences in cache, memory bandwidth, and I/O.</p>
+
+
+
+<p class="wp-block-paragraph">In the rest of this blog, we illustrate how you can run experiments using the open source scikit-learn_bench which currently supports scikit-learn, cuML, and XGBoost frameworks.</p>
+
+
+
+<h2 class="wp-block-heading">Installations and Benchmarking</h2>
+
+
+
+<p class="wp-block-paragraph">Once the GCP VM is initialized, you can SSH into the instance and execute the commands below in your terminal.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-bash">sudo apt update &amp;&amp; sudo apt upgrade -y 
+sudo apt install -y git wget numactl</code></pre>
+
+
+
+<p class="wp-block-paragraph">To install Conda on a GCP VM, you’ll need to account for the CPU architecture. If you’re unsure about the architecture of your VM, you can run</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-bash">uname -m</code></pre>
+
+
+
+<p class="wp-block-paragraph">before proceeding to</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-bash">wget https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh -O ~/miniconda.sh
+
+# Use the installer for Linux aarch64 if your VM is based on Arm architecture.
+# wget https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-aarch64.sh -O ~/miniconda.sh</code></pre>
+
+
+
+<p class="wp-block-paragraph">Next, you need to execute the script and accept the terms of service (ToS).</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-bash">bash ~/miniconda.sh
+source ~/.bashrc</code></pre>
+
+
+
+<p class="wp-block-paragraph">Finally, clone the latest scikit-learn_bench from GitHub, create a virtual environment and install the required Python libraries.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-bash">git clone https://github.com/IntelPython/scikit-learn_bench.git
+cd scikit-learn_bench
+conda env create -n sklearn_bench -f envs/conda-env-sklearn.yml
+conda activate sklearn_bench</code></pre>
+
+
+
+<p class="wp-block-paragraph">At this point, you should be able to run a benchmark using the <a href="https://github.com/IntelPython/scikit-learn_bench/tree/main/sklbench">sklbench module</a> and a specific configuration:</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-bash">python -m sklbench --config configs/xgboost_example.json</code></pre>
+
+
+
+<p class="wp-block-paragraph">By default, <code>sklbench</code> benchmarks both the standard scikit-learn implementations and their optimized counterparts provided by <strong>sklearnex</strong> (Intel’s accelerated extension)—or other supported frameworks like cuML or XGBoost—and logs results along with hardware and software metadata into <code>result.json</code>. You can customize the output file with <code>--result-file</code>, and include <code>--report</code> to produce an Excel report (<code>report.xlsx</code>). For a list of all supported options, see the <a href="https://github.com/IntelPython/scikit-learn_bench/blob/main/sklbench/report/README.md#arguments">documentation</a>.</p>
+
+
+
+<p class="wp-block-paragraph">As discussed earlier, you can use <code>numactl</code> to pin a process and its child processes to specific CPU cores. Here’s how to run <code>sklbench</code> with <code>numactl</code>, binding it to selected cores:</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-bash">cores="0-3"
+export runid="$(date +%Y%m%d%H%M%S)"
+
+numactl --physcpubind $cores python3 -m sklbench \
+  --config configs/regular \
+  --filters algorithm:library=sklearnex algorithm:device=cpu algorithm:estimator=RandomForestClassifier \
+  --result-file $result-${runid}.json
+</code></pre>
+
+
+
+<h2 class="wp-block-heading">Interpreting Results and Best Practices</h2>
+
+
+
+<p class="wp-block-paragraph">The <a href="https://github.com/IntelPython/scikit-learn_bench/tree/main/sklbench/report">report generator</a> allows you to combine the result files of multiple runs.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-bash">python -m sklbench.report --result-files &lt;result 1&gt; &lt;result 2&gt;</code></pre>
+
+
+
+<p class="wp-block-paragraph">The real metric for cloud decision-making is the cost per task, namely,</p>
+
+
+
+<p class="wp-block-paragraph"><em>Cost per task = runtime in hours x hourly price</em>.</p>
+
+
+
+<p class="wp-block-paragraph">Real-world deployments rarely behave like single benchmark runs. To accurately model the cost per task, it’s useful to account for CPU boost behavior, cloud infrastructure variability, and memory topology, as they can all influence performance in ways that aren’t captured by a one-off measurement. To better reflect actual runtime characteristics, I recommend starting with warm-up iterations to stabilize CPU frequency scaling. Then run each experiment multiple times to account for system noise and transient effects. Reporting the mean and standard deviation helps surface consistent trends, while using medians can be more robust when variance is high, especially in cloud environments where noisy neighbors or resource contention can skew averages. For reproducibility, it’s important to fix package versions and use consistent VM image snapshots. Including NUMA configuration in your results helps others understand memory locality effects, which can significantly impact performance. Tools like scikit-learn_bench automate many of these steps, making it easier to produce benchmarks that are both representative and repeatable.</p>
+
+
+
+<p class="wp-block-paragraph">If you found this article valuable, please consider sharing it with your network. For more AI development how-to content, visit <a href="https://www.intel.com/content/www/us/en/developer/topic-technology/artificial-intelligence/overview.html" target="_blank" rel="noreferrer noopener">Intel® AI Development Resources</a>.</p>
+
+
+
+<p class="wp-block-paragraph"><strong><em>Acknowledgments</em></strong></p>
+
+
+
+<p class="wp-block-paragraph"><em>The author thanks Neal Dixon, Miriam Gonzales, Chris Liebert, and Rachel Novak for providing feedback on an earlier draft of this work.</em></p>
+
+
+
+<p class="wp-block-paragraph"><strong>Resources</strong></p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item"><a href="https://www.intel.com/content/dam/develop/external/us/en/documents/3-5-memmgt-optimizing-applications-for-numa-184398.pdf">Optimizing Applications for NUMA</a>, Intel Guide for Developing Multithreaded Applications</li>
+
+
+
+<li class="wp-block-list-item">Vijay Janapa Reddi, <a href="https://www.mlsysbook.ai/">Introduction to Machine Learning Systems</a> (2025), MIT Press</li>
+
+
+
+<li class="wp-block-list-item">Kounev et al., <a href="https://link.springer.com/book/10.1007/978-3-031-85634-1">Systems Benchmarking For Scientists and Engineers</a>, Second Edition (2025), Springer</li>
+
+
+
+<li class="wp-block-list-item">Matthew Stewart, <a href="https://medium.com/data-science/the-olympics-of-ai-benchmarking-machine-learning-systems-c4b2051fbd2b">The Olympics of AI: Benchmarking Machine Learning Systems</a> (2023), Towards Data Science</li>
+</ul>
+
+
+
+<p class="wp-block-paragraph"/>
+    
+</body>
+</html>

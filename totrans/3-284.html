@@ -1,0 +1,538 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.1//EN"
+  "http://www.w3.org/TR/xhtml11/DTD/xhtml11.dtd">
+
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+<title>Supercharge Your RAG with Multi-Agent Self-RAG</title>
+<link href="../Styles/Style.css" type="text/css" rel="stylesheet"/>
+</head>
+<body>
+<h1>Supercharge Your RAG with Multi-Agent Self-RAG</h1>
+<blockquote>原文：<a href="https://towardsdatascience.com/supercharge-your-rag-with-multi-agent-self-rag/">https://towardsdatascience.com/supercharge-your-rag-with-multi-agent-self-rag/</a></blockquote>
+<h2 class="wp-block-heading" id="c356"><strong>Introduction</strong></h2>
+
+
+
+<p class="wp-block-paragraph" id="cf60">Many of us might have tried to build a RAG application and noticed it falls significantly short of addressing real-life needs. Why is that? It’s because many real-world problems require multiple steps of information retrieval and reasoning. We need our agent to perform those as humans normally do, yet most RAG applications fall short of this.</p>
+
+
+
+<p class="wp-block-paragraph" id="063e">This article explores how to supercharge your RAG application by making its data retrieval and reasoning process similar to how a human would, under a multi-agent framework. The framework presented here is based on the <a href="https://langchain-ai.github.io/langgraph/tutorials/rag/langgraph_self_rag/" rel="noreferrer noopener" target="_blank">Self-RAG strategy</a> but has been significantly modified to enhance its capabilities. Prior knowledge of the original strategy is not necessary for reading this article.</p>
+
+
+
+<h2 class="wp-block-heading" id="9cbe"><strong>Real-life Case</strong></h2>
+
+
+
+<p class="wp-block-paragraph" id="13b4">Consider this: I was going to fly from Delhi to Munich (let’s assume I am taking the flight from an EU airline), but I was denied boarding somehow. Now I want to know what the compensation should be.</p>
+
+
+
+<p class="wp-block-paragraph" id="8796">These two webpages contain relevant information, I go ahead adding them to my vector store, trying to have my agent answer this for me by retrieving the right information.</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item"><a href="https://www.eu-startups.com/2024/04/comparative-analysis-eu-vs-us-flight-compensation-policies-sponsored/" target="_blank" rel="noreferrer noopener">Flight compensation policy</a></li>
+
+
+
+<li class="wp-block-list-item"><a href="https://www.geodatos.net/en/distances/cities/germany/bavaria/munich" target="_blank" rel="noreferrer noopener">Distance between Munich and other major cities in the world</a> (note: it does not reflect the distance between airports, but it serves the purpose for our demonstration)</li>
+</ul>
+
+
+
+<p class="wp-block-paragraph" id="87ad">Now, I pass this question to the vector store: <strong><em>“how much can I receive if I am denied boarding, for flights from Delhi to Munich?”</em></strong>.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-">– – – – – – – – – – – – – – – – – – – – – – – – –
+Overview of US Flight Compensation Policies To get compensation for delayed flights, you should contact your airline via their customer service or go to the customer service desk. At the same time, you should bear in mind that you will only receive compensation if the delay is not weather-related and is within the carrier`s control. According to the US Department of Transportation, US airlines are not required to compensate you if a flight is cancelled or delayed. You can be compensated if you are bumped or moved from an overbooked flight. If your provider cancels your flight less than two weeks before departure and you decide to cancel your trip entirely, you can receive a refund of both pre-paid baggage fees and your plane ticket. There will be no refund if you choose to continue your journey. In the case of a delayed flight, the airline will rebook you on a different flight. According to federal law, you will not be provided with money or other compensation. Comparative Analysis of EU vs. US Flight Compensation Policies
+– – – – – – – – – – – – – – – – – – – – – – – – –
+(AUTHOR-ADDED NOTE: IMPORTANT, PAY ATTENTION TO THIS)
+Short-distance flight delays – if it is up to 1,500 km, you are due 250 Euro compensation.
+Medium distance flight delays – for all the flights between 1,500 and 3,500 km, the compensation should be 400 Euro.
+Long-distance flight delays – if it is over 3,500 km, you are due 600 Euro compensation. To receive this kind of compensation, the following conditions must be met; Your flight starts in a non-EU member state or in an EU member state and finishes in an EU member state and is organised by an EU airline. Your flight reaches the final destination with a delay that exceeds three hours. There is no force majeure.
+– – – – – – – – – – – – – – – – – – – – – – – – –
+Compensation policies in the EU and US are not the same, which implies that it is worth knowing more about them. While you can always count on Skycop flight cancellation compensation, you should still get acquainted with the information below.
+– – – – – – – – – – – – – – – – – – – – – – – – –
+Compensation for flight regulations EU: The EU does regulate flight delay compensation, which is known as EU261. US: According to the US Department of Transportation, every airline has its own policies about what should be done for delayed passengers. Compensation for flight delays EU: Just like in the United States, compensation is not provided when the flight is delayed due to uncontrollable reasons. However, there is a clear approach to compensation calculation based on distance. For example, if your flight was up to 1,500 km, you can receive 250 euros. US: There are no federal requirements. That is why every airline sets its own limits for compensation in terms of length. However, it is usually set at three hours. Overbooking EU: In the EU, they call for volunteers if the flight is overbooked. These people are entitled to a choice of: Re-routing to their final destination at the earliest opportunity. Refund of their ticket cost within a week if not travelling. Re-routing at a later date at the person`s convenience.</code></pre>
+
+
+
+<p class="wp-block-paragraph" id="5cb4">Unfortunately, they contain only generic flight compensation policies, without telling me how much I can expect when denied boarding from Delhi to Munich specifically. If the RAG agent takes these as the sole context, it can only provide a generic answer about flight compensation policy, without giving the answer we want.</p>
+
+
+
+<p class="wp-block-paragraph" id="97c7">However, while the documents are not immediately useful, there is an important insight contained in the 2nd piece of context: <strong><em>compensation varies according to flight distance</em></strong>. If the RAG agent thinks more like human, it should follow these steps to provide an answer:</p>
+
+
+
+<ol class="wp-block-list">
+<li class="wp-block-list-item">Based on the retrieved context, reason that compensation varies with flight distance</li>
+
+
+
+<li class="wp-block-list-item">Next, retrieve the flight distance between Delhi and Munich</li>
+
+
+
+<li class="wp-block-list-item">Given the distance (which is around 5900km), classify the flight as a long-distance one</li>
+
+
+
+<li class="wp-block-list-item">Combined with the previously retrieved context, figure out I am due 600 EUR, assuming other conditions are fulfilled</li>
+</ol>
+
+
+
+<p class="wp-block-paragraph" id="ea58">This example demonstrates how a simple RAG, in which a single retrieval is made, fall short for several reasons:</p>
+
+
+
+<ol class="wp-block-list">
+<li class="wp-block-list-item"><strong>Complex Queries</strong>: Users often have questions that a simple search can’t fully address. For example, “What’s the best smartphone for gaming under $500?” requires consideration of multiple factors like performance, price, and features, which a single retrieval step might miss.</li>
+
+
+
+<li class="wp-block-list-item"><strong>Deep Information</strong>: Some information lies across documents. For example, research papers, medical records, or legal documents often include references that need to be made sense of, before one can fully understand the content of a given article. Multiple retrieval steps help dig deeper into the content.</li>
+</ol>
+
+
+
+<p class="wp-block-paragraph" id="e8d0">Multiple retrievals supplemented with human-like reasoning allow for a more nuanced, comprehensive, and accurate response, adapting to the complexity and depth of user queries.</p>
+
+
+
+<h2 class="wp-block-heading" id="a66e">Multi-Agent Self-RAG</h2>
+
+
+
+<p class="wp-block-paragraph" id="d9c4">Here I explain the reasoning process behind this strategy, afterwards I will provide the code to show you how to achieve this!</p>
+
+
+
+<blockquote class="wp-block-quote is-layout-flow wp-block-quote-is-layout-flow">
+<p class="wp-block-paragraph" id="e167">Note: For readers interested in knowing how my approach differs from the <a href="https://langchain-ai.github.io/langgraph/tutorials/rag/langgraph_self_rag/" rel="noreferrer noopener" target="_blank">original Self-RAG</a>, I will describe the discrepancies in quotation boxes like this. But general readers who are unfamiliar with the original Self-RAG can skip them.</p>
+</blockquote>
+
+
+
+<p class="wp-block-paragraph" id="9184">In the below graphs, each circle represents a step (aka <strong>Node</strong>), which is performed by a dedicated agent working on the specific problem. We orchestrate them to form a multi-agent RAG application.</p>
+
+
+
+<h3 class="wp-block-heading" id="96b2">1st iteration: Simple RAG</h3>
+
+
+
+<figure class="wp-block-image size-full"><img data-dominant-color="fbf5e9" data-has-transparency="false" style="--dominant-color: #fbf5e9;" decoding="async" width="895" height="226" src="../Images/3e93d3aa6427236f7cb1697453d4cdef.png" alt="" class="wp-image-598562 not-transparent" srcset="https://towardsdatascience.com/wp-content/uploads/2025/02/1_7cjs7z09W_HEySmLc0-whw.webp 895w, https://towardsdatascience.com/wp-content/uploads/2025/02/1_7cjs7z09W_HEySmLc0-whw-300x76.webp 300w, https://towardsdatascience.com/wp-content/uploads/2025/02/1_7cjs7z09W_HEySmLc0-whw-768x194.webp 768w" sizes="(max-width: 895px) 100vw, 895px" data-original-src="https://towardsdatascience.com/wp-content/uploads/2025/02/1_7cjs7z09W_HEySmLc0-whw.webp"/><figcaption class="wp-element-caption">A simple RAG chain</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph" id="1faf">This is just the vanilla RAG approach I described in “Real-life Case”, represented as a graph. After <code>Retrieve documents</code>, the <code>new_documents</code> will be used as input for <code>Generate Answer</code>. Nothing special, but it serves as our starting point.</p>
+
+
+
+<h3 class="wp-block-heading" id="830d">2nd iteration: Digest documents with “Grade documents”</h3>
+
+
+
+<figure class="wp-block-image size-large"><img data-dominant-color="f5f3ee" data-has-transparency="false" style="--dominant-color: #f5f3ee;" decoding="async" width="1024" height="261" src="../Images/b7f1c9640452c0a5a8354cb4d2fd7d54.png" alt="" class="wp-image-598564 not-transparent" srcset="https://towardsdatascience.com/wp-content/uploads/2025/02/1_S7emqxgrROrusM2R4K0N2w-1024x261.webp 1024w, https://towardsdatascience.com/wp-content/uploads/2025/02/1_S7emqxgrROrusM2R4K0N2w-300x76.webp 300w, https://towardsdatascience.com/wp-content/uploads/2025/02/1_S7emqxgrROrusM2R4K0N2w-768x195.webp 768w, https://towardsdatascience.com/wp-content/uploads/2025/02/1_S7emqxgrROrusM2R4K0N2w.webp 1132w" sizes="(max-width: 1024px) 100vw, 1024px" data-original-src="https://towardsdatascience.com/wp-content/uploads/2025/02/1_S7emqxgrROrusM2R4K0N2w-1024x261.webp"/><figcaption class="wp-element-caption">Reasoning like human do</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph" id="ec3e">Remember I said in the “Real-life Case” section, that as a next step, the agent should <strong><em>“reason that compensation varies with flight distance”</em></strong>? The <code>Grade documents</code> step is exactly for this purpose.</p>
+
+
+
+<p class="wp-block-paragraph" id="a6bb">Given the <code>new_documents</code>, the agent will try to output two items:</p>
+
+
+
+<ol class="wp-block-list">
+<li class="wp-block-list-item"><code>useful_documents</code>: Comparing the question asked, it determines if the documents are useful, and retain a memory for those deemed useful for future reference. As an example, since our question does not concern compensation policies for US, documents describing those are discarded, leaving only those for EU</li>
+
+
+
+<li class="wp-block-list-item"><code>hypothesis</code>: Based on the documents, the agent forms a hypothesis about how the question can be answered, that is, flight distance needs to be identified</li>
+</ol>
+
+
+
+<p class="wp-block-paragraph" id="3055">Notice how the above reasoning resembles human thinking! But still, while these outputs are useful, we need to instruct the agent to use them as input for performing the next document retrieval. Without this, the answer provided in <code>Generate answer</code> is still not useful.</p>
+
+
+
+<blockquote class="wp-block-quote is-layout-flow wp-block-quote-is-layout-flow">
+<p class="wp-block-paragraph" id="5e39"><code>useful_documents</code> are appended for each document retrieval loop, instead of being overwritten, to keep a memory of documents that are previously deemed useful. <code>hypothesis</code> is formed from <code>useful_documents</code> and <code>new_documents</code> to provide an “abstract reasoning” to inform how query is to be transformed subsequently.</p>
+
+
+
+<p class="wp-block-paragraph" id="8496">The <code>hypothesis</code> is especially useful when no useful documents can be identified initially, as the agent can still form hypothesis from documents not immediately deemed as useful / only bearing indirect relationship to the question at hand, for informing what questions to ask next</p>
+</blockquote>
+
+
+
+<h3 class="wp-block-heading" id="2ecf">3rd iteration: Brainstorm new questions to ask</h3>
+
+
+
+<figure class="wp-block-image size-large"><img data-dominant-color="f7f6f2" data-has-transparency="false" style="--dominant-color: #f7f6f2;" loading="lazy" decoding="async" width="1024" height="355" src="../Images/e10e387b4e93a2f996674eeedb99da62.png" alt="" class="wp-image-598565 not-transparent" srcset="https://towardsdatascience.com/wp-content/uploads/2025/02/1_xI3fGpV0M6BfLPIZDtD_2Q-1024x355.webp 1024w, https://towardsdatascience.com/wp-content/uploads/2025/02/1_xI3fGpV0M6BfLPIZDtD_2Q-300x104.webp 300w, https://towardsdatascience.com/wp-content/uploads/2025/02/1_xI3fGpV0M6BfLPIZDtD_2Q-768x266.webp 768w, https://towardsdatascience.com/wp-content/uploads/2025/02/1_xI3fGpV0M6BfLPIZDtD_2Q.webp 1320w" sizes="auto, (max-width: 1024px) 100vw, 1024px" data-original-src="https://towardsdatascience.com/wp-content/uploads/2025/02/1_xI3fGpV0M6BfLPIZDtD_2Q-1024x355.webp"/><figcaption class="wp-element-caption">Suggest questions for additional information retrieval</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph" id="c68b">We have the agent reflect upon whether the answer is useful and grounded in context. If not, it should proceed to <code>Transform query</code> to ask further questions.</p>
+
+
+
+<p class="wp-block-paragraph" id="75ea">The output <code>new_queries</code> will be a list of new questions that the agent consider useful for obtaining extra information. Given the <code>useful_documents</code> (compensation policies for EU), and <code>hypothesis</code> (need to identify flight distance between Delhi and Munich), it asks questions like <strong>“What is the distance between Delhi and Munich?”</strong></p>
+
+
+
+<p class="wp-block-paragraph" id="487a">Now we are ready to use the <code>new_queries</code> for further retrieval!</p>
+
+
+
+<blockquote class="wp-block-quote is-layout-flow wp-block-quote-is-layout-flow">
+<p class="wp-block-paragraph" id="016e">The <code>transform_query</code> node will use <code>useful_documents</code> (which are accumulated per iteration, instead of being overwritten) and <code>hypothesis</code> as input for providing the agent directions to ask new questions.</p>
+
+
+
+<p class="wp-block-paragraph" id="91bc">The new questions will be a list of questions (instead of a single question) separated from the original <code>question</code>, so that the original question is kept in state, otherwise the agent could lose track of the original question after multiple iterations.</p>
+</blockquote>
+
+
+
+<h3 class="wp-block-heading" id="d80b">Final iteration: Further retrieval with new questions</h3>
+
+
+
+<figure class="wp-block-image size-large"><img data-dominant-color="f5f5f2" data-has-transparency="false" style="--dominant-color: #f5f5f2;" loading="lazy" decoding="async" width="1024" height="439" src="../Images/1f4824fc416826a22d6095aaec8d7db3.png" alt="" class="wp-image-598566 not-transparent" srcset="https://towardsdatascience.com/wp-content/uploads/2025/02/1_g2kgeEqpTlWhHntGo7ip6Q-1024x439.webp 1024w, https://towardsdatascience.com/wp-content/uploads/2025/02/1_g2kgeEqpTlWhHntGo7ip6Q-300x129.webp 300w, https://towardsdatascience.com/wp-content/uploads/2025/02/1_g2kgeEqpTlWhHntGo7ip6Q-768x329.webp 768w, https://towardsdatascience.com/wp-content/uploads/2025/02/1_g2kgeEqpTlWhHntGo7ip6Q.webp 1126w" sizes="auto, (max-width: 1024px) 100vw, 1024px" data-original-src="https://towardsdatascience.com/wp-content/uploads/2025/02/1_g2kgeEqpTlWhHntGo7ip6Q-1024x439.webp"/><figcaption class="wp-element-caption">Issuing new queries to retrieve extra documents</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph" id="2e3f">The output <code>new_queries</code> from <code>Transform query</code> will be passed to the <code>Retrieve documents</code> step, forming a retrieval loop.</p>
+
+
+
+<p class="wp-block-paragraph" id="7d3a">Since the question <strong><em>“What is the distance between Delhi and Munich?”</em></strong><em> </em>is asked, we can expect the flight distance is then retrieved as <code>new_documents</code>, and subsequently graded as <code>useful_documents</code>, further used as an input for <code>Generate answer</code>.</p>
+
+
+
+<blockquote class="wp-block-quote is-layout-flow wp-block-quote-is-layout-flow">
+<p class="wp-block-paragraph" id="0784">The <em><code>grade_documents</code></em> node will compare the documents against both the original <em><code>question</code></em> and <em><code>new_questions</code></em> list, so that documents that are considered useful for <em><code>new_questions</code></em>, even if not so for the original <em><code>question</code></em>, are kept.</p>
+
+
+
+<p class="wp-block-paragraph" id="e4f0">This is because those documents might help answer the original <em><code>question</code></em> indirectly, by being relevant to <em><code>new_questions</code> (like “</em>What is the distance between Delhi and Munich?”)</p>
+</blockquote>
+
+
+
+<figure class="wp-block-image size-large"><img data-dominant-color="f5f5f4" data-has-transparency="false" style="--dominant-color: #f5f5f4;" loading="lazy" decoding="async" width="1024" height="412" src="../Images/a4599bfbe5c468cb77be822740654429.png" alt="" class="wp-image-598567 not-transparent" srcset="https://towardsdatascience.com/wp-content/uploads/2025/02/1_6CPIMb3V8A2dOOyR8N89Uw-1024x412.webp 1024w, https://towardsdatascience.com/wp-content/uploads/2025/02/1_6CPIMb3V8A2dOOyR8N89Uw-300x121.webp 300w, https://towardsdatascience.com/wp-content/uploads/2025/02/1_6CPIMb3V8A2dOOyR8N89Uw-768x309.webp 768w, https://towardsdatascience.com/wp-content/uploads/2025/02/1_6CPIMb3V8A2dOOyR8N89Uw.webp 1251w" sizes="auto, (max-width: 1024px) 100vw, 1024px" data-original-src="https://towardsdatascience.com/wp-content/uploads/2025/02/1_6CPIMb3V8A2dOOyR8N89Uw-1024x412.webp"/><figcaption class="wp-element-caption">Final answer!</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph" id="a411">Equipped with this new context about flight distance, the agent is now ready to provide the right answer: <strong>600 EUR</strong>!</p>
+
+
+
+<p class="wp-block-paragraph" id="ea2b">Next, let us now dive into the code to see how this multi-agent RAG application is created.</p>
+
+
+
+<h2 class="wp-block-heading" id="df4e">Implementation</h2>
+
+
+
+<p class="wp-block-paragraph" id="b681">The source code can be found <a href="https://github.com/yip-kl/enhanced-self-rag" rel="noreferrer noopener" target="_blank">here</a>. Our multi-agent RAG application involves iterations and loops, and LangGraph is a great library for building such complex multi-agent application. If you are not familiar with LangGraph, you are strongly suggested to have a look at <a href="https://langchain-ai.github.io/langgraph/tutorials/introduction/" rel="noreferrer noopener" target="_blank">LangGraph’s Quickstart guide</a> to understand more about it!</p>
+
+
+
+<p class="wp-block-paragraph" id="f661">To keep this article concise, I will focus on the key code snippets only.</p>
+
+
+
+<p class="wp-block-paragraph" id="c0af"><strong>Important note</strong>: I am using OpenRouter as the <a href="https://towardsdatascience.com/tag/llm/">Llm</a> interface, but the code can be easily adapted for other LLM interfaces. Also, while in my code I am using Claude 3.5 Sonnet as model, you can use any LLM as long as it support <code>tools</code> as parameter (check this list <a href="https://openrouter.ai/models?fmt=cards&amp;order=newest&amp;supported_parameters=tools" rel="noreferrer noopener" target="_blank">here</a>), so you can also run this with other models, like DeepSeek V3 and OpenAI o1!</p>
+
+
+
+<h3 class="wp-block-heading" id="ab53">State definition</h3>
+
+
+
+<p class="wp-block-paragraph" id="3879">In the previous section, I have defined various elements e.g. <code>new_documents</code>, <code>hypothesis</code> that are to be passed to each step (aka <strong>Nodes</strong>), in LangGraph’s terminology these elements are called <strong>State</strong>.</p>
+
+
+
+<p class="wp-block-paragraph" id="3a1d">We define the State formally with the following snippet.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">from typing import List, Annotated
+from typing_extensions import TypedDict
+
+def append_to_list(original: list, new: list) -&gt; list:
+    original.append(new)
+    return original
+
+def combine_list(original: list, new: list) -&gt; list:
+    return original + new
+
+class GraphState(TypedDict):
+    """
+    Represents the state of our graph.
+
+    Attributes:
+        question: question
+        generation: LLM generation
+        new_documents: newly retrieved documents for the current iteration
+        useful_documents: documents that are considered useful
+        graded_documents: documents that have been graded
+        new_queries: newly generated questions
+        hypothesis: hypothesis
+    """
+
+    question: str
+    generation: str
+    new_documents: List[str]
+    useful_documents: Annotated[List[str], combine_list]
+    graded_documents: List[str]
+    new_queries: Annotated[List[str], append_to_list]
+    hypothesis: str</code></pre>
+
+
+
+<h3 class="wp-block-heading" id="188d">Graph definition</h3>
+
+
+
+<p class="wp-block-paragraph" id="5fc4">This is where we combine the different steps to form a “<strong>Graph</strong>”, which is a representation of our multi-agent application. The definitions of various steps (e.g. <code>grade_documents</code>) are represented by their respective functions.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">from langgraph.graph import END, StateGraph, START
+from langgraph.checkpoint.memory import MemorySaver
+from IPython.display import Image, display
+
+workflow = StateGraph(GraphState)
+
+# Define the nodes
+workflow.add_node("retrieve", retrieve)  # retrieve
+workflow.add_node("grade_documents", grade_documents)  # grade documents
+workflow.add_node("generate", generate)  # generatae
+workflow.add_node("transform_query", transform_query)  # transform_query
+
+# Build graph
+workflow.add_edge(START, "retrieve")
+workflow.add_edge("retrieve", "grade_documents")
+workflow.add_conditional_edges(
+    "grade_documents",
+    decide_to_generate,
+    {
+        "transform_query": "transform_query",
+        "generate": "generate",
+    },
+)
+workflow.add_edge("transform_query", "retrieve")
+workflow.add_conditional_edges(
+    "generate",
+    grade_generation_v_documents_and_question,
+    {
+        "useful": END,
+        "not supported": "transform_query",
+        "not useful": "transform_query",
+    },
+)
+
+# Compile
+memory = MemorySaver()
+app = workflow.compile(checkpointer=memory)
+display(Image(app.get_graph(xray=True).draw_mermaid_png()))</code></pre>
+
+
+
+<p class="wp-block-paragraph" id="4135">Running the above code, you should see this graphical representation of our RAG application. Notice how it is essentially equivalent to the graph I have shown in the final iteration of “Enhanced Self-RAG Strategy”!</p>
+
+
+
+<figure class="wp-block-image size-full"><img data-dominant-color="f8f7fa" data-has-transparency="false" style="--dominant-color: #f8f7fa;" loading="lazy" decoding="async" width="515" height="557" src="../Images/99ab0d879d190453a2a3b3a254c62213.png" alt="" class="wp-image-598568 not-transparent" srcset="https://towardsdatascience.com/wp-content/uploads/2025/02/1_bRGuqH1Zm577pt6nDJIPWQ.webp 515w, https://towardsdatascience.com/wp-content/uploads/2025/02/1_bRGuqH1Zm577pt6nDJIPWQ-277x300.webp 277w" sizes="auto, (max-width: 515px) 100vw, 515px" data-original-src="https://towardsdatascience.com/wp-content/uploads/2025/02/1_bRGuqH1Zm577pt6nDJIPWQ.webp"/><figcaption class="wp-element-caption">Visualizing the multi-agent RAG graph</figcaption></figure>
+
+
+
+<blockquote class="wp-block-quote is-layout-flow wp-block-quote-is-layout-flow">
+<p class="wp-block-paragraph" id="baed">After <code>generate</code>, if the answer is considered “not supported”, the agent will proceed to <code>transform_query</code> intead of to <code>generate</code> again, so that the agent will look for additional information rather than trying to regenerate answers based on existing context, which might not suffice for providing a “supported” answer</p>
+</blockquote>
+
+
+
+<p class="wp-block-paragraph" id="7519">Now we are ready to put the multi-agent application to test! With the below code snippet, we ask this question <code>how much can I receive if I am denied boarding, for flights from Delhi to Munich?</code></p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">from pprint import pprint
+config = {"configurable": {"thread_id": str(uuid4())}}
+
+# Run
+inputs = {
+    "question": "how much can I receive if I am denied boarding, for flights from Delhi to Munich?",
+    }
+for output in app.stream(inputs, config):
+    for key, value in output.items():
+        # Node
+        pprint(f"Node '{key}':")
+        # Optional: print full state at each node
+        # print(app.get_state(config).values)
+    pprint("\n---\n")
+
+# Final generation
+pprint(value["generation"])</code></pre>
+
+
+
+<p class="wp-block-paragraph" id="f058">While output might vary (sometimes the application provides the answer without any iterations, because it “guessed” the distance between Delhi and Munich), it should look something like this, which shows the application went through multiple rounds of data retrieval for RAG.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">---RETRIEVE---
+"Node 'retrieve':"
+'\n---\n'
+---CHECK DOCUMENT RELEVANCE TO QUESTION---
+---GRADE: DOCUMENT NOT RELEVANT---
+---GRADE: DOCUMENT RELEVANT---
+---GRADE: DOCUMENT NOT RELEVANT---
+---GRADE: DOCUMENT NOT RELEVANT---
+---ASSESS GRADED DOCUMENTS---
+---DECISION: GENERATE---
+"Node 'grade_documents':"
+'\n---\n'
+---GENERATE---
+---CHECK HALLUCINATIONS---
+'---DECISION: GENERATION IS NOT GROUNDED IN DOCUMENTS, RE-TRY---'
+"Node 'generate':"
+'\n---\n'
+---TRANSFORM QUERY---
+"Node 'transform_query':"
+'\n---\n'
+---RETRIEVE---
+"Node 'retrieve':"
+'\n---\n'
+---CHECK DOCUMENT RELEVANCE TO QUESTION---
+---GRADE: DOCUMENT NOT RELEVANT---
+---GRADE: DOCUMENT NOT RELEVANT---
+---GRADE: DOCUMENT RELEVANT---
+---GRADE: DOCUMENT NOT RELEVANT---
+---GRADE: DOCUMENT NOT RELEVANT---
+---GRADE: DOCUMENT NOT RELEVANT---
+---GRADE: DOCUMENT NOT RELEVANT---
+---ASSESS GRADED DOCUMENTS---
+---DECISION: GENERATE---
+"Node 'grade_documents':"
+'\n---\n'
+---GENERATE---
+---CHECK HALLUCINATIONS---
+---DECISION: GENERATION IS GROUNDED IN DOCUMENTS---
+---GRADE GENERATION vs QUESTION---
+---DECISION: GENERATION ADDRESSES QUESTION---
+"Node 'generate':"
+'\n---\n'
+('Based on the context provided, the flight distance from Munich to Delhi is '
+ '5,931 km, which falls into the long-distance category (over 3,500 km). '
+ 'Therefore, if you are denied boarding on a flight from Delhi to Munich '
+ 'operated by an EU airline, you would be eligible for 600 Euro compensation, '
+ 'provided that:\n'
+ '1. The flight is operated by an EU airline\n'
+ '2. There is no force majeure\n'
+ '3. Other applicable conditions are met\n'
+ '\n'
+ "However, it's important to note that this compensation amount is only valid "
+ 'if all the required conditions are met as specified in the regulations.')</code></pre>
+
+
+
+<p class="wp-block-paragraph" id="be75">And the final answer is what we aimed for!</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-">Based on the context provided, the flight distance from Munich to Delhi is
+5,931 km, which falls into the long-distance category (over 3,500 km).
+Therefore, if you are denied boarding on a flight from Delhi to Munich
+operated by an EU airline, you would be eligible for 600 Euro compensation,
+provided that:
+1. The flight is operated by an EU airline
+2. There is no force majeure
+3. Other applicable conditions are met
+
+However, it's important to note that this compensation amount is only valid
+if all the required conditions are met as specified in the regulations.</code></pre>
+
+
+
+<p class="wp-block-paragraph" id="6d83">Inspecting the State, we see how the <code>hypothesis</code> and <code>new_queries</code> enhance the effectiveness of our multi-agent RAG application by mimicking human thinking process.</p>
+
+
+
+<p class="wp-block-paragraph" id="bc4b"><strong>Hypothesis</strong></p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">print(app.get_state(config).values.get('hypothesis',""))</code></pre>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-">--- Output ---
+To answer this question accurately, I need to determine:
+
+1. Is this flight operated by an EU airline? (Since Delhi is non-EU and Munich is EU)
+2. What is the flight distance between Delhi and Munich? (To determine compensation amount)
+3. Are we dealing with a denied boarding situation due to overbooking? (As opposed to delay/cancellation)
+
+From the context, I can find information about compensation amounts based on distance, but I need to verify:
+- If the flight meets EU compensation eligibility criteria
+- The exact distance between Delhi and Munich to determine which compensation tier applies (250€, 400€, or 600€)
+- If denied boarding compensation follows the same amounts as delay compensation
+
+The context doesn't explicitly state compensation amounts specifically for denied boarding, though it mentions overbooking situations in the EU require offering volunteers re-routing or refund options.
+
+Would you like me to proceed with the information available, or would you need additional context about denied boarding compensation specifically?</code></pre>
+
+
+
+<p class="wp-block-paragraph" id="a30b"><strong>New Queries</strong></p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">for questions_batch in app.get_state(config).values.get('new_queries',""):
+    for q in questions_batch:
+        print(q)</code></pre>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-">--- Output ---
+What is the flight distance between Delhi and Munich?
+Does EU denied boarding compensation follow the same amounts as flight delay compensation?
+Are there specific compensation rules for denied boarding versus flight delays for flights from non-EU to EU destinations?
+What are the compensation rules when flying with non-EU airlines from Delhi to Munich?
+What are the specific conditions that qualify as denied boarding under EU regulations?</code></pre>
+
+
+
+<h2 class="wp-block-heading" id="71a4">Conclusion</h2>
+
+
+
+<p class="wp-block-paragraph" id="fac8">Simple RAG, while easy to build, might fall short in tackling real-life questions. By incorporating human thinking process into a multi-agent RAG framework, we are making RAG applications much more practical.</p>
+
+
+
+<p class="wp-block-paragraph" id="04e2"><em>*Unless otherwise noted, all images are by the author</em></p>
+
+
+
+<hr class="wp-block-separator has-alpha-channel-opacity"/>
+    
+</body>
+</html>

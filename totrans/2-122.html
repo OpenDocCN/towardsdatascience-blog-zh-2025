@@ -1,0 +1,555 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.1//EN"
+  "http://www.w3.org/TR/xhtml11/DTD/xhtml11.dtd">
+
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+<title>Advanced Topic Modeling with LLMs</title>
+<link href="../Styles/Style.css" type="text/css" rel="stylesheet"/>
+</head>
+<body>
+<h1>Advanced Topic Modeling with LLMs</h1>
+<blockquote>原文：<a href="https://towardsdatascience.com/advanced-topic-modeling-with-llms/">https://towardsdatascience.com/advanced-topic-modeling-with-llms/</a></blockquote>
+<h2 class="wp-block-heading"><mdspan datatext="el1752776036552" class="mdspan-comment">Introduction</mdspan></h2>
+
+
+
+<p class="wp-block-paragraph">This article is a continuation of topic modeling open-source intelligence (OSINT) from the OpenAlex API. In a previous article, I give an introduction into topic modeling, the data used, and a traditional NLP approach using Latent Dirichlet Allocation (LDA).</p>
+
+
+
+<p class="wp-block-paragraph"><em>See the previous article here:</em></p>
+
+
+
+<figure class="wp-block-embed is-type-wp-embed is-provider-towards-data-science wp-block-embed-towards-data-science"><div class="wp-block-embed__wrapper">
+<blockquote class="wp-embedded-content" data-secret="zjf4dy0AaN"><a href="https://towardsdatascience.com/topic-modeling-open-source-research-with-the-openalex-api-5191c7db9156/">Topic Modeling Open-Source Research with the OpenAlex API</a></blockquote>
+</div></figure>
+
+
+
+<p class="wp-block-paragraph">This article uses a more advanced approach of topic modeling by leveraging representation models, generative AI, and other advanced techniques. <strong>We leverage BERTopic to bring several models together into one pipeline, visualize our topics, and explore variations of topic models.</strong></p>
+
+
+
+<figure class="wp-block-image aligncenter size-full is-resized"><img decoding="async" src="../Images/1416962c4acb8bec1f346a589887ca76.png" alt="" class="wp-image-609217" style="width:680px;height:auto" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/07/image-159.png"/><figcaption class="wp-element-caption">Image by Author</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph"><em><mdspan datatext="el1753117843766" class="mdspan-comment">The data used comes from the OpenAlex API (<a href="https://openalex.org/">https://openalex.org/</a>). This is a dataset/catalogue of open-source research from around the world. The data is freely accessible under a No Rights Reserved license (CC0 license).</mdspan></em></p>
+
+
+
+<hr class="wp-block-separator has-alpha-channel-opacity is-style-dotted"/>
+
+
+
+<h2 class="wp-block-heading">The BERTopic Pipeline</h2>
+
+
+
+<p class="wp-block-paragraph">Using a traditional approach to topic modeling can be difficult, needing to build your own pipeline to clean your data, tokenize, lemmatize, create features, etc. Traditional models like LDA or LSA are also computationally expensive and often yield poor results.</p>
+
+
+
+<p class="wp-block-paragraph"><strong>BERTopic leverages the transformer architecture through embedding models, and incorporates other components like dimensionality reduction and topic representation models, to create high-performing topic models.</strong> BERTopic also provides variations of models to fit a variety of data and use cases, visualizations to explore results, and more.</p>
+
+
+
+<figure class="wp-block-image aligncenter size-full"><img decoding="async" src="../Images/92f02b547867d9aa262bc66880fda71e.png" alt="" class="wp-image-609219" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/07/image-160.png"/><figcaption class="wp-element-caption">Image by Author</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph" id="296c"><strong>The biggest advantage of BERTopic is its modularity.</strong> Seen above, the pipeline is comprised of several different models:</p>
+
+
+
+<ol class="wp-block-list">
+<li class="wp-block-list-item">Embedding model</li>
+
+
+
+<li class="wp-block-list-item">Dimensionality Reduction model</li>
+
+
+
+<li class="wp-block-list-item">Clustering model</li>
+
+
+
+<li class="wp-block-list-item">Tokenizer</li>
+
+
+
+<li class="wp-block-list-item">Weighting Scheme</li>
+
+
+
+<li class="wp-block-list-item">Representation model (optional)</li>
+</ol>
+
+
+
+<p class="wp-block-paragraph">Therefore, we can experiment with different models in each component, each with its own parameters. For example, we can try different embedding models, switch the dimensionality reduction from PCA to UMAP, or try fine-tuning the parameters on our clustering model. This is a huge advantage that allows us to fit a topic model to our data and use case.</p>
+
+
+
+<hr class="wp-block-separator has-alpha-channel-opacity is-style-dotted"/>
+
+
+
+<p class="wp-block-paragraph">First, we need to import to necessary modules. Most of these are to build the components of our BERTopic model.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">#import packages for data management
+import pickle
+
+#import packages for topic modeling
+from bertopic import BERTopic
+from bertopic.representation import KeyBERTInspired
+from bertopic.vectorizers import ClassTfidfTransformer
+from sentence_transformers import SentenceTransformer
+from umap.umap_ import UMAP
+from hdbscan import HDBSCAN
+from sklearn.feature_extraction.text import CountVectorizer
+
+#import packages for data manipulation and visualization
+import pandas as pd
+import matplotlib.pyplot as plt
+from scipy.cluster import hierarchy as sch</code></pre>
+
+
+
+<h2 class="wp-block-heading">Embedding Model</h2>
+
+
+
+<p class="wp-block-paragraph">The main component of the BERTopic model is the embedding model. First, we initialize the model using the sentence transformer. You can then specify the embedding model you would like to use.</p>
+
+
+
+<p class="wp-block-paragraph">In this case, I am using a relatively small model (~30 million parameters). While we can probably get better results using larger embedding models, I decided to use a smaller model to emphasize speed in this pipeline. <em>You can find and compare embedding models based on their size, performance, intended use, etc. by using the MTEB leaderboard from Hugging Face (</em><a href="https://huggingface.co/spaces/mteb/leaderboard" target="_blank" rel="noreferrer noopener"><em>https://huggingface.co/spaces/mteb/leaderboard</em></a><em>).</em></p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">#initalize embedding model
+embedding_model = SentenceTransformer('thenlper/gte-small')
+
+#calculate embeddings
+embeddings = embedding_model.encode(data['all_text'].tolist(), show_progress_bar=True)</code></pre>
+
+
+
+<p class="wp-block-paragraph">Once we run our model, we can use the .shape function to see the size of the vectors produced. Below, we can see that each embedding contains 384 values which make up the meaning of each document.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">#invesigate shape and size of vectors
+embeddings.shape
+
+#output: (6102, 384)</code></pre>
+
+
+
+<h2 class="wp-block-heading">Dimensionality Reduction Model</h2>
+
+
+
+<p class="wp-block-paragraph">The next component of the BERTopic model is the dimensionality reduction model. As high-dimensional data can be troublesome to model, we can use a dimensionality reduction model to represent the embeddings in a lower dimensional representation without losing too much information.</p>
+
+
+
+<figure class="wp-block-image size-full"><img decoding="async" src="../Images/766b0340fd7eae8e62898b6ca5759e31.png" alt="" class="wp-image-609847" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/07/image-179.png"/><figcaption class="wp-element-caption">Image by Author</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">There are several different types of dimensionality reduction models, with Principal Component Analysis (PCA) being the most popular. In this case, we will use a Uniform Manifold Approximation and Projection (UMAP) model. <strong>The UMAP model is a non-linear model and is likely to better handle the complex relationships in our data better than PCA.</strong></p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">#initialize dimensionality reduction model and reduce embeddings
+umap_model = UMAP(n_neighbors=5, min_dist=0.0, metric='cosine', random_state=42)
+reduced_embeddings = umap_model.fit_transform(embeddings)</code></pre>
+
+
+
+<p class="wp-block-paragraph">It is important to note that dimensionality reduction is not a solve-all for high-dimensional data. Dimensionality reduction presents a tradeoff between speed and accuracy as information is lost. These models need to be well-thought out and experimented with to avoid losing too much information while maintaining speed and scalability.</p>
+
+
+
+<h2 class="wp-block-heading">Clustering Model</h2>
+
+
+
+<p class="wp-block-paragraph">The third step is to use the reduced embeddings and create clusters. While clustering is not usually necessary for topic modeling, <strong>we can leverage density-based clustering models to isolate outliers and eliminate noise in our data</strong>. Below, we initialize the Hierarchical Density-Based Spatial Clustering of Applications with Noise (HDBSCAN) model and create our clusters.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">#initialize clustering model and cluster
+hdbscan_model = HDBSCAN(min_cluster_size=30, metric='euclidean', cluster_selection_method='eom').fit(reduced_embeddings)
+clusters = hdbscan_model.labels_</code></pre>
+
+
+
+<p class="wp-block-paragraph">A density-based approach gives us a few advantages. Documents are not forced into clusters that they shouldn’t be assigned to, therefore isolating outliers and reducing noise in our data. Also, as opposed to centroid-based models, we do not specify the number of clusters, and clusters are more likely to be well-defined.</p>
+
+
+
+<p class="wp-block-paragraph"><em>See my guide to clustering algorithms:</em></p>
+
+
+
+<figure class="wp-block-embed is-type-wp-embed is-provider-towards-data-science wp-block-embed-towards-data-science"><div class="wp-block-embed__wrapper">
+<blockquote class="wp-embedded-content" data-secret="VBsfBnjrGB"><a href="https://towardsdatascience.com/a-guide-to-clustering-algorithms-e28af85da0b7/">A Guide to Clustering Algorithms</a></blockquote>
+</div></figure>
+
+
+
+<p class="wp-block-paragraph">See the code below to visualize the results of the clustering model.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">#create dataframe of reduced embeddings and clusters
+df = pd.DataFrame(reduced_embeddings, columns = ['x', 'y'])
+df['Cluster'] = [str(c) for c in clusters]
+
+#split between clusters and outliers
+to_plot = df.loc[df.Cluster != '-1', :]
+outliers = df.loc[df.Cluster == '-1', :]
+
+#plot clusters
+plt.scatter(outliers.x, outliers.y, alpha = 0.05, s = 2, c = 'grey')
+plt.scatter(to_plot.x, to_plot.y, alpha = 0.6, s = 2, c = to_plot.Cluster.astype(int), cmap = 'tab20b')
+plt.axis('off')</code></pre>
+
+
+
+<figure class="wp-block-image aligncenter size-full"><img decoding="async" src="../Images/178b7ef86f0be4ca47c15ce1d38cef34.png" alt="" class="wp-image-609848" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/07/image-180.png"/><figcaption class="wp-element-caption">Image by Author</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">We can see well-defined clusters that do not overlap. We can also see some smaller clusters group together to make up higher-level topics. Lastly, we can see several documents are greyed out and identified as outliers.</p>
+
+
+
+<hr class="wp-block-separator has-alpha-channel-opacity is-style-dotted"/>
+
+
+
+<h2 class="wp-block-heading">Creating a BERTopic Pipeline</h2>
+
+
+
+<p class="wp-block-paragraph">We now have the necessary components to build our BERTopic pipeline (embedding model, dimensionality reduction model, clustering model). We can use the models we have initialized and fit them to our data using the BERTopic function.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">#use models above to BERTopic pipeline
+topic_model = BERTopic(
+  embedding_model=embedding_model,          # Step 1 - Extract embeddings
+  umap_model=umap_model,                    # Step 2 - Reduce dimensionality
+  hdbscan_model=hdbscan_model,              # Step 3 - Cluster reduced embeddings
+  verbose = True).fit(data['all_text'].tolist(), embeddings)</code></pre>
+
+
+
+<p class="wp-block-paragraph">Since I know I ingested papers about human-machine interfaces (augmented reality, virtual reality), let’s see which topic align to the term “augmented reality”.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">#topics most similar to 'augmented reality'
+topic_model.find_topics("augmented reality")
+
+#output: ([18, 3, 16, 24, 12], [0.9532771, 0.9498462, 0.94966936, 0.9451431, 0.9417263])</code></pre>
+
+
+
+<p class="wp-block-paragraph">From the output above, we can see that topics 18, 3, 16, 24, and 12 highly align to the term “augmented reality”. <strong>All these topic should (hopefully) contribute to the broader theme of augmented reality, but each cover a different aspect.</strong></p>
+
+
+
+<p class="wp-block-paragraph">To confirm this, let’s investigate the topic representations. <strong>A topic representation is a list of terms that aims to properly represent the underlying theme of the topic.</strong> For example, the terms “cake”, “candles”, “family”, and “presents” may collectively represent the topic of birthdays or birthday parties.</p>
+
+
+
+<p class="wp-block-paragraph">We can use the get_topic() function to investigate the representation of topic 18.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">#investigate topic 18
+topic_model.get_topic(18)</code></pre>
+
+
+
+<figure class="wp-block-image aligncenter size-full"><img decoding="async" src="../Images/606854111652d5f35d4e32a275edf48e.png" alt="" class="wp-image-609850" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/07/image-181.png"/><figcaption class="wp-element-caption">Image by Author</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">In the above representation, we see some useful terms like “reality”, “virtual”, “augmented”, etc. However, this is not useful as a whole, as we see several stop words like “and” and “the”. This is because BERTopic uses Bag of Words as the default way to represent topics. This representation may also match other representations about augmented reality.</p>
+
+
+
+<p class="wp-block-paragraph"><strong>Next, we will improve our BERTopic pipeline to create more meaningful topic representations that are give us more insight into these themes.</strong></p>
+
+
+
+<hr class="wp-block-separator has-alpha-channel-opacity is-style-dotted"/>
+
+
+
+<h2 class="wp-block-heading">Improving Topic Representations</h2>
+
+
+
+<p class="wp-block-paragraph">We can improve the topic representations by adding a weighting scheme, which will highlight the most important terms and better differentiate our topics.</p>
+
+
+
+<p class="wp-block-paragraph">This does not replace the Bag of Words model, but improves upon it. Below we add a TF-IDF model to better determine the importance of each term. We use the update_topics() function to update our pipeline.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">#initialize tokenizer model
+vectorizer_model = CountVectorizer(stop_words="english")
+
+#initialize ctfidf model to weight terms
+ctfidf_model = ClassTfidfTransformer()
+
+#add tokenizer and ctfidf to pipeline
+topic_model.update_topics(data['all_text'].tolist(), vectorizer_model=vectorizer_model, ctfidf_model=ctfidf_model)</code></pre>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">#investigate how topic representations have changed
+topic_model.get_topic(18)</code></pre>
+
+
+
+<figure class="wp-block-image aligncenter size-full"><img decoding="async" src="../Images/b60449fd3946e139ef5dd88bb3f29c1e.png" alt="" class="wp-image-609851" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/07/image-182.png"/><figcaption class="wp-element-caption">Image by Author</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">With TF-IDF, these topic representations are much more useful. We can see that the meaningless stop words are gone, other terms appear that help describe the topic, and terms are reordered by their importance.</p>
+
+
+
+<p class="wp-block-paragraph">But we do not have to stop here. Thanks to countless new developments in the world of AI and NLP, there are methods we can leverage to fine-tune these representations.</p>
+
+
+
+<p class="wp-block-paragraph" id="7406">To fine-tune, we can take one of two approaches:</p>
+
+
+
+<ol class="wp-block-list">
+<li class="wp-block-list-item">A representation model</li>
+
+
+
+<li class="wp-block-list-item">A generative model</li>
+</ol>
+
+
+
+<h2 class="wp-block-heading">Fine-Tuning with a Representation Model</h2>
+
+
+
+<p class="wp-block-paragraph">First, let’s add the KeyBERTInspired model as our representation model. <strong>This leverages BERT to compare the semantic similarity of the TF-IDF representations with the documents themselves to better determine the relevance of each term, rather than the importance.</strong></p>
+
+
+
+<p class="wp-block-paragraph"><em>See all representation model options here: </em><a href="https://maartengr.github.io/BERTopic/getting_started/representation/representation.html#keybertinspired" target="_blank" rel="noreferrer noopener"><em>https://maartengr.github.io/BERTopic/getting_started/representation/representation.html#keybertinspired</em></a></p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">#initilzae representation model and add to pipeline
+representation_model = KeyBERTInspired()
+topic_model.update_topics(data['all_text'].tolist(), vectorizer_model=vectorizer_model, ctfidf_model=ctfidf_model, representation_model=representation_model)</code></pre>
+
+
+
+<figure class="wp-block-image aligncenter size-full"><img decoding="async" src="../Images/fe094ce3404f3d974b81faaeb9f9717e.png" alt="" class="wp-image-609852" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/07/image-183.png"/><figcaption class="wp-element-caption">Image by Author</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">Here, we see a fairly major change in the terms, with some additional terms and acronyms. Comparing this to the TF-IDF representation, we again get a better understanding of what this topic is about. Also notice that the scores changed from the TF-IDF weights, which did not have any meaning without context, to scores between 0–1. These new scores represent the semantic similarity scores.</p>
+
+
+
+<h2 class="wp-block-heading">Topic Model Visualizations</h2>
+
+
+
+<p class="wp-block-paragraph">Before we move to generative models for fine-tuning, let’s explore some of the visualizations that BERTopic offers. Visualizing topic models is crucial in understanding your data and how the model is working.</p>
+
+
+
+<p class="wp-block-paragraph">First, we can visualize our topics in a 2-dimensional space, allowing us to see the size of topics and what other topics are similar. Below, we can see we have many topics, with clusters of topics making up larger themes. We can also see a topic that is large and isolated, indicating that there is a lot of similar research regarding crispr.</p>
+
+
+
+<figure class="wp-block-image aligncenter size-full"><img decoding="async" src="../Images/5a51d0c4de027f7c15ece04b1bda9b85.png" alt="" class="wp-image-609853" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/07/image-184.png"/><figcaption class="wp-element-caption">Image by Author</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">Let’s zoom into these clusters of topics to see how they break down higher-level themes. Below, we zoom into topics regarding augmented and virtual reality and see how some topics cover different domains and applications.</p>
+
+
+
+<figure class="wp-block-image size-full"><img decoding="async" src="../Images/ef757f6991da50d2ce34aede148255cd.png" alt="" class="wp-image-609854" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/07/image-185.png"/><figcaption class="wp-element-caption">Image by Author</figcaption></figure>
+
+
+
+<figure class="wp-block-image size-full"><img decoding="async" src="../Images/1883b754eb457b60c47277fa5992610b.png" alt="" class="wp-image-609855" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/07/image-186.png"/><figcaption class="wp-element-caption">Image by Author</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">We can also quickly visualize the most important or most relevant terms in each topic. Again, this is dependent on your approach to the topic representations.</p>
+
+
+
+<figure class="wp-block-image size-full"><img decoding="async" src="../Images/66ecd85405fb5b5ff8f9727b527776ae.png" alt="" class="wp-image-609856" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/07/image-187.png"/><figcaption class="wp-element-caption">Image by Author</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">We can also use a heatmap to explore the similarity between topics.</p>
+
+
+
+<figure class="wp-block-image size-full"><img decoding="async" src="../Images/b16d6c5a01ff061e794e02e75ca32b35.png" alt="" class="wp-image-609857" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/07/image-188.png"/><figcaption class="wp-element-caption">Image by Author</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">These are just a few of the visualizations that BERTopic offers. <em>See the full list here: </em><a href="https://maartengr.github.io/BERTopic/getting_started/visualization/visualization.html" target="_blank" rel="noreferrer noopener"><em>https://maartengr.github.io/BERTopic/getting_started/visualization/visualization.html</em></a></p>
+
+
+
+<h2 class="wp-block-heading">Leveraging Generative Models</h2>
+
+
+
+<p class="wp-block-paragraph">For our last step of fine-tuning our topic representations, we can leverage generative AI to produce representations that are coherent descriptions of the topic.</p>
+
+
+
+<p class="wp-block-paragraph"><strong>BERTopic offers an easy way to leverage OpenAI’s GPT models to interact with the topic model. </strong>We first establish a prompt that shows the model the data and the current representation of the topics. We then ask it to generate a short label for each topic.</p>
+
+
+
+<p class="wp-block-paragraph">We then initialize the client and model, and update our pipeline.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">import openai
+from bertopic.representation import OpenAI
+
+#promt for GPT to create topic labels
+prompt = """
+I have a topic that contains the following documents:
+[DOCUMENTS]
+
+The topic is described by the following key words: [KEYWORDS]
+
+Based on the information above, extract a short topic label in the following format:
+topic: &lt;short topic label&gt;
+"""
+
+#import GPT
+client = openai.OpenAI(api_key='API KEY')
+
+#add GPT as representation model
+representation_model = OpenAI(client, model = 'gpt-3.5-turbo', exponential_backoff=True, chat=True, prompt=prompt)
+topic_model.update_topics(data['all_text'].tolist(), representation_model=representation_model)</code></pre>
+
+
+
+<p class="wp-block-paragraph">Now, let’s go back to the augmented reality topic.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">#investigate how topic representations have changed
+topic_model.get_topic(18)
+
+#output: [('Comparative analysis of virtual and augmented reality for immersive analytics',1)]</code></pre>
+
+
+
+<p class="wp-block-paragraph">The topic representation now reads “Comparative analysis of virtual and augmented reality for immersive analytics”. <strong>The topic is now much more clear, as we can see the objectives, technologies, and domain included in these documents.</strong></p>
+
+
+
+<p class="wp-block-paragraph">Below is the full list of our new topic representations.</p>
+
+
+
+<figure class="wp-block-image size-full"><img decoding="async" src="../Images/f1a220b6dcaff4169d165f640f782474.png" alt="" class="wp-image-609858" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/07/image-189.png"/><figcaption class="wp-element-caption">Image by Author</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">It does not take much code to see how powerful generative AI is in supporting our topic model and its representations. It is of course extremely important to dig deeper and validate these outputs as you build your model and to do plenty of experimentation with different models, parameters, and approaches.</p>
+
+
+
+<h2 class="wp-block-heading">Leveraging Topic Models Variations</h2>
+
+
+
+<p class="wp-block-paragraph">Lastly, BERTopic provides several variations of topic models to provide solutions for different data and use cases. These include time-series, hierarchical, supervised, semi-supervised, and many more.</p>
+
+
+
+<p class="wp-block-paragraph"><em>See the full list and documentation here: </em><a href="https://maartengr.github.io/BERTopic/getting_started/topicsovertime/topicsovertime.html" target="_blank" rel="noreferrer noopener"><em>https://maartengr.github.io/BERTopic/getting_started/topicsovertime/topicsovertime.html</em></a></p>
+
+
+
+<p class="wp-block-paragraph">Let’s quickly explore one of these possibilities with hierarchical topic modeling. Below, we create a linkage function using scipy, which establishes distances between our topics. We can easily fit it to our data and visualize the hierarchy of topics.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">#create linkages between topics
+linkage_function = lambda x: sch.linkage(x, 'single', optimal_ordering=True)
+hierarchical_topics = topic_model.hierarchical_topics(data['all_text'], linkage_function=linkage_function)
+
+#visualize topic model hierarchy
+topic_model.visualize_hierarchy(hierarchical_topics=hierarchical_topics)</code></pre>
+
+
+
+<figure class="wp-block-image size-full" datatext=""><img decoding="async" src="../Images/cd3a924b3f90753f73062d76ad32bd63.png" alt="" class="wp-image-609859" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/07/image-190.png"/><figcaption class="wp-element-caption">Image by Author</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">In the visualization above, we can see how topics put themselves together to create broader and broader topics. For example, we see topics 25 and 30 come together to form “Smart Cities and Sustainable Development”. This model provides an awesome capability of being able to zoom in and out and deciding how broad or narrow we would like our topics to be.</p>
+
+
+
+<hr class="wp-block-separator has-alpha-channel-opacity is-style-dotted"/>
+
+
+
+<h2 class="wp-block-heading">Conclusion</h2>
+
+
+
+<p class="wp-block-paragraph">In this article, we got to see the power of BERTopic for topic modeling. BERTopics use of transformers and embedding models dramatically improves results from traditional approaches. The BERTopic pipeline also offers both power and modularity, leveraging several models and allowing you to plug-in other models to fit your data. All of these models can be fine-tuned and put together to create a powerful topic model.</p>
+
+
+
+<p class="wp-block-paragraph">You can also integrate representation and generative models to improve topic representations and improve interpretability. BERTopic also offers several visualizations to truly explore your data and validate your model. Lastly, BERTopic offers several variations of topic modeling, like time-series or hierarchical topic modeling, to better fit your use case.</p>
+
+
+
+<hr class="wp-block-separator has-alpha-channel-opacity is-style-dotted"/>
+
+
+
+<p class="wp-block-paragraph" id="c8a5"><em>I hope you have enjoyed my article! Please feel free to comment, ask questions, or request other topics.</em></p>
+
+
+
+<p class="wp-block-paragraph" id="173f"><em>Connect with me on LinkedIn: </em><a href="https://www.linkedin.com/in/alexdavis2020/" rel="noreferrer noopener" target="_blank"><em>https://www.linkedin.com/in/alexdavis2020/</em></a></p>
+    
+</body>
+</html>

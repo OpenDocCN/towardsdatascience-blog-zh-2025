@@ -1,0 +1,174 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.1//EN"
+  "http://www.w3.org/TR/xhtml11/DTD/xhtml11.dtd">
+
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+<title>Build Your First API with Python and AWS</title>
+<link href="../Styles/Style.css" type="text/css" rel="stylesheet"/>
+</head>
+<body>
+<h1>Build Your First API with Python and AWS</h1>
+<blockquote>原文：<a href="https://towardsdatascience.com/build-your-first-api-with-python-and-aws-09f13bc7b62c/">https://towardsdatascience.com/build-your-first-api-with-python-and-aws-09f13bc7b62c/</a></blockquote><figure class="wp-block-image size-large"><img data-dominant-color="797157" data-has-transparency="false" style="--dominant-color: #797157;" decoding="async" width="2560" height="1700" src="../Images/055648d95e29abe339a7b06e3df6543c.png" alt="Photo by Lucas Campoi on Unsplash" class="wp-image-596510 not-transparent" srcset="https://towardsdatascience.com/wp-content/uploads/2025/01/0r9J2LI_qPZSN3Lyw-scaled.jpg 2560w, https://towardsdatascience.com/wp-content/uploads/2025/01/0r9J2LI_qPZSN3Lyw-300x199.jpg 300w, https://towardsdatascience.com/wp-content/uploads/2025/01/0r9J2LI_qPZSN3Lyw-1024x680.jpg 1024w, https://towardsdatascience.com/wp-content/uploads/2025/01/0r9J2LI_qPZSN3Lyw-768x510.jpg 768w, https://towardsdatascience.com/wp-content/uploads/2025/01/0r9J2LI_qPZSN3Lyw-1536x1020.jpg 1536w, https://towardsdatascience.com/wp-content/uploads/2025/01/0r9J2LI_qPZSN3Lyw-2048x1360.jpg 2048w" sizes="(max-width: 2560px) 100vw, 2560px" data-original-src="https://towardsdatascience.com/wp-content/uploads/2025/01/0r9J2LI_qPZSN3Lyw-scaled.jpg"/><figcaption class="wp-element-caption">Photo by <a href="https://unsplash.com/@campoilucas?utm_source=medium&amp;utm_medium=referral">Lucas Campoi</a> on <a href="https://unsplash.com?utm_source=medium&amp;utm_medium=referral">Unsplash</a></figcaption></figure>
+<h2 class="wp-block-heading">Introduction</h2>
+<p class="wp-block-paragraph">Today, we’re going to take a small deviation from the normal Snowflake and Data Warehouse-centric concepts in this article. We’ll walk through the creation of your own API that sits on top of data stored in another type of database, DynamoDB, and then build a small web front end to test it.</p>
+<p class="wp-block-paragraph">You’ve probably coded against numerous APIs in your day-to-day work, but what is it like to create your own? In this article, we’ll show you how you can create an API giving you some additional exposure to how a cloud service works, but also hopefully giving you inspiration for building your own in the future.</p>
+<p class="wp-block-paragraph">The following is a diagram of what we’re going to build today: An API that is hosted in an AWS Lambda, all written in Python, and connected to the super powerful DynamoDB. The API is then exposed through the AWS API Gateway which allows us to add protections such as rate-limiting to our API. We also used Route 53 (their domain management tool) and CloudWatch for logging.</p>
+<p class="wp-block-paragraph">Let’s jump in!</p>
+<figure class="wp-block-image size-large"><img data-dominant-color="eee5ee" data-has-transparency="false" style="--dominant-color: #eee5ee;" decoding="async" width="800" height="340" src="../Images/40556e8db72789af370aa4384a07639f.png" alt="Image by Author" class="wp-image-596511 not-transparent" srcset="https://towardsdatascience.com/wp-content/uploads/2025/01/0Z3EQALqToj7ohDRS.png 800w, https://towardsdatascience.com/wp-content/uploads/2025/01/0Z3EQALqToj7ohDRS-300x128.png 300w, https://towardsdatascience.com/wp-content/uploads/2025/01/0Z3EQALqToj7ohDRS-768x326.png 768w" sizes="(max-width: 800px) 100vw, 800px" data-original-src="https://towardsdatascience.com/wp-content/uploads/2025/01/0Z3EQALqToj7ohDRS.png"/><figcaption class="wp-element-caption">Image by Author</figcaption></figure>
+<h2 class="wp-block-heading">Why an API?</h2>
+<p class="wp-block-paragraph">As mentioned, you’ve most certainly used APIs before. But how are they built and how do they work to help you get access to your data? Let’s start off with some of the potential advantages.</p>
+<ul class="wp-block-list">
+<li><strong>Abstraction and Decoupling</strong>: An API abstracts the underlying schema, so users don’t need to understand anything about how the data is stored or how to query the system. You’re also able to centralize business rules, validation, and transformations, preventing duplication of logic.</li>
+<li><strong>Enhanced Security</strong>: With an API, you are limiting how users can get at your data and how they can interact with it – Can they update records? Can they delete? Whatever you want to expose, you can through the API, preventing unwanted mistakes. Additionally, you can implement Rate Limits and Throttling, which prevents abuse of the service.</li>
+<li><strong>Maintainability</strong>: By adding versioning to your API ( /v1, /v2 ), you can safely evolve your application without breaking older versions. And a huge advantage is that you could swap out where the data is stored (maybe you want to move to MySQL or Snowflake later), and the API can remain 100% compatible for clients. You just need to change where the data is retrieved from in the API layer.</li>
+<li><strong>Cross-Platform Access</strong>: Finally – An API like we’re building here is compatible with any programming language on Windows, Mac, Linux, and Mobile.</li>
+</ul>
+<h2 class="wp-block-heading">Storing Data in DynamoDB</h2>
+<p class="wp-block-paragraph">For this application, I chose <a href="https://aws.amazon.com/dynamodb/">DynamoDB</a>. DynamoDB is honestly incredible, and having some exposure to it is a must. It’s referred to as a NoSQL, key-value store. There are a lot of different versions of databases like this, but this is one of the most popular. It doesn’t look like a series of tables and doesn’t support your typical SQL syntax or generally the idea of joining tables together. Rather, Dynamo prefers schemas that are <a href="https://www.geeksforgeeks.org/denormalization-in-databases/">denormalized</a> and, if possible, all stored in a single table. Because of this, some use cases are certainly not appropriate for it. <a href="https://www.reddit.com/r/aws/comments/177sfoz/when_would_you_use_dynamodb_over_rds/">Read up</a> a bit on when you can and shouldn’t use this type of database before picking it.</p>
+<p class="wp-block-paragraph">To get started, we need to create a new table in the DynamoDB console called Items. The only setting you need to deal with at this time is setting the Partition Key to <code>id</code>, which will represent the unique identifier for our data.</p>
+<p class="wp-block-paragraph">After that, we can use the <a href="https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html">AWS CLI</a> to add items to our new table. You’ll notice that we don’t have to define any of the schema up front like we do with SQL; we simply add the key-value pairs and specify their data types when adding them. Simple as that.</p>
+<pre class="wp-block-prismatic-blocks"><code class="language-bash">aws dynamodb put-item 
+      --table-name Items 
+      --item '{
+      "id": {"S": "2"},
+      "id": {"S": "6ec6736f-ae36-4091-9cc0-1d8a98babee1"},
+      "name": {"S": "Smartphone"},
+      "description": {"S": "Latest model with 5G capability"}
+      }'</code></pre>
+<p class="wp-block-paragraph">You can repeat that process with creating four or five additional items to get started.</p>
+<p class="wp-block-paragraph">Note: the Unique Identifier is created as <a href="https://en.wikipedia.org/wiki/Universally_unique_identifier">UUID4</a> values. You can use Python or any number of <a href="https://www.uuidgenerator.net/">sites</a> on the internet to create one. This is a wonderful practice with any data identifiers you need, since there is a near-zero chance of collision between ones that are created, and you do not have to keep track of order or previously created value. Just simply generate a new one.</p>
+<h2 class="wp-block-heading">Building Routes with FastAPI</h2>
+<p class="wp-block-paragraph">For our API, we’re going to use the library <a href="https://fastapi.tiangolo.com/">FastAPI</a>. FastAPI is a simple yet production-quality API in Python. First off, let’s define what a Route is in FastAPI. A Route defines a specific endpoint (or URL path) that a client can access, along with the HTTP method (e.g., GET, POST, PUT, DELETE) used to interact with that endpoint. Let’s take a look at a very simple one for a health check:</p>
+<pre class="wp-block-prismatic-blocks"><code class="language-python">app = FastAPI ()
+
+@app.get("/health")
+async def health():
+    logger.info("Health check endpoint accessed")
+    return {"status": "healthy"}</code></pre>
+<p class="wp-block-paragraph">That’s it in its most basic form! The <code>@app.get</code> decorator tells the incoming request what to do when the <code>&lt;URL&gt;/health</code> is pinged. And the GET is the HTTP method. We can continue this pattern with all of the other endpoints we want to add, such as listing all items, creating a new item, editing an item, and deleting an item; also known as CRUD operations. Let’s look at the get all items route.</p>
+<pre class="wp-block-prismatic-blocks"><code class="language-python">@app.get("/items", response_model=List[Dict[str, Any]])
+async def get_items(table: Any = Depends(get_dynamodb)):
+    logger.info("Handling GET request for all items")
+    # Add request path logging
+    logger.info("FastAPI root_path: %s", app.root_path)
+    logger.info("FastAPI routes: %s", [route.path for route in app.routes])
+    try:
+        response = table.scan()
+        items = response.get("Items", [])
+        logger.info(f"Successfully retrieved {len(items)} items")
+        return items
+    except ClientError as e:
+        --- ERROR HANDLING HERE ---</code></pre>
+<p class="wp-block-paragraph">This process repeats itself for each of the endpoints you want to implement. You simply need to make sure you’re picking the correct HTTP method and calling the proper DynamoDB APIs for performing the operation on the data.</p>
+<h2 class="wp-block-heading">Creating a Lambda Function</h2>
+<p class="wp-block-paragraph">Next we want to wrap our APIs in the code needed to deploy this as a Lambda Function. Fortunately there is not that much involved with migrating a normal set of Python code to a Lambda. One of the main things we can do is ensure that we have logging implemented. We can use the standard Python logger module, anything done with this package will automatically be written to CloudWatch.</p>
+<pre class="wp-block-prismatic-blocks"><code class="language-python"># Configure logging for CloudWatch
+logger = logging.getLogger()
+logger.setLevel(logging.INFO)
+# Lambda automatically captures logs from stdout/stderr and sends to CloudWatch
+formatter = logging.Formatter(
+    "%(asctime)s | %(levelname)s | %(name)s:%(funcName)s:%(lineno)d - %(message)s"
+)
+handler = logging.StreamHandler()
+handler.setFormatter(formatter)
+logger.addHandler(handler)</code></pre>
+<p class="wp-block-paragraph">The last step we need to do for this application is leverage a package called Mangum. The Mangum package acts as an adapter to bridge an ASGI (Asynchronous Server Gateway Interface) framework (like FastAPI) with AWS Lambda and API Gateway. It essentially allows you to deploy ASGI applications to AWS Lambda as serverless functions.</p>
+<p class="wp-block-paragraph">Normally, an ASGI framework like FastAPI requires a persistent server to run (e.g., Uvicorn). However, AWS Lambda is event-driven and ephemeral, without a persistent server running in the background. Mangum bridges this gap by allowing FastAPI to function as an AWS Lambda handler. This is all done with a few lines of code.</p>
+<pre class="wp-block-prismatic-blocks"><code class="language-python">from mangum import Mangum
+
+# Create Lambda handler with API Gateway v2 configuration
+lambda_handler = Mangum(app, lifespan="off", api_gateway_base_path="/default")</code></pre>
+<h2 class="wp-block-heading">Building the Lambda Function</h2>
+<p class="wp-block-paragraph">First, create a new Lambda Function from the AWS Console. Give it an appropriate name and make sure to select the proper runtime environment, Python, and whichever version suits your application. After the function is created, the one setting you probably want to change is the timeout. Its default is 3 seconds, and you can safely change that to 30 seconds. This setting can be found under General Configuration.</p>
+<h2 class="wp-block-heading">Creating the Function</h2>
+<figure class="wp-block-image size-large"><img data-dominant-color="f4f5f7" data-has-transparency="false" style="--dominant-color: #f4f5f7;" loading="lazy" decoding="async" width="800" height="402" src="../Images/ffd19b40b7040cc08e00feb8507440c3.png" alt="Image by Author" class="wp-image-596512 not-transparent" srcset="https://towardsdatascience.com/wp-content/uploads/2025/01/0bONjXm6_oPH5bWur.png 800w, https://towardsdatascience.com/wp-content/uploads/2025/01/0bONjXm6_oPH5bWur-300x151.png 300w, https://towardsdatascience.com/wp-content/uploads/2025/01/0bONjXm6_oPH5bWur-768x386.png 768w" sizes="auto, (max-width: 800px) 100vw, 800px" data-original-src="https://towardsdatascience.com/wp-content/uploads/2025/01/0bONjXm6_oPH5bWur.png"/><figcaption class="wp-element-caption">Image by Author</figcaption></figure>
+<h2 class="wp-block-heading">Granting Table Access</h2>
+<p class="wp-block-paragraph">You will need to grant access to the DynamoDB table you created above by attaching an inline policy to the role that was created along with your Lambda function. You can navigate there from the Lambda function from the Configuration tab and the Permissions section.</p>
+<figure class="wp-block-image size-large"><img data-dominant-color="f5f7f9" data-has-transparency="false" style="--dominant-color: #f5f7f9;" loading="lazy" decoding="async" width="800" height="297" src="../Images/2a0dd8787bcfde4126806e90b2969374.png" alt="Image by Author" class="wp-image-596513 not-transparent" srcset="https://towardsdatascience.com/wp-content/uploads/2025/01/0IwiUY7WuxYFtb9X2.png 800w, https://towardsdatascience.com/wp-content/uploads/2025/01/0IwiUY7WuxYFtb9X2-300x111.png 300w, https://towardsdatascience.com/wp-content/uploads/2025/01/0IwiUY7WuxYFtb9X2-768x285.png 768w" sizes="auto, (max-width: 800px) 100vw, 800px" data-original-src="https://towardsdatascience.com/wp-content/uploads/2025/01/0IwiUY7WuxYFtb9X2.png"/><figcaption class="wp-element-caption">Image by Author</figcaption></figure>
+<pre class="wp-block-prismatic-blocks"><code class="language-json">{
+    "Version": "2012-10-17",
+    "Statement": [
+        {
+            "Effect": "Allow",
+            "Action": [
+                "dynamodb:GetItem",
+                "dynamodb:PutItem",
+                "dynamodb:DeleteItem",
+                "dynamodb:Scan",
+                "dynamodb:Query",
+                "dynamodb:UpdateItem"
+            ],
+            "Resource": "arn:aws:dynamodb:*:*:table/Items"
+        }
+    ]
+}</code></pre>
+<h2 class="wp-block-heading">Deploying the Function</h2>
+<p class="wp-block-paragraph">Deploying a Lambda function requires that you package up everything needed for your function in a zip file, including libraries that AWS may not have readily available in the Lambda environment. Since Lambdas have a file size limitation, do NOT package up libraries that are <a href="https://gist.github.com/gene1wood/4a052f39490fae00e0c3">already installed</a>, such as boto3, the Python AWS SDK.</p>
+<p class="wp-block-paragraph">To simplify this, you can create a Bash script that does all of the packaging for you. Simply run this to deploy your script and any updates.</p>
+<pre class="wp-block-prismatic-blocks"><code class="language-bash">#!/bin/bash
+
+# Remove existing files
+rm -rf package lambda.zip lvenv
+
+# Create and activate virtual environment
+python3.9 -m venv lvenv
+source lvenv/bin/activate
+
+# Create package directory
+mkdir -p package
+
+# Install dependencies
+pip install -r requirements.txt --target ./package
+
+# Copy lambda function to package directory
+cp lambda_function.py ./package/
+
+# Create deployment package
+cd package &amp;amp;&amp;amp; zip -r ../lambda.zip . &amp;amp;&amp;amp; cd ..
+
+# Cleanup
+deactivate
+rm -rf lvenv package
+
+# Update Lambda function
+aws lambda update-function-code --function-name DynamoAPI --zip-file fileb://lambda.zip</code></pre>
+<h2 class="wp-block-heading">Expose Endpoints with the API Gateway</h2>
+<p class="wp-block-paragraph">The final step here is to expose our Lambda function with the AWS API Gateway. We first start by attaching a new API Gateway to the Lambda function from the Lambda function page in the AWS Console. Select Add Trigger and then choose API Gateway. From here, create a New API Gateway and select HTTP API and set the Security to Open.</p>
+<p class="wp-block-paragraph">The next and most critical step of this process is to map the routes to your Lambda function. This is a simple process you can do from the API Gateway console. Navigate to your newly created gateway and select Routes from the sidebar. Create a new route for each of the routes in your Lambda function. You can additionally include ones that are autogenerated by FastAPI, such as <code>/docs</code>.</p>
+<p class="wp-block-paragraph">After you have added all your routes, navigate to the Integrations section via the sidebar and then for each route, attach the Lambda function to the endpoint. This will tell the API gateway what to fire when it receives a request from the route.</p>
+<p class="wp-block-paragraph"><strong>Note</strong>: You can also set up custom rate limits for your API from the console under Throttling.</p>
+<figure class="wp-block-image size-large"><img data-dominant-color="f0f4f3" data-has-transparency="true" style="--dominant-color: #f0f4f3;" loading="lazy" decoding="async" width="2138" height="1366" src="../Images/16caaef46c34669d7696095cb7b5cf7b.png" alt="Image by Author" class="wp-image-596514 has-transparency" srcset="https://towardsdatascience.com/wp-content/uploads/2025/01/0Y9oNgBp0AZFispwd.png 2138w, https://towardsdatascience.com/wp-content/uploads/2025/01/0Y9oNgBp0AZFispwd-300x192.png 300w, https://towardsdatascience.com/wp-content/uploads/2025/01/0Y9oNgBp0AZFispwd-1024x654.png 1024w, https://towardsdatascience.com/wp-content/uploads/2025/01/0Y9oNgBp0AZFispwd-768x491.png 768w, https://towardsdatascience.com/wp-content/uploads/2025/01/0Y9oNgBp0AZFispwd-1536x981.png 1536w, https://towardsdatascience.com/wp-content/uploads/2025/01/0Y9oNgBp0AZFispwd-2048x1308.png 2048w" sizes="auto, (max-width: 2138px) 100vw, 2138px" data-original-src="https://towardsdatascience.com/wp-content/uploads/2025/01/0Y9oNgBp0AZFispwd.png"/><figcaption class="wp-element-caption">Image by Author</figcaption></figure>
+<h2 class="wp-block-heading">Testing Your API with Streamlit</h2>
+<p class="wp-block-paragraph">If you’re a regular reader of this blog, you know that we’re a huge fan of Streamlit. It’s so easy to build a quick UI for data-driven apps. So, of course, we used that to build out a little test harness for our API.</p>
+<p class="wp-block-paragraph">One of the core concepts you will use when you work with a RESTful API is <code>requests</code>. This package allows you to make the various web API calls that we set up in our API. Let’s take a look at the first one, the GET Items Route.</p>
+<pre class="wp-block-prismatic-blocks"><code class="language-python">Import requests
+
+# Configure API URL
+API_URL = "https://api.dataknowsall.com"
+
+# Fetch items from API
+try:
+    response = requests.get(f"{API_URL}/items")
+    response.raise_for_status()  # Raise an exception for bad status codes
+    items = response.json()</code></pre>
+<p class="wp-block-paragraph">You’ll see in the try block that we use requests.get and simply directly call the API. This will return <code>JSON</code> that contains the results of your query. In our case, we can simply make a Pandas DataFrame directly from this and display it in Streamlit with the <code>st.dataframe()</code> function.</p>
+<p class="wp-block-paragraph">When it comes to the other verbs for our API ( <code>POST, PUT, DELETE</code>), we can follow a similar convention. Let’s take a look at the code for <code>EDIT</code>.</p>
+<pre class="wp-block-prismatic-blocks"><code class="language-python"># Create the updated item dictionary
+updated_item = {
+    'id': selected_item['id'],
+    'name': name,
+    'description': description
+}
+
+# Update item using API
+response = requests.put(f"{API_URL}/items/{selected_item['id']}", json=updated_item)</code></pre>
+<p class="wp-block-paragraph">To update a record we utilize <code>requests.put</code> and then pass it the URL per our API specification, and finally include the <code>JSON</code> needed to update the item. In this case, we only have three fields in our table, and we can simply create a dictionary with the key-value pairs that we want to update.</p>
+<p class="wp-block-paragraph">Note: The Add Item API is the exact same pattern except you use <code>requests.post</code>.</p>
+<figure class="wp-block-image size-large"><img data-dominant-color="e5e6e8" data-has-transparency="true" style="--dominant-color: #e5e6e8;" loading="lazy" decoding="async" width="800" height="744" src="../Images/06ff4995ddb882df4d7dd0b27250660a.png" alt="Image by Author" class="wp-image-596515 has-transparency" srcset="https://towardsdatascience.com/wp-content/uploads/2025/01/0wyhxrPaaiHE9aWTP.png 800w, https://towardsdatascience.com/wp-content/uploads/2025/01/0wyhxrPaaiHE9aWTP-300x279.png 300w, https://towardsdatascience.com/wp-content/uploads/2025/01/0wyhxrPaaiHE9aWTP-768x714.png 768w" sizes="auto, (max-width: 800px) 100vw, 800px" data-original-src="https://towardsdatascience.com/wp-content/uploads/2025/01/0wyhxrPaaiHE9aWTP.png"/><figcaption class="wp-element-caption">Image by Author</figcaption></figure>
+<p class="wp-block-paragraph">As always, feel free to check out the full working source code on <a href="https://github.com/broepke/dynamo-api">GitHub</a>. This is a really fun application for you to try on your own! There are some additional setup and configuration steps in the README for the repo, which might be helpful if you’re trying to set up your own.</p>
+<h2 class="wp-block-heading">Conclusion</h2>
+<p class="wp-block-paragraph">In conclusion, building your own API on top of DynamoDB using AWS services like Lambda and API Gateway is not only a rewarding experience but also a practical skill that can enhance your understanding of cloud-based applications. By following the steps outlined in this article, you have learned how to create a robust and scalable API that can be easily integrated with various platforms. Whether you’re looking to streamline data access, improve security, or simply explore new technologies, this project offers a comprehensive introduction to API development in a serverless environment. As you continue to experiment and refine your skills, remember that the possibilities are endless, and the knowledge gained here can be applied to countless other projects. Happy coding!</p>
+<p class="wp-block-paragraph"><em>If you enjoy reading stories like these and want to support me as a writer, consider signing up to become a Medium member. It’s $5 a month, with unlimited access to thousands of articles. If you sign up using <a href="https://medium.com/@broepke/membership">my link</a>, I’ll earn a small commission at no extra cost.</em></p>    
+</body>
+</html>

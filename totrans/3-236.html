@@ -1,0 +1,1113 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.1//EN"
+  "http://www.w3.org/TR/xhtml11/DTD/xhtml11.dtd">
+
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+<title>Advanced Time Intelligence in DAX with Performance in Mind</title>
+<link href="../Styles/Style.css" type="text/css" rel="stylesheet"/>
+</head>
+<body>
+<h1>Advanced Time Intelligence in DAX with Performance in Mind</h1>
+<blockquote>原文：<a href="https://towardsdatascience.com/advanced-time-intelligence-in-dax-with-performance-in-mind/">https://towardsdatascience.com/advanced-time-intelligence-in-dax-with-performance-in-mind/</a></blockquote>
+<p class="wp-block-paragraph">We all know the usual Time Intelligence function based on years, quarters, months, and days. But sometimes, we need to perform more exotic timer intelligence calculations. But we should not forget to consider performance while programming the measures. </p>
+
+
+
+<h2 class="wp-block-heading">Introduction </h2>
+
+
+
+<p class="wp-block-paragraph"><strong>Update 27. </strong><span style="margin: 0px; padding: 0px;"><strong>Dec. 2025:</strong> With the advent of Calendar-based Time Intelligence, several of the solutions presented here are obsolete.</span><br/>You can learn more about these in my piece here:</p>
+
+
+
+<p class="wp-block-paragraph"><a href="https://towardsdatascience.com/use-cases-for-the-new-calendar-based-time-intelligence/">https://towardsdatascience.com/use-cases-for-the-new-calendar-based-time-intelligence/</a> </p>
+
+
+
+<p class="wp-block-paragraph">But the new approach still has some flaws. Therefore, I keep this one online.</p>
+
+
+
+<p class="wp-block-paragraph">—– end of update —-</p>
+
+
+
+<p class="wp-block-paragraph">There are many DAX functions in Power BI for Time Intelligence Measures. </p>
+
+
+
+<p class="wp-block-paragraph">The most common are: </p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item"><code>&lt;a href="https://dax.guide/dateadd/"&gt;DATEADD()&lt;/a&gt; </code></li>
+
+
+
+<li class="wp-block-list-item"><a href="https://dax.guide/datesmtd/">DATESMTD()</a>, <a href="https://dax.guide/datesqtd/">DATESQTD()</a> and <a href="https://dax.guide/datesytd/">DATESYTD()</a> and the shortcut functions <a href="https://dax.guide/totalmtd/">TOTALMTD()</a>, <a href="https://dax.guide/totalqtd/">TOTALQTD()</a> and <a href="https://dax.guide/totalytd/">TOTALYTD()</a> </li>
+
+
+
+<li class="wp-block-list-item"><a href="https://dax.guide/parallelperiod/">PARALLELPERIOD()</a> </li>
+
+
+
+<li class="wp-block-list-item"><a href="https://dax.guide/previousday/">PREVIOUSDAY()</a>, <a href="https://dax.guide/previousmonth/">PREVIOUSMONTH()</a>, <a href="https://dax.guide/previousquarter/">PREVIOUSQUARTER(</a>), and <a href="https://dax.guide/previousyear/">PREVIOUSYEAR()</a></li>
+
+
+
+<li class="wp-block-list-item"><a href="https://dax.guide/sameperiodlastyear/">SAMEPERIODLASTYEAR()</a> </li>
+</ul>
+
+
+
+<p class="wp-block-paragraph">You can find a comprehensive list of Time Intelligence functions here: <a href="https://dax.guide/functions/time-intelligence/">Time Intelligence – DAX Guide</a>. These functions cover the most common cases. </p>
+
+
+
+<p class="wp-block-paragraph">However, some requirements cannot be easily covered with these functions. And here we are. </p>
+
+
+
+<p class="wp-block-paragraph">I want to cover some of these cases I encountered in my projects, which include: </p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">Last n Periods and some variants </li>
+
+
+
+<li class="wp-block-list-item">How to cope with Leap years </li>
+
+
+
+<li class="wp-block-list-item">Week-to-Date calculations </li>
+
+
+
+<li class="wp-block-list-item">Calculating Weekly sums </li>
+
+
+
+<li class="wp-block-list-item">Fiscal Week YTD </li>
+</ul>
+
+
+
+<p class="wp-block-paragraph">I will show you how to use an extended date table to support these scenarios and improve efficiency and performance. </p>
+
+
+
+<p class="wp-block-paragraph">Most Time-Intelligence functions work regardless of whether the Fiscal Year is aligned with the calendar year. One exception is Year-to-Date (YTD). </p>
+
+
+
+<p class="wp-block-paragraph">For such cases, look at the DATESYTD() function mentioned above. There, you will find the optional parameter to pass the last day of the Fiscal year. </p>
+
+
+
+<p class="wp-block-paragraph">The last case will cover calculations based on weeks, while the Fiscal year doesn’t align with the calendar year. </p>
+
+
+
+<h2 class="wp-block-heading">Scenario </h2>
+
+
+
+<p class="wp-block-paragraph">I will use the well-known ContosoRetailDW data model.</p>
+
+
+
+<p class="wp-block-paragraph">The Base Measure is Sum Online Sales, which has the following code: </p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">Sum Online Sales = SUMX('Online Sales',
+ ( 'Online Sales'[UnitPrice]
+            * 'Online Sales'[SalesQuantity] ) 
+                         - 'Online Sales'[DiscountAmount] )</code></pre>
+
+
+
+<p class="wp-block-paragraph">I will work almost exclusively in <a href="https://www.sqlbi.com/tools/dax-studio/">DAX-Studio</a>, which provides the Server Timing function to analyze the performance of the DAX code. In the References section below, you can find a link to an article about how to collect and interpret performance data in DAX Studio. </p>
+
+
+
+<p class="wp-block-paragraph">This is the base query used in my examples to get some data from the data model: </p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">EVALUATE 
+ CALCULATETABLE( 
+ SUMMARIZECOLUMNS('Date'[Year] 
+ ,'Date'[Month Short Name] 
+,'Date'[Week] 
+,'Date'[Date] 
+,"Online Sales", [Sum Online Sales] 
+) 
+ ,'Product'[ProductCategoryName] = "Computers" ,'Product'[ProductSubcategoryName] = "Laptops" 
+,'Customer'[Continent] = "North America" 
+ ,'Customer'[Country] = "United States"  ,'Customer'[State/Province] = "Texas" )
+</code></pre>
+
+
+
+<p class="wp-block-paragraph">In most examples, I will remove some filters to get more complete data (for each day). </p>
+
+
+
+<h2 class="wp-block-heading">Date table </h2>
+
+
+
+<p class="wp-block-paragraph">My date table includes a relatively large number of additional columns. </p>
+
+
+
+<p class="wp-block-paragraph">In the references section below, you can find some articles written by SQLBI, on building weekly related calculations, including creating a date table to support these calculations. </p>
+
+
+
+<p class="wp-block-paragraph">As described in my article about date tables referenced below, I have added the following columns: </p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">Index or Offset columns to count the days, weeks, months, quarters, semesters, and years from the current date. </li>
+
+
+
+<li class="wp-block-list-item">Flag columns to mark the current day, week, month, quarter, semester, and year based on the current date. </li>
+
+
+
+<li class="wp-block-list-item">This and the previous columns require a daily recalculation to ensure the correct date is used as the reference date. </li>
+
+
+
+<li class="wp-block-list-item">Start- and End-Dates of each week and month (Add more if needed). </li>
+
+
+
+<li class="wp-block-list-item">Start- and End-Dates for the Fiscal Year. </li>
+
+
+
+<li class="wp-block-list-item">Previous year dates to include the start and end dates of the current period. This is especially interesting for weeks, as the start- and end dates of the weeks are not the same from year to year. </li>
+</ul>
+
+
+
+<p class="wp-block-paragraph">As you will see, I will use these columns extensively to simplify my calculations.</p>
+
+
+
+<p class="wp-block-paragraph">In addition, we will use the Calendar Hierarchy to calculate the needed results at different levels of the hierarchy. </p>
+
+
+
+<p class="wp-block-paragraph">A complete Calendar hierarchy contains either: </p>
+
+
+
+<ol class="wp-block-list">
+<li class="wp-block-list-item">Year </li>
+
+
+
+<li class="wp-block-list-item">Semester </li>
+
+
+
+<li class="wp-block-list-item">Quarter </li>
+
+
+
+<li class="wp-block-list-item">Month </li>
+
+
+
+<li class="wp-block-list-item">Day </li>
+</ol>
+
+
+
+<p class="wp-block-paragraph">Or </p>
+
+
+
+<ol class="wp-block-list">
+<li class="wp-block-list-item">Year </li>
+
+
+
+<li class="wp-block-list-item">Week </li>
+
+
+
+<li class="wp-block-list-item">Day </li>
+</ol>
+
+
+
+<p class="wp-block-paragraph">If the Fiscal Year doesn’t align with the Calendar year, I built the Hierarchy with the Fiscal Year instead of the Calendar Year. </p>
+
+
+
+<p class="wp-block-paragraph">Then, I added a separate FiscalMonthName column and a FiscalMonthSort column to ensure that the first month of the fiscal year was shown first. </p>
+
+
+
+<p class="wp-block-paragraph">OK, let’s start with the first case. </p>
+
+
+
+<h2 class="wp-block-heading">Last n periods </h2>
+
+
+
+<p class="wp-block-paragraph">This scenario calculates the rolling sum of values over the past n periods. </p>
+
+
+
+<p class="wp-block-paragraph">For example, for each day, we want to get the Sales for the last 10 days: </p>
+
+
+
+<figure class="wp-block-image size-large is-resized"><img data-dominant-color="e0e3e5" data-has-transparency="true" decoding="async" width="1024" height="634" src="../Images/00a9e6eb589ebc848a5a123c06b530bb.png" alt="" class="wp-image-598127 has-transparency" style="--dominant-color: #e0e3e5; width:582px;height:auto" srcset="https://towardsdatascience.com/wp-content/uploads/2025/02/Screenshot-2025-02-19-at-11.40.18 AM-1024x634.png 1024w, https://towardsdatascience.com/wp-content/uploads/2025/02/Screenshot-2025-02-19-at-11.40.18 AM-300x186.png 300w, https://towardsdatascience.com/wp-content/uploads/2025/02/Screenshot-2025-02-19-at-11.40.18 AM-768x475.png 768w, https://towardsdatascience.com/wp-content/uploads/2025/02/Screenshot-2025-02-19-at-11.40.18 AM.png 1050w" sizes="(max-width: 1024px) 100vw, 1024px" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/02/Screenshot-2025-02-19-at-11.40.18 AM-1024x634.png"/><figcaption class="wp-element-caption"><em>Figure 1 – Example for the sum over the last 10 days (Figure by the Author) </em></figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">Here is the Measure I came up with: </p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">Online Sales (Last 10 days) = 
+        CALCULATE (
+                [Sum Online Sales]
+                ,DATESINPERIOD (
+                    'Date'[Date],
+                    MAX ( 'Date'[Date] ),
+                    -10,
+                    DAY
+                )
+            )</code></pre>
+
+
+
+<p class="wp-block-paragraph">When executing the query filtering for Computers and North America, I get this result: </p>
+
+
+
+<figure class="wp-block-image size-full"><img data-dominant-color="e3e3e5" data-has-transparency="true" style="--dominant-color: #e3e3e5;" decoding="async" width="540" height="348" src="../Images/fc392080b58efb2d7ff555a2d16dce46.png" alt="" class="wp-image-598128 has-transparency" srcset="https://towardsdatascience.com/wp-content/uploads/2025/02/Screenshot-2025-02-19-at-11.42.19 AM.png 540w, https://towardsdatascience.com/wp-content/uploads/2025/02/Screenshot-2025-02-19-at-11.42.19 AM-300x193.png 300w" sizes="(max-width: 540px) 100vw, 540px" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/02/Screenshot-2025-02-19-at-11.42.19 AM.png"/><figcaption class="wp-element-caption"><em>Figure 2 – Last 10 days – Result of Measure (Figure by the Author)</em></figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">If I look at the server timings, the result is not bad: </p>
+
+
+
+<figure class="wp-block-image aligncenter is-resized"><img decoding="async" src="../Images/b844e5d1fa76aa640d0e315d8674e716.png" alt="" style="width:164px;height:auto" data-original-src="https://lh7-rt.googleusercontent.com/docsz/AD_4nXcibj9TX2MPwXZkLifW2GA9Pc_0sXdZoF-xKlcebbNaQoooERUFe16UI9PaybXgV_iqsgqUytvK1jQ-ski9o8RxpXNM02ZEEC285aXSQzccGL_cjji3S57QJsuaCIjwNVQKgu4PwQ?key=UZ99HMJ_TyEY5euXsrcZKGZ7"/><figcaption class="wp-element-caption"><em>Figure 3 – Server timings for the last 10 days Measure (Figure by the Author) </em></figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">As you can see, the Storage engine performs more than half of the work, which is a good sign. It’s not perfect, but as the execution time is less than 100 ms, it’s still very good from the performance point of view. </p>
+
+
+
+<p class="wp-block-paragraph">This approach has one crucial issue:</p>
+
+
+
+<p class="wp-block-paragraph">When calculating the rolling sum over multiple months, you must know that this approach is date oriented. </p>
+
+
+
+<p class="wp-block-paragraph">This means that when you look at a specific time, it goes back to the same day of the given month. For example: </p>
+
+
+
+<p class="wp-block-paragraph">We look at January 12. 2024, and we want to calculate the rolling sum over the last three months. The starting date for this calculation will be November 13. 2023. </p>
+
+
+
+<p class="wp-block-paragraph">When do we want to get the rolling sum for the entire month? </p>
+
+
+
+<p class="wp-block-paragraph">In the case above, I want to have as the starting date November 1, 2023. </p>
+
+
+
+<p class="wp-block-paragraph">For this case, we can use the MonthIndex column. </p>
+
+
+
+<p class="wp-block-paragraph">Each column has a unique index based on the current date. </p>
+
+
+
+<p class="wp-block-paragraph">Therefore, we can use it to go back three months and get the entire month. </p>
+
+
+
+<p class="wp-block-paragraph">This is the DAX Code for this: </p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">Online Sales rolling full 3 months = 
+        VAR CurDate =
+            MAX ( 'Date'[Date] )
+        VAR CurMonthIndex =
+            MAX ( 'Date'[MonthIndex] )
+        VAR FirstDatePrevMonth =
+            CALCULATE (
+                MIN ( 'Date'[Date] ),
+                REMOVEFILTERS ( 'Date' ),
+                'Date'[MonthIndex] = CurMonthIndex - 2
+            )
+        RETURN
+            CALCULATE (
+                [Sum Online Sales],
+                DATESBETWEEN (
+                    'Date'[Date],
+                    FirstDatePrevMonth,
+                    CurDate
+                )
+            )</code></pre>
+
+
+
+<p class="wp-block-paragraph">The execution is still quick, but it’s less efficient, as most of the calculations cannot be performed by the Storage engine:</p>
+
+
+
+<figure class="wp-block-image aligncenter is-resized"><img decoding="async" src="../Images/ef3d8971fd3980218287b5b450bc00ac.png" alt="" style="width:145px;height:auto" data-original-src="https://lh7-rt.googleusercontent.com/docsz/AD_4nXfBlmh8jKSd02mFprWGtUyZWhKDVf4LdALF_SUcghTwSrt9osiarB5xsrALXMZoUK3bNKH_Nez7fwpjAvJvzx1H7lZdwzeq7gdrGzVKRcI_KBy2TUAVnUD_9ziZ7JYQr-1N4thmSg?key=UZ99HMJ_TyEY5euXsrcZKGZ7"/><figcaption class="wp-element-caption"><em>Figure 4 – Server timings for the rolling sum of the last three full months (Figure by the Author) </em>As you can see, it is not as fast as before. </figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">I tried other approaches (for example, <code>'Date'[MonthIndex] &gt;= CurMonthIndex – 2 &amp;&amp;</code> <code>'Date'[MonthIndex] &lt;= CurMonthIndex)</code>, but these approaches were worse than this one. </p>
+
+
+
+<p class="wp-block-paragraph">Here is the result for the same logic, but for the last two months (To avoid showing too many rows):</p>
+
+
+
+<figure class="wp-block-image size-full"><img data-dominant-color="e7e8e7" data-has-transparency="true" style="--dominant-color: #e7e8e7;" loading="lazy" decoding="async" width="605" height="672" src="../Images/4a67115ea659810001ae991f853e207b.png" alt="" class="wp-image-598129 has-transparency" srcset="https://towardsdatascience.com/wp-content/uploads/2025/02/Screenshot-2025-02-19-at-11.45.25 AM.png 605w, https://towardsdatascience.com/wp-content/uploads/2025/02/Screenshot-2025-02-19-at-11.45.25 AM-270x300.png 270w" sizes="auto, (max-width: 605px) 100vw, 605px" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/02/Screenshot-2025-02-19-at-11.45.25 AM.png"/><figcaption class="wp-element-caption"><em>Figure 5 – Results for the last two whole months (Figure by the Author) </em></figcaption></figure>
+
+
+
+<h2 class="wp-block-heading">Regarding Leap Years </h2>
+
+
+
+<p class="wp-block-paragraph">The leap year problem is odd, which is evident when calculating the previous year for each day. Let me explain: </p>
+
+
+
+<p class="wp-block-paragraph">When I execute the following Query to get the last days of February for the years 2020 and 2021: </p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">EVALUATE 
+CALCULATETABLE (
+    SUMMARIZECOLUMNS (
+        'Date'[Year],
+        'Date'[Month Short Name],
+        'Date'[MonthKey],
+        'Date'[Day Of Month],
+        "Online Sales", [Sum Online Sales],
+        "Online Sales (PY)", [Online Sales (PY)]
+    ),
+    'Date'[Year] IN {2020, 2021},
+    'Date'[Month] = 2,
+    'Date'[Day Of Month] IN {27, 28, 29},
+    'Customer'[Continent] = "North America",
+    'Customer'[Country] = "United States"
+)
+    ORDER BY 'Date'[MonthKey],
+        'Date'[Day Of Month]</code></pre>
+
+
+
+<p class="wp-block-paragraph">I get the following result: </p>
+
+
+
+<figure class="wp-block-image size-full"><img data-dominant-color="ece9e9" data-has-transparency="true" style="--dominant-color: #ece9e9;" loading="lazy" decoding="async" width="547" height="159" src="../Images/ad693a076f32d6372b94656599146b6a.png" alt="" class="wp-image-598130 has-transparency" srcset="https://towardsdatascience.com/wp-content/uploads/2025/02/Screenshot-2025-02-19-at-11.47.10 AM.png 547w, https://towardsdatascience.com/wp-content/uploads/2025/02/Screenshot-2025-02-19-at-11.47.10 AM-300x87.png 300w" sizes="auto, (max-width: 547px) 100vw, 547px" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/02/Screenshot-2025-02-19-at-11.47.10 AM.png"/><figcaption class="wp-element-caption"><em>Figure 6 – Problem of daily PY for the year after a leap year (Figure by the Author) </em></figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">As you can see above, the result for February 28. 2020 is shown twice, and one day is missing the February 2021 for Online Sales (PY). </p>
+
+
+
+<p class="wp-block-paragraph">When looking at the month, the sum is correct: </p>
+
+
+
+<figure class="wp-block-image is-resized"><img decoding="async" src="../Images/0bce5875191c2d107669e6011375a0d4.png" alt="" style="width:524px;height:auto" data-original-src="https://lh7-rt.googleusercontent.com/docsz/AD_4nXeMRTAAF7ZFO5t0diNEWqq21NjG9F0RJx-d_61EJ51Ad6oXkDon0rftxZFJDmHU5oaozW8MKU9HrbmB81WOvNLEzcpIoFspY6R82ZJl97z40-rlCSTrvXgLCBmTyT1KlqFoFpEEDQ?key=UZ99HMJ_TyEY5euXsrcZKGZ7"/><figcaption class="wp-element-caption"><em>Figure 7 – Correct monthly sum with leap years (Figure by the Author) </em></figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">The problem is that there is no February 29 in 2021. Therefore, there is no way that the sales for February 29, 2020 will be displayed when listing the Sales Amount per day. </p>
+
+
+
+<p class="wp-block-paragraph">While the result is correct, it will be wrong when the data is exported to Excel, and the values are summed. Then, the sum of the daily results will differ from those shown for the entire month. </p>
+
+
+
+<p class="wp-block-paragraph">This can undermine the users’ perceived reliability of the data. </p>
+
+
+
+<p class="wp-block-paragraph">My solution was to add a <code>LeapYearDate</code> table. This table is a copy of the Date table but without a Date column. I added one row each year on February 29, even for non-leap years. </p>
+
+
+
+<p class="wp-block-paragraph">Then, I added a calculated column for each month and day (<code>MonthDay</code>): </p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">MonthDay = ('LeapYearDate'[Month] * 100 ) + 'LeapYearDate'[Day Of Month]</code></pre>
+
+
+
+<p class="wp-block-paragraph">The Measure to calculate the previous year manually and using the new table is the following:</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">Online Sales (PY Leap Year) = 
+        VAR ActYear =
+            SELECTEDVALUE ( 'LeapYearDate'[Year] )
+        VAR ActDays =
+            VALUES ( 'LeapYearDate'[MonthDay] )
+        RETURN
+            CALCULATE (
+                [Sum Online Sales],
+                REMOVEFILTERS ( LeapYearDate ),
+                'LeapYearDate'[Year] = ActYear - 1,
+                ActDays
+            )</code></pre>
+
+
+
+<p class="wp-block-paragraph">As you can see, I got the current year, and by using the <a href="https://dax.guide/values/">VALUES() function</a>, I got the list of all dates in the current filter context. </p>
+
+
+
+<p class="wp-block-paragraph">Using this method, my Measure works for single Days, Months, Quarters, and Years. The result of this Measure is the following: </p>
+
+
+
+<figure class="wp-block-image size-full"><img data-dominant-color="ede9e9" data-has-transparency="true" style="--dominant-color: #ede9e9;" loading="lazy" decoding="async" width="598" height="183" src="../Images/14bb7212405a6f0cc41ac67fe3f5b9ad.png" alt="" class="wp-image-598131 has-transparency" srcset="https://towardsdatascience.com/wp-content/uploads/2025/02/Screenshot-2025-02-19-at-11.56.10 AM.png 598w, https://towardsdatascience.com/wp-content/uploads/2025/02/Screenshot-2025-02-19-at-11.56.10 AM-300x92.png 300w" sizes="auto, (max-width: 598px) 100vw, 598px" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/02/Screenshot-2025-02-19-at-11.56.10 AM.png"/><figcaption class="wp-element-caption"><em>Figure 8 – Result for the custom PY Measure, which always displays leap days (Figure by the Author) </em></figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">As you can see here, the Measure is very efficient, as most of the work is done by the Storage engine: </p>
+
+
+
+<figure class="wp-block-image aligncenter size-full"><img data-dominant-color="e2e3e3" data-has-transparency="true" style="--dominant-color: #e2e3e3;" loading="lazy" decoding="async" width="125" height="182" src="../Images/4f06daed12359f816ddca3b3224ce4d1.png" alt="" class="wp-image-598132 has-transparency" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/02/Screenshot-2025-02-19-at-11.57.07 AM.png"/><figcaption class="wp-element-caption"><em>Figure 9 – Server Timings for the custom PY Measure for Leap years (Figure by the Author) </em></figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">But, to be honest, I don’t like this approach, even though it works very well. </p>
+
+
+
+<p class="wp-block-paragraph">The reason is that the LeapYearDate table does not have a date column. Therefore, it cannot be used as a Date table for the existing Time Intelligence functions. </p>
+
+
+
+<p class="wp-block-paragraph">We must also use the calendar columns from this table in the visualizations. We cannot use the ordinary date table. </p>
+
+
+
+<p class="wp-block-paragraph">Consequently, we must reinvent all Time Intelligence functions to use this table.</p>
+
+
+
+<p class="wp-block-paragraph">I strongly recommend using this approach only when necessary. </p>
+
+
+
+<h2 class="wp-block-heading">Week to Date and PY </h2>
+
+
+
+<p class="wp-block-paragraph">Some Business areas concentrate on Weekly analysis. </p>
+
+
+
+<p class="wp-block-paragraph">Unfortunately, the standard Time Intelligence functions do not support weekly analysis out of the box. Therefore, we must build our Weekly Measures by ourselves. </p>
+
+
+
+<p class="wp-block-paragraph">The first Measure is WTD. </p>
+
+
+
+<p class="wp-block-paragraph">The first approach is the following: </p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-">Online Sales WTD v1 = 
+        VAR MaxDate = MAX('Date'[Date])
+        
+        VAR CurWeekday = WEEKDAY(MaxDate, 2)
+        
+        RETURN
+            CALCULATE([Sum Online Sales]
+                        ,DATESBETWEEN('Date'[Date]
+                                        ,MaxDate - CurWeekDay + 1
+                                        ,MaxDate)
+                        )</code></pre>
+
+
+
+<p class="wp-block-paragraph">As you can see, I use the <a href="https://dax.guide/weekday/"><code>WEEKDAY()</code> function</a> to calculate the start date of the week. Then, I use the <a href="https://dax.guide/datesbetween/"><code>DATESBETWEEN()</code> function</a> to calculate the WTD. </p>
+
+
+
+<p class="wp-block-paragraph">When you adapt this pattern to your situation, you must ensure that the second parameter in <code>WEEKDAY()</code> is set to the correct value. Please read the documentation to learn more about it. </p>
+
+
+
+<p class="wp-block-paragraph">The result is the following:</p>
+
+
+
+<figure class="wp-block-image aligncenter size-full is-resized"><img data-dominant-color="e8e8e8" data-has-transparency="true" loading="lazy" decoding="async" width="462" height="450" src="../Images/21084e500baf8b8ce566e04b69050825.png" alt="" class="wp-image-598133 has-transparency" style="--dominant-color: #e8e8e8; width:462px;height:auto" srcset="https://towardsdatascience.com/wp-content/uploads/2025/02/Screenshot-2025-02-19-at-11.59.03 AM.png 462w, https://towardsdatascience.com/wp-content/uploads/2025/02/Screenshot-2025-02-19-at-11.59.03 AM-300x292.png 300w" sizes="auto, (max-width: 462px) 100vw, 462px" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/02/Screenshot-2025-02-19-at-11.59.03 AM.png"/><figcaption class="wp-element-caption"><em>Figure 10 – Result for WTD in DAX Studio (Figure by the Author) </em></figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">Another approach is to store the first date of each week in the Date table and use this information in the Measure: </p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">Online Sales WTD PY v2 = 
+        VAR DayOfWeek = MAX('Date'[Day Of Week])
+        
+        VAR FirstDayOfWeek = MIN('Date'[FirstDayOfWeekDatePY])
+        
+        RETURN
+            CALCULATE([Sum Online Sales]
+                        ,DATESBETWEEN('Date'[Date]
+                                        ,FirstDayOfWeek
+                                        ,FirstDayOfWeek + DayOfWeek - 1)
+                        )</code></pre>
+
+
+
+<p class="wp-block-paragraph">The result is precisely the same. </p>
+
+
+
+<p class="wp-block-paragraph">When analyzing the performance in DAX Studio, I see that both Measures are comparable to each other:</p>
+
+
+
+<figure class="wp-block-image aligncenter"><img decoding="async" src="../Images/33b715dc6eed04d82ffe728edeaf3adf.png" alt="" data-original-src="https://lh7-rt.googleusercontent.com/docsz/AD_4nXc4fqdyEN-XX760lAz4f7IG7A_vzJ0goGTg3UJ1ROmDi8eSlwwN8Yo7stKebfKlrd-O6ByNHBIx0c5-PVlbrtou3I8gOHRd498eekPJCzRC6X_zDzhYuDuYqFG17sGFUrpqG4SwPg?key=UZ99HMJ_TyEY5euXsrcZKGZ7"/><figcaption class="wp-element-caption"><em>Figure 11 – On the left, you can see the execution statistics for the first version, and on the right, you see them for the second  version. As you can see, both are very comparable (Figure by the Author)</em></figcaption></figure>
+
+
+
+<p class="wp-block-paragraph"><em> </em></p>
+
+
+
+<p class="wp-block-paragraph">I tend to use the second one, as it has better potential when combined with other Measures. But in the end, it depends on the current scenario. </p>
+
+
+
+<p class="wp-block-paragraph">Another challenge is to calculate the previous year. </p>
+
+
+
+<p class="wp-block-paragraph">Look at the following dates for the same week in different weeks: </p>
+
+
+
+<figure class="wp-block-image aligncenter is-resized"><img decoding="async" src="../Images/c1958cd70aa985a6009155902dd8f774.png" alt="" style="width:329px;height:auto" data-original-src="https://lh7-rt.googleusercontent.com/docsz/AD_4nXdf6SsT728scuGCqhXnVacrNc8VivcjR5iA3XW5c23KibM16qiN3ptNwGM8PVEMBvVyj_bJ6GeIsgBg84TEMdGwmVMygPtSiygH6MI7f1VXSMHDi1MmUFvGGgzGDxMmHaGG6aIIIw?key=UZ99HMJ_TyEY5euXsrcZKGZ7"/><figcaption class="wp-element-caption"><em>Figure 12 – Comparing the dates of the same week in different years. (Figure by the Author) </em></figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">As you can see, the dates are shifted. And as the standard time intelligence functions are based on shifting dates, they will not work. </p>
+
+
+
+<p class="wp-block-paragraph">I tried different approaches, but in the end, I stored the first date of the same week for the previous year in the date table and used it like in the second version of WTD shown above: </p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">Online Sales WTD PY = 
+        VAR DayOfWeek = MAX('Date'[Day Of Week])
+        
+        VAR FirstDayOfWeek = MIN('Date'[FirstDayOfWeekDatePY])
+        
+        RETURN
+            CALCULATE([Sum Online Sales]
+                        ,DATESBETWEEN('Date'[Date]
+                                        ,FirstDayOfWeek
+                                        ,FirstDayOfWeek + DayOfWeek - 1)
+                        )</code></pre>
+
+
+
+<p class="wp-block-paragraph">This is the result: </p>
+
+
+
+<figure class="wp-block-image size-full"><img data-dominant-color="eeecec" data-has-transparency="true" style="--dominant-color: #eeecec;" loading="lazy" decoding="async" width="594" height="577" src="../Images/80313badadac5b16b4d693fb5fdb82fa.png" alt="" class="wp-image-598134 has-transparency" srcset="https://towardsdatascience.com/wp-content/uploads/2025/02/Screenshot-2025-02-19-at-12.01.29 PM.png 594w, https://towardsdatascience.com/wp-content/uploads/2025/02/Screenshot-2025-02-19-at-12.01.29 PM-300x291.png 300w" sizes="auto, (max-width: 594px) 100vw, 594px" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/02/Screenshot-2025-02-19-at-12.01.29 PM.png"/><figcaption class="wp-element-caption"><em>Figure 13 – Result for WTD PY Measure (Figure by the Author) </em></figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">As the logic is the same as in the WTD v2, the performance is also the same. Therefore, this Measure is very efficient. </p>
+
+
+
+<h2 class="wp-block-heading">Weekly Sums for PY </h2>
+
+
+
+<p class="wp-block-paragraph">Sometimes, the weekly view is enough, and we don’t need to calculate the WTD at the Daily level. </p>
+
+
+
+<p class="wp-block-paragraph">We don’t need a WTD Measure for this scenario for the current year. The base Measure sliced by Week can cover this. The result is correct out of the box. </p>
+
+
+
+<p class="wp-block-paragraph">But, again, it’s another story for PY.</p>
+
+
+
+<p class="wp-block-paragraph">This is the first version I came up with: </p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">Online Sales (PY Weekly) v1 = 
+        VAR ActYear = MAX('Date'[Year])
+        
+        RETURN
+            CALCULATE([Sum Online Sales]
+                        ,ALLEXCEPT('Date'
+                                    ,'Date'[Week]
+                                    )
+                        ,'Date'[Year] = ActYear - 1
+                        )</code></pre>
+
+
+
+<p class="wp-block-paragraph">Here, I subtract one from the current year while retaining the filter for the current week. This is the result:</p>
+
+
+
+<figure class="wp-block-image"><img decoding="async" src="../Images/77164167b69496d127458beca658e829.png" alt="" data-original-src="https://lh7-rt.googleusercontent.com/docsz/AD_4nXdHdrAi-ZEW9_C4LDBMvzbGF5TxilbNf-vZk--bLPwl8ge9weDeNYVMxp-f--3d41zrRdwrDtTDjeWanG-US0XUDk6KUr9RlmFRLirJfgo9XcNhjMBtVxuYAnGnf6C-Rly6gFvr?key=UZ99HMJ_TyEY5euXsrcZKGZ7"/><figcaption class="wp-element-caption"><em>Figure 14 – The result for WTD PY for the whole week. See that the WTD result for the last day of each week corresponds to the PY value (Figure by the Author) </em></figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">The performance is good, but I can do better. </p>
+
+
+
+<p class="wp-block-paragraph">What if I could store a unique Week Identifier in the Date column? </p>
+
+
+
+<p class="wp-block-paragraph">For example, the Current Week is 9 of 2025.. </p>
+
+
+
+<p class="wp-block-paragraph">The Identifier would be 202509. </p>
+
+
+
+<p class="wp-block-paragraph">When I detract 100 from it, I get 202409, the identifier for the same week in the previous year. After adding this column to the date table, I can change the Measure to this: </p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">MEASURE 'All Measures'[Online Sales (PY Weekly) v2 = 
+	VAR WeeksPY = VALUES('Date'[WeekKeyPY])
+		
+RETURN
+	CALCULATE([Sum Online Sales]
+			,REMOVEFILTERS('Date')
+			,'Date'[WeekKey] IN WeeksPY
+			)</code></pre>
+
+
+
+<p class="wp-block-paragraph">This version is much simpler than before, and the result is still the same. </p>
+
+
+
+<p class="wp-block-paragraph">When we compare the execution statistics of the two versions, we see this: </p>
+
+
+
+<figure class="wp-block-image aligncenter"><img decoding="async" src="../Images/5ccd193a4699bff521e29b0d231df085.png" alt="" data-original-src="https://lh7-rt.googleusercontent.com/docsz/AD_4nXeQqUUspkTxfAcQTjDXqLVIQnbLrrgrPLwcvPQnWrvqvDW0r-ut3gx3JDhg4yJOezvbUr-QFlLvQL717hGXE6m-L85QrY0_T9eY6jQMdmWlPu_xre5S2LezJem8b1qfOuMYfoopnQ?key=UZ99HMJ_TyEY5euXsrcZKGZ7"/><figcaption class="wp-element-caption"><em>Figure 15 – Comparing the execution statistics of the two versions for WTD PY for the whole week. On the left is V1, and on the right is V2. (Figure by the Author) </em></figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">As you can see, the second version, with the precalculated column in the Date table, is slightly more efficient. I have only four SE queries, a good sign for increased efficiency. </p>
+
+
+
+<h2 class="wp-block-heading">Fiscal Weeks YTD </h2>
+
+
+
+<p class="wp-block-paragraph">This last one is tricky. </p>
+
+
+
+<p class="wp-block-paragraph">The requirement is that the user wants to see a YTD starting from the first day of the first week of the Fiscal year. </p>
+
+
+
+<p class="wp-block-paragraph">For example, the Fiscal year starts on July 1. </p>
+
+
+
+<p class="wp-block-paragraph">In 2022, the week containing July the 1<sup>st </sup>starts on Monday, June 27. </p>
+
+
+
+<p class="wp-block-paragraph">This means that the YTD calculation must start on this date. </p>
+
+
+
+<p class="wp-block-paragraph">The same applies to the YTD PY calculation starting Monday, June 28, 2021. </p>
+
+
+
+<p class="wp-block-paragraph">This approach has some consequences when visualizing the data. </p>
+
+
+
+<p class="wp-block-paragraph">Again, knowing if the result must be shown at the day or week level is essential. When showing the data at the day level, the result can be confusing when selecting a Fiscal Year:</p>
+
+
+
+<figure class="wp-block-image size-large"><img data-dominant-color="eeeeee" data-has-transparency="true" style="--dominant-color: #eeeeee;" loading="lazy" decoding="async" width="1024" height="348" src="../Images/08095429394f54835eee41632937d09c.png" alt="" class="wp-image-598135 has-transparency" srcset="https://towardsdatascience.com/wp-content/uploads/2025/02/Screenshot-2025-02-19-at-12.04.25 PM-1024x348.png 1024w, https://towardsdatascience.com/wp-content/uploads/2025/02/Screenshot-2025-02-19-at-12.04.25 PM-300x102.png 300w, https://towardsdatascience.com/wp-content/uploads/2025/02/Screenshot-2025-02-19-at-12.04.25 PM-768x261.png 768w, https://towardsdatascience.com/wp-content/uploads/2025/02/Screenshot-2025-02-19-at-12.04.25 PM.png 1214w" sizes="auto, (max-width: 1024px) 100vw, 1024px" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/02/Screenshot-2025-02-19-at-12.04.25 PM-1024x348.png"/><figcaption class="wp-element-caption"><em>Figure 16 – Result of the weekly based YTD for the Fiscal year 22/23 (Figure by the Author) </em></figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">As you can see, Friday is the first day of the Fiscal year. And the YTD result doesn’t start on July 1<sup>st </sup>but on Monday of that week. </p>
+
+
+
+<p class="wp-block-paragraph">The consequence is that the YTD doesn’t seem to start correctly. The users must know what they are looking at. </p>
+
+
+
+<p class="wp-block-paragraph">The same is valid for the YTD PY results. </p>
+
+
+
+<p class="wp-block-paragraph">To facilitate the calculations, I added more columns to the Date table: </p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">FiscalYearWeekYear—This field contains the numerical representation of the Fiscal year (for 23/24, I get 2324), starting with the first week of the Fiscal year. </li>
+
+
+
+<li class="wp-block-list-item">FiscalYearWeekYearPY – The same as before, but for the previous year (FiscalYearWeekYear – 101). </li>
+
+
+
+<li class="wp-block-list-item">FiscalWeekSort—This sorting column starts the week with the first day of the fiscal year. A more elaborate way to use this column could be to follow the ISO-Week definition, which I didn’t do to keep it more uncomplicated. </li>
+
+
+
+<li class="wp-block-list-item">FiscalYearWeekSort – The same as before but with the FiscalYearWeekYear in front (e. g. 232402). </li>
+
+
+
+<li class="wp-block-list-item">FirstDayOfWeekDate – The date of the Monday of the week in which the current date is in. </li>
+</ul>
+
+
+
+<p class="wp-block-paragraph">Here is the Measure for the Daily YTD:</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">Online Sales (Fiscal Week YTD) =
+        VAR FiscalYearWeekYear = MAX('Date'[FiscalYearWeekYear])
+        
+        VAR StartFiscalYear = CALCULATE(MIN('Date'[Date])
+                                        ,REMOVEFILTERS('Date')
+                                        ,'Date'[FiscalYearWeekSort] = FiscalYearWeekYear * 100 + 1
+                                        )
+        
+        VAR FiscalYearStartWeekDate = CALCULATE(MIN('Date'[FirstDayOfWeekDate])
+                                            ,ALLEXCEPT('Date'
+                                                        ,'Date'[FiscalYearWeekYear]
+                                                        )
+                                            ,'Date'[Date] = StartFiscalYear
+                                            )
+        
+        VAR MaxDate = MAX('Date'[Date])
+        
+        RETURN
+            CALCULATE([Sum Online Sales]
+                        ,REMOVEFILTERS('Date')
+                        ,DATESBETWEEN('Date'[Date]
+                                        ,FiscalYearStartWeekDate
+                                        ,MaxDate
+                                        )
+                        )</code></pre>
+
+
+
+<p class="wp-block-paragraph">Here is the DAX Code for the Daily YTD PY:</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">Online Sales (Fiscal Week YTD) (PY) =
+        VAR FiscalYearWeekYear = MAX('Date'[FiscalYearWeekYear])
+        
+        -- Get the Week/Weekday at the start of the current Fiscal Year
+        VAR FiscalYearStart = CALCULATE(MIN('Date'[Date])
+                                        ,REMOVEFILTERS('Date')
+                                        ,'Date'[FiscalYearWeekSort] = FiscalYearWeekYear * 100 + 1
+                                        )
+        
+        VAR MaxDate = MAX('Date'[Date])
+                
+        -- Get the number of Days since the start of the FiscalYear
+        VAR DaysFromFiscalYearStart =
+            DATEDIFF( FiscalYearStart, MaxDate, DAY )
+        
+        -- Get the PY Date of the Fiscal Year Week Start date 
+        VAR DateWeekStartPY = CALCULATE(MIN('Date'[Date])
+                                        ,REMOVEFILTERS('Date')
+                                        ,'Date'[FiscalYearWeekSort] = (FiscalYearWeekYear - 101) * 100 + 1
+                                        )
+        
+            
+        RETURN
+            CALCULATE(
+                [Sum Online Sales],
+                DATESBETWEEN(
+                    'Date'[Date],
+                    DateWeekStartPY,
+                    DateWeekStartPY + DaysFromFiscalYearStart
+                )
+            )
+</code></pre>
+
+
+
+<p class="wp-block-paragraph">As you can see, both Measures follow the same pattern: </p>
+
+
+
+<ol class="wp-block-list">
+<li class="wp-block-list-item">Get the current Fiscal Year. </li>
+
+
+
+<li class="wp-block-list-item">Get the Starting Date of the current Fiscal Year. </li>
+
+
+
+<li class="wp-block-list-item">Get the Starting date of the week starting the Fiscal Year. </li>
+
+
+
+<li class="wp-block-list-item">Calculate the Result based on the Difference between these two dates </li>
+</ol>
+
+
+
+<p class="wp-block-paragraph">For the PY Measure, one additional step is required: </p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">Calculate the days between the starting and current dates to calculate the correct YTD. This is necessary because of the date shift between the years. </li>
+</ul>
+
+
+
+<p class="wp-block-paragraph">And here is the DAX code for the weekly base YTD: </p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">Online Sales (Fiscal Week YTD) =
+        VAR FiscalWeekSort = MAX( 'Date'[FiscalWeekSort] )
+        
+        -- Get the Week/Weekday at the start of the current Fiscal Year
+        VAR FiscalYearNumber = MAX( 'Date'[FiscalYearWeekYear] )
+        
+        
+        RETURN
+            CALCULATE(
+                [Sum Online Sales],
+                REMOVEFILTERS('Date'),
+                'Date'[FiscalYearWeekSort] &gt;= (FiscalYearNumber * 100 ) + 1
+                    &amp;&amp; 'Date'[FiscalYearWeekSort] &lt;= (FiscalYearNumber * 100 ) + FiscalWeekSort
+            )</code></pre>
+
+
+
+<p class="wp-block-paragraph">For the weekly YTD PY, the DAX code is the following: </p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">Online Sales (Fiscal Week YTD) (PY) =
+        VAR FiscalWeekSort = MAX( 'Date'[FiscalWeekSort] )
+        
+        -- Get the Week/Weekday at the start of the current Fiscal Year
+        VAR FiscalYearNumberPY = MAX( 'Date'[FiscalYearWeekYearPY] )
+        
+        
+        RETURN
+            CALCULATE(
+                [Sum Online Sales],
+                REMOVEFILTERS('Date'),
+                'Date'[FiscalYearWeekSort] &gt;= (FiscalYearNumberPY * 100) + 1
+                    &amp;&amp; 'Date'[FiscalYearWeekSort] &lt;= (FiscalYearNumberPY * 100) + FiscalWeekSort
+            )</code></pre>
+
+
+
+<p class="wp-block-paragraph">Again, both Measures follow the same pattern: </p>
+
+
+
+<ol class="wp-block-list">
+<li class="wp-block-list-item">Get the current (Sort-) number of the week in the Fiscal year.</li>
+
+
+
+<li class="wp-block-list-item">Get the start date for the fiscal year’s first week.</li>
+
+
+
+<li class="wp-block-list-item">Calculate the result based on these values.</li>
+</ol>
+
+
+
+<p class="wp-block-paragraph">The result for the weekly based Measure is the following (At the weekly level, as the value is the same for each day of the same week): </p>
+
+
+
+<figure class="wp-block-image size-large"><img data-dominant-color="f0eeee" data-has-transparency="true" style="--dominant-color: #f0eeee;" loading="lazy" decoding="async" width="1024" height="361" src="../Images/c4fbd10319b8b256de5894ac365a31de.png" alt="" class="wp-image-598136 has-transparency" srcset="https://towardsdatascience.com/wp-content/uploads/2025/02/Screenshot-2025-02-19-at-12.11.56 PM-1024x361.png 1024w, https://towardsdatascience.com/wp-content/uploads/2025/02/Screenshot-2025-02-19-at-12.11.56 PM-300x106.png 300w, https://towardsdatascience.com/wp-content/uploads/2025/02/Screenshot-2025-02-19-at-12.11.56 PM-768x270.png 768w, https://towardsdatascience.com/wp-content/uploads/2025/02/Screenshot-2025-02-19-at-12.11.56 PM.png 1210w" sizes="auto, (max-width: 1024px) 100vw, 1024px" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/02/Screenshot-2025-02-19-at-12.11.56 PM-1024x361.png"/><figcaption class="wp-element-caption"><em>Figure 17 – Result for the first three weeks per Fiscal Year with the weekly based YTD and PY Measure (Figure by the Author) </em></figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">When comparing the two Approaches, the Measure for the weekly calculation is more efficient than the one for the daily calculation:</p>
+
+
+
+<figure class="wp-block-image size-full"><img data-dominant-color="e2e2e2" data-has-transparency="true" style="--dominant-color: #e2e2e2;" loading="lazy" decoding="async" width="524" height="368" src="../Images/67c3483b0e60db3522bf5700a8e1495c.png" alt="" class="wp-image-598137 has-transparency" srcset="https://towardsdatascience.com/wp-content/uploads/2025/02/Screenshot-2025-02-19-at-12.12.32 PM.png 524w, https://towardsdatascience.com/wp-content/uploads/2025/02/Screenshot-2025-02-19-at-12.12.32 PM-300x211.png 300w" sizes="auto, (max-width: 524px) 100vw, 524px" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/02/Screenshot-2025-02-19-at-12.12.32 PM.png"/><figcaption class="wp-element-caption"><em>Figure 18 – Comparing the execution statistics for the two Measures. On the left is the daily, and on the right is the weekly calculation. They are the same for the calculation for the current and the previous year (Figure by the Author) </em></figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">As you can see, the Measure for the weekly result is faster, has a more significant portion executed in the Storage Engine (SE), and has fewer SE queries. </p>
+
+
+
+<p class="wp-block-paragraph">Therefore, it can be a good idea to ask the users if they need a WTD result at the day level or if it’s enough to see the results at the week level. </p>
+
+
+
+<h2 class="wp-block-heading">Conclusion </h2>
+
+
+
+<p class="wp-block-paragraph">When you start writing Time Intelligence expressions, consider whether additional calculated columns in your date table can be helpful. </p>
+
+
+
+<p class="wp-block-paragraph">A carefully crafted and extended date table can be helpful for two reasons: </p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">Make Measures easier to write </li>
+
+
+
+<li class="wp-block-list-item">Improve the performance of the Measures </li>
+</ul>
+
+
+
+<p class="wp-block-paragraph">They will be easier to write as I do not need to perform the calculations to get the intermediary results to calculate the required results. </p>
+
+
+
+<p class="wp-block-paragraph">The consequence of shorter and simpler Measures is better efficiency and performance. </p>
+
+
+
+<p class="wp-block-paragraph">I will add more and more columns to the template of my date table as I encounter more situations in which they can be helpful. </p>
+
+
+
+<p class="wp-block-paragraph">One question remains: How to build it? </p>
+
+
+
+<p class="wp-block-paragraph">In my case, I used an Azure SQL database to create the table used in my examples. </p>
+
+
+
+<p class="wp-block-paragraph">But it’s possible to create a date table as a DAX table or use Python or JavaScript in Fabric or whatever data platform you use. </p>
+
+
+
+<p class="wp-block-paragraph">Another option is to use the Bravo tool from SQLBI, which allows you to create a DAX table containing additional columns to support exotic Time Intelligence scenarios. </p>
+
+
+
+<h2 class="wp-block-heading">References </h2>
+
+
+
+<p class="wp-block-paragraph">You can find more information about my date-table <a href="https://contributor.insightmediagroup.io/3-ways-to-improve-your-reporting-with-an-expanded-date-table-2d983d76cced/">here</a>. </p>
+
+
+
+<p class="wp-block-paragraph">Read <a href="https://medium.com/towards-data-science/how-to-get-performance-data-from-power-bi-with-dax studio-b7f11b9dd9f9">this piece</a> to learn how to extract performance data in DAX-Studio and how to interpret it. </p>
+
+
+
+<p class="wp-block-paragraph">An <a href="https://www.sqlbi.com/articles/using-weekly-calendars-in-power-bi/">SQLBI article</a> about building a date table to support weekly calculations: Using weekly calendars in Power BI – SQLBI </p>
+
+
+
+<p class="wp-block-paragraph">SQLBI Pattern to perform further weekly calculations: </p>
+
+
+
+<p class="wp-block-paragraph">Week-related calculations – <a href="https://www.daxpatterns.com/week-related-calculations/">DAX Patterns</a> </p>
+
+
+
+<p class="wp-block-paragraph">Like in my previous articles, I use the Contoso sample dataset. You can download the ContosoRetailDW Dataset for free from Microsoft <a href="https://www.microsoft.com/en-us/download/details.aspx?id=18279">here</a>. </p>
+
+
+
+<p class="wp-block-paragraph">The Contoso Data can be freely used under the MIT License, as described <a href="https://github.com/microsoft/Power-BI-Embedded-Contoso-Sales-Demo">here</a>. </p>
+
+
+
+<p class="wp-block-paragraph">I changed the dataset to shift the data to contemporary dates. </p>
+    
+</body>
+</html>

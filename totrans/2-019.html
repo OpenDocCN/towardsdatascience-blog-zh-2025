@@ -1,0 +1,339 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.1//EN"
+  "http://www.w3.org/TR/xhtml11/DTD/xhtml11.dtd">
+
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+<title>How We Reduced LLM Costs by 90% with 5 Lines of Code</title>
+<link href="../Styles/Style.css" type="text/css" rel="stylesheet"/>
+</head>
+<body>
+<h1>How We Reduced LLM Costs by 90% with 5 Lines of Code</h1>
+<blockquote>原文：<a href="https://towardsdatascience.com/how-we-reduced-llm-cost-by-90-with-5-lines-of-code/">https://towardsdatascience.com/how-we-reduced-llm-cost-by-90-with-5-lines-of-code/</a></blockquote>
+<p class="wp-block-paragraph"><mdspan datatext="el1755803155887" class="mdspan-comment">You know that</mdspan> feeling when everything <em>seems</em> to be working just fine, until you look under the hood and realize your system is burning 10× more fuel than it needs to?</p>
+
+
+
+<p class="wp-block-paragraph">We had a client script firing off requests to validate our prompts, built with async Python code and running smoothly in a Jupyter notebook. Clean, simple, and fast. We ran it regularly to test our models and collect evaluation data. No red flags. No warnings.</p>
+
+
+
+<p class="wp-block-paragraph">But beneath that polished surface, something was quietly going wrong.</p>
+
+
+
+<p class="wp-block-paragraph">We weren’t seeing failures. We weren’t getting exceptions. We weren’t even noticing slowness. But our system was doing a lot more work than it needed to, and we didn’t realize it.</p>
+
+
+
+<p class="wp-block-paragraph">In this post, we’ll walk through how we discovered the issue, what caused it, and how a <strong>simple structural change in our async code reduced LLM traffic and cost by 90%, </strong>with virtually no loss in speed or functionality.</p>
+
+
+
+<p class="wp-block-paragraph">Now, fair warning, <strong>reading this post won’t magically slash your LLM costs by 90%</strong>. But the takeaway here is broader: <strong>small, overlooked design decisions, sometimes just a few lines of code, can lead to massive inefficiencies.</strong> And being intentional about how your code runs can save you time, money, and frustration in the long run.</p>
+
+
+
+<p class="wp-block-paragraph">The fix itself might feel niche at first. It involves the subtleties of Python’s asynchronous behavior, how tasks are scheduled and dispatched. If you’re familiar with Python and <code>async</code>/<code>await</code>, you’ll get more out of the code examples, but even if you’re not, there’s still plenty to take away. Because the real story here isn’t just about LLMs or Python, it’s about <strong>responsible, efficient engineering</strong>.</p>
+
+
+
+<p class="wp-block-paragraph">Let’s dig in.</p>
+
+
+
+<h2 class="wp-block-heading">The Setup</h2>
+
+
+
+<p class="wp-block-paragraph">To automate validation, we use a predefined dataset and trigger our system through a client script. The validation focuses on a <strong>small subset</strong> of the dataset, so the client code only stops after receiving a certain number of responses.</p>
+
+
+
+<p class="wp-block-paragraph">Here’s a simplified version of our client in Python:</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">import asyncio
+from aiohttp import ClientSession
+from tqdm.asyncio import tqdm_asyncio
+
+URL = "http://localhost:8000/example"
+NUMBER_OF_REQUESTS = 100
+STOP_AFTER = 10
+
+async def fetch(session: ClientSession, url: str) -&gt; bool:
+    async with session.get(url) as response:
+        body = await response.json()
+        return body["value"]
+
+async def main():
+    results = []
+
+    async with ClientSession() as session:
+        tasks = [fetch(session, URL) for _ in range(NUMBER_OF_REQUESTS)]
+
+        for future in tqdm_asyncio.as_completed(tasks, total=NUMBER_OF_REQUESTS, desc="Fetching"):
+            response = await future
+            if response is True:
+                results.append(response)
+                if len(results) &gt;= STOP_AFTER:
+                    print(f"\n✅ Stopped after receiving {STOP_AFTER} true responses.")
+                    break
+
+asyncio.run(main())</code></pre>
+
+
+
+<p class="wp-block-paragraph">This script reads requests from a dataset, fires them concurrently, and stops once we collect enough <code>true</code> responses for our evaluation. In production, the logic is more complex and based on the diversity of responses we need. But the structure is the same.</p>
+
+
+
+<p class="wp-block-paragraph">Let’s use a dummy FastAPI server to simulate real behavior:</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">import asyncio
+import fastapi
+import uvicorn
+import random
+
+app = fastapi.FastAPI()
+
+@app.get("/example")
+async def example():
+    sleeping_time = random.uniform(1, 2)
+    await asyncio.sleep(sleeping_time)
+    return {"value": random.choice([True, False])}
+
+if __name__ == "__main__":
+    uvicorn.run(app, host="0.0.0.0", port=8000)</code></pre>
+
+
+
+<p class="wp-block-paragraph">Now let’s fire up that dummy server and run the client. You’ll see something like this from the client terminal:</p>
+
+
+
+<figure class="wp-block-image size-full"><img decoding="async" src="../Images/cbc447468800550dedd3e4c28dcaedc0.png" alt="" class="wp-image-616346" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/08/first_progress_bar.png"/><figcaption class="wp-element-caption">The progress bar stopped after receiving 10 responses</figcaption></figure>
+
+
+
+<h2 class="wp-block-heading">Can You Spot the Problem?</h2>
+
+
+
+<figure class="wp-block-image size-full"><img decoding="async" src="../Images/c707900ee9507a9ccea492894a033ce2.png" alt="" class="wp-image-616348" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/08/1_03EaneUUDlrZwicXzjTrBg.jpg"/><figcaption class="wp-element-caption">Photo by <a href="https://unsplash.com/@keiteu_ko?utm_source=medium&amp;utm_medium=referral" target="_blank" rel="noreferrer noopener">Keiteu Ko</a> on <a href="https://unsplash.com?utm_source=medium&amp;utm_medium=referral" target="_blank" rel="noreferrer noopener">Unsplash</a></figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">Nice! Fast, clean, and… wait is everything working as expected?</p>
+
+
+
+<p class="wp-block-paragraph">On the surface, it <em>seems</em> like the client is doing the right thing: sending requests, getting 10 <code>true</code> responses, then stopping.</p>
+
+
+
+<p class="wp-block-paragraph">But is it?</p>
+
+
+
+<p class="wp-block-paragraph">Let’s add a few print statements to our server to see what it’s actually doing under the hood:</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">import asyncio
+import fastapi
+import uvicorn
+import random
+
+app = fastapi.FastAPI()
+
+@app.get("/example")
+async def example():
+    print("Got a request")
+    sleeping_time = random.uniform(1, 2)
+    print(f"Sleeping for {sleeping_time:.2f} seconds")
+    await asyncio.sleep(sleeping_time)
+    value = random.choice([True, False])
+    print(f"Returning value: {value}")
+    return {"value": value}
+
+if __name__ == "__main__":
+    uvicorn.run(app, host="0.0.0", port=8000)</code></pre>
+
+
+
+<p class="wp-block-paragraph">Now re-run everything.</p>
+
+
+
+<p class="wp-block-paragraph">You’ll start seeing logs like this:</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-vim">Got a request
+Sleeping for 1.11 seconds
+Got a request
+Sleeping for 1.29 seconds
+Got a request
+Sleeping for 1.98 seconds
+...
+Returning value: True
+Returning value: False
+Returning value: False
+...</code></pre>
+
+
+
+<p class="wp-block-paragraph">Take a closer look at the server logs. You’ll notice something unexpected: <strong>instead of processing just 14 requests like we see in the progress bar, the server handles all 100</strong>. Even though the client stops after receiving 10 <code>true</code> responses, it still sends every request up front. As a result, the server must process all of them.</p>
+
+
+
+<p class="wp-block-paragraph"><strong>It’s an easy mistake to miss</strong>, especially because everything appears to be working correctly from the client’s perspective: responses come in quickly, the progress bar advances, and the script exits early. But behind the scenes, all 100 requests are sent immediately, regardless of when we decide to stop listening. This results in <strong>10× more traffic</strong> than needed, driving up costs, increasing load, and risking rate limits.</p>
+
+
+
+<p class="wp-block-paragraph">So the key question becomes: why is this happening, and how can we make sure we only send the requests we actually need? The answer turned out to be a small but powerful change.</p>
+
+
+
+<p class="wp-block-paragraph"><strong>The root of the issue lies in how the tasks are scheduled</strong>. In our original code, we create a list of 100 tasks all at once:</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">tasks = [fetch(session, URL) for _ in range(NUMBER_OF_REQUESTS)]
+
+for future in tqdm_asyncio.as_completed(tasks, total=NUMBER_OF_REQUESTS, desc="Fetching"):
+    response = await future</code></pre>
+
+
+
+<p class="wp-block-paragraph">When you pass a list of coroutines to <code>as_completed</code>, Python immediately wraps each coroutine in a <code>Task</code> and schedules it on the event loop. This happens before you start iterating over the loop body. Once a coroutine becomes a <code>Task</code>, the event loop starts running it in the background right away.</p>
+
+
+
+<p class="wp-block-paragraph"><code>as_completed</code> itself doesn’t control concurrency, it simply <strong>waits for tasks to finish and yields them one by one in the order they complete</strong>. Think of it as an iterator over completed futures, not a traffic controller. This means that by the time you start looping, <strong>all 100 requests are already in progress</strong>. Breaking out after 10 <code>true</code> results stops you from processing the rest, but it doesn’t stop them from being sent.</p>
+
+
+
+<p class="wp-block-paragraph">To fix this, we introduced <strong>a </strong><a href="https://docs.python.org/3/library/asyncio-sync.html#asyncio.Semaphore" rel="noreferrer noopener" target="_blank"><strong>semaphore</strong></a><strong> to limit concurrency</strong>. The semaphore adds a lightweight lock inside <code>fetch</code> so that only a fixed number of requests can start at the same time. The rest remain paused, waiting for a slot. Once we hit our stopping condition, the paused tasks never acquire the lock, so they never send their requests.</p>
+
+
+
+<p class="wp-block-paragraph">Here’s the adjusted version:</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">import asyncio
+from aiohttp import ClientSession
+from tqdm.asyncio import tqdm_asyncio
+
+URL = "http://localhost:8000/example"
+NUMBER_OF_REQUESTS = 100
+STOP_AFTER = 10
+
+async def fetch(session: ClientSession, url: str, semaphore: asyncio.Semaphore) -&gt; str:
+    async with semaphore:
+        async with session.get(url) as response:
+            body = await response.json()
+            return body["value"]
+
+async def main():
+    results = []
+    semaphore = asyncio.Semaphore(int(STOP_AFTER * 1.5))
+
+    async with ClientSession() as session:
+        tasks = [fetch(session, URL, semaphore) for _ in range(NUMBER_OF_REQUESTS)]
+
+        for future in tqdm_asyncio.as_completed(tasks, total=NUMBER_OF_REQUESTS, desc="Fetching"):
+            response = await future
+            if response:
+                results.append(response)
+                if len(results) &gt;= STOP_AFTER:
+                    print(f"\n✅ Stopped after receiving {STOP_AFTER} true responses.")
+                    break
+
+asyncio.run(main())</code></pre>
+
+
+
+<p class="wp-block-paragraph">With this change, we still define 100 requests upfront, but <strong>only a small group is allowed to run at the same time</strong>, 15 in that example. If we reach our stopping condition early, the event loop stops before launching more requests. This keeps the behavior responsive while reducing unnecessary calls.</p>
+
+
+
+<p class="wp-block-paragraph">Now, the server logs will display only around 20 <code>"Got a request/Returning response"</code> entries. On the client side, the progress bar will appear identical to the original.</p>
+
+
+
+<figure class="wp-block-image size-full"><img decoding="async" src="../Images/0f50cca6da59ff72ded05c9ee4e4e5af.png" alt="" class="wp-image-616349" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/08/progges_bar_2.png"/><figcaption class="wp-element-caption">The progress bar stopped after receiving 10 responses</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">With this change in place, we saw immediate impact: <strong>90% reduction in request volume and LLM cost</strong>, with no noticeable degradation in client experience. It also improved throughput across the team, reduced queuing, and eliminated rate-limit issues from our LLM providers.</p>
+
+
+
+<p class="wp-block-paragraph">This small structural adjustment made our validation pipeline dramatically more efficient, without adding much complexity to the code. It’s a good reminder that in async systems, control flow doesn’t always behave the way you assume unless you’re explicit about how tasks are scheduled and when they should run.</p>
+
+
+
+<h2 class="wp-block-heading">Bonus Insight: Closing the Event Loop</h2>
+
+
+
+<p class="wp-block-paragraph">If we had run the original client code without <code>asyncio.run</code>, we might have noticed the problem earlier. <br/>For example, if we had used manual event loop management like this:</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">loop = asyncio.get_event_loop()
+loop.run_until_complete(main())
+loop.close()</code></pre>
+
+
+
+<p class="wp-block-paragraph">Python would have printed warnings such as:</p>
+
+
+
+<figure class="wp-block-image size-full"><img decoding="async" src="../Images/dbd33fdab24a696f30cd9897f8996225.png" alt="" class="wp-image-616350" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/08/warn_image.png"/><figcaption class="wp-element-caption">Task was destroyed but it is pending!</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">These warnings appear when the program exits while there are still unfinished async tasks scheduled in the loop. If we had seen a screen full of those warnings, it likely would’ve triggered a red flag much sooner.</p>
+
+
+
+<p class="wp-block-paragraph">So why didn’t we see that warning when using <code>asyncio.run()</code>?</p>
+
+
+
+<p class="wp-block-paragraph">Because <code>asyncio.run()</code> takes care of cleanup behind the scenes. It doesn’t just run your coroutine and exit, it also cancels any remaining tasks, waits for them to finish, and only then shuts down the event loop. This built-in safety net prevents those “pending task” warnings from showing up, even if your code quietly launched more tasks than it needed to.</p>
+
+
+
+<p class="wp-block-paragraph">As a result, it <strong>suppresses those “pending task” warnings </strong>when you manually close the loop with <code>loop.close()</code> after <code>run_until_complete()</code>, any leftover tasks that haven’t been awaited will still be hanging around. Python detects that you’re forcefully shutting down the loop while work is still scheduled, and warns you about it.</p>
+
+
+
+<p class="wp-block-paragraph">This isn’t to say that every async Python program should avoid <code>asyncio.run()</code> or always use <code>loop.run_until_complete()</code> with a manual <code>loop.close()</code>. But it does highlight something important: you should be aware of what tasks are still running when your program exits. <strong>At the very least, it’s a good idea to monitor or log any pending tasks before shutdown.</strong></p>
+
+
+
+<h2 class="wp-block-heading">Final Thoughts</h2>
+
+
+
+<p class="wp-block-paragraph">By stepping back and rethinking the control flow, we were able to make our validation process dramatically more efficient — <strong>not by adding more infrastructure, but by using what we already had more carefully.</strong> A few lines of code change led to a <strong>90% cost reduction</strong> with almost no added complexity. It resolved rate-limit errors, reduced system load, and allowed the team to run evaluations more frequently without causing bottlenecks.</p>
+
+
+
+<p class="wp-block-paragraph">It is an important reminder that <strong>“clean” async code doesn’t always mean efficient code, being intentional about how we use system resources is crucial.</strong> Responsible, efficient engineering is about more than just writing code that works. It’s about designing systems that respect time, money, and shared resources, especially in collaborative environments. When you treat compute as a shared asset instead of an infinite pool, everyone benefits: systems scale better, teams move faster, and costs stay predictable.</p>
+
+
+
+<p class="wp-block-paragraph">So, whether you’re making LLM calls, launching Kubernetes jobs, or processing data in batches, pause and ask yourself: am I only using what I <em>really need</em>?<br/><br/>Often, the answer and the improvement are just one line of code away.</p>
+    
+</body>
+</html>

@@ -1,0 +1,631 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.1//EN"
+  "http://www.w3.org/TR/xhtml11/DTD/xhtml11.dtd">
+
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+<title>Rapid Prototyping of Chatbots with Streamlit and Chainlit</title>
+<link href="../Styles/Style.css" type="text/css" rel="stylesheet"/>
+</head>
+<body>
+<h1>Rapid Prototyping of Chatbots with Streamlit and Chainlit</h1>
+<blockquote>原文：<a href="https://towardsdatascience.com/rapid-prototyping-of-chatbots-with-streamlit-and-chainlit/">https://towardsdatascience.com/rapid-prototyping-of-chatbots-with-streamlit-and-chainlit/</a></blockquote>
+<p class="wp-block-paragraph"><em><mdspan datatext="el1758113565427" class="mdspan-comment">Rapid prototyping</mdspan></em> <mdspan datatext="el1758162360901" class="mdspan-comment">refers to an iterative</mdspan> process of building — and collecting regular user feedback on — simple versions of a product to quickly validate important assumptions and hypotheses, and assess key risks. This approach is closely aligned with the practice of agile software development, and the “build-measure-learn” process in the Lean Startup methodology, and can significantly reduce development costs and shorten the time-to-market. Rapid prototyping is especially useful for shipping successful AI products, given the early-stage nature of related technologies, use cases, and user expectations.</p>
+
+
+
+<p class="wp-block-paragraph">To this end, Streamlit was launched in 2019 as a Python framework that simplifies the process of prototyping AI apps that require user interfaces (UIs). Data scientists and engineers can focus on the backend parts (e.g., training an ML model and exposing a prediction endpoint via an API), and with only a few lines of Python code, Streamlit can spin up a user-friendly, customizable UI. Chainlit, also a Python framework, was launched more recently in 2023 to specifically address pain points in prototyping conversational AI applications (i.e., chatbots). While Streamlit and Chainlit are similar in some ways, there are also important differences. In this article, we will examine the pros and cons of both frameworks by building end-to-end demo chatbot applications, and provide practical recommendations.</p>
+
+
+
+<p class="wp-block-paragraph"><strong>Note:</strong> All figures in the following sections have been created by the author of this article.</p>
+
+
+
+<h2 class="wp-block-heading">End-to-End Chatbot Demos</h2>
+
+
+
+<h3 class="wp-block-heading">Local Setup</h3>
+
+
+
+<p class="wp-block-paragraph">For simplicity, we will build the demo applications so that they can easily be tested in a local environment using open-source large language models (LLMs) accessed via Ollama, a tool for downloading, managing, and interacting with open-source LLMs in a user-friendly way on one’s local machine.</p>
+
+
+
+<p class="wp-block-paragraph">Of course, the demos can later be modified for use in production, e.g., by leveraging the latest LLMs offered by the likes of OpenAI or Google, and by deploying the chatbot on a commonly used hyperscaler such as AWS, Azure, or GCP. All implementation steps below have been tested on macOS Sequoia 15.6.1, and should be roughly similar on Linux and Windows.</p>
+
+
+
+<p class="wp-block-paragraph">Go <a href="https://ollama.com/download">here</a> to download and install Ollama. Check that the installation was successful by running this command in the Terminal:</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-bash">ollama --version</code></pre>
+
+
+
+<p class="wp-block-paragraph">We will use Google’s lightweight Gemma 2 model with 2B parameters, which can be downloaded with this command:</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-bash">ollama pull gemma:2b</code></pre>
+
+
+
+<p class="wp-block-paragraph">The model file size is around 1.7 GB, so the download might take a few minutes depending on your internet connection. Verify that the model has been downloaded using this command:</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-bash">ollama list</code></pre>
+
+
+
+<p class="wp-block-paragraph">This will show all the models that have been downloaded via Ollama so far.</p>
+
+
+
+<p class="wp-block-paragraph">Next, we will set up the project directory using <code>uv</code>, a fast and user-friendly project management tool for Python. Follow the instructions <a href="https://docs.astral.sh/uv/getting-started/installation/">here</a> to install <code>uv</code>, and verify the installation using this command:</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-bash">uv --version</code></pre>
+
+
+
+<p class="wp-block-paragraph">Initialize a project directory called <code>chatbot-demos</code> at a suitable location on your local machine like this:</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-bash">uv init --bare chatbot-demos</code></pre>
+
+
+
+<p class="wp-block-paragraph">Without specifying the <code>--bare</code> option, <code>uv</code> would have created some standard artifacts during initialization, such as <code>main.py</code>, <code>README.md</code>, and a Python version pin file, but these are not needed for our demos. The minimal process only creates a <code>pyproject.toml</code> file.</p>
+
+
+
+<p class="wp-block-paragraph">In the <code>chatbot-demos</code> project directory, create a <code>requirements.txt</code> file with the following dependencies:</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-">chainlit==2.7.2
+ollama==0.5.3
+streamlit==1.49.1</code></pre>
+
+
+
+<p class="wp-block-paragraph">Now create a virtual Python 3.12 environment inside the project directory, activate the environment, and install the dependencies:</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-bash">uv venv --python=3.12 
+source .venv/bin/activate
+uv add -r requirements.txt</code></pre>
+
+
+
+<p class="wp-block-paragraph">Check that the dependencies have been installed:</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-bash">uv pip list</code></pre>
+
+
+
+<p class="wp-block-paragraph">We will implement a class called <code>LLMClient</code> for backend functionality that can be decoupled from the UI-centric functionality, which is the key differentiator of frameworks like Streamlit and Chainlit. For example, <code>LLMClient</code> could take care of tasks such as choosing between LLM providers, executing LLM calls, interacting with external databases for retrieval-augmented generation (RAG), and logging the conversation history for later analysis. Here is an example implementation of <code>LLMClient</code>, kept in a file called <code>llm_client.py</code>:</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">import logging
+import time
+from datetime import datetime, timezone
+from typing import List, Dict, Optional, Callable, Any, Generator
+import os
+import ollama
+
+LOG_FILE = os.path.join(os.path.dirname(__file__), "conversation_history.log")
+
+logger = logging.getLogger("conversation_logger")
+logger.setLevel(logging.INFO)
+
+if not logger.handlers:
+    fh = logging.FileHandler(LOG_FILE, encoding="utf-8")
+    fmt = logging.Formatter("%(asctime)s - %(message)s")
+    fh.setFormatter(fmt)
+    logger.addHandler(fh)
+
+class LLMClient:
+    def __init__(
+        self,
+        provider: str = "ollama",
+        model: str = "gemma:2b",
+        temperature: float = 0.2,
+        retriever: Optional[Callable[[str], List[str]]] = None,
+        feedback_handler: Optional[Callable[[Dict[str, Any]], None]] = None,
+        logger: Optional[Callable[[Dict[str, Any]], None]] = None
+    ):
+        self.provider = provider
+        self.model = model
+        self.temperature = temperature
+        self.retriever = retriever
+        self.feedback_handler = feedback_handler
+        self.logger = logger or self.default_logger
+
+    def default_logger(self, data: Dict[str, Any]):
+        logging.info(f"[LLMClient] {data}")
+
+    def _format_messages(self, messages: List[Dict[str, str]]) -&gt; str:
+        return "\n".join(f"{m['role'].capitalize()}: {m['content']}" for m in messages)
+
+    def _stream_provider(self, prompt: str, temperature: float) -&gt; Generator[str, None, None]:
+        if self.provider == "ollama":
+            for chunk in ollama.generate(
+                model=self.model,
+                prompt=prompt,
+                stream=True,
+                options={"temperature": temperature}
+            ):
+                yield chunk.get("response", "")
+        else:
+            raise ValueError(f"Streaming not implemented for provider: {self.provider}")
+
+    def stream_generate(
+        self,
+        messages: List[Dict[str, str]],
+        on_token: Callable[[str], None],
+        temperature: Optional[float] = None
+    ) -&gt; Dict[str, Any]:
+        start_time = time.time()
+
+        if self.retriever:
+            query = messages[-1]["content"]
+            docs = self.retriever(query)
+            if docs:
+                context_str = "\n".join(docs)
+                messages = [{"role": "system", "content": f"Use this context:\n{context_str}"}] + messages
+
+        prompt = self._format_messages(messages)
+        assembled_text = ""
+        temp_to_use = temperature if temperature is not None else self.temperature
+
+        try:
+            for token in self._stream_provider(prompt, temp_to_use):
+                assembled_text += token
+                on_token(token)
+        except Exception as e:
+            assembled_text = f"Error: {e}"
+
+        latency = time.time() - start_time
+
+        result = {
+            "text": assembled_text,
+            "timestamp": datetime.now(timezone.utc),
+            "latency": latency,
+            "provider": self.provider,
+            "model": self.model,
+            "temperature": temp_to_use,
+            "messages": messages
+        }
+
+        self.logger({
+            "event": "llm_stream_call",
+            "provider": self.provider,
+            "model": self.model,
+            "temperature": temp_to_use,
+            "latency": latency,
+            "prompt": prompt,
+            "response": assembled_text
+        })
+
+        return result
+
+    def record_feedback(self, feedback: Dict[str, Any]):
+        if self.feedback_handler:
+            self.feedback_handler(feedback)
+        else:
+            self.logger({"event": "feedback", **feedback})
+    
+    def log_interaction(self, role: str, content: str):
+        logger.info(f"{role.upper()}: {content}")</code></pre>
+
+
+
+<h3 class="wp-block-heading">Basic Streamlit Demo</h3>
+
+
+
+<p class="wp-block-paragraph">Create a file called <code>st_app_basic.py</code> in the project directory and paste in the following code:</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">import streamlit as st
+from llm_client import LLMClient
+
+MAX_HISTORY = 5
+llm_client = LLMClient(provider="ollama", model="gemma:2b")
+
+st.set_page_config(page_title="Streamlit Basic Chatbot", layout="centered")
+st.title("Streamlit Basic Chatbot")
+
+if "messages" not in st.session_state:
+    st.session_state.messages = []
+
+# Display chat history
+for msg in st.session_state.messages:
+    with st.chat_message(msg["role"]):
+        st.markdown(msg["content"])
+
+# User input
+if prompt := st.chat_input("Type your message..."):
+    st.session_state.messages.append({"role": "user", "content": prompt})
+    st.session_state.messages = st.session_state.messages[-MAX_HISTORY:]
+    llm_client.log_interaction("user", prompt)
+
+    with st.chat_message("assistant"):
+        response_container = st.empty()
+        state = {"full_response": ""}
+
+        def on_token(token):
+            state["full_response"] += token
+            response_container.markdown(state["full_response"])
+
+        result = llm_client.stream_generate(st.session_state.messages, on_token)
+        st.session_state.messages.append({"role": "assistant", "content": result["text"]})
+        llm_client.log_interaction("assistant", result["text"])</code></pre>
+
+
+
+<p class="wp-block-paragraph">Launch the app at <code>localhost:8501</code> like this:</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-bash">streamlit run st_app_basic.py</code></pre>
+
+
+
+<p class="wp-block-paragraph">If the app does not open automatically in your default browser, navigate to the URL manually (<a href="http://localhost:8501">http://localhost:8501</a>). You should see a bare-bones chat interface. Enter the following question in the prompt field and hit Enter:</p>
+
+
+
+<blockquote class="wp-block-quote is-layout-flow wp-block-quote-is-layout-flow">
+<p class="wp-block-paragraph"><em>What is the formula to convert Celsius to Fahrenheit?</em></p>
+</blockquote>
+
+
+
+<p class="wp-block-paragraph">Figure 1 shows the result:</p>
+
+
+
+<figure class="wp-block-image size-large"><img decoding="async" src="../Images/9c996bc2642d6596f6bced066c84bece.png" alt="" class="wp-image-620027" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/09/image-111-1024x734.png"/><figcaption class="wp-element-caption">Figure 1: Initial Streamlit Q&amp;A</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">Now, ask this follow-up question:</p>
+
+
+
+<blockquote class="wp-block-quote is-layout-flow wp-block-quote-is-layout-flow">
+<p class="wp-block-paragraph"><em>Can you implement that formula in Python?</em></p>
+</blockquote>
+
+
+
+<p class="wp-block-paragraph">Since our demo implementation keeps track of the conversation history for up to 5 previous messages, the chatbot will be able to associate “that formula” with the one in the preceding prompt, as shown in Figure 2 below:</p>
+
+
+
+<figure class="wp-block-image size-large"><img decoding="async" src="../Images/62533ab1c934b4e6fc118bdfb4004f40.png" alt="" class="wp-image-620028" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/09/image-112-987x1024.png"/><figcaption class="wp-element-caption">Figure 2: Follow-Up Streamlit Q&amp;A</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">Feel free to play around with a few more prompts. To close the app, execute <code>Control</code> + <code>c</code> in the Terminal.</p>
+
+
+
+<h3 class="wp-block-heading">Basic Chainlit Demo</h3>
+
+
+
+<p class="wp-block-paragraph">Create a file called <code>cl_app_basic.py</code> in the project directory and paste in the following code:</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">import chainlit as cl
+from llm_client import LLMClient
+
+MAX_HISTORY = 5
+llm_client = LLMClient(provider="ollama", model="gemma:2b")
+
+@cl.on_chat_start
+async def start():
+    await cl.Message(content="Welcome! Ask me anything.").send()
+    cl.user_session.set("messages", [])
+
+@cl.on_message
+async def main(message: cl.Message):
+    messages = cl.user_session.get("messages")
+    messages.append({"role": "user", "content": message.content})
+    messages[:] = messages[-MAX_HISTORY:]
+    llm_client.log_interaction("user", message.content)
+
+    state = {"full_response": ""}
+    
+    def on_token(token):
+        state["full_response"] += token
+
+    result = llm_client.stream_generate(messages, on_token)
+    messages.append({"role": "assistant", "content": result["text"]})
+    llm_client.log_interaction("assistant", result["text"])
+
+    await cl.Message(content=result["text"]).send()</code></pre>
+
+
+
+<p class="wp-block-paragraph">Launch the app at <code>localhost:8000</code> (note the different port) like this:</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-bash">chainlit run cl_app_basic.py</code></pre>
+
+
+
+<p class="wp-block-paragraph">For the sake of comparison, we will run the same two prompts as before. The results are shown in Figures 3 and 4 below:</p>
+
+
+
+<figure class="wp-block-image size-large"><img decoding="async" src="../Images/e4f1da0d3dd50a0be9dab126838d19d0.png" alt="" class="wp-image-620029" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/09/image-113-1024x769.png"/><figcaption class="wp-element-caption">Figure 3: Initial Chainlit Q&amp;A</figcaption></figure>
+
+
+
+<figure class="wp-block-image size-large"><img decoding="async" src="../Images/f9a4532f45c7474fa836a98058967b02.png" alt="" class="wp-image-620030" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/09/image-114-766x1024.png"/><figcaption class="wp-element-caption">Figure 4: Follow-Up Chainlit Q&amp;A</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">As before, after playing around with some more prompts, close the app by executing <code>Control</code> + <code>c</code> in the Terminal.</p>
+
+
+
+<h3 class="wp-block-heading">Advanced Streamlit Demo</h3>
+
+
+
+<p class="wp-block-paragraph">We will now extend the basic Streamlit demo with a persistent sidebar on the left side with a slider widget to toggle the temperature parameter of the LLM, a button to download chat history, and feedback buttons below each chatbot response (“Helpful”, “Not Helpful”). Customizing the app layout and adding global widgets can be done relatively easily in Streamlit but may be cumbersome to replicate in Chainlit — interested readers can give it a go to experience the difficulties first-hand.</p>
+
+
+
+<p class="wp-block-paragraph">Here is the extended Streamlit app, kept in a file called <code>st_app_advanced.py</code>:</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">import streamlit as st
+from llm_client import LLMClient
+import json
+
+MAX_HISTORY = 5
+llm_client = LLMClient(provider="ollama", model="gemma:2b")
+
+st.set_page_config(page_title="Streamlit Advanced Chatbot", layout="wide")
+st.title("Streamlit Advanced Chatbot")
+
+# Sidebar controls
+st.sidebar.header("Model Settings")
+temperature = st.sidebar.slider("Temperature", 0.0, 1.0, 0.2, 0.1)  # min, max, default, increment size
+st.sidebar.download_button(
+    "Download Chat History",
+    data=json.dumps(st.session_state.get("messages", []), indent=2),
+    file_name="chat_history.json",
+    mime="application/json"
+)
+
+if "messages" not in st.session_state:
+    st.session_state.messages = []
+
+# Display chat history
+for msg in st.session_state.messages:
+    with st.chat_message(msg["role"]):
+        st.markdown(msg["content"])
+
+# User input
+if prompt := st.chat_input("Type your message..."):
+    st.session_state.messages.append({"role": "user", "content": prompt})
+    st.session_state.messages = st.session_state.messages[-MAX_HISTORY:]
+    llm_client.log_interaction("user", prompt)
+
+    with st.chat_message("assistant"):
+        response_container = st.empty()
+        state = {"full_response": ""}
+
+        def on_token(token):
+            state["full_response"] += token
+            response_container.markdown(state["full_response"])
+
+        result = llm_client.stream_generate(
+            st.session_state.messages,
+            on_token,
+            temperature=temperature
+        )
+        llm_client.log_interaction("assistant", result["text"])
+        st.session_state.messages.append({"role": "assistant", "content": result["text"]})
+
+        # Feedback buttons
+        col1, col2 = st.columns(2)
+        if col1.button("Helpful"):
+            llm_client.record_feedback({"rating": "up", "comment": "User liked the answer"})
+        if col2.button("Not Helpful"):
+            llm_client.record_feedback({"rating": "down", "comment": "User disliked the answer"})</code></pre>
+
+
+
+<p class="wp-block-paragraph">Figure 5 shows an example screenshot:</p>
+
+
+
+<figure class="wp-block-image size-large"><img decoding="async" src="../Images/728c2f0227bfec39fd68edfd13254c30.png" alt="" class="wp-image-620031" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/09/image-115-1024x533.png"/><figcaption class="wp-element-caption">Figure 5: Demo of Advanced Streamlit Features</figcaption></figure>
+
+
+
+<h3 class="wp-block-heading">Advanced Chainlit Demo</h3>
+
+
+
+<p class="wp-block-paragraph">Next, we will extend the basic Chainlit demo with per-message interactive actions and multimodal input handling (text and images in our case). The chat-native primitives of the Chainlit framework make it easier to implement these types of features than in Streamlit. Again, interested readers are encouraged to experience the difference by attempting to replicate the functionality using Streamlit.</p>
+
+
+
+<p class="wp-block-paragraph">Here is the extended Chainlit app, kept in a file called <code>cl_app_advanced.py</code>:</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">import os
+import json
+from typing import List, Dict
+import chainlit as cl
+from llm_client import LLMClient
+
+MAX_HISTORY = 5
+DEFAULT_TEMPERATURE = 0.2
+SESSIONS_DIR = os.path.join(os.path.dirname(__file__), "sessions")
+os.makedirs(SESSIONS_DIR, exist_ok=True)
+
+llm_client = LLMClient(provider="ollama", model="gemma:2b", temperature=DEFAULT_TEMPERATURE)
+
+def _session_file(session_name: str) -&gt; str:
+    safe = "".join(c for c in session_name if c.isalnum() or c in ("-", "_"))
+    return os.path.join(SESSIONS_DIR, f"{safe or 'default'}.json")
+
+def _save_session(session_name: str, messages: List[Dict]):
+    with open(_session_file(session_name), "w", encoding="utf-8") as f:
+        json.dump(messages, f, ensure_ascii=False, indent=2)
+
+def _load_session(session_name: str) -&gt; List[Dict]:
+    path = _session_file(session_name)
+    if os.path.exists(path):
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    return []
+
+@cl.on_chat_start
+async def start():
+    cl.user_session.set("messages", [])
+    cl.user_session.set("session_name", "default")
+    cl.user_session.set("last_assistant_idx", None)
+
+    await cl.Message(
+        content=(
+            "Welcome! Ask me anything."
+        ),
+        actions=[
+            cl.Action(name="set_session_name", label="Set session name", payload={"turn": None}),
+            cl.Action(name="save_session", label="Save session", payload={"turn": "save"}),
+            cl.Action(name="load_session", label="Load session", payload={"turn": "load"}),
+        ],
+    ).send()
+
+@cl.action_callback("set_session_name")
+async def set_session_name(action):
+    await cl.Message(content="Please type: /name YOUR_SESSION_NAME").send()
+
+@cl.action_callback("save_session")
+async def save_session(action):
+    session_name = cl.user_session.get("session_name")
+    _save_session(session_name, cl.user_session.get("messages", []))
+    await cl.Message(content=f"Session saved as '{session_name}'.").send()
+
+@cl.action_callback("load_session")
+async def load_session(action):
+    session_name = cl.user_session.get("session_name")
+    loaded = _load_session(session_name)
+    cl.user_session.set("messages", loaded[-MAX_HISTORY:])
+    await cl.Message(content=f"Loaded session '{session_name}' with {len(loaded)} turn(s).").send()
+
+@cl.on_message
+async def main(message: cl.Message):
+    if message.content.strip().startswith("/name "):
+        new_name = message.content.strip()[6:].strip() or "default"
+        cl.user_session.set("session_name", new_name)
+        await cl.Message(content=f"Session name set to '{new_name}'.").send()
+        return
+
+    messages = cl.user_session.get("messages")
+
+    user_text = message.content or ""
+    if message.elements:
+        for element in message.elements:
+            if getattr(element, "mime", "").startswith("image/"):
+                user_text += f" [Image: {element.name}]"
+
+    messages.append({"role": "user", "content": user_text})
+    messages[:] = messages[-MAX_HISTORY:]
+    llm_client.log_interaction("user", user_text)
+
+    state = {"full_response": ""}
+    msg = cl.Message(content="")
+
+    def on_token(token: str):
+        state["full_response"] += token
+        cl.run_sync(msg.stream_token(token))
+
+    result = llm_client.stream_generate(messages, on_token, temperature=DEFAULT_TEMPERATURE)
+    messages.append({"role": "assistant", "content": result["text"]})
+    llm_client.log_interaction("assistant", result["text"])
+
+    msg.content = state["full_response"]
+    await msg.send()
+    
+    turn_idx = len(messages) - 1
+    cl.user_session.set("last_assistant_idx", turn_idx)
+
+    await cl.Message(
+        content="Was this helpful?",
+        actions=[
+            cl.Action(name="thumbs_up", label="Yes", payload={"turn": turn_idx}),
+            cl.Action(name="thumbs_down", label="No", payload={"turn": turn_idx}),
+            cl.Action(name="save_session", label="Save session", payload={"turn": "save"}),
+        ],
+    ).send()
+
+@cl.action_callback("thumbs_up")
+async def thumbs_up(action):
+    turn = action.payload.get("turn")
+    llm_client.record_feedback({"rating": "up", "turn": turn})
+    await cl.Message(content="Thanks for your feedback!").send()
+
+@cl.action_callback("thumbs_down")
+async def thumbs_down(action):
+    turn = action.payload.get("turn")
+    llm_client.record_feedback({"rating": "down", "turn": turn})
+    await cl.Message(content="Thanks for your feedback.").send()</code></pre>
+
+
+
+<p class="wp-block-paragraph">Figure 6 shows an example screenshot:</p>
+
+
+
+<figure class="wp-block-image size-large"><img decoding="async" src="../Images/a90ca9f6c7c551b80e76852eaf1cd7ab.png" alt="" class="wp-image-620039" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/09/image-117-944x1024.png"/><figcaption class="wp-element-caption">Figure 6: Demo of Advanced Chainlit Features</figcaption></figure>
+
+
+
+<h2 class="wp-block-heading">Practical Guidance</h2>
+
+
+
+<p class="wp-block-paragraph">As the previous section demonstrates, it is possible to rapidly prototype simple chatbot applications with both Streamlit and Chainlit. In the basic demos that we implemented, there were a few architectural similarities: the calls to Ollama and conversation logging was abstracted away using the <code>LLMClient</code> class, the context size was limited using a constant variable called <code>MAX_HISTORY</code>, and the history was serialized into a plaintext chat format. As the advanced demos show, however, the scope of each framework is somewhat different, which entails certain pros and cons depending on the use case along with related practical recommendations.</p>
+
+
+
+<p class="wp-block-paragraph">Whereas Streamlit is a general-purpose framework for data-centric, interactive web apps, Chainlit is focused on building and deploying conversational AI apps. Thus, Chainlit may make more sense to use if the chatbot is central to the prototype; as the above code examples illustrate, Chainlit takes care of several boilerplate operational details (e.g., built-in chat features for native typing indicators, message streaming, and markdown/code rendering). But if the chatbot is embedded in a larger AI product, Streamlit may be able to better cope with the larger application scope (e.g., combining the chat interface with data visualizations, dashboards, global widgets, and custom layouts).</p>
+
+
+
+<p class="wp-block-paragraph">Furthermore, the conversational elements in AI applications may need to be handled in an asynchronous manner to ensure a good user experience (UX), since messages can arrive at any time and need to be processed quickly while other tasks may be in progress (e.g., calling another API or streaming model output). Chainlit makes it easy to prototype asynchronous chat logic using Python’s <code>async</code> and <code>await</code> keywords, ensuring that the app can handle concurrent operations without blocking the UI. The framework takes care of low-level details around managing WebSocket connections and custom polling, so that whenever an event is triggered (e.g., message sent, token streamed, state changed), the event handling logic of Chainlit automatically triggers UI updates as required. By contrast, Streamlit uses synchronous communication, which causes the app script to rerun with each user interaction; for complex apps that need to juggle multiple concurrent processes, Chainlit may allow for a smoother UX than Streamlit.</p>
+
+
+
+<p class="wp-block-paragraph">Finally, beyond the limitations that come with focusing primarily on chat-based applications, Chainlit was released a few years after Streamlit, so it is currently less technically mature and has a smaller developer community; e.g., fewer third‑party extensions, community‑contributed examples, and troubleshooting resources are available at the moment. Although Chainlit is evolving rapidly and gaps are actively being addressed, developers may encounter occasional breaking changes between versions, less comprehensive documentation for advanced use cases, and limited integration guidance for certain deployment environments. Product teams that still wish to prototype chatbot-centric AI applications using Chainlit due to potential long-term architectural benefits should thus be prepared to make some additional short-term investments in custom development, experimentation, and direct engagement with the framework maintainers and relevant community forums to resolve issues and request additional functionality.</p>
+    
+</body>
+</html>

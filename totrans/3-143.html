@@ -1,0 +1,363 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.1//EN"
+  "http://www.w3.org/TR/xhtml11/DTD/xhtml11.dtd">
+
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+<title>AI Agents from Scratch: Iterations & Chains</title>
+<link href="../Styles/Style.css" type="text/css" rel="stylesheet"/>
+</head>
+<body>
+<h1>AI Agents from Scratch: Iterations & Chains</h1>
+<blockquote>原文：<a href="https://towardsdatascience.com/ai-agents-from-zero-to-hero-part-2/">https://towardsdatascience.com/ai-agents-from-zero-to-hero-part-2/</a></blockquote>
+<h2 class="wp-block-heading"><strong><mdspan datatext="el1743017574199" class="mdspan-comment">Intro</mdspan></strong></h2>
+
+
+
+<p class="wp-block-paragraph">In <a href="https://towardsdatascience.com/ai-agents-from-zero-to-hero-part-1/">Part 1</a> of this tutorial series, we introduced <strong>AI Agents</strong>, autonomous programs that perform tasks, make decisions, and communicate with others. </p>
+
+
+
+<p class="wp-block-paragraph">Agents perform actions through Tools. It might happen that a Tool doesn’t work on the first try, or that multiple Tools must be activated in sequence. Agents should be able to organize tasks into a logical progression and change their strategies in a dynamic environment.</p>
+
+
+
+<p class="wp-block-paragraph">To put it simply, the Agent’s structure must be solid, and the behavior must be reliable. The most common way to do that is through:</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item"><strong>Iterations –</strong> repeating a certain action multiple times, often with slight changes or improvements in each cycle. Every time might involve the Agent revisiting certain steps to refine its output or reach an optimal solution.</li>
+
+
+
+<li class="wp-block-list-item"><strong>Chains</strong> <strong>–</strong> a series of actions that are linked together in a sequence. Each step in the chain is dependent on the previous one, and the output of one action becomes the input for the next.</li>
+</ul>
+
+
+
+<p class="wp-block-paragraph">In this tutorial, I’m going to show how to use <strong>iterations and chains for Agents</strong>. I will present some useful Python code that can be easily applied in other similar cases (just copy, paste, run) and walk through every line of code with comments so that you can replicate this example (link to full code at the end of the article).</p>
+
+
+
+<h2 class="wp-block-heading"><strong>Setup</strong></h2>
+
+
+
+<p class="wp-block-paragraph">Please refer to <a href="https://towardsdatascience.com/ai-agents-from-zero-to-hero-part-1/">Part 1</a> for the setup of <a href="https://ollama.com/"><strong><em>Ollama</em></strong></a> and the main LLM.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">import ollama
+llm = "qwen2.5" </code></pre>
+
+
+
+<p class="wp-block-paragraph">We will use the <a href="https://yfinance-python.org/"><em>YahooFinance</em> public APIs</a> with the Python library (<code>pip install yfinance==0.2.55</code>) to download financial data. </p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">import yfinance as yf
+
+stock = "MSFT"
+yf.Ticker(ticker=stock).history(period='5d') #1d,5d,1mo,3mo,6mo,1y,2y,5y,10y,ytd,max</code></pre>
+
+
+
+<figure class="wp-block-image"><img decoding="async" src="../Images/f78d6ac26569e06de1298387249dddd2.png" alt="" data-original-src="https://lh7-rt.googleusercontent.com/docsz/AD_4nXfouSXPRKeUie50ngD0nNH4_1KURTjDjhbUwqeJ9EyKVlTJbwoHiHlukNP57Ymg4afc4aD9A-kZCUqwJp4QmbWawEI1a27aRnPF2j3Ji9OvZ3b4WgvnPl32x-ZM2ImsBCA_0CNp4g?key=2eqZbEnNxwakht1Lz2efc-lr"/></figure>
+
+
+
+<p class="wp-block-paragraph">Let’s embed that into a Tool.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">import matplotlib.pyplot as plt
+
+def get_stock(ticker:str, period:str, col:str):
+    data = yf.Ticker(ticker=ticker).history(period=period)
+    if len(data) &gt; 0:
+        data[col].plot(color="black", legend=True, xlabel='', title=f"{ticker.upper()} ({period})").grid()
+        plt.show()
+        return 'ok'
+    else:
+        return 'no'
+
+tool_get_stock = {'type':'function', 'function':{
+  'name': 'get_stock',
+  'description': 'Download stock data',
+  'parameters': {'type': 'object',
+                'required': ['ticker','period','col'],
+                'properties': {
+                    'ticker': {'type':'str', 'description':'the ticker symbol of the stock.'},
+                    'period': {'type':'str', 'description':"for 1 month input '1mo', for 6 months input '6mo', for 1 year input '1y'. Use '1y' if not specified."},
+                    'col': {'type':'str', 'description':"one of 'Open','High','Low','Close','Volume'. Use 'Close' if not specified."},
+}}}}
+
+## test
+get_stock(ticker="msft", period="1y", col="Close")</code></pre>
+
+
+
+<figure class="wp-block-image"><img decoding="async" src="../Images/ea1f9b6db9a06611d982aad95c41c8b6.png" alt="" data-original-src="https://lh7-rt.googleusercontent.com/docsz/AD_4nXer7QmZmL87alB3T7kc4ICvz2vPMX-Hehfj2o0JqKIOMZp8RE4-TAqOxTJmQvPQHCZaTokm8vpZBvvSM5x7lPJtCE3sr01Jwl33rBnmshRGisjah1_oajy3VdVMyPqdHh49d4urMA?key=2eqZbEnNxwakht1Lz2efc-lr"/></figure>
+
+
+
+<p class="wp-block-paragraph">Moreover, taking the code from the previous article as a reference, I shall write a general function to process the model response, such as when the Agent wants to use a Tool or when it just returns text.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">def use_tool(agent_res:dict, dic_tools:dict) -&gt; dict:
+    ## use tool
+    if "tool_calls" in agent_res["message"].keys():
+        for tool in agent_res["message"]["tool_calls"]:
+            t_name, t_inputs = tool["function"]["name"], tool["function"]["arguments"]
+            if f := dic_tools.get(t_name):
+                ### calling tool
+                print('🔧 &gt;', f"\x1b[1;31m{t_name} -&gt; Inputs: {t_inputs}\x1b[0m")
+                ### tool output
+                t_output = f(**tool["function"]["arguments"])
+                print(t_output)
+                ### final res
+                res = t_output
+            else:
+                print('🤬 &gt;', f"\x1b[1;31m{t_name} -&gt; NotFound\x1b[0m")
+    ## don't use tool
+    if agent_res['message']['content'] != '':
+        res = agent_res["message"]["content"]
+        t_name, t_inputs = '', ''
+    return {'res':res, 'tool_used':t_name, 'inputs_used':t_inputs}</code></pre>
+
+
+
+<p class="wp-block-paragraph">Let’s start a quick conversation with our Agent. For now, I’m going to use a simple generic prompt.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">prompt = '''You are a financial analyst, assist the user using your available tools.'''
+messages = [{"role":"system", "content":prompt}]
+dic_tools = {'get_stock':get_stock}
+
+while True:
+    ## user input
+    try:
+        q = input('🙂 &gt;')
+    except EOFError:
+        break
+    if q == "quit":
+        break
+    if q.strip() == "":
+        continue
+    messages.append( {"role":"user", "content":q} )
+   
+    ## model
+    agent_res = ollama.chat(model=llm, messages=messages,
+                            tools=[tool_get_stock])
+    dic_res = use_tool(agent_res, dic_tools)
+    res, tool_used, inputs_used = dic_res["res"], dic_res["tool_used"], dic_res["inputs_used"]
+   
+    ## final response
+    print("👽 &gt;", f"\x1b[1;30m{res}\x1b[0m")
+    messages.append( {"role":"assistant", "content":res} )</code></pre>
+
+
+
+<p class="wp-block-paragraph">As you can see, I started by asking an “easy” question. The LLM already knows that the symbol of Microsoft stock is MSFT, therefore the Agent was able to activate the Tool with the right inputs. But what if I ask something that might not be included in the LLM knowledge base? </p>
+
+
+
+<figure class="wp-block-image"><img decoding="async" src="../Images/6794ec7547ecfad80dcf54c9dc341e7a.png" alt="" data-original-src="https://lh7-rt.googleusercontent.com/docsz/AD_4nXeW3QY-K1AhycyHXzTJopnBRUkcjq4GVYNB54hK2BwOKIiEptNCj-7nuxXBWC2UtgdoEMsneoYuwBEpNeSP3aceDoEz6Afm-eSuTPL8tx7qa8GGtO4k83gKEmzPr6lg22OGRrkgng?key=2eqZbEnNxwakht1Lz2efc-lr"/></figure>
+
+
+
+<p class="wp-block-paragraph">Seems that the LLM doesn’t know that Facebook changed its name to META, so it used the Tool with the wrong inputs. I will enable the Agent to try an action several times through iterations.</p>
+
+
+
+<h2 class="wp-block-heading"><strong>Iterations</strong></h2>
+
+
+
+<p class="wp-block-paragraph">Iterations refer to the repetition of a process until a certain condition is met. We can let the Agent try a specific number of times, but we need to let it know that the previous parameters didn’t work, by adding the details in the message history.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">    max_i, i = 3, 0
+    while res == 'no' and i &lt; max_i:
+        comment = f'''I used tool '{tool_used}' with inputs {inputs_used}. But it didn't work, so I must try again with different inputs'''
+        messages.append( {"role":"assistant", "content":comment} )
+        agent_res = ollama.chat(model=llm, messages=messages,
+                                tools=[tool_get_stock])
+        dic_res = use_tool(agent_res, dic_tools)
+        res, tool_used, inputs_used = dic_res["res"], dic_res["tool_used"], dic_res["inputs_used"]
+       
+        i += 1
+        if i == max_i:
+            res = f'I tried {i} times but something is wrong'
+
+    ## final response
+    print("👽 &gt;", f"\x1b[1;30m{res}\x1b[0m")
+    messages.append( {"role":"assistant", "content":res} )</code></pre>
+
+
+
+<figure class="wp-block-image"><img decoding="async" src="../Images/400dd2794aca736a4a2f9b023abd2aad.png" alt="" data-original-src="https://lh7-rt.googleusercontent.com/docsz/AD_4nXdDHRUSjNVxMPGTYocuK6zW6l7YyTQJ7xDTY69YiGUe0yulhLIFKyRk1CtTDKBHdpus0TViK45Bdyegvs-9vOda4OwTCjnD_2jDKaTkG0LV4lhrZ_7uk1f_JkgCGbNvxbdqyEkyXA?key=2eqZbEnNxwakht1Lz2efc-lr"/></figure>
+
+
+
+<p class="wp-block-paragraph">The Agent tried 3 times with different inputs but it couldn’t find a solution because there is a gap in the LLM knowledge base. In this case, the model needed human input to understand how to use the Tool.</p>
+
+
+
+<p class="wp-block-paragraph">Next, we’re going to enable the Agent to fill the knowledge gap by itself.</p>
+
+
+
+<h2 class="wp-block-heading"><strong>Chains</strong></h2>
+
+
+
+<p class="wp-block-paragraph">A chain refers to a linear sequence of actions where the output of one step is used as the input for the next step. In this example, I will add another Tool that the Agent can use in case the first one fails.</p>
+
+
+
+<p class="wp-block-paragraph">We can use the web-searching Tool from the previous article.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">from langchain_community.tools import DuckDuckGoSearchResults
+
+def search_web(query:str) -&gt; str:
+  return DuckDuckGoSearchResults(backend="news").run(query)
+
+tool_search_web = {'type':'function', 'function':{
+  'name': 'search_web',
+  'description': 'Search the web',
+  'parameters': {'type': 'object',
+                'required': ['query'],
+                'properties': {
+                    'query': {'type':'str', 'description':'the topic or subject to search on the web'},
+}}}}
+
+## test
+search_web(query="facebook stock")</code></pre>
+
+
+
+<figure class="wp-block-image"><img decoding="async" src="../Images/df35b941be6ad9a440d3a15e4ff1ce1b.png" alt="" data-original-src="https://lh7-rt.googleusercontent.com/docsz/AD_4nXc9Wxl7SAI5E-ewj0D_MDk0Onx7AsMlEnvqMVxuXz--C6vEmNU7cMPO3jrb5viL9_PHwp4r2TQW2H_fjfuoy-6SLHdLgY_L7Z0jKxfVUklvxYjtjJoWdr1JNubJlIfuDyHbMe8VjQ?key=2eqZbEnNxwakht1Lz2efc-lr"/></figure>
+
+
+
+<p class="wp-block-paragraph">So far, I’ve always used very generic prompts as the tasks were relatively simple. Now, I want to make sure that the Agent understands how to use the Tools in the right order, so I’m going to write a <strong>proper prompt</strong>. This is how a prompt should be done:</p>
+
+
+
+<ol class="wp-block-list">
+<li class="wp-block-list-item">The goal of the Agent</li>
+
+
+
+<li class="wp-block-list-item">What it must return (i.e. format, content)</li>
+
+
+
+<li class="wp-block-list-item">Any relevant warnings that might affect the output</li>
+
+
+
+<li class="wp-block-list-item">Context dump</li>
+</ol>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">prompt = '''
+[GOAL] You are a financial analyst, assist the user using your available tools.
+
+[RETURN] You must return the stock data that the user asks for.
+
+[WARNINGS] In order to retrieve stock data, you need to know the ticker symbol of the company.
+
+[CONTEXT] First ALWAYS try to use the tool 'get_stock'.
+If it doesn't work, you can use the tool 'search_web' and search 'company name stock'.
+Get information about the stock and deduct what is the right ticker symbol of the company.
+Then, you can use AGAIN the tool 'get_stock' with the ticker you got using the previous tool.
+'''</code></pre>
+
+
+
+<p class="wp-block-paragraph">We can simply add the chain to the iteration loop that we already have. This time the Agent has two Tools, and when the first fails, the model can decide whether to retry or to use the second one. Then, if the second Tool is used, <strong>the Agent must process the output and learn</strong> what’s the right input for the first Tool that initially failed.</p>
+
+
+
+<pre class="wp-block-prismatic-blocks"><code class="language-python">    max_i, i = 3, 0
+    while res in ['no',''] and i &lt; max_i:
+        comment = f'''I used tool '{tool_used}' with inputs {inputs_used}. But it didn't work, so I must try a different way.'''
+        messages.append( {"role":"assistant", "content":comment} )
+        agent_res = ollama.chat(model=llm, messages=messages,
+                                tools=[tool_get_stock, tool_search_web])
+        dic_res = use_tool(agent_res, dic_tools)
+        res, tool_used, inputs_used = dic_res["res"], dic_res["tool_used"], dic_res["inputs_used"]
+
+        ## chain: output of previous tool = input of next tool
+        if tool_used == 'search_web':
+            query = q+". You must return just the compay ticker.\nContext: "+res
+            llm_res = ollama.generate(model=llm, prompt=query)["response"]
+            messages.append( {"role":"user", "content":f"try ticker: {llm_res}"} )
+           
+            print("👽 &gt;", f"\x1b[1;30mI can try with {llm_res}\x1b[0m")
+           
+            agent_res = ollama.chat(model=llm, messages=messages, tools=[tool_get_stock])
+            dic_res = use_tool(agent_res, dic_tools)
+            res, tool_used, inputs_used = dic_res["res"], dic_res["tool_used"], dic_res["inputs_used"]
+        i += 1        if i == max_i:            res = f'I tried {i} times but something is wrong'
+    
+ ## final response    
+ print("👽 &gt;", f"\x1b[1;30m{res}\x1b[0m")    
+ messages.append( {"role":"assistant", "content":res} )</code></pre>
+
+
+
+<figure class="wp-block-image"><img decoding="async" src="../Images/ff88c20cd12928894453355d965218e5.png" alt="" data-original-src="https://lh7-rt.googleusercontent.com/docsz/AD_4nXffM1UV48YR7WN5jNrjnEob3TEI6rdiYZkhdbfYLtgIZ_B128Gtal5FThAl8I2U42UvHlKHZQFv-LeKtJ4EKqMYF6i6OntUFZymhVFKfRWkCCT_ulB3lC_bdn2s_MjZVsE-zYg?key=2eqZbEnNxwakht1Lz2efc-lr"/></figure>
+
+
+
+<p class="wp-block-paragraph">As expected, the Agent tried to use the first Tool with the wrong inputs, but instead of trying the same action again as before, it decided to use the second Tool. By consuming information, it should understand the solution without the need for human input.</p>
+
+
+
+<figure class="wp-block-image"><img decoding="async" src="../Images/e18010afb8d0dfa2d8c611f44ec7c468.png" alt="" data-original-src="https://lh7-rt.googleusercontent.com/docsz/AD_4nXeL9Ur7fIGQfqipNtH6HdTBIoeNKAOlbe-6jbpMhsucr8-8kkTPwnviSTeVpHxVuI1K2oxqiIjsI23Q_KlOkUHx9KQ0VyifBZMFPvxZPGaYabCIAD7h9cBjkcrFEdy3D5Uk1PaOkg?key=2eqZbEnNxwakht1Lz2efc-lr"/></figure>
+
+
+
+<p class="wp-block-paragraph">In summary, the AI tried to do an action but failed due to a gap in its knowledge base. So it activated Tools to fill that gap and deliver the output requested by the user… that is indeed the true essence of AI Agents. </p>
+
+
+
+<h2 class="wp-block-heading"><strong>Conclusion</strong></h2>
+
+
+
+<p class="wp-block-paragraph">This article has covered more structured ways to make Agents more reliable, using iterations and chains. With these building blocks in place, you are already equipped to start developing your own Agents for different use cases. </p>
+
+
+
+<p class="wp-block-paragraph"><strong>Stay tuned for Part 3</strong>, where we will dive deeper into more advanced examples.</p>
+
+
+
+<p class="wp-block-paragraph">Full code for this article: <a href="https://github.com/mdipietro09/GenerativeAI/blob/main/Agents_ZeroToHero/notebook.ipynb"><strong>GitHub</strong></a></p>
+
+
+
+<p class="wp-block-paragraph">I hope you enjoyed it! Feel free to contact me for questions and feedback or just to share your interesting projects.</p>
+
+
+
+<p class="has-text-align-center wp-block-paragraph">👉 <a href="https://maurodp.carrd.co/"><strong>Let’s Connect</strong></a> 👈</p>
+
+
+
+<figure class="wp-block-image"><img decoding="async" src="../Images/1e0e1083fd6b193ac7b714448044ddde.png" alt="" data-original-src="https://lh7-rt.googleusercontent.com/docsz/AD_4nXfFcYBOAVagch7S-aKbCzR0P021yn4JnlWJpjLFXfWu7ui3X7AVBQA5pu7zZDuPhhTgWF5nn8kJIxU3NrsEkh6pH3TmfiT2S3S4_PnThnPDjoO3sNMcoqKpaeKGUyOYUyyOdvR5zA?key=2eqZbEnNxwakht1Lz2efc-lr"/></figure>
+    
+</body>
+</html>

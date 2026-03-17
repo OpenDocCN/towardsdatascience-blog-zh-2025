@@ -1,0 +1,444 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.1//EN"
+  "http://www.w3.org/TR/xhtml11/DTD/xhtml11.dtd">
+
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+<title>When Transformers Sing: Adapting SpectralKD for Text-Based Knowledge Distillation</title>
+<link href="../Styles/Style.css" type="text/css" rel="stylesheet"/>
+</head>
+<body>
+<h1>When Transformers Sing: Adapting SpectralKD for Text-Based Knowledge Distillation</h1>
+<blockquote>原文：<a href="https://towardsdatascience.com/when-transformers-sing-adapting-spectralkd-for-text-based-knowledge-distillation/">https://towardsdatascience.com/when-transformers-sing-adapting-spectralkd-for-text-based-knowledge-distillation/</a></blockquote>
+<h2 class="wp-block-heading"><mdspan datatext="el1761183506645" class="mdspan-comment">Introduction</mdspan></h2>
+
+
+
+<p class="wp-block-paragraph">While working on my Knowledge Distillation problem for intent classification, I faced a puzzling roadblock. My setup involved a teacher model, which is RoBERTa-large (finetuned on my intent classification), and a student model, which I was trying to train without losing too much accuracy compared to the teacher.</p>
+
+
+
+<p class="wp-block-paragraph">I experimented with multiple mapping techniques, connecting every 2nd layer to the student layer, averaging two teacher layers into one, and even assigning custom weights like giving (0.3 to l1 and 0.7 to l2). But no matter what combination I tried, the teacher’s accuracy never matched the student model.</p>
+
+
+
+<p class="wp-block-paragraph">That’s when I started exploring <strong>how to map the most informative layers<em> to my student model so that the student can maximize its performance</em></strong>. I wanted a way to quantify which layer of the teacher model truly matters for distillation.</p>
+
+
+
+<p class="wp-block-paragraph">In that search, I stumbled upon a fascinating paper<span style="margin: 0px; padding: 0px;">—”<a href="https://arxiv.org/pdf/2412.19055" target="_blank"><strong>SpectralKD: A Unified Framework for Interpreting and Distilling Vision Transformers via Spectral Analysis</strong></a>,” which tackled a similar problem but in the image domain. The authors used a spectral analysis approach (Spectral KD) to more intelligently align the teacher and student models</span>.</p>
+
+
+
+<p class="wp-block-paragraph">Curious, I decided to adapt the idea to text data – and <strong><em>BOOM!!!, it actually worked!</em> </strong>For the first time, my student model started thinking almost like its teacher.</p>
+
+
+
+<figure class="wp-block-image size-full"><img decoding="async" src="../Images/3658ff1da43414f028b6bc14fe685fd7.png" alt="" class="wp-image-626367" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/10/Screenshot-2025-10-07-191554-1.png"/><figcaption class="wp-element-caption">Source: Author</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">Here’s the <strong>layer intensity graph</strong> of my fine-tuned <strong>RoBERTa-large</strong> model. Based on the spectral insights, I selected <strong>layers 1–9 and 21–23</strong> for my <strong>student model</strong> during knowledge distillation, the ones carrying the richest information.</p>
+
+
+
+<p class="wp-block-paragraph">I can’t share my dataset or code for confidentiality reasons, but I’ll walk you through how the <strong>paper’s image-based approach</strong> inspired my <strong>text-based adaptation</strong>, and how you can think about doing the same.</p>
+
+
+
+<hr class="wp-block-separator has-alpha-channel-opacity is-style-dotted"/>
+
+
+
+<h2 class="wp-block-heading">Behind the Scenes: How FFT Reveals a Model’s Spectral Soul</h2>
+
+
+
+<p class="wp-block-paragraph">So, let’s start with <strong>spectral intensity</strong>, and slowly dive into the real magician here: the <strong>Fast Fourier Transform (FFT)</strong>.</p>
+
+
+
+<p class="wp-block-paragraph">In the <a href="https://arxiv.org/pdf/2412.19055">spectralKD paper</a>, the authors introduce a framework that helps us to see Vision Transformer(ViTs), not just what they are predicting, but also <strong>how the information flows in the layers</strong>. Instead of relying on intuition or visualisation, they use spectral analysis, a way <strong>to measure the frequency richness of the model’s internal representations.</strong></p>
+
+
+
+<p class="wp-block-paragraph">Imagine each Transformer layer as the musician in an orchestra, some layers play high notes(fine details), while others play low notes(broad features). The FFT helps us to listen to each player’s music separately and filter out which one is having the strongest melodies, i.e., the most information-rich signals.</p>
+
+
+
+<figure class="wp-block-image size-full"><img decoding="async" src="../Images/ee37544aaa3eb37fd40424da8ed5a6f2.png" alt="" class="wp-image-627093" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/10/image-301.png"/><figcaption class="wp-element-caption">Source: Author</figcaption></figure>
+
+
+
+<blockquote class="wp-block-quote is-layout-flow wp-block-quote-is-layout-flow">
+<p class="wp-block-paragraph">Step 1: Feature maps, The raw material</p>
+
+
+
+<figure class="wp-block-image size-full"><img decoding="async" src="../Images/85cec5b50db3dff72e7ffd62cca4350e.png" alt="" class="wp-image-626388" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/10/image-264.png"/></figure>
+
+
+
+<p class="wp-block-paragraph">B is batch size<br/>C is number of channels and,<br/>H,W is the spatial height and width.</p>
+</blockquote>
+
+
+
+<blockquote class="wp-block-quote is-layout-flow wp-block-quote-is-layout-flow">
+<p class="wp-block-paragraph">Step 2: Applying the fourier Transform</p>
+
+
+
+<p class="wp-block-paragraph">The authors apply a 1-dimensional FFT along the channel dimension to translate these real-valued activations into the frequency domain:<br/>                                    <strong>F(X)=FFT(X)</strong></p>
+
+
+
+<p class="wp-block-paragraph">This means:<br/>For every spatial location (b, h, w), a <strong>1D FFT</strong> is computed across all channels.<br/>The result is a <strong>complex-valued tensor</strong> (since FFT outputs real + imaginary parts).<br/>F(X) therefore tells us how much of each frequency is present in that layer’s representation.</p>
+</blockquote>
+
+
+
+<p class="wp-block-paragraph">And if you’re wondering, <em>“Why FFT though?”</em> — hold that thought.<br/>Because later in this blog, we’re going to uncover <strong>exactly why FFT is the perfect tool</strong> to measure a model’s inner intensity.</p>
+
+
+
+<blockquote class="wp-block-quote is-layout-flow wp-block-quote-is-layout-flow">
+<p class="wp-block-paragraph">Step 3: measuring frequency strength</p>
+
+
+
+<figure class="wp-block-image size-full is-resized"><img decoding="async" src="../Images/543487f1b4c24e66fc0981ed466fcc1e.png" alt="" class="wp-image-626393" style="width:321px;height:auto" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/10/image-265.png"/></figure>
+
+
+
+<p class="wp-block-paragraph"><strong>Re(F(X))</strong> is the real part,<br/><strong>Im(F(X))</strong> is the imaginary part.</p>
+</blockquote>
+
+
+
+<blockquote class="wp-block-quote is-layout-flow wp-block-quote-is-layout-flow">
+<p class="wp-block-paragraph">Step 4: Averaging across the map</p>
+
+
+
+<p class="wp-block-paragraph">Now we want to summarize this intensity across all positions in the layer:</p>
+
+
+
+<figure class="wp-block-image size-full is-resized"><img decoding="async" src="../Images/284a3861c5199652574dfb3407d8c772.png" alt="" class="wp-image-626395" style="width:406px;height:auto" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/10/image-266.png"/></figure>
+
+
+
+<p class="wp-block-paragraph">This step tells us the average intensity of the single channel</p>
+
+
+
+<figure class="wp-block-image size-full"><img decoding="async" src="../Images/4ff0c6c356372add60cca7ff900c6cfe.png" alt="" class="wp-image-626396" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/10/image-267.png"/></figure>
+
+
+
+<p class="wp-block-paragraph">And then you can simply do average of each channels. Voilà! Now you have the spectral intensity of the single layer of the Vision Transformer.</p>
+</blockquote>
+
+
+
+<hr class="wp-block-separator has-alpha-channel-opacity is-style-dotted"/>
+
+
+
+<h2 class="wp-block-heading">Peeking into the Frequency Realm: The Fourier Lens of SpectralKD</h2>
+
+
+
+<p class="wp-block-paragraph">Let’s look into the Fast Fourier Transform:</p>
+
+
+
+<figure class="wp-block-image size-full is-resized"><img decoding="async" src="../Images/6e3fda77eafa3f749ef899dcaed613e0.png" alt="" class="wp-image-626400" style="width:250px;height:auto" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/10/image-269.png"/></figure>
+
+
+
+<p class="wp-block-paragraph"><br/>Xₖ is the input sequence (your signal, feature, or activation pattern).<br/>xₙ is the frequency component at the frequency index.<br/>N is the number of points in the sequence (i.e., number of channels or features).</p>
+
+
+
+<p class="wp-block-paragraph">Each term e⁻ʲ²πᵏⁿ/ᴺ acts as a <strong>rotating phasor</strong>, a tiny complex wave spinning through the signal space, and together, they form one of the most beautiful ideas in signal processing.</p>
+
+
+
+<figure class="wp-block-image size-full is-resized"><img decoding="async" src="../Images/36698c1a2b5c039f4d80a5cdd3024cda.png" alt="" class="wp-image-627307" style="width:604px;height:auto" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/10/image-320.png"/><figcaption class="wp-element-caption">Source: Author (Here, a rotating phasor e⁻ʲ²πᵏⁿ/ᴺ is getting multiplied by g(t) in a complex plane)</figcaption></figure>
+
+
+
+<figure class="wp-block-image size-large" datatext="el1761201696524"><img decoding="async" src="../Images/bf5b85f9d431d3597481c11d98dbe4ed.png" alt="" class="wp-image-627310" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/10/Screenshot-2025-10-23-120913-1024x578.png"/><figcaption class="wp-element-caption">source: Author (Average out all the points in the complex plane, then it will give you the center of mass of the phasor entity, and it gets peaked only at a specific frequency or K (in the above case, it is 3))</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">.<strong>OMG! What just happened here?</strong> Let me break it down.</p>
+
+
+
+<p class="wp-block-paragraph">When you multiply your hidden activations xₙ  (say, across channels or feature dimensions) by this phasor, you’re essentially asking:</p>
+
+
+
+<blockquote class="wp-block-quote is-layout-flow wp-block-quote-is-layout-flow">
+<p class="wp-block-paragraph">“Hey, layer, how much of the <em>k-th type of variation</em> do you contain in your representations?”</p>
+</blockquote>
+
+
+
+<p class="wp-block-paragraph">Each frequency k corresponds to a distinct <strong>pattern scale</strong> across the feature dimensions.</p>
+
+
+
+<p class="wp-block-paragraph">Lower k values capture <strong>broad, smooth semantic structures</strong> (like topic-level context), while higher k values capture <strong>rapid, fine-grained variations</strong> (like token-level nuances or syntactic signals).</p>
+
+
+
+<p class="wp-block-paragraph">Now here’s the fun part: if some layer resonates with a particular frequency pattern, the multiplication of the Fourier Transform aligns perfectly, and the sum in the Fourier formula produces a <strong>strong response</strong> for that k.</p>
+
+
+
+<p class="wp-block-paragraph">If not, the rotations cancel out, meaning that frequency doesn’t play a big role in that layer’s representation.</p>
+
+
+
+<p class="wp-block-paragraph">So, the Fourier Transform isn’t adding anything new; it is just finding out how our layer encodes information across different scales of abstraction.</p>
+
+
+
+<p class="wp-block-paragraph">It’s like zooming out and realizing:</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">Some layers hum quietly with smooth, conceptual meanings (low frequencies),</li>
+
+
+
+<li class="wp-block-list-item">Others buzz with sharp, detailed interactions between tokens (high frequencies).</li>
+</ul>
+
+
+
+<p class="wp-block-paragraph">The FFT basically <strong>turns a layer’s hidden states into a frequency fingerprint</strong> — a map of what kinds of information that layer is focusing on.</p>
+
+
+
+<p class="wp-block-paragraph">And that’s exactly what SpectralKD uses to figure out which layers are <em>actually doing the heavy lifting</em> during knowledge distillation.</p>
+
+
+
+<p class="wp-block-paragraph">If you still need the visualization and more intuition of the Fourier transform, you can just go through the 3Blue1Brown Video, <a href="https://youtu.be/spUNpyF58BY?si=C6v49BiX0-F-cfo5">“But what is the Fourier Transform? A visual introduction.”</a></p>
+
+
+
+<hr class="wp-block-separator has-alpha-channel-opacity is-style-dotted"/>
+
+
+
+<h2 class="wp-block-heading">From Vision to Language: How Spectral Intensity Guided My Intent Classifier</h2>
+
+
+
+<figure class="wp-block-image size-full"><img decoding="async" src="../Images/571f8badf000730cfcdd46e6c9fd8139.png" alt="" class="wp-image-627099" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/10/image-304.png"/><figcaption class="wp-element-caption">Source: Author</figcaption></figure>
+
+
+
+<p class="wp-block-paragraph">Let a layer activation tensor be:</p>
+
+
+
+<figure class="wp-block-image size-full"><img decoding="async" src="../Images/5cebd24cec58b53255ba7f152f82513a.png" alt="" class="wp-image-626743" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/10/image-276.png"/></figure>
+
+
+
+<p class="wp-block-paragraph">where:</p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item">N = number of samples (batch size)</li>
+
+
+
+<li class="wp-block-list-item">L = sequence length (number of tokens/time steps)</li>
+
+
+
+<li class="wp-block-list-item">H = hidden dimension (number of channels/features produced by the layer)</li>
+</ul>
+
+
+
+<p class="wp-block-paragraph">Each Sample i has an activation matrix Xᵢ ∈ Rᴸ ˣ ᴴ (sequence positions x hidden features)</p>
+
+
+
+<p class="wp-block-paragraph">Now again, you can compute the FFT of that Xᵢ and then measure the frequency length using the real and imaginary components and average out across the channels, and then for each layer.</p>
+
+
+
+<p class="wp-block-paragraph"><strong>Frequency length:</strong></p>
+
+
+
+<figure class="wp-block-image size-full is-resized"><img decoding="async" src="../Images/f82e4b6676a1d1fa36727b559c0d3ae0.png" alt="" class="wp-image-626745" style="width:444px;height:auto" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/10/image-277.png"/></figure>
+
+
+
+<p class="wp-block-paragraph"><strong>Frequency across channels:</strong></p>
+
+
+
+<figure class="wp-block-image size-full is-resized"><img decoding="async" src="../Images/26a35c5aab0d8e3ca15eae2bb6c9722f.png" alt="" class="wp-image-626746" style="width:328px;height:auto" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/10/image-278.png"/></figure>
+
+
+
+<p class="wp-block-paragraph"><strong>Frequency across a layer:</strong></p>
+
+
+
+<figure class="wp-block-image size-full is-resized"><img decoding="async" src="../Images/936f3402ae94d3897a875ea7f0bd9aca.png" alt="" class="wp-image-626747" style="width:410px;height:auto" data-original-src="https://contributor.insightmediagroup.io/wp-content/uploads/2025/10/image-279.png"/></figure>
+
+
+
+<p class="wp-block-paragraph">Here, <strong>K is the number of bins retained</strong>.</p>
+
+
+
+<hr class="wp-block-separator has-alpha-channel-opacity is-style-dotted"/>
+
+
+
+<h2 class="wp-block-heading">Conclusion</h2>
+
+
+
+<p class="wp-block-paragraph">Their analysis shows two major insights:</p>
+
+
+
+<ol class="wp-block-list">
+<li class="wp-block-list-item"><strong>Not all layers contribute equally.</strong> In uniform transformer architectures, only a few <em>early</em> and <em>final</em> layers show strong spectral activity, the true “hotspots” of information flow.</li>
+
+
+
+<li class="wp-block-list-item"><strong>Different transformer types, similar melodies.</strong> Despite architectural variations, both hierarchical and uniform transformers share surprisingly similar spectral patterns, hinting at a universal way these models learn and represent knowledge.</li>
+</ol>
+
+
+
+<p class="wp-block-paragraph">Building on these findings, SpectralKD introduces a <strong>simple, parameter-free knowledge distillation (KD)</strong> strategy. By selectively aligning the spectral behavior of early and final layers between a teacher and a student model, the student learns to <em>mimic the teacher’s spectral signature</em>, even in intermediate layers that were never explicitly aligned.</p>
+
+
+
+<p class="wp-block-paragraph">The results are striking in the paper: the distilled student (DeiT-Tiny) doesn’t just match performance on benchmarks like ImageNet-1K, it also <em>learns to think spectrally like the teacher</em>, capturing both local and global information with remarkable <strong>allegiance</strong>.</p>
+
+
+
+<p class="wp-block-paragraph">Ultimately, SpectralKD bridges <strong>interpretability and distillation</strong>, offering a fresh way to visualize what happens inside transformers during learning. It opens a new line of research, the authors call <strong>“distillation dynamics”</strong>, a journey into how knowledge itself flows, oscillates, and harmonizes between teacher and student networks.</p>
+
+
+
+<hr class="wp-block-separator has-alpha-channel-opacity is-style-dotted"/>
+
+
+
+<h2 class="wp-block-heading">References</h2>
+
+
+
+<p class="wp-block-paragraph"><strong>Core Spectral &amp; Transformer Foundations</strong></p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item"><a href="https://arxiv.org/pdf/1706.03762">Vaswani, A. <em>Attention Is All You Need.</em> <em>NeurIPS</em>, 2017.</a></li>
+
+
+
+<li class="wp-block-list-item"><a href="https://arxiv.org/abs/2010.11929">Dosovitskiy, A. <em>An Image is Worth 16×16 Words: Transformers for Image Recognition at Scale.</em> arXiv preprint arXiv:2010.11929, 2020.</a></li>
+
+
+
+<li class="wp-block-list-item"><a href="https://proceedings.neurips.cc/paper_files/paper/2021/file/652cf38361a209088302ba2b8b7f51e0-Paper.pdf">Raghu, M., Unterthiner, T., Kornblith, S., Zhang, C., &amp; Dosovitskiy, A. <em>Do Vision Transformers See Like Convolutional Neural Networks?</em> <em>NeurIPS</em>, 2021.</a></li>
+
+
+
+<li class="wp-block-list-item"><a href="https://ieeexplore.ieee.org/document/9716741">Han, K. et al. <em>A Survey on Vision Transformer.</em> <em>IEEE TPAMI</em>, 2022.</a></li>
+</ul>
+
+
+
+<p class="wp-block-paragraph"><strong>Interpretability &amp; Spectral Analysis</strong></p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item"><a href="https://arxiv.org/pdf/2012.09838">Chefer, H., Gur, S., &amp; Wolf, L. <em>Transformer Interpretability Beyond Attention Visualization.</em> <em>CVPR</em>, 2021.</a></li>
+
+
+
+<li class="wp-block-list-item"><a href="https://arxiv.org/pdf/2305.03210">Yeh, C. et al. <em>AttentionViz: A Global View of Transformer Attention.</em> <em>IEEE TVCG</em>, 2023.</a></li>
+
+
+
+<li class="wp-block-list-item"><a href="https://dl.acm.org/doi/10.1145/3664647.3681712">Zeng, J. et al. <em>Peeling Back the Layers: Interpreting the Storytelling of ViT.</em> <em>ACM Multimedia</em>, 2024.</a></li>
+</ul>
+
+
+
+<p class="wp-block-paragraph"><strong>Knowledge Distillation &amp; Model Compression</strong></p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item"><a href="https://arxiv.org/pdf/1503.02531">Hinton, G. <em>Distilling the Knowledge in a Neural Network.</em> arXiv preprint arXiv:1503.02531, 2015.</a></li>
+
+
+
+<li class="wp-block-list-item"><a href="https://arxiv.org/pdf/2105.13093">Phuong, M., &amp; Lampert, C. <em>Towards Understanding Knowledge Distillation.</em> <em>ICML</em>, 2019.</a></li>
+
+
+
+<li class="wp-block-list-item"><a href="https://arxiv.org/pdf/1904.05068">Park, W. et al. <em>Relational Knowledge Distillation.</em> <em>CVPR</em>, 2019.</a></li>
+
+
+
+<li class="wp-block-list-item"><a href="https://arxiv.org/pdf/2206.14532">Chandrasegaran, K. et al. <em>Revisiting Label Smoothing and Knowledge Distillation Compatibility: What Was Missing?</em> <em>ICML</em>, 2022.</a></li>
+
+
+
+<li class="wp-block-list-item"><a href="https://arxiv.org/pdf/2205.10536">Huang, T. et al. <em>Knowledge Distillation from a Stronger Teacher.</em> <em>NeurIPS</em>, 2022.</a></li>
+
+
+
+<li class="wp-block-list-item"><a href="https://arxiv.org/pdf/2403.05894">Pham, C. et al. <em>Frequency Attention for Knowledge Distillation.</em> <em>WACV</em>, 2024.</a></li>
+
+
+
+<li class="wp-block-list-item"><a href="https://arxiv.org/pdf/2411.06786">Fan, J. et al. <em>ScaleKD: Strong Vision Transformers Could Be Excellent Teachers.</em> arXiv preprint arXiv:2411.06786, 2024.</a></li>
+
+
+
+<li class="wp-block-list-item"><a href="https://arxiv.org/pdf/2302.10494">Son, S. et al. <em>The Role of Masking for Efficient Supervised Knowledge Distillation of Vision Transformers.</em> <em>ECCV</em>, 2025</a>.</li>
+</ul>
+
+
+
+<p class="wp-block-paragraph"><strong>SpectralKD Core Paper</strong></p>
+
+
+
+<ul class="wp-block-list">
+<li class="wp-block-list-item"><a href="https://arxiv.org/pdf/2412.19055"><em>SpectralKD: A Unified Framework for Interpreting and Distilling Vision Transformers via Spectral Analysis</em>, 2024.</a></li>
+</ul>
+
+
+
+<p class="wp-block-paragraph"/>
+    
+</body>
+</html>
