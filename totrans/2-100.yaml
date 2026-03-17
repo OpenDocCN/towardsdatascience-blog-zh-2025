@@ -1,25 +1,33 @@
 - en: How I Fine-Tuned Granite-Vision 2B to Beat a 90B Model — Insights and Lessons
     Learned
+  id: totrans-0
   prefs:
   - PREF_H1
   type: TYPE_NORMAL
+  zh: 如何微调Granite-Vision 2B以击败90B模型——洞察与经验教训
 - en: 原文：[https://towardsdatascience.com/how-i-fine-tuned-granite-vision-2b-to-beat-a-90b-model-insights-and-lessons-learned/](https://towardsdatascience.com/how-i-fine-tuned-granite-vision-2b-to-beat-a-90b-model-insights-and-lessons-learned/)
+  id: totrans-1
   prefs:
   - PREF_BQ
   type: TYPE_NORMAL
+  zh: 原文：[https://towardsdatascience.com/how-i-fine-tuned-granite-vision-2b-to-beat-a-90b-model-insights-and-lessons-learned/](https://towardsdatascience.com/how-i-fine-tuned-granite-vision-2b-to-beat-a-90b-model-insights-and-lessons-learned/)
 - en: <mdspan datatext="el1753471540338" class="mdspan-comment">Fine-tuning large
     language</mdspan> or vision-language models is a powerful technique that unlocks
     their potential on specialized tasks. However, despite their effectiveness, these
     approaches are often out of reach for many users due to their high computational
     cost and the need for GPUs with large VRAM — resources that only a small percentage
     of end users can access.
+  id: totrans-2
   prefs: []
   type: TYPE_NORMAL
+  zh: <mdspan datatext="el1753471540338" class="mdspan-comment">微调大型语言</mdspan>或视觉语言模型是一种强大的技术，它解锁了它们在特定任务上的潜力。然而，尽管这些方法非常有效，但由于它们的高计算成本和需要具有大VRAM的GPU——这些资源只有一小部分最终用户可以访问——这些方法通常对许多用户来说遥不可及。
 - en: In this project, I fine-tuned IBM’s [Granite-Vision 2B](https://huggingface.co/ibm-granite/granite-vision-3.2-2b),
     a relatively small yet powerful vision-language model, to tackle the challenge
     of converting images of tables into clean, structured HTML code.
+  id: totrans-3
   prefs: []
   type: TYPE_NORMAL
+  zh: 在这个项目中，我微调了IBM的[Granite-Vision 2B](https://huggingface.co/ibm-granite/granite-vision-3.2-2b)，这是一个相对较小但功能强大的视觉语言模型，以应对将表格图像转换为干净的、结构化的HTML代码的挑战。
 - en: What makes this project particularly exciting is that the fine-tuning was performed
     on a consumer-grade GPU — the NVIDIA RTX 4070 Ti Super — and yet, the resulting
     2-billion-parameter model was able to outperform much larger models, including [meta-llama/Llama-3.2–90B-Vision](https://huggingface.co/meta-llama/Llama-3.2-90B-Vision),
@@ -27,8 +35,10 @@
     power of parameter-efficient fine-tuning methods like LoRA but also highlights
     the practical value of building specialized small models tailored to specific
     problems.
+  id: totrans-4
   prefs: []
   type: TYPE_NORMAL
+  zh: 使这个项目特别令人兴奋的是，微调是在消费级GPU——NVIDIA RTX 4070 Ti Super——上进行的，而结果却是这个20亿参数的模型能够在图像到文本生成任务上超越许多更大的模型，包括[meta-llama/Llama-3.2–90B-Vision](https://huggingface.co/meta-llama/Llama-3.2-90B-Vision)。这一成功不仅证明了参数高效微调方法（如LoRA）的力量，也突出了构建针对特定问题量身定制的小型模型的实际价值。
 - en: In this post, I’ll walk you through the motivation behind this work, the model
     and dataset choices, the custom HTML similarity metric I adapted, the experiments
     and results, and finally, the key insights and lessons learned throughout the
@@ -37,48 +47,68 @@
     fine-tuning code used for this project was adapted from [HuggingFace’s Granite
     Vision fine-tuning cookbook](https://huggingface.co/learn/cookbook/en/fine_tuning_granite_vision_sft_trl),
     authored by Eli Schwartz, who in turn adapted the original code from Sergio Paniego.
+  id: totrans-5
   prefs: []
   type: TYPE_NORMAL
+  zh: 在这篇文章中，我将向您介绍这项工作的动机，包括模型和数据集的选择，我采用的定制HTML相似度指标，实验和结果，以及在整个过程中获得的关键洞察和经验教训。无论您对视觉语言模型、微调技术还是实际的人工智能应用感兴趣，我都希望这次旅程能为您提供有用的收获。用于此项目的微调代码是从[HuggingFace的Granite
+    Vision微调食谱](https://huggingface.co/learn/cookbook/en/fine_tuning_granite_vision_sft_trl)改编的，该食谱由Eli
+    Schwartz撰写，他反过来又从Sergio Paniego那里改编了原始代码。
 - en: Motivation
+  id: totrans-6
   prefs:
   - PREF_H2
   type: TYPE_NORMAL
+  zh: 动机
 - en: 'While working on Retrieval-Augmented Generation (RAG) projects, I encountered
     a major challenge: accurately extracting large and complex tables from PDFs, especially
     when these tables appeared as images. Despite trying different approaches — including
     tools like Unstructured and large vision-language models such as Meta’s Llama
     90B — the results often fell short of the accuracy needed.'
+  id: totrans-7
   prefs: []
   type: TYPE_NORMAL
+  zh: 在进行检索增强生成（RAG）项目时，我遇到了一个主要挑战：从PDF中准确提取大型和复杂的表格，尤其是在这些表格以图像形式出现时。尽管尝试了不同的方法——包括像Unstructured这样的工具以及Meta的Llama
+    90B这样的大型视觉语言模型——但结果往往达不到所需的准确性。
 - en: 'This led me to consider a different approach: a **small, specialized vision-language
     model focused exclusively on table understanding and extraction**. Such a model
     could serve as a dedicated preprocessing step to significantly improve RAG pipelines
     that rely on accurate table extraction.'
+  id: totrans-8
   prefs: []
   type: TYPE_NORMAL
+  zh: 这使我考虑了一种不同的方法：一个**专注于表格理解和提取的专用小型视觉语言模型**。这样的模型可以作为RAG管道的专用预处理步骤，显著提高依赖于准确表格提取的RAG管道。
 - en: Around the same time, IBM released Granite-Vision 2B — a vision-language model
     with just the right balance of size and power. It’s capable enough to handle complex
     tables, yet small enough to be fine-tuned on consumer-grade GPUs with 16 GB of
     VRAM. This made it an ideal candidate for my project.
+  id: totrans-9
   prefs: []
   type: TYPE_NORMAL
+  zh: 大约与此同时，IBM发布了Granite-Vision 2B——一个大小和功能平衡恰到好处的视觉语言模型。它足以处理复杂的表格，同时体积足够小，可以在具有16
+    GB VRAM的消费级GPU上进行微调。这使得它成为我项目的理想候选者。
 - en: 'The Task: Image to HTML (Table Extraction)'
+  id: totrans-10
   prefs:
   - PREF_H2
   type: TYPE_NORMAL
+  zh: 任务：图像到HTML（表格提取）
 - en: One important design choice was the target format: **HTML**. By converting tables
     into clean HTML code, we obtain a structured and widely supported representation
     that can be easily converted into other formats. For example, HTML tables can
     be readily imported into data analysis tools like Pandas as dataframes, making
     downstream processing and analysis much more efficient.
+  id: totrans-11
   prefs: []
   type: TYPE_NORMAL
+  zh: 一个重要的设计选择是目标格式：**HTML**。通过将表格转换为干净的HTML代码，我们获得了一种结构化和广泛支持的表示形式，可以轻松转换为其他格式。例如，HTML表格可以轻松导入到Pandas等数据分析工具作为数据框，使得下游处理和分析更加高效。
 - en: 'The original plan was to build a custom dataset by extracting HTML table tags,
     rendering them as images, and pairing each image with its corresponding HTML code.
     Fortunately, I found a solution: the [PubTabNet-HTML](https://huggingface.co/datasets/apoidea/pubtabnet-html) dataset,
     which includes over 568,000 image–HTML pairs, far more than needed for this project.'
+  id: totrans-12
   prefs: []
   type: TYPE_NORMAL
+  zh: 原计划是通过提取HTML表格标签，将它们渲染为图像，并将每个图像与其对应的HTML代码配对来构建一个自定义数据集。幸运的是，我找到了一个解决方案：[PubTabNet-HTML](https://huggingface.co/datasets/apoidea/pubtabnet-html)数据集，该数据集包含超过568,000个图像-HTML配对，远远超过了这个项目所需的数量。
 - en: PubTabNet was developed by IBM and is based on scientific articles from the **PubMed
     Central Open Access Subset (commercial use collection)**. The tables were extracted
     by aligning PDF and XML versions of the articles. The **annotations** (i.e., the
@@ -87,72 +117,103 @@
     with the [PMC Open Access Subset Terms of Use](https://www.ncbi.nlm.nih.gov/pmc/tools/openftlist/).
     This makes the dataset suitable for both research and commercial applications,
     provided the license terms are followed.
+  id: totrans-13
   prefs: []
   type: TYPE_NORMAL
+  zh: PubTabNet是由IBM开发的，基于**PubMed Central Open Access Subset（商业用途集合）**中的科学文章。表格是通过将文章的PDF和XML版本对齐来提取的。**标注**（即HTML标签）根据**社区数据许可协议
+    – 宽泛 – 第1.0版**进行许可，虽然**IBM不拥有图像**，但它们的使用符合[PMC开放获取子集使用条款](https://www.ncbi.nlm.nih.gov/pmc/tools/openftlist/)。这使得数据集适合研究和商业应用，前提是遵守许可条款。
 - en: 'Custom Metric: HTML Similarity'
+  id: totrans-14
   prefs:
   - PREF_H2
   type: TYPE_NORMAL
+  zh: 自定义指标：HTML相似度
 - en: Standard text similarity metrics like BLEU or ROUGE are insufficient for evaluating
     HTML table generation because they primarily focus on surface-level text matching
     and ignore important structural and stylistic aspects of HTML code.
+  id: totrans-15
   prefs: []
   type: TYPE_NORMAL
+  zh: 标准文本相似度指标如BLEU或ROUGE对于评估HTML表格生成是不够的，因为它们主要关注表面级别的文本匹配，而忽略了HTML代码的重要结构和风格方面。
 - en: 'To better capture the quality of generated HTML tables, I adapted a custom **HTML
     Similarity** metric that combines multiple complementary components, where the
     most important ones (style and structure) are imported from [**niteru**](https://raw.githubusercontent.com/ninoseki/niteru):'
+  id: totrans-16
   prefs: []
   type: TYPE_NORMAL
+  zh: 为了更好地捕捉生成的HTML表格的质量，我采用了一个自定义的**HTML相似度**指标，该指标结合了多个互补的组件，其中最重要的（样式和结构）是从[**niteru**](https://raw.githubusercontent.com/ninoseki/niteru)导入的：
 - en: '**Style similarity (S):** Extracts CSS classes of each html document and calculates
     the jaccard similarity of the sets of classes.'
+  id: totrans-17
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: '**样式相似度（S）**：提取每个HTML文档的CSS类，并计算类集合的Jaccard相似度。'
 - en: '**Structural similarity (T):** Uses sequence comparison of the html tags to
     compute the similarity.'
+  id: totrans-18
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: '**结构相似度（T）**：使用HTML标签的序列比较来计算相似度。'
 - en: '**Content similarity (C):** Based on normalized edit distance between the extracted
     plain text content of the tables.'
+  id: totrans-19
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: '**内容相似度（C）**：基于提取的表格纯文本内容的归一化编辑距离。'
 - en: '**Token overlap similarity (J):** The Jaccard similarity between the sets of
     content tokens.'
+  id: totrans-20
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: '**标记重叠相似度（J）**：内容标记集合之间的Jaccard相似度。'
 - en: 'The final similarity score **M** is a weighted sum of these components:'
+  id: totrans-21
   prefs: []
   type: TYPE_NORMAL
+  zh: 最终的相似度得分**M**是这些组件的加权总和：
 - en: '![](../Images/ef52545aa5b7280f65429ab9cd183c5e.png)'
+  id: totrans-22
   prefs: []
   type: TYPE_IMG
+  zh: '![](../Images/ef52545aa5b7280f65429ab9cd183c5e.png)'
 - en: 'I manually tested the metric on various example outputs, iteratively adjusting
     the weighting coefficients to better capture meaningful similarities. This process
     resulted in a balanced evaluation that fairly rewards accurate table structure
     and style, alongside precise textual content. Python implementation is as follows:'
+  id: totrans-23
   prefs: []
   type: TYPE_NORMAL
+  zh: 我手动测试了该指标在各种示例输出上，迭代调整权重系数以更好地捕捉有意义的相似性。这个过程产生了一个平衡的评估，公平地奖励准确的表格结构和样式，以及精确的文本内容。Python实现如下：
 - en: '[PRE0]'
+  id: totrans-24
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE0]'
 - en: The metric also includes a regex-based function to extract only the HTML content
     within `<table>` tags. This was necessary because one of the reference models
     only generated incomplete or extra HTML outside of the table structure. By focusing
     the comparison strictly on the table content, the metric provides a more fair
     and meaningful evaluation across models.
+  id: totrans-25
   prefs: []
   type: TYPE_NORMAL
+  zh: 该指标还包括一个基于正则表达式的函数，用于提取`<table>`标签内的HTML内容。这是必要的，因为其中一个参考模型只生成了表格结构之外的完整或不完整的HTML。通过严格关注表格内容，该指标为模型提供了更公平和有意义的评估。
 - en: Developing a custom evaluation metric like this is crucial for reliably tracking
     model improvements and benchmarking performance against reference models.
+  id: totrans-26
   prefs: []
   type: TYPE_NORMAL
+  zh: 开发这样一个定制的评估指标对于可靠地跟踪模型改进和将性能与参考模型进行基准测试至关重要。
 - en: Training Setup
+  id: totrans-27
   prefs:
   - PREF_H2
   type: TYPE_NORMAL
+  zh: 训练设置
 - en: To fine-tune the model efficiently on my NVIDIA RTX 4070 Ti Super, which has
     16 GB VRAM, I used **LoRA** (Low-Rank Adaptation). This allowed me to update only
     a small number of parameters, significantly reducing GPU memory usage. In fact,
@@ -160,444 +221,651 @@
     headroom to play around with longer sequences, but not enough to handle more than
     one batch. Additionally, LoRA is generally faster to train than approaches like
     QLoRA.
+  id: totrans-28
   prefs: []
   type: TYPE_NORMAL
+  zh: 为了高效地在我的NVIDIA RTX 4070 Ti Super上微调模型，该显卡拥有16 GB VRAM，我使用了**LoRA**（低秩自适应）。这使我能够只更新少量参数，显著减少GPU内存使用。实际上，在训练过程中，模型只使用了大约一半的可用VRAM——有足够的余量来处理更长的序列，但不足以处理超过一个批次。此外，与QLoRA等方法相比，LoRA通常训练速度更快。
 - en: LoRA Setup
+  id: totrans-29
   prefs:
   - PREF_H2
   type: TYPE_NORMAL
+  zh: LoRA设置
 - en: 'I used the following LoRA configuration:'
+  id: totrans-30
   prefs: []
   type: TYPE_NORMAL
+  zh: 我使用了以下LoRA配置：
 - en: '[PRE1]'
+  id: totrans-31
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE1]'
 - en: 'Key points:'
+  id: totrans-32
   prefs: []
   type: TYPE_NORMAL
+  zh: 关键点：
 - en: '`r=16`: This low-rank dimension provides a good balance between model capacity
     and GPU memory usage.'
+  id: totrans-33
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: '`r=16`: 这个低秩维度在模型容量和GPU内存使用之间提供了良好的平衡。'
 - en: '`use_dora=True`: [DoRA](https://arxiv.org/pdf/2402.09353) (Weight-Decomposed
     Low Rank Adaptation) improves the learning capacity and stability of LoRA by decomposing
     the pretrained weights into magnitude and direction components, helping the model
     better resemble the capacity of full fine-tuning — all without adding inference
     overhead. Performed slightly better than the default setting.'
+  id: totrans-34
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: '`use_dora=True`: [DoRA](https://arxiv.org/pdf/2402.09353)（权重分解低秩自适应）通过将预训练权重分解为幅度和方向分量，提高了LoRA的学习能力和稳定性，帮助模型更好地接近全微调的能力——所有这些都不需要增加推理开销。表现略优于默认设置。'
 - en: '`init_lora_weights="gaussian"`: No particular reason, I didn’t want to experiment
     with this parameter.'
+  id: totrans-35
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: '`init_lora_weights="gaussian"`: 没有特别的原因，我不想在这个参数上做实验。'
 - en: '`target_modules`: This flexible setup allows selectively targeting vision layers,
     language layers, or both, depending on the experiment. In practice, vision layers
     remained unaffected — even with `use_dora=False`— since DoRA currently supports
     only embedding, linear, and Conv2d layers. As a result, I fine-tuned only the
     language layers.'
+  id: totrans-36
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: '`target_modules`: 这个灵活的设置允许根据实验选择性地针对视觉层、语言层或两者，具体取决于实验。在实践中，视觉层保持未受影响——即使`use_dora=False`——因为DoRA目前仅支持嵌入、线性层和Conv2d层。因此，我只微调了语言层。'
 - en: Dataset Setup
+  id: totrans-37
   prefs:
   - PREF_H2
   type: TYPE_NORMAL
+  zh: 数据集设置
 - en: During my initial experiments, I kept running into **out-of-memory (OOM)** errors
     — even though there was still plenty of available GPU VRAM after loading model,
     LoRA layers and optimizer parameters (around 4GB still free). There were no memory
     spikes during training, but the crashes consistently happened at the same training
     step.
+  id: totrans-38
   prefs: []
   type: TYPE_NORMAL
+  zh: 在我的初步实验中，我不断遇到**内存不足（OOM）**错误——尽管在加载模型后仍有大量的可用GPU VRAM（大约还有4GB空闲）。训练过程中没有内存峰值，但崩溃总是在相同的训练步骤发生。
 - en: After some investigation, I realized that the problem was caused by large tables,
     which resulted in extremely long token sequences. To address this, I adjusted
     the `max_seq_length` parameter and filtered out samples that exceeded this limit.
     After experimentation, I found that using `max_seq_length = 1024` allowed me to
     fine-tune the model reliably without triggering OOM errors.
+  id: totrans-39
   prefs: []
   type: TYPE_NORMAL
+  zh: 经过一些调查，我发现问题是由大表格引起的，这导致了非常长的标记序列。为了解决这个问题，我调整了`max_seq_length`参数，并过滤掉了超过这个限制的样本。经过实验，我发现使用`max_seq_length
+    = 1024`可以让我可靠地微调模型，而不会触发OOM错误。
 - en: 'To filter out oversized tables, I wrote a simple data processing function that:'
+  id: totrans-40
   prefs: []
   type: TYPE_NORMAL
+  zh: 为了过滤掉过大的表格，我编写了一个简单的数据处理函数，该函数：
 - en: Filters out samples whose HTML token length exceeds `max_seq_length`
+  id: totrans-41
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: 过滤掉HTML标记长度超过`max_seq_length`的样本
 - en: Automatically balances the number of training and test samples
+  id: totrans-42
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: 自动平衡训练和测试样本的数量
 - en: Uses **streaming** to avoid loading the entire dataset into memory (PubTabNet-HTML
     is quite large, around 10 GB on disk)
+  id: totrans-43
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: 使用**流式处理**来避免将整个数据集加载到内存中（PubTabNet-HTML相当大，在磁盘上大约有10 GB）
 - en: .
+  id: totrans-44
   prefs: []
   type: TYPE_NORMAL
+  zh: 。
 - en: '[PRE2]'
+  id: totrans-45
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE2]'
 - en: The final configuration included `num_train_images=10000` and `num_test_images=250` to
     compute the evaluation loss.
+  id: totrans-46
   prefs: []
   type: TYPE_NORMAL
+  zh: 最终配置包括`num_train_images=10000`和`num_test_images=250`，以计算评估损失。
 - en: Fine-Tuning Configuration
+  id: totrans-47
   prefs:
   - PREF_H2
   type: TYPE_NORMAL
+  zh: 微调配置
 - en: 'For training, I used the **Transformers SFTTrainer** to fine-tune the model:'
+  id: totrans-48
   prefs: []
   type: TYPE_NORMAL
+  zh: 对于训练，我使用了**Transformers SFTTrainer**来微调模型：
 - en: '[PRE3]'
+  id: totrans-49
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE3]'
 - en: 'Key points:'
+  id: totrans-50
   prefs: []
   type: TYPE_NORMAL
+  zh: 关键点：
 - en: '`num_train_epochs=1`: The dataset is very large, and to run multiple experiments
     efficiently, I chose to train for only one full epoch while maximizing learning
     per sample and number of training samples.'
+  id: totrans-51
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: '`num_train_epochs=1`：数据集非常大，为了高效地运行多个实验，我选择只训练一个完整周期，同时最大化每个样本和训练样本的数量。'
 - en: '`per_device_train_batch_size=1`: Larger batch sizes would not fit in GPU memory
     without significantly reducing max_seq_length — which would hurt performance on
     large tables. Keeping longer sequences was more important for this task.'
+  id: totrans-52
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: '`per_device_train_batch_size=1`：更大的批量大小无法适应GPU内存，除非显著减少max_seq_length——这将损害大型表格上的性能。保持更长的序列对于这个任务来说更为重要。'
 - en: '`gradient_accumulation_steps=8`: Used to effectively simulate a larger batch
     size and help stabilize the learning process, compensating for the small physical
     batch. This is the final value, but experimented with `gradient_accumulation_steps=4` as
     well.'
+  id: totrans-53
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: '`gradient_accumulation_steps=8`：用于有效地模拟更大的批量大小，并帮助稳定学习过程，补偿较小的物理批量。这是最终值，但也尝试过`gradient_accumulation_steps=4`。'
 - en: '`optim="adamw_torch_fused"` and `bf16=True`: These settings leverage modern
     NVIDIA architectures (Ada Lovelace) to accelerate training and reduce memory usage
     — as recommended for this hardware.'
+  id: totrans-54
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: '`optim="adamw_torch_fused"`和`bf16=True`：这些设置利用现代NVIDIA架构（Ada Lovelace）来加速训练并减少内存使用——正如为这种硬件所推荐的那样。'
 - en: Evaluation Loss Workaround
+  id: totrans-55
   prefs:
   - PREF_H2
   type: TYPE_NORMAL
+  zh: 评估损失解决方案
 - en: At the time of developing the project, there is a known issue in the Transformers
     + LoRA integration that causes an error when running evaluation with a validation
     dataset during training. Fortunately, a community-tested [workaround](https://raw.githubusercontent.com/huggingface/transformers/issues/33420#issuecomment-2957417282) is
     available (although not yet merged into the main branch), and I successfully used
     this fix in my experiments.
+  id: totrans-56
   prefs: []
   type: TYPE_NORMAL
+  zh: 在开发项目的时候，Transformers + LoRA集成中存在一个已知问题，在训练期间使用验证数据集进行评估时会导致错误。幸运的是，有一个经过社区测试的[解决方案](https://raw.githubusercontent.com/huggingface/transformers/issues/33420#issuecomment-2957417282)可用（尽管尚未合并到主分支），我在实验中成功地使用了这个修复。
 - en: Evaluation (Inference) Setup
+  id: totrans-57
   prefs:
   - PREF_H2
   type: TYPE_NORMAL
+  zh: 评估（推理）设置
 - en: The evaluation dataset used for final scoring was completely independent from
     the `eval_dataset` used during training. It consists of **500 randomly selected
     images**, none of which were included in either the `train_dataset` or the training `eval_dataset`.
+  id: totrans-58
   prefs: []
   type: TYPE_NORMAL
+  zh: 用于最终评分的评估数据集与训练期间使用的`eval_dataset`完全独立。它由**500个随机选择的图像**组成，其中没有任何一个图像包含在`train_dataset`或训练的`eval_dataset`中。
 - en: Once fine-tuning was complete, I used the **best model checkpoint** — selected
     based on the lowest evaluation loss — to run inference on these 500 samples.
+  id: totrans-59
   prefs: []
   type: TYPE_NORMAL
+  zh: 一旦微调完成，我使用了基于最低评估损失的**最佳模型检查点**来对这些500个样本进行推理。
 - en: Initially, I attempted to perform inference by simply **loading the LoRA/DoRA
     adapter** on top of the base model. However, I found that inference with **DoRA
     adapters is extremely slow** when not merged into the model weights (as explained
     in the [official PEFT docs](https://raw.githubusercontent.com/huggingface/peft/blob/main/docs/source/developer_guides/lora.md)).
     In fact, generating one test random sample took about **90 seconds** in this configuration.
+  id: totrans-60
   prefs: []
   type: TYPE_NORMAL
+  zh: 初始时，我尝试通过在基模型之上简单地**加载LoRA/DoRA适配器**来进行推理。然而，我发现当**DoRA适配器**未合并到模型权重中时（如[官方PEFT文档](https://raw.githubusercontent.com/huggingface/peft/blob/main/docs/source/developer_guides/lora.md)中所述），推理速度非常慢。实际上，在这种配置下生成一个测试随机样本大约需要**90秒**。
 - en: To resolve this, I merged the adapter weights into the base model — which is
     the recommended practice — and after merging, inference speed improved dramatically: **down
     to ~20 seconds for the same sample**, making full evaluation runs much more practical.
+  id: totrans-61
   prefs: []
   type: TYPE_NORMAL
+  zh: 为了解决这个问题，我将适配器权重合并到基模型中——这是推荐的实践——合并后，推理速度显著提高：**对于相同样本，推理时间缩短到约20秒**，使得全面评估运行变得更加实用。
 - en: 'The **reference models** used for comparison with my fine-tuned models are:'
+  id: totrans-62
   prefs: []
   type: TYPE_NORMAL
+  zh: 用于与我微调的模型进行比较的**参考模型**是：
 - en: '[meta-llama/Llama-3.2–90B-Vision](https://huggingface.co/meta-llama/Llama-3.2-90B-Vision):
     Meta’s massive **90-billion parameter**model — the main baseline I aimed to surpass
     through specialization and parameter-efficient fine-tuning of a much smaller VLM.'
+  id: totrans-63
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: '[meta-llama/Llama-3.2–90B-Vision](https://huggingface.co/meta-llama/Llama-3.2-90B-Vision):
+    Meta的巨型**90亿参数**模型——我通过专业化和对更小VLM参数高效微调来超越的主要基线。'
 - en: '[KennethTM/pix2struct-base-table2html](https://huggingface.co/KennethTM/pix2struct-base-table2html):
     A much smaller model fine-tuned from Google’s [pix2struct-base](https://huggingface.co/google/pix2struct-base),
     highly specialized for exactly the same dataset I used in this project. Thanks
     to its smaller size, the developer(s) was able to train it for many more samples
     and over longer training runs — demonstrating the key advantage of using **smaller,
     targeted models** for specific tasks.'
+  id: totrans-64
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: '[KennethTM/pix2struct-base-table2html](https://huggingface.co/KennethTM/pix2struct-base-table2html):
+    从谷歌的[pix2struct-base](https://huggingface.co/google/pix2struct-base)微调的一个更小的模型，针对与我在这项项目中使用的完全相同的数据集进行了高度专业化。由于其较小的尺寸，开发者能够对更多样本进行训练，并在更长的训练周期中进行训练——展示了使用**较小、针对特定任务的模型**的关键优势。'
 - en: These two baselines allowed me to benchmark both **scaling-based performance** (vs
     the 90B model) and **specialization efficiency** (vs the smaller, dedicated Pix2Struct
     model).
+  id: totrans-65
   prefs: []
   type: TYPE_NORMAL
+  zh: 这两个基线使我能够基准测试**基于缩放的性能**（与90B模型相比）和**专业化效率**（与较小、专门的Pix2Struct模型相比）。
 - en: Experiments & Results
+  id: totrans-66
   prefs:
   - PREF_H2
   type: TYPE_NORMAL
+  zh: 实验 & 结果
 - en: A total of 9 experiments were conducted, iteratively modifying one or two components
     at a time. The goal was to understand the effect of each change on model performance,
     gradually refining the setup to achieve the best possible **HTML Similarity** score
     compared to reference models.
+  id: totrans-67
   prefs: []
   type: TYPE_NORMAL
+  zh: 共进行了9次实验，每次迭代性地修改一个或两个组件。目标是了解每个变化对模型性能的影响，逐渐细化设置，以实现与参考模型相比最佳的**HTML相似度**得分。
 - en: 'The experimental process was incremental: whenever a change improved the results,
     it was incorporated into the next round of experiments and continued exploring
     new variations.'
+  id: totrans-68
   prefs: []
   type: TYPE_NORMAL
+  zh: 实验过程是逐步进行的：每当一个变化改善了结果，它就会被纳入下一轮实验，并继续探索新的变化。
 - en: 'The experiments focused on adjusting the following components:'
+  id: totrans-69
   prefs: []
   type: TYPE_NORMAL
+  zh: 实验主要集中在调整以下组件：
 - en: '**Vision vs. Language Layers**'
+  id: totrans-70
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: '**视觉与语言层**'
 - en: 1.1 `lang_only`
+  id: totrans-71
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: 1.1 `lang_only`
 - en: 1.2 `vision_only`
+  id: totrans-72
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: 1.2 `vision_only`
 - en: 1.3 `lang_vision`
+  id: totrans-73
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: 1.3 `lang_vision`
 - en: '**2\. Ground Truth Output Format**'
+  id: totrans-74
   prefs: []
   type: TYPE_NORMAL
+  zh: '**2. 真实输出格式**'
 - en: 2.1 `lang_table_only`
+  id: totrans-75
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: 2.1 `lang_table_only`
 - en: '**3\. Training Framework**'
+  id: totrans-76
   prefs: []
   type: TYPE_NORMAL
+  zh: '**3. 训练框架**'
 - en: 3.1 `lang_table_unsloth`
+  id: totrans-77
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: 3.1 `lang_table_unsloth`
 - en: 3.2 `vision_table_unsloth`
+  id: totrans-78
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: 3.2 `vision_table_unsloth`
 - en: '**4\. Gradient Accumulation**'
+  id: totrans-79
   prefs: []
   type: TYPE_NORMAL
+  zh: '**4. 梯度累积**'
 - en: 4.1 `lang_table_only_2`
+  id: totrans-80
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: 4.1 `lang_table_only_2`
 - en: '**5\. Prompt Format**'
+  id: totrans-81
   prefs: []
   type: TYPE_NORMAL
+  zh: '**5. 提示格式**'
 - en: 5.1 `lang_table_only_3`
+  id: totrans-82
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: 5.1 `lang_table_only_3`
 - en: '**6\. Gradient Accumulation & Dataset Size**'
+  id: totrans-83
   prefs: []
   type: TYPE_NORMAL
+  zh: '**6. 梯度累积与数据集大小**'
 - en: 6.1 `lang_table_only_4`
+  id: totrans-84
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: 6.1 `lang_table_only_4`
 - en: Both the **evaluation loss** and the **HTML Similarity** metric were used to
     assess model performance, and I found them to be well correlated — confirming
     that HTML Similarity is a good proxy for how well the model is learning the task.
+  id: totrans-85
   prefs: []
   type: TYPE_NORMAL
+  zh: 评估损失和**HTML相似度**指标都被用来评估模型性能，我发现它们之间有很好的相关性——证实了HTML相似度是衡量模型学习任务好坏的良好代理。
 - en: Before diving into the results of each experiment, let’s first look at **GPU
     memory utilization during training**, which is often the most critical factor
     in determining whether a model can be fine-tuned on consumer hardware.
+  id: totrans-86
   prefs: []
   type: TYPE_NORMAL
+  zh: 在深入每个实验的结果之前，让我们首先看看 **训练期间的GPU内存利用率**，这通常是确定模型是否可以在消费级硬件上进行微调的最关键因素。
 - en: '![](../Images/cb4398ae68fedba99ef1bae054cf1710.png)'
+  id: totrans-87
   prefs: []
   type: TYPE_IMG
+  zh: '![](../Images/cb4398ae68fedba99ef1bae054cf1710.png)'
 - en: GPU Memory Utilization During Training | Image by author from wandb.ai
+  id: totrans-88
   prefs: []
   type: TYPE_NORMAL
+  zh: GPU内存利用率训练期间 | 图由作者来自wandb.ai
 - en: As shown in the graph, GPU utilization remained stable throughout training —
     averaging around **75% VRAM usage**, or roughly **12 GB** on my GPU. Most of VRAM
     usage (~5.5 GB) is the frozen model weights. LoRA gradients + optimizer states
     take very little (<< 1 GB). Activations + overhead should fill the rest (~5–6
     GB), which depends on `batch_size` and `max_seq_length`.
+  id: totrans-89
   prefs: []
   type: TYPE_NORMAL
+  zh: 如图中所示，GPU利用率在整个训练过程中保持稳定——平均大约为 **75% VRAM使用率**，或者在我的GPU上大约为 **12 GB**。VRAM使用的大部分（约5.5
+    GB）是冻结的模型权重。LoRA梯度 + 优化器状态占用非常少（<< 1 GB）。激活 + 额外开销应填满剩余部分（约5–6 GB），这取决于 `batch_size` 和 `max_seq_length`。
 - en: First Run: `lang_only`
+  id: totrans-90
   prefs:
   - PREF_H2
   type: TYPE_NORMAL
+  zh: 第一次运行： `lang_only`
 - en: 'This experiment uses the following initial components/parameters:'
+  id: totrans-91
   prefs: []
   type: TYPE_NORMAL
+  zh: 这个实验使用了以下初始组件/参数：
 - en: '![](../Images/efdd9d367623635cb9726ebd08ab98d1.png)'
+  id: totrans-92
   prefs: []
   type: TYPE_IMG
+  zh: '![](../Images/efdd9d367623635cb9726ebd08ab98d1.png)'
 - en: These were the starting values for the first experiment. In subsequent runs,
     I modified many of them as I refined the approach. This first experiment focused
     only on tuning **language layers**, while training the model to predict the full
     raw HTML output — including everything inside and around the `<table>` tags.
+  id: totrans-93
   prefs: []
   type: TYPE_NORMAL
+  zh: 这些是第一次实验的起始值。在后续运行中，我根据改进的方法修改了许多值。这个第一次实验仅关注调整 **语言层**，同时训练模型预测完整的原始HTML输出——包括`<table>`标签内和周围的全部内容。
 - en: Since this was the first run, I’ll include the **training loss curve** here
     to illustrate how it behaves. For later experiments, I’ll omit this graph — as
     the behavior was similar across runs, with minor variations. In practice, **evaluation
     loss** is more useful for comparing performance across experiments.
+  id: totrans-94
   prefs: []
   type: TYPE_NORMAL
+  zh: 由于这是第一次运行，我将包括 **训练损失曲线** 以说明其行为。对于后续实验，我将省略此图——因为运行之间的行为相似，只有细微的差异。实际上， **评估损失** 对于比较实验的性能更有用。
 - en: '![](../Images/00058548fd92f139e58ba0fe47217114.png)'
+  id: totrans-95
   prefs: []
   type: TYPE_IMG
+  zh: '![](../Images/00058548fd92f139e58ba0fe47217114.png)'
 - en: Training Loss | Image by author from wandb.ai
+  id: totrans-96
   prefs: []
   type: TYPE_NORMAL
+  zh: 训练损失 | 图由作者来自wandb.ai
 - en: 'One important note about the logging configuration: `logging_steps=25` means
     that the training loss is only logged after every 25 steps, where each logged
     value is the average over `gradient_accumulation_steps=4`. As a result, the largest
     drop in loss appears at the second log point — where most of the initial learning
     happens. After that, the model continues learning more gradually, with a slow
     decreasing trend, depending on the difficulty of the training samples.'
+  id: totrans-97
   prefs: []
   type: TYPE_NORMAL
+  zh: 关于日志配置的一个重要注意事项：`logging_steps=25` 表示训练损失仅在每25步之后记录，其中每个记录的值是`gradient_accumulation_steps=4`的平均值。因此，损失的最大下降出现在第二个记录点——这是大多数初始学习发生的地方。之后，模型继续以更缓慢的趋势学习，具体取决于训练样本的难度。
 - en: 'Now, let’s take a look at the **evaluation loss**:'
+  id: totrans-98
   prefs: []
   type: TYPE_NORMAL
+  zh: 现在，让我们来看看 **评估损失**：
 - en: '![](../Images/cd98a112082ad27def847b88ee7e847a.png)'
+  id: totrans-99
   prefs: []
   type: TYPE_IMG
+  zh: '![](../Images/cd98a112082ad27def847b88ee7e847a.png)'
 - en: Validation Loss 1 | Image by author from wandb.ai
+  id: totrans-100
   prefs: []
   type: TYPE_NORMAL
+  zh: 验证损失 1 | 图由作者来自wandb.ai
 - en: Since we are evaluating on the same set of 250 validation samples, the evaluation
     loss curve gives us a more stable and meaningful view of model learning — and
     will serve as a baseline for comparisons across future runs.
+  id: totrans-101
   prefs: []
   type: TYPE_NORMAL
+  zh: 由于我们在同一组250个验证样本上评估，评估损失曲线为我们提供了一个更稳定和有意义的模型学习视图——并将作为未来运行比较的基准。
 - en: Here, we observe a clear and consistent downward trend throughout training.
     The initial loss starts close to **0.03**, with a steady improvement as training
     progresses, eventually stabilizing just below **0.015**.
+  id: totrans-102
   prefs: []
   type: TYPE_NORMAL
+  zh: 在这里，我们观察到整个训练过程中明显的持续下降趋势。初始损失接近 **0.03**，随着训练的进行稳步改善，最终稳定在 **0.015** 以下。
 - en: The smooth nature of this curve — compared to the more variable training loss
     — reflects the regular structure of the validation set and confirms that the model
     is generalizing well to unseen samples, even with a small batch size and a single
     epoch of training.
+  id: totrans-103
   prefs: []
   type: TYPE_NORMAL
+  zh: 与更易变的训练损失相比，这条曲线的平滑性反映了验证集的规则结构，并证实了模型在未见过的样本上泛化良好，即使在较小的批量大小和单个训练周期的情况下。
 - en: 'Now, let’s compare the performance of this fine-tuned model against the reference
     models on the **HTML Similarity** metric:'
+  id: totrans-104
   prefs: []
   type: TYPE_NORMAL
+  zh: 现在，让我们比较这个微调模型在**HTML相似度**指标上与参考模型的性能：
 - en: '![](../Images/037c54bc1502c9aa558cd3e06a0d0ba2.png)'
+  id: totrans-105
   prefs: []
   type: TYPE_IMG
+  zh: '![图片](../Images/037c54bc1502c9aa558cd3e06a0d0ba2.png)'
 - en: As we can see, this first experiment already delivers **strong performance gains** —
     improving the base Granite-Vision 2B model by a large margin (+0.18) and clearly
     outperforming LLaMA 90B Vision on this specialized task. Only Pix2Struct retains
     a slight lead at this stage.
+  id: totrans-106
   prefs: []
   type: TYPE_NORMAL
+  zh: 如我们所见，这个第一次实验已经带来了**显著的性能提升**——将基础Granite-Vision 2B模型提升了很大幅度（+0.18），并且在这个专业任务上明显优于LLaMA
+    90B Vision。只有Pix2Struct在这个阶段仍保持微弱领先。
 - en: Second Run: `vision_only`
+  id: totrans-107
   prefs:
   - PREF_H2
   type: TYPE_NORMAL
+  zh: 第二次运行：`vision_only`
 - en: There isn’t much to analyze in this run. I tested several variations that could
     potentially unblock learning in the vision layers — including drastically increasing
     the learning rate — but without success.
+  id: totrans-108
   prefs: []
   type: TYPE_NORMAL
+  zh: 在这次运行中，没有太多可以分析的内容。我测试了几个可能解锁视觉层学习的变体——包括大幅提高学习率——但都没有成功。
 - en: 'While the base code suggests that fine-tuning vision layers **should** be possible,
     in practice I found it was not working in this setup. The following evaluation
     loss curve confirms that no learning occurred — the loss remained constant throughout
     training. To avoid wasting compute resources, I stopped the run early:'
+  id: totrans-109
   prefs: []
   type: TYPE_NORMAL
+  zh: 尽管基础代码表明微调视觉层**应该**是可能的，但在实践中我发现在这个设置中它不起作用。以下评估损失曲线证实了这一点——损失在整个训练过程中保持恒定。为了避免浪费计算资源，我提前停止了运行：
 - en: '![](../Images/cc717d3bed2ba656374be32487da6da8.png)'
+  id: totrans-110
   prefs: []
   type: TYPE_IMG
+  zh: '![图片](../Images/cc717d3bed2ba656374be32487da6da8.png)'
 - en: Validation Loss 2 | Image by author from wandb.ai
+  id: totrans-111
   prefs: []
   type: TYPE_NORMAL
+  zh: 验证损失 2 | 图片由作者来自 wandb.ai 提供
 - en: 'Additionally, training was noticeably faster in this run compared to the previous `lang_only` experiment
     — suggesting that the language layers (which contain the bulk of the model’s parameters)
     remained frozen, and only the small vision layers were being processed:'
+  id: totrans-112
   prefs: []
   type: TYPE_NORMAL
+  zh: 此外，与之前的`lang_only`实验相比，这次训练的速度明显更快——这表明语言层（包含模型的大部分参数）保持冻结状态，只有小的视觉层正在被处理：
 - en: '![](../Images/9e3b8b3b3920dd57062d69ae5bbaa382.png)'
+  id: totrans-113
   prefs: []
   type: TYPE_IMG
+  zh: '![图片](../Images/9e3b8b3b3920dd57062d69ae5bbaa382.png)'
 - en: Validation Samples per Second 1 | Image by author from wandb.ai
+  id: totrans-114
   prefs: []
   type: TYPE_NORMAL
+  zh: 验证样本每秒 1 | 图片由作者来自 wandb.ai 提供
 - en: Third Run: `lang_vision`
+  id: totrans-115
   prefs:
   - PREF_H2
   type: TYPE_NORMAL
+  zh: 第三次运行：`lang_vision`
 - en: At this point, it was clear that only language layers were being effectively
     trained. In this `lang_vision` run — where both language and vision layers were
     selected — I expected results similar to `lang_only`.
+  id: totrans-116
   prefs: []
   type: TYPE_NORMAL
+  zh: 到这个时候，很明显只有语言层被有效地训练。在这个`lang_vision`运行中——其中选择了语言和视觉层——我期望得到与`lang_only`相似的结果。
 - en: 'Indeed, the evaluation loss curve confirmed this expectation, showing nearly
     identical behavior to `lang_only`:'
+  id: totrans-117
   prefs: []
   type: TYPE_NORMAL
+  zh: 的确，评估损失曲线证实了这一点，显示出与`lang_only`几乎相同的行为：
 - en: '![](../Images/2117b2bc5a22298e21a923add02020de.png)'
+  id: totrans-118
   prefs: []
   type: TYPE_IMG
+  zh: '![图片](../Images/2117b2bc5a22298e21a923add02020de.png)'
 - en: Validation Loss 3 | Image by author from wandb.ai
+  id: totrans-119
   prefs: []
   type: TYPE_NORMAL
+  zh: 验证损失 3 | 图片由作者来自 wandb.ai 提供
 - en: Once this was clear, I again stopped training early to conserve resources, and
     proceeded to test new approaches.
+  id: totrans-120
   prefs: []
   type: TYPE_NORMAL
+  zh: 一旦这一点清楚，我又提前停止了训练以节省资源，并开始测试新的方法。
 - en: Fourth Run: `lang_table_only`
+  id: totrans-121
   prefs:
   - PREF_H2
   type: TYPE_NORMAL
+  zh: 第四次运行：`lang_table_only`
 - en: 'This experiment modified the following component:'
+  id: totrans-122
   prefs: []
   type: TYPE_NORMAL
+  zh: 这个实验修改了以下组件：
 - en: '![](../Images/851923d8f42bb6901ae1ea12beb83f6f.png)'
+  id: totrans-123
   prefs: []
   type: TYPE_IMG
+  zh: '![图片](../Images/851923d8f42bb6901ae1ea12beb83f6f.png)'
 - en: The goal of this run was to train the model to predict **only the table content**,
     without any surrounding HTML wrapper code. This approach could help improve learning
     — by removing unnecessary tokens — and also align the training behavior more closely
     with Pix2Struct’s model.
+  id: totrans-124
   prefs: []
   type: TYPE_NORMAL
+  zh: 这次运行的目标是训练模型只预测**表格内容**，而不包含任何周围的HTML包装代码。这种方法可以帮助提高学习——通过移除不必要的标记——并且使训练行为更接近Pix2Struct的模型。
 - en: Additionally, by stripping out the wrapper HTML, the target sequences became
     shorter — which allowed longer and more complex tables to fit within the model’s
     context window. This change could also improve the model’s ability to generalize
     to larger or more detailed tables.
+  id: totrans-125
   prefs: []
   type: TYPE_NORMAL
+  zh: 此外，通过移除包装HTML，目标序列变得更短——这使得更长的更复杂的表格能够适应模型的环境窗口。这种变化也可能提高模型泛化到更大或更详细表格的能力。
 - en: 'Let’s look at the **evaluation loss** compared to the first run:'
+  id: totrans-126
   prefs: []
   type: TYPE_NORMAL
+  zh: 让我们看看与第一次运行的**评估损失**比较：
 - en: '![](../Images/fbb74274e94026043b56d62efae3983c.png)'
+  id: totrans-127
   prefs: []
   type: TYPE_IMG
+  zh: '![图片](../Images/fbb74274e94026043b56d62efae3983c.png)'
 - en: Validation Loss 4 | Image by author from wandb.ai
+  id: totrans-128
   prefs: []
   type: TYPE_NORMAL
+  zh: 验证损失 4 | 图片由作者来自 wandb.ai 提供
 - en: 'At first glance, the higher evaluation loss might seem counterintuitive. However,
     there’s a clear explanation: the wrapper HTML code is trivial for the model to
     learn — since it tends to be nearly identical across many training samples. These
@@ -605,418 +873,632 @@
     loss in earlier runs. By removing them, the model now focuses entirely on the
     more challenging and variable table content — resulting in a higher but more meaningful
     loss value.'
+  id: totrans-129
   prefs: []
   type: TYPE_NORMAL
+  zh: 初看，更高的评估损失可能看起来有些不合常理。然而，有一个明确的解释：包装 HTML 代码对模型来说很容易学习——因为它往往在许多训练样本中几乎完全相同。这些重复的标记减少了交叉熵损失，人为地降低了早期运行的平均损失。通过移除它们，模型现在完全专注于更具挑战性和可变性的表格内容——导致损失值更高但更有意义。
 - en: 'Now, let’s see how this change impacted the **HTML Similarity** metric:'
+  id: totrans-130
   prefs: []
   type: TYPE_NORMAL
+  zh: 现在，让我们看看这个变化如何影响了 **HTML相似度** 指标：
 - en: '![](../Images/a1165ea42448204ded266ab39c72a3ef.png)'
+  id: totrans-131
   prefs: []
   type: TYPE_IMG
+  zh: '![图片](../Images/a1165ea42448204ded266ab39c72a3ef.png)'
 - en: In this first test, we observe **no significant gain or degradation** from using
     this new output format. It is possible that the model would need **more epochs** or **larger
     training samples** to fully adapt to this new format. Another idea is to **update
     the prompt** — so that from the very first step the model understands it should
     focus solely on table content, rather than having to infer this behavior through
     training alone. This will be explored in the next experiments.
+  id: totrans-132
   prefs: []
   type: TYPE_NORMAL
+  zh: 在这次第一次测试中，我们没有观察到使用这种新输出格式的 **显著提升或下降**。可能模型需要 **更多的训练轮数**或 **更大的训练样本**才能完全适应这种新格式。另一个想法是 **更新提示**——这样从第一步开始，模型就明白它应该只专注于表格内容，而不是必须通过训练来推断这种行为。这将在接下来的实验中探讨。
 - en: Fifth / Sixth Run: `lang_table_unsloth`, `vision_table_unsloth`
+  id: totrans-133
   prefs:
   - PREF_H2
   type: TYPE_NORMAL
+  zh: 第五 / 第六次运行：`lang_table_unsloth`，`vision_table_unsloth`
 - en: 'In these experiments, I explored the following components:'
+  id: totrans-134
   prefs: []
   type: TYPE_NORMAL
+  zh: 在这些实验中，我探索了以下组件：
 - en: '![](../Images/f3000c93c861d24187b702e3c0a3f75e.png)'
+  id: totrans-135
   prefs: []
   type: TYPE_IMG
+  zh: '![图片](../Images/f3000c93c861d24187b702e3c0a3f75e.png)'
 - en: At this point, I discovered the promising [Unsloth](https://raw.githubusercontent.com/unslothai/unsloth) framework
     — which claims to offer **2x faster training** with up to **70% lower memory usage**.
     Of course, I wanted to test whether it could accelerate my workflow.
+  id: totrans-136
   prefs: []
   type: TYPE_NORMAL
+  zh: 在这一点上，我发现了一个有希望的 [Unsloth](https://raw.githubusercontent.com/unslothai/unsloth) 框架——它声称可以提供 **2
+    倍的训练速度**以及高达 **70% 的内存使用降低**。当然，我想测试它是否可以加速我的工作流程。
 - en: My first idea was to leverage the improved memory handling to run longer sequences
     (`max_seq_length=2048`), but in my case this quickly led to **Out of Memory (OOM)** errors
     — so I reverted to my previous configuration.
+  id: totrans-137
   prefs: []
   type: TYPE_NORMAL
+  zh: 我最初的想法是利用改进的内存处理来运行更长的序列（`max_seq_length=2048`），但在我这个例子中，这很快导致了 **内存不足 (OOM)
+    错误**——所以我恢复了之前的配置。
 - en: 'The training speed improvements, however, were undeniable — almost **4x faster** than
     my earlier runs:'
+  id: totrans-138
   prefs: []
   type: TYPE_NORMAL
+  zh: 然而，训练速度的提高是无可否认的——几乎 **4 倍** 快于我之前的运行：
 - en: '![](../Images/e7d77aed0df77ca91e896f8d6a8cd22b.png)'
+  id: totrans-139
   prefs: []
   type: TYPE_IMG
+  zh: '![图片](../Images/e7d77aed0df77ca91e896f8d6a8cd22b.png)'
 - en: Validation Samples per Second 2 | Image by author from wandb.ai
+  id: totrans-140
   prefs: []
   type: TYPE_NORMAL
+  zh: 每秒验证样本数 2 | 图片由作者来自 wandb.ai 提供
 - en: 'Unfortunately, this came at a clear **cost to loss performance**:'
+  id: totrans-141
   prefs: []
   type: TYPE_NORMAL
+  zh: 不幸的是，这明显是以损失性能为代价的 **成本**：
 - en: '![](../Images/f18dc7d7c8d08a863b598135846992fd.png)'
+  id: totrans-142
   prefs: []
   type: TYPE_IMG
+  zh: '![图片](../Images/f18dc7d7c8d08a863b598135846992fd.png)'
 - en: Validation Loss 5 | Image by author from wandb.ai
+  id: totrans-143
   prefs: []
   type: TYPE_NORMAL
+  zh: 验证损失 5 | 图片由作者来自 wandb.ai 提供
 - en: Given this noticeable drop in quality, I paused the experiment to investigate
     further — particularly to see if **Unsloth would allow me to train vision layers**,
     which is one of its advertised advantages. However, I encountered exactly the
     same behavior as with HuggingFace Transformers — no actual learning in vision
     layers.
+  id: totrans-144
   prefs: []
   type: TYPE_NORMAL
+  zh: 由于质量明显下降，我暂停了实验以进行进一步调查——特别是看看 Unsloth 是否允许我训练视觉层，这是其宣传的优势之一。然而，我遇到了与 HuggingFace
+    Transformers 完全相同的行为——视觉层没有实际的学习。
 - en: With these results in mind, I decided to **set aside Unsloth for this project**and
     continue using **HuggingFace Transformers**, which had shown more reliable learning
     in earlier runs.
+  id: totrans-145
   prefs: []
   type: TYPE_NORMAL
+  zh: 考虑到这些结果，我决定 **将 Unsloth 保留在这个项目中**并继续使用 **HuggingFace Transformers**，这在之前的运行中已经显示出更可靠的学习能力。
 - en: Seventh Run: `lang_table_only_2`
+  id: totrans-146
   prefs:
   - PREF_H2
   type: TYPE_NORMAL
+  zh: 第七次运行：`lang_table_only_2`
 - en: 'Here are the new parameters for this run:'
+  id: totrans-147
   prefs: []
   type: TYPE_NORMAL
+  zh: 这里是这个运行的新参数：
 - en: '![](../Images/338ae8562e99f2d2a7a2621bd35f5ee6.png)'
+  id: totrans-148
   prefs: []
   type: TYPE_IMG
+  zh: '![图片](../Images/338ae8562e99f2d2a7a2621bd35f5ee6.png)'
 - en: Going back to the previous configuration, I wanted to analyze the impact of
     a **larger virtual batch size** (via higher `gradient_accumulation_steps`).
+  id: totrans-149
   prefs: []
   type: TYPE_NORMAL
+  zh: 回到之前的配置，我想分析一个 **更大的虚拟批量大小**（通过更高的 `gradient_accumulation_steps`）的影响。
 - en: 'The results were promising — the **evaluation loss** became smoother and trended
     closer to the original `lang_only` run, even though the model was now predicting **only
     the table content**:'
+  id: totrans-150
   prefs: []
   type: TYPE_NORMAL
+  zh: 结果很有希望——**评估损失**变得更加平滑，趋势更接近原始的`lang_only`运行，尽管模型现在只预测**表格内容**：
 - en: '![](../Images/d4737e1896473d62c7d08e9c9a921fc1.png)'
+  id: totrans-151
   prefs: []
   type: TYPE_IMG
+  zh: '![图片](../Images/d4737e1896473d62c7d08e9c9a921fc1.png)'
 - en: Validation Loss 6 | Image by author from wandb.ai
+  id: totrans-152
   prefs: []
   type: TYPE_NORMAL
+  zh: 验证损失 6 | 图片由作者来自wandb.ai
 - en: Based on this positive result, I decided to keep this `gradient_accumulation_steps=8` setting
     for the final experiment.
+  id: totrans-153
   prefs: []
   type: TYPE_NORMAL
+  zh: 基于这个积极的结果，我决定将这个`gradient_accumulation_steps=8`设置用于最终实验。
 - en: 'Evaluating this model on **HTML Similarity** resulted in a small but meaningful
     improvement — finally reaching parity with Pix2Struct:'
+  id: totrans-154
   prefs: []
   type: TYPE_NORMAL
+  zh: 在**HTML相似度**上评估这个模型导致了一个小但有意义的好转——最终与Pix2Struct达到了平衡：
 - en: '![](../Images/d3f5564932067f1855bf0ea998fcff75.png)'
+  id: totrans-155
   prefs: []
   type: TYPE_IMG
+  zh: '![图片](../Images/d3f5564932067f1855bf0ea998fcff75.png)'
 - en: 'Naturally, the goal is not just to match Pix2Struct — but to surpass it. Two
     important levers remained to explore: dataset size and prompt.'
+  id: totrans-156
   prefs: []
   type: TYPE_NORMAL
+  zh: 自然地，目标不仅仅是匹配Pix2Struct——而是要超越它。还有两个重要的杠杆需要探索：数据集大小和提示。
 - en: Eighth Run: `lang_table_only_3`
+  id: totrans-157
   prefs:
   - PREF_H2
   type: TYPE_NORMAL
+  zh: 第八次运行：`lang_table_only_3`
 - en: 'The updated parameters for this run were:'
+  id: totrans-158
   prefs: []
   type: TYPE_NORMAL
+  zh: 这次运行的更新参数为：
 - en: '![](../Images/cff1bca96f4270b644842cae402813b4.png)'
+  id: totrans-159
   prefs: []
   type: TYPE_IMG
+  zh: '![图片](../Images/cff1bca96f4270b644842cae402813b4.png)'
 - en: I accidentally reverted `gradient_accumulation_steps` back to **4** in this
     run, only realizing it once the training was nearly complete — but this actually
     gave me an extra-chance to observe its effect on learning.
+  id: totrans-160
   prefs: []
   type: TYPE_NORMAL
+  zh: 我不小心在这个运行中将`gradient_accumulation_steps`回退到**4**，直到训练接近完成才意识到这一点——但实际上这给了我额外的机会来观察它对学习的影响。
 - en: 'The main goal here was to **double the training size** (to 10K images) and
     to test the updated, clearer **prompt** format. Unfortunately, a random **CUDA
     error** caused training to halt around **80% completion** — but even so, the improvement
     was clear:'
+  id: totrans-161
   prefs: []
   type: TYPE_NORMAL
+  zh: 这里的主要目标是**将训练规模翻倍**（到10K张图片）并测试更新的、更清晰的**提示**格式。不幸的是，一个随机的**CUDA错误**导致训练在**80%完成**时停止——但即便如此，改进是明显的：
 - en: '![](../Images/29327a5dfa467d2d43f2e17a4a5bda9a.png)'
+  id: totrans-162
   prefs: []
   type: TYPE_IMG
+  zh: '![图片](../Images/29327a5dfa467d2d43f2e17a4a5bda9a.png)'
 - en: Validation Loss 7 | Image by author from wandb.ai
+  id: totrans-163
   prefs: []
   type: TYPE_NORMAL
+  zh: 验证损失 7 | 图片由作者来自wandb.ai
 - en: As expected, some smoothness was lost due to the smaller virtual batch size,
     but the new **prompt** proved very effective — noticeably boosting model learning.
+  id: totrans-164
   prefs: []
   type: TYPE_NORMAL
+  zh: 如预期，由于虚拟批量大小的减小，一些平滑度丢失了，但新的**提示**证明非常有效——显著提升了模型的学习能力。
 - en: This set the stage perfectly for the **final experiment**, using this improved
     prompt, 10K training samples, and restoring `gradient_accumulation_steps` to 8.
+  id: totrans-165
   prefs: []
   type: TYPE_NORMAL
+  zh: 这为使用这个改进的提示、10K个训练样本，并将`gradient_accumulation_steps`恢复到8的**最终实验**做好了完美的准备。
 - en: Final Run: `lang_table_only_4`
+  id: totrans-166
   prefs:
   - PREF_H2
   type: TYPE_NORMAL
+  zh: 最终运行：`lang_table_only_4`
 - en: 'The final set of parameters are:'
+  id: totrans-167
   prefs: []
   type: TYPE_NORMAL
+  zh: 最终的参数集为：
 - en: '![](../Images/5b2a04148c7262d28b89c19659d6c075.png)'
+  id: totrans-168
   prefs: []
   type: TYPE_IMG
+  zh: '![图片](../Images/5b2a04148c7262d28b89c19659d6c075.png)'
 - en: 'The evaluation loss for this final run:'
+  id: totrans-169
   prefs: []
   type: TYPE_NORMAL
+  zh: 这次最终运行的评估损失：
 - en: '![](../Images/23f07b7a2a06feeb024658bd6d8b797d.png)'
+  id: totrans-170
   prefs: []
   type: TYPE_IMG
+  zh: '![图片](../Images/23f07b7a2a06feeb024658bd6d8b797d.png)'
 - en: Validation Loss 7 | Image by author from wandb.ai
+  id: totrans-171
   prefs: []
   type: TYPE_NORMAL
+  zh: 验证损失 7 | 图片由作者来自wandb.ai
 - en: As expected, restoring the `gradient_accumulation_steps` to 8 smoothed the loss
     curve, reducing spikes and achieving slightly lower overall loss values. With
     a **full epoch** of training on 10K images, this became the best-performing model
     across all experiments.
+  id: totrans-172
   prefs: []
   type: TYPE_NORMAL
+  zh: 如预期，将`gradient_accumulation_steps`恢复到8平滑了损失曲线，减少了峰值，并实现了略低的总体损失值。在10K张图片上进行**完整周期**的训练，这使得它成为所有实验中表现最好的模型。
 - en: 'Now, let’s look at the final results on the **HTML Similarity** metric:'
+  id: totrans-173
   prefs: []
   type: TYPE_NORMAL
+  zh: 现在，让我们看看在**HTML相似度**指标上的最终结果：
 - en: '![](../Images/fc1c9a0d7bc2956bdde1092995625394.png)'
+  id: totrans-174
   prefs: []
   type: TYPE_IMG
+  zh: '![图片](../Images/fc1c9a0d7bc2956bdde1092995625394.png)'
 - en: Final HTML Similarity Results | Image by author from matplotlib
+  id: totrans-175
   prefs: []
   type: TYPE_NORMAL
+  zh: 最终HTML相似度结果 | 图片由作者来自matplotlib
 - en: The goal of this project was achieved — the fine-tuned model now **surpasses
     both reference models** on this task. Looking back at the original Granite-Vision
     2B, the LoRA fine-tuning improved performance to **0.77**, a **+21 percentage
     point gain** — all accomplished in under **8 hours** on a **consumer-grade GPU**.
+  id: totrans-176
   prefs: []
   type: TYPE_NORMAL
+  zh: 这个项目的目标已经实现——经过微调的模型现在在这个任务上**超过了两个参考模型**。回顾原始的Granite-Vision 2B，LoRA微调将性能提升到**0.77**，实现了**+21个百分点的提升**——所有这些都在**8小时**内，在一个**消费级GPU**上完成。
 - en: Qualitative Results
+  id: totrans-177
   prefs:
   - PREF_H2
   type: TYPE_NORMAL
+  zh: 定性结果
 - en: To better illustrate how much the model improved through fine-tuning, let’s
     look at a specific example: **Image ID 618932**.
+  id: totrans-178
   prefs: []
   type: TYPE_NORMAL
+  zh: 为了更好地说明模型通过微调的改进程度，让我们看看一个具体的例子：**图像ID 618932**。
 - en: '![](../Images/07ca41e2f639309d2ecb840b68a84759.png)'
+  id: totrans-179
   prefs: []
   type: TYPE_IMG
+  zh: '![图片](../Images/07ca41e2f639309d2ecb840b68a84759.png)'
 - en: PubTabNet Evaluation Sample with ID 618932 | Image from [PMC](https://pmc.ncbi.nlm.nih.gov/tools/openftlist/)
+  id: totrans-180
   prefs: []
   type: TYPE_NORMAL
+  zh: PubTabNet评估样本ID 618932 | 图像来自[PMC](https://pmc.ncbi.nlm.nih.gov/tools/openftlist/)
 - en: This table is particularly tricky — under the `Kappa` column there are **sub-headers** (`Present
     study` and `King et al. 2001`). These complex layouts typically challenge generic
     VLMs, especially when they haven’t been exposed to enough similar examples during
     training. Models can usually **understand** these sub-headers and **answer questions** about
     them, but generating the full table structure in HTML often requires further prompt
     tuning and specialized fine-tuning.
+  id: totrans-181
   prefs: []
   type: TYPE_NORMAL
+  zh: 这个表格尤其棘手——在`Kappa`列下有**子标题**（`Present study`和`King et al. 2001`）。这些复杂的布局通常挑战通用的VLMs，尤其是在训练期间没有接触到足够的类似示例时。模型通常可以**理解**这些子标题并**回答**关于它们的问题，但生成完整的HTML表格结构通常需要进一步的提示调整和专门的微调。
 - en: Let’s first see how a *base*, non-fine-tuned Granite-Vision 2B model performs
     on this task.
+  id: totrans-182
   prefs: []
   type: TYPE_NORMAL
+  zh: 让我们先看看一个**基础**的、未经微调的Granite-Vision 2B模型在这个任务上的表现。
 - en: 'Baseline: Raw Granite-Vision 2B'
+  id: totrans-183
   prefs:
   - PREF_H2
   type: TYPE_NORMAL
+  zh: 基准：原始Granite-Vision 2B
 - en: 'The model can answer questions based on the table correctly:'
+  id: totrans-184
   prefs: []
   type: TYPE_NORMAL
+  zh: 该模型可以正确地根据表格回答问题：
 - en: '[PRE4]'
+  id: totrans-185
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE4]'
 - en: '**Out[1]:**'
+  id: totrans-186
   prefs: []
   type: TYPE_NORMAL
+  zh: '**Out[1]:**'
 - en: '[PRE5]'
+  id: totrans-187
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE5]'
 - en: 'However, when asked to generate the full HTML table, the model struggles:'
+  id: totrans-188
   prefs: []
   type: TYPE_NORMAL
+  zh: 然而，当要求生成完整的HTML表格时，模型遇到了困难：
 - en: '[PRE6]'
+  id: totrans-189
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE6]'
 - en: '**Out[2]:**'
+  id: totrans-190
   prefs: []
   type: TYPE_NORMAL
+  zh: '**Out[2]:**'
 - en: '![](../Images/edad5830d63c006ab5980401a9d2a4d3.png)'
+  id: totrans-191
   prefs: []
   type: TYPE_IMG
+  zh: '![](../Images/edad5830d63c006ab5980401a9d2a4d3.png)'
 - en: 'And the **HTML Similarity** metrics for this attempt:'
+  id: totrans-192
   prefs: []
   type: TYPE_NORMAL
+  zh: 以及这次尝试的**HTML相似度**指标：
 - en: '[PRE7]'
+  id: totrans-193
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE7]'
 - en: Fine-Tuned Model: `lang_table_only_4`
+  id: totrans-194
   prefs:
   - PREF_H2
   type: TYPE_NORMAL
+  zh: 微调模型：`lang_table_only_4`
 - en: 'Now, let’s try the exact same test using the fine-tuned model:'
+  id: totrans-195
   prefs: []
   type: TYPE_NORMAL
+  zh: 现在，让我们使用微调后的模型尝试完全相同的测试：
 - en: '[PRE8]'
+  id: totrans-196
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE8]'
 - en: '**Out[4]:**'
+  id: totrans-197
   prefs: []
   type: TYPE_NORMAL
+  zh: '**Out[4]:**'
 - en: '[PRE9]'
+  id: totrans-198
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE9]'
 - en: 'And the same prediction prompt:'
+  id: totrans-199
   prefs: []
   type: TYPE_NORMAL
+  zh: 以及相同的预测提示：
 - en: '[PRE10]'
+  id: totrans-200
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE10]'
 - en: '**Out[5]:**'
+  id: totrans-201
   prefs: []
   type: TYPE_NORMAL
+  zh: '**Out[5]:**'
 - en: '![](../Images/f54dff7111febfce27bff02bf71336e1.png)'
+  id: totrans-202
   prefs: []
   type: TYPE_IMG
+  zh: '![](../Images/f54dff7111febfce27bff02bf71336e1.png)'
 - en: The fine-tuned model now produces an output that closely matches the ground
     truth, correctly capturing the table structure and sub-headers — something the
     base model struggled with.
+  id: totrans-203
   prefs: []
   type: TYPE_NORMAL
+  zh: 微调后的模型现在生成的输出与真实值非常接近，正确地捕捉到了表格结构和子标题——这是基础模型难以做到的。
 - en: 'Final **HTML Similarity** metrics:'
+  id: totrans-204
   prefs: []
   type: TYPE_NORMAL
+  zh: 最终的**HTML相似度**指标：
 - en: '[PRE11]'
+  id: totrans-205
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE11]'
 - en: 'This example shows a clear quantitative improvement as well: from a score of
     0.36 to 0.96 on a complex table structure — confirming that fine-tuning on this
     specialized task dramatically boosts the model’s capability.'
+  id: totrans-206
   prefs: []
   type: TYPE_NORMAL
+  zh: 这个例子清楚地显示了明显的量化改进：在复杂表格结构上的得分从0.36提高到0.96——证实了在这个专业任务上进行微调可以显著提高模型的能力。
 - en: Inference Speed
+  id: totrans-207
   prefs:
   - PREF_H2
   type: TYPE_NORMAL
+  zh: 推理速度
 - en: One major advantage of using a smaller model — aside from the ability to fine-tune
     on consumer-grade hardware — is **inference speed**. Even if larger models offer
     competitive performance, latency and throughput remain key factors, especially
     in production settings.
+  id: totrans-208
   prefs: []
   type: TYPE_NORMAL
+  zh: 使用较小模型的一个主要优势——除了能够在消费级硬件上进行微调的能力之外——是**推理速度**。即使较大的模型提供具有竞争力的性能，延迟和吞吐量仍然是关键因素，尤其是在生产环境中。
 - en: 'Let’s compare the inference speed of the different models:'
+  id: totrans-209
   prefs: []
   type: TYPE_NORMAL
+  zh: 让我们比较不同模型的推理速度：
 - en: '![](../Images/1c536955b6eae017f701faebac5faf98.png)'
+  id: totrans-210
   prefs: []
   type: TYPE_IMG
+  zh: '![](../Images/1c536955b6eae017f701faebac5faf98.png)'
 - en: Inference SpeedM | Image by author from matplotlib
+  id: totrans-211
   prefs: []
   type: TYPE_NORMAL
+  zh: 推理速度M | 图像由作者来自matplotlib
 - en: As shown in the plot, **Pix2Struct** is by far the fastest model. For some use
     cases — such as **batch-processing thousands of documents for table extraction** —
     this speed advantage could translate into **significant time savings** and lower
     compute costs.
+  id: totrans-212
   prefs: []
   type: TYPE_NORMAL
+  zh: 如图中所示，**Pix2Struct**是迄今为止最快的模型。对于某些用例——例如**批量处理数千份文档进行表格提取**——这种速度优势可以转化为**显著的时间节省**和更低的计算成本。
 - en: However, the **fine-tuned Granite-Vision 2B** achieves a good balance when the
     amount of documents to process is not massive, having a superior accuracy on this
     specialized task and reasonably fast inference without the need for extremely
     large compute infrastructure.
+  id: totrans-213
   prefs: []
   type: TYPE_NORMAL
+  zh: 然而，当需要处理的文档数量不是很大时，**微调后的Granite-Vision 2B**在准确性上具有优势，推理速度合理，无需极端庞大的计算基础设施。
 - en: Conclusions
+  id: totrans-214
   prefs:
   - PREF_H2
   type: TYPE_NORMAL
+  zh: 结论
 - en: This project demonstrated that with **LoRA-based fine-tuning** and a **targeted
     task** (table extraction → HTML), a **small vision-language model (Granite-Vision
     2B)** can **outperform much larger models** — even Meta’s 90B LLaMA Vision — while
     requiring only a **consumer GPU** and less than a day of training.
+  id: totrans-215
   prefs: []
   type: TYPE_NORMAL
+  zh: 这个项目证明了使用基于**LoRA的微调**和**针对性任务**（表格提取→HTML），一个**小型视觉语言模型（Granite-Vision 2B）**可以**超越许多更大的模型**——甚至Meta的90B
+    LLaMA Vision——同时只需要一个**消费级GPU**和不到一天的训练时间。
 - en: 'A few key takeaways:'
+  id: totrans-216
   prefs: []
   type: TYPE_NORMAL
+  zh: 一些关键要点：
 - en: '**Small, specialized models matter** — you don’t always need 70B+ models to
     solve specific problems with high accuracy.'
+  id: totrans-217
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: '**小型、专业化的模型很重要**——你并不总是需要70B+的模型来解决特定问题并获得高精度。'
 - en: '**Parameter-efficient fine-tuning (LoRA)** is a game-changer: adapting large
     foundation models becomes accessible for most practitioners.'
+  id: totrans-218
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: '**参数高效微调（LoRA）**是一个变革性的技术：适应大型基础模型对大多数从业者来说变得可行。'
 - en: '**Prompt design and training targets** have a big influence — small changes
     (like switching to `lang_table_only` or refining the prompt) directly impacted
     performance.'
+  id: totrans-219
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: '**提示设计和技术目标**对结果有重大影响——小的改动（如切换到`lang_table_only`或细化提示）直接影响了性能。'
 - en: Having a **custom metric (HTML Similarity)** was critical to track meaningful
     progress beyond generic text-based metrics.
+  id: totrans-220
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: 拥有一个**自定义指标（HTML相似度）**对于跟踪超越通用文本指标的有意义进展至关重要。
 - en: Smaller models not only train faster, but also **infer faster** — ideal for
     production pipelines with high volume.
+  id: totrans-221
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: 较小的模型不仅训练更快，而且**推理更快**——非常适合高吞吐量的生产流程。
 - en: Finally — and maybe most importantly — this type of experimentation shows that **you
     can move fast and iterate** even with limited hardware. Fine-tuning powerful open
     models and adapting them to real-world tasks is **not reserved to big labs anymore**.
+  id: totrans-222
   prefs: []
   type: TYPE_NORMAL
+  zh: 最后——也许是最重要的——这种类型的实验表明，即使硬件有限，你也可以快速行动并迭代。微调强大的开源模型并将它们适应现实世界任务不再仅限于大型实验室。
 - en: I hope this encourages other AI engineers to experiment with small VLMs and
     fine-tuning techniques for their own projects and solutions — and to see that
     powerful results are possible even without massive compute budgets!
+  id: totrans-223
   prefs: []
   type: TYPE_NORMAL
+  zh: 我希望这能鼓励其他AI工程师在自己的项目和解决方案中尝试小型VLM和微调技术——并看到即使没有庞大的计算预算，也能取得强大的结果！
 - en: What’s Next?
+  id: totrans-224
   prefs:
   - PREF_H2
   type: TYPE_NORMAL
+  zh: 接下来是什么？
 - en: 'There are definitely some interesting follow-up ideas that can be explored
     next:'
+  id: totrans-225
   prefs: []
   type: TYPE_NORMAL
+  zh: 肯定有一些有趣的后续想法可以探索：
 - en: '**Prompt engineering refinements**: Final tests (while writing this blog) showed
     that separating prompts into *system message* (defining behavior) and *user message* (providing
     task instructions) significantly improved the base model’s performance. Applying
     this strategy during fine-tuning could further enhance the model’s ability to
     consistently generate accurate HTML. This will be tested in upcoming experiments.'
+  id: totrans-226
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: '**提示工程优化**：在撰写此博客的最终测试中显示，将提示分为*系统消息*（定义行为）和*用户消息*（提供任务指令）显著提高了基础模型的表现。在微调过程中应用此策略可以进一步提高模型持续生成准确HTML的能力。这将在即将进行的实验中得到测试。'
 - en: '**Training vision layers**: Currently, only the language layers are fine-tuned,
     as training the vision layers through text-only loss proved ineffective. A more
     advanced approach could involve adding an auxiliary vision loss — for example,
     contrastive learning between vision outputs and HTML structure — to better adapt
     the vision backbone for table extraction tasks.'
+  id: totrans-227
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: '**训练视觉层**：目前，只有语言层被微调，因为仅通过文本损失训练视觉层已被证明无效。一种更先进的方法可能包括添加辅助视觉损失——例如，在视觉输出和HTML结构之间进行对比学习——以更好地适应表格提取任务的视觉骨干。'
 - en: '**Improved generalization**: The current model is fine-tuned on a single dataset.
     Expanding training to include more diverse document layouts, table styles, and
     noisy OCR scenarios could improve robustness and transferability to real-world
     data.'
+  id: totrans-228
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: '**提高泛化能力**：当前模型是在单个数据集上微调的。将训练扩展到包括更多样化的文档布局、表格样式和有噪声的OCR场景可以提高鲁棒性和对现实世界数据的迁移性。'
 - en: Links
+  id: totrans-229
   prefs:
   - PREF_H2
   type: TYPE_NORMAL
+  zh: 链接
 - en: '[GitHub Repository](https://github.com/JulioSanchezD/TableVision2html)'
+  id: totrans-230
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: '[GitHub 仓库](https://github.com/JulioSanchezD/TableVision2html)'
 - en: '[HuggingFace Model](https://huggingface.co/JulioSnchezD/granite-vision-3.2-2b-table2html)'
+  id: totrans-231
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: '[HuggingFace 模型](https://huggingface.co/JulioSnchezD/granite-vision-3.2-2b-table2html)'
 - en: '* * *'
+  id: totrans-232
   prefs: []
   type: TYPE_NORMAL
+  zh: '* * *'
 - en: If you liked this post, feel free to reach out or share your own experiments!
+  id: totrans-233
   prefs: []
   type: TYPE_NORMAL
+  zh: 如果你喜欢这篇帖子，请随时联系或分享你自己的实验！
