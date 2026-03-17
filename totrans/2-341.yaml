@@ -3,11 +3,13 @@
   prefs:
   - PREF_H1
   type: TYPE_NORMAL
+  zh: 使用EoRA提升2位LLM的准确性
 - en: 原文：[https://towardsdatascience.com/boost-2-bit-llm-accuracy-with-eora/](https://towardsdatascience.com/boost-2-bit-llm-accuracy-with-eora/)
   id: totrans-1
   prefs:
   - PREF_BQ
   type: TYPE_NORMAL
+  zh: 原文：[https://towardsdatascience.com/boost-2-bit-llm-accuracy-with-eora/](https://towardsdatascience.com/boost-2-bit-llm-accuracy-with-eora/)
 - en: <mdspan datatext="el1747288055104" class="mdspan-comment">Quantization</mdspan>
     is one of the key techniques for reducing the memory footprint of large language
     models (LLMs). It works by converting the data type of model parameters from higher-precision
@@ -18,6 +20,7 @@
   id: totrans-2
   prefs: []
   type: TYPE_NORMAL
+  zh: <mdspan datatext="el1747288055104" class="mdspan-comment">量化</mdspan>是减少大型语言模型（LLMs）内存占用足迹的关键技术之一。它通过将模型参数的数据类型从32位浮点（FP32）或16位浮点（FP16/BF16）等高精度格式转换为低精度整数格式（通常是INT8或INT4）来实现。例如，将模型量化到4位意味着每个参数仅使用0.5字节，而FP32则需要4字节。
 - en: Post-training quantization methods like GPTQ and AWQ can dramatically reduce
     the size of large models. A model like Llama 3 with 70 billion parameters can
     occupy around 140 GB in FP16, but this can be reduced to approximately 40 GB using
@@ -25,6 +28,8 @@
   id: totrans-3
   prefs: []
   type: TYPE_NORMAL
+  zh: 后训练量化方法如GPTQ和AWQ可以显著减少大型模型的大小。像Llama 3这样的模型，拥有700亿个参数，在FP16下可以占用大约140 GB，但使用4位量化可以减少到大约40
+    GB，同时在下游任务上仍保持强大的性能。
 - en: However, despite this substantial reduction, such models still exceed the memory
     capacity of most consumer-grade GPUs, which typically offer 24 GB to 32 GB of
     VRAM. To make these models truly accessible, quantization to even lower bitwidths,
@@ -34,6 +39,7 @@
   id: totrans-4
   prefs: []
   type: TYPE_NORMAL
+  zh: 然而，尽管这种大幅减少，这些模型仍然超过了大多数消费级GPU的内存容量，这些GPU通常提供24 GB到32 GB的VRAM。为了使这些模型真正可访问，需要将量化到更低的位宽，例如2位。尽管低位量化最近取得了进展，但实现稳定和准确的2位量化仍然是一个重大挑战。
 - en: In this article, we review a technique called **EoRA** that helps compensate
     for quantization-induced errors. EoRA is a *training-free* method, meaning it
     can be applied quickly and efficiently to any model, even the largest ones. We’ll
@@ -43,52 +49,62 @@
   id: totrans-5
   prefs: []
   type: TYPE_NORMAL
+  zh: 在本文中，我们回顾了一种称为**EoRA**的技术，该技术有助于补偿量化引起的误差。EoRA是一种*无需训练*的方法，这意味着它可以快速有效地应用于任何模型，即使是最大的模型。我们将检查EoRA是如何工作的，并展示它如何显著提高2位量化模型的性能，使它们的准确性接近全精度版本，同时体积缩小到原来的1/5.5。
 - en: We’ll analyze experimental results obtained using large models such as Qwen3-32B
     and Qwen2.5-72B, both quantized to 2-bit using state-of-the-art quantization techniques,
     to illustrate the effectiveness of EoRA.
   id: totrans-6
   prefs: []
   type: TYPE_NORMAL
+  zh: 我们将分析使用大型模型（如Qwen3-32B和Qwen2.5-72B）获得的实验结果，这两个模型都使用最先进的量化技术量化到2位，以说明EoRA的有效性。
 - en: Diving into the Eigenspace in Search of an Adapter
   id: totrans-7
   prefs:
   - PREF_H2
   type: TYPE_NORMAL
+  zh: 深入研究特征空间以寻找适配器
 - en: Post-training quantization or, more generally, compression aims to reduce model
     size or inference cost by minimizing the output difference between the original
     weights *W[l]​* and compressed weights *Ŵ[l]* using only a small calibration dataset.
   id: totrans-8
   prefs: []
   type: TYPE_NORMAL
+  zh: 后训练量化或更普遍地说，压缩旨在通过最小化原始权重*W[l]*和压缩权重*Ŵ[l]*之间的输出差异来减少模型大小或推理成本，这仅使用一个小型校准数据集。
 - en: Most quantization methods are framed layer-wise, but the choice of compression
     formats is rigid and limits flexibility across diverse deployment needs.
   id: totrans-9
   prefs: []
   type: TYPE_NORMAL
+  zh: 大多数量化方法都是按层划分的，但压缩格式的选择是刚性的，这限制了满足不同部署需求时的灵活性。
 - en: To bypass format constraints and improve accuracy, previous work, such as QLoRA
     [1] and HQQ+ [2], directly fine-tuned a LoRA adapter on top of the frozen quantized
     models.
   id: totrans-10
   prefs: []
   type: TYPE_NORMAL
+  zh: 为了绕过格式限制并提高准确性，先前的工作，如QLoRA [1] 和 HQQ+ [2]，直接在冻结的量化模型上微调了LoRA适配器。
 - en: 'It is also possible to reframe compression as a *compensation* problem: given
     a compressed model, introduce low-rank residual paths that specifically correct
     compression errors.'
   id: totrans-11
   prefs: []
   type: TYPE_NORMAL
+  zh: 也可以将压缩重新定义为*补偿*问题：给定一个压缩模型，引入低秩残差路径，专门纠正压缩误差。
 - en: 'A straightforward method uses SVD to decompose the compression error:'
   id: totrans-12
   prefs: []
   type: TYPE_NORMAL
+  zh: 一种简单的方法使用SVD分解压缩误差：
 - en: \[\Delta W_l = W_l – \hat{W}_l\]
   id: totrans-13
   prefs: []
   type: TYPE_NORMAL
+  zh: \[\Delta W_l = W_l – \hat{W}_l\]
 - en: into
   id: totrans-14
   prefs: []
   type: TYPE_NORMAL
+  zh: 转换为
 - en: \[U_l \Sigma_l V_l^T\]
   id: totrans-15
   prefs: []
