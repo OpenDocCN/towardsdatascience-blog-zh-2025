@@ -1,385 +1,570 @@
 - en: 'Understanding Flash Attention: Writing the Algorithm from Scratch in Triton'
+  id: totrans-0
   prefs:
   - PREF_H1
   type: TYPE_NORMAL
+  zh: 理解Flash Attention：在Triton中从头编写算法
 - en: 原文：[https://towardsdatascience.com/understanding-flash-attention-writing-the-algorithm-from-scratch-in-triton-5609f0b143ea/](https://towardsdatascience.com/understanding-flash-attention-writing-the-algorithm-from-scratch-in-triton-5609f0b143ea/)
+  id: totrans-1
   prefs:
   - PREF_BQ
   type: TYPE_NORMAL
+  zh: 原文：[https://towardsdatascience.com/understanding-flash-attention-writing-the-algorithm-from-scratch-in-triton-5609f0b143ea/](https://towardsdatascience.com/understanding-flash-attention-writing-the-algorithm-from-scratch-in-triton-5609f0b143ea/)
 - en: Read for free at [alexdremov.me](https://alexdremov.me/understanding-flash-attention-writing-the-algorithm-from-scratch-in-triton?utm_source=medium)
+  id: totrans-2
   prefs:
   - PREF_BQ
   type: TYPE_NORMAL
+  zh: 免费阅读[alexdremov.me](https://alexdremov.me/understanding-flash-attention-writing-the-algorithm-from-scratch-in-triton?utm_source=medium)
 - en: Flash Attention is a revolutionary technique that dramatically accelerates the
     attention mechanism in transformer-based models, delivering processing speeds
     many times faster than naive methods. By cleverly tiling data and minimizing memory
     transfers, it tackles the notorious GPU memory bottleneck that large language
     models often struggle with.
+  id: totrans-3
   prefs: []
   type: TYPE_NORMAL
+  zh: Flash Attention是一种革命性的技术，它极大地加速了基于Transformer模型的注意力机制，其处理速度比原始方法快得多倍。通过巧妙地划分数据和最小化内存传输，它解决了大型语言模型经常遇到的著名的GPU内存瓶颈问题。
 - en: In this post, we’ll dive into how Flash Attention leverages efficient *I/O-awareness*
     to reduce overhead, then take it a step further by crafting a **block-sparse attention
     kernel** in Triton.
+  id: totrans-4
   prefs: []
   type: TYPE_NORMAL
+  zh: 在这篇文章中，我们将深入探讨Flash Attention如何利用高效的*I/O感知*来减少开销，然后通过在Triton中构建一个**块稀疏注意力内核**来更进一步。
 - en: 💥 I will provide a simple explanation of how Flash Attention works. We will
     then implement the explained algorithm in Triton!
+  id: totrans-5
   prefs:
   - PREF_BQ
   type: TYPE_NORMAL
+  zh: 💥 我将提供一个关于Flash注意力如何工作的简单解释。然后，我们将将在Triton中实现所解释的算法！
 - en: What is Attention?
+  id: totrans-6
   prefs:
   - PREF_H2
   type: TYPE_NORMAL
+  zh: 什么是注意力？
 - en: The attention mechanism (or scaled dot-product attention) is a core element
     of transformer models, which is a leading architecture for solving the problem
     of language modeling. All popular models, like GPT, LLaMA, and BERT, rely on attention.
+  id: totrans-7
   prefs: []
   type: TYPE_NORMAL
+  zh: 注意力机制（或缩放点积注意力）是Transformer模型的核心元素，这是一种解决语言建模问题的领先架构。所有流行的模型，如GPT、LLaMA和BERT，都依赖于注意力。
 - en: 'The formula is pretty simple:'
+  id: totrans-8
   prefs: []
   type: TYPE_NORMAL
+  zh: 公式相当简单：
 - en: '![](../Images/568abba54eaaf8d8d6f84b9ae0a6f18f.png)'
+  id: totrans-9
   prefs: []
   type: TYPE_IMG
+  zh: '![](../Images/568abba54eaaf8d8d6f84b9ae0a6f18f.png)'
 - en: The rest is history.
+  id: totrans-10
   prefs: []
   type: TYPE_NORMAL
+  zh: 其余的都是历史。
 - en: Even though the formula looks simple, its computation involves multiplications
     of large tensors and a lot of data movement. Considering that this is a core part
     of the transformer architecture, optimizing the algorithm greatly improves the
     performance of the model in general.
+  id: totrans-11
   prefs: []
   type: TYPE_NORMAL
+  zh: 尽管公式看起来很简单，但其计算涉及大张量的乘法和大量数据移动。考虑到这是Transformer架构的核心部分，优化算法可以极大地提高模型的整体性能。
 - en: In the naive implementation, attention requires **O(n²)** additional memory
     and **O(n²)** compute time complexity, where **n** is the sequence length. **That’s
     a lot!**
+  id: totrans-12
   prefs: []
   type: TYPE_NORMAL
+  zh: 在原始实现中，注意力需要**O(n²**)额外的内存和**O(n²**)的计算时间复杂度，其中**n**是序列长度。**这太多了！**
 - en: '**Flash Attention**'
+  id: totrans-13
   prefs:
   - PREF_H2
   type: TYPE_NORMAL
+  zh: '**Flash Attention**'
 - en: '**Core Idea**'
+  id: totrans-14
   prefs:
   - PREF_H3
   type: TYPE_NORMAL
+  zh: '**核心思想**'
 - en: 'The main idea of Flash attention can be summarized in a simple quote from [the
     original paper](https://arxiv.org/pdf/2205.14135?ref=alexdremov.me):'
+  id: totrans-15
   prefs: []
   type: TYPE_NORMAL
+  zh: Flash注意力（Flash Attention）的主要思想可以用[原始论文](https://arxiv.org/pdf/2205.14135?ref=alexdremov.me)中的一句话来概括：
 - en: We argue that a missing principle is making attention algorithms IO-aware –
     accounting for reads and writes between levels of GPU memory.
+  id: totrans-16
   prefs:
   - PREF_BQ
   type: TYPE_NORMAL
+  zh: 我们认为，一个缺失的原则是使注意力算法具有I/O感知性——考虑到GPU内存层级之间的读写操作。
 - en: 'That is, modern GPUs have several types of memory:'
+  id: totrans-17
   prefs: []
   type: TYPE_NORMAL
+  zh: 也就是说，现代GPU有几种类型的内存：
 - en: '**SRAM** – fast, on-chip, small'
+  id: totrans-18
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: '**SRAM** – 快速，片上，小'
 - en: '**HBM –** slower than SRAM, large size. That’s what we usually address as GPU
     memory.'
+  id: totrans-19
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: '**HBM –** 比SRAM慢，体积大。这就是我们通常所说的GPU内存。'
 - en: Check out the memory hierarchy in the image below to see the differences in
     bandwidth and sizes of different memory types.
+  id: totrans-20
   prefs: []
   type: TYPE_NORMAL
+  zh: 查看下面的图像以了解不同内存类型的带宽和大小差异。
 - en: '![Image from FlashAttention: Fast and Memory-Efficient Exact Attention with
     IO-Awareness by Tri Dao et al.](../Images/465d679c122c059d74a6fd1d7c1a04a4.png)'
+  id: totrans-21
   prefs: []
   type: TYPE_IMG
+  zh: '![Image from FlashAttention: Fast and Memory-Efficient Exact Attention with
+    IO-Awareness by Tri Dao et al.](../Images/465d679c122c059d74a6fd1d7c1a04a4.png)'
 - en: 'Image from FlashAttention: Fast and Memory-Efficient Exact Attention with IO-Awareness
     by Tri Dao et al.'
+  id: totrans-22
   prefs: []
   type: TYPE_NORMAL
+  zh: 'Image from FlashAttention: Fast and Memory-Efficient Exact Attention with IO-Awareness
+    by Tri Dao et al.'
 - en: 💡 To conduct computation, data must be transferred from HBM to SRAM, and this
     transfer is not overhead-free!
+  id: totrans-23
   prefs:
   - PREF_BQ
   type: TYPE_NORMAL
+  zh: 💡 为了进行计算，数据必须从HBM传输到SRAM，而这种传输并不是没有开销的！
 - en: 'The Flash Attention algorithm proposes a method of **computing attention in
     tiles**, without explicitly materializing the attention scores tensor:'
+  id: totrans-24
   prefs: []
   type: TYPE_NORMAL
+  zh: Flash Attention 算法提出了一种**在瓦片中计算注意力**的方法，而不需要显式地实现注意力分数张量：
 - en: '![](../Images/9b4d492b14be6c8cef5db7fffcc8e2c9.png)'
+  id: totrans-25
   prefs: []
   type: TYPE_IMG
+  zh: '![](../Images/9b4d492b14be6c8cef5db7fffcc8e2c9.png)'
 - en: 💥 **Not materializing a matrix** means that at any given time, the matrix does
     not exist in its full shape in memory.
+  id: totrans-26
   prefs:
   - PREF_BQ
   type: TYPE_NORMAL
+  zh: 💥 **不实现矩阵**意味着在任何给定时间，矩阵都没有在内存中以完整形状存在。
 - en: It’s easy to see that this matrix requires **O(n²)** of memory to store. For
     large sequence lengths, **that’s a lot of data!** So, if we manage to avoid explicitly
     materializing this matrix, we can save lots of memory.
+  id: totrans-27
   prefs: []
   type: TYPE_NORMAL
+  zh: 很容易看出，这个矩阵需要 **O(n²)** 的内存来存储。对于长的序列，**那将是非常多的数据**！所以，如果我们能够避免显式地实现这个矩阵，我们可以节省大量的内存。
 - en: However, this matrix is necessary for transformer training as it is a part of
     backpropagation and gradient calculation. The authors propose that it’s better
     to recalculate this matrix during the backward pass (again without explicit materialization).
     Not only does this saves lots of memory, but it also provides huge speedups as
     we don’t need to transfer this enormous matrix between different GPU memory types.
+  id: totrans-28
   prefs: []
   type: TYPE_NORMAL
+  zh: 然而，这个矩阵对于 transformer 训练是必要的，因为它是反向传播和梯度计算的一部分。作者提出，在反向传播期间重新计算这个矩阵会更好（再次不显式实现）。这不仅节省了大量内存，而且提供了巨大的速度提升，因为我们不需要在不同
+    GPU 内存类型之间传输这个巨大的矩阵。
 - en: Overall, such an approach did not only speed up calculations by taking GPU I/O
     specifics into account, but also allowed processing huge sequence lengths as memory
     complexity drops to **O(n)**.
+  id: totrans-29
   prefs: []
   type: TYPE_NORMAL
+  zh: 总体而言，这种方法不仅通过考虑 GPU I/O 特性来加速计算，而且还允许处理巨大的序列长度，因为内存复杂度降低到 **O(n)**。
 - en: Tiled Attention Calculation
+  id: totrans-30
   prefs:
   - PREF_H3
   type: TYPE_NORMAL
+  zh: 瓦片注意力计算
 - en: The last thing to understand is how to compute attention **in tiles**. Basically,
     this means that we will calculate attention over the full sequence by processing
     incoming tokens in small portions.
+  id: totrans-31
   prefs: []
   type: TYPE_NORMAL
+  zh: 最后要理解的是如何**在瓦片中**计算注意力。基本上，这意味着我们将通过处理传入的标记的小部分来计算整个序列的注意力。
 - en: Well, it’s easy to calculate **QK^T** in tiles. Considering that attention dimension
     is not high, we can load full matrix rows and columns and conduct multiplication
     in tiles.
+  id: totrans-32
   prefs: []
   type: TYPE_NORMAL
+  zh: 好吧，计算 **QK^T** 在瓦片中是很简单的。考虑到注意力维度不高，我们可以加载完整的矩阵行和列，并在瓦片中进行乘法运算。
 - en: 😡 Yes, if we want to have an enormous attention dimension, Flash Attention will
     not work without algorithm modifications.
+  id: totrans-33
   prefs:
   - PREF_BQ
   type: TYPE_NORMAL
+  zh: 😡 是的，如果我们想要一个巨大的注意力维度，没有算法修改，Flash Attention 将无法工作。
 - en: As dimensions are usually quite small even for enormous models, this limitation
     is fair.
+  id: totrans-34
   prefs: []
   type: TYPE_NORMAL
+  zh: 由于维度通常很小，即使是对于巨大的模型，这种限制也是合理的。
 - en: '![Tiled QK^T | Image by the author](../Images/7ba9ca6f82a416f46eeeee1bcf38178d.png)'
+  id: totrans-35
   prefs: []
   type: TYPE_IMG
+  zh: '![瓦片 QK^T | 图片由作者提供](../Images/7ba9ca6f82a416f46eeeee1bcf38178d.png)'
 - en: Tiled QK^T | Image by the author
+  id: totrans-36
   prefs: []
   type: TYPE_NORMAL
+  zh: 瓦片 QK^T | 图片由作者提供
 - en: So, we have **QK^T** calculated in SRAM. All that’s left is to apply softmax,
     multiply by **V**, and that’s it!
+  id: totrans-37
   prefs: []
   type: TYPE_NORMAL
+  zh: 因此，我们在 SRAM 中计算了 **QK^T**。剩下的只是应用 softmax，乘以 **V**，就完成了！
 - en: '![](../Images/f5359b6ef738dac38cd587e0f4ea2eaf.png)'
+  id: totrans-38
   prefs: []
   type: TYPE_IMG
+  zh: '![](../Images/f5359b6ef738dac38cd587e0f4ea2eaf.png)'
 - en: That’s where the trick is.
+  id: totrans-39
   prefs: []
   type: TYPE_NORMAL
+  zh: 那就是技巧所在。
 - en: The problem is that the softmax denominator requires aggregation over the sequence
     length to normalize scores, and we do not have access to the whole length as we
     load data in tiles.
+  id: totrans-40
   prefs: []
   type: TYPE_NORMAL
+  zh: 问题在于 softmax 分母需要聚合整个序列长度以归一化分数，而我们无法访问整个长度，因为我们以瓦片的形式加载数据。
 - en: 'To address it, we can implement a concatenated softmax algorithm. Using it,
     we can calculate softmax "in batch" mode: by adjusting computed values with the
     new incoming data.'
+  id: totrans-41
   prefs: []
   type: TYPE_NORMAL
+  zh: 为了解决这个问题，我们可以实现一个连接 softmax 算法。使用它，我们可以以“批量”模式计算 softmax：通过调整计算值与新的传入数据。
 - en: 'Taking the algorithm from the original article, we can define rules to compute
     the softmax over data concatenation. Having two vectors **x1** and **x2**, we
     need to calculate the softmax denominator **l(x)** over those vectors’ concatenation
     **[x1, x2]**. If the vector’s maximum is **m(x)**, we can easily derive the softmax
     denominator of the concatenation:'
+  id: totrans-42
   prefs: []
   type: TYPE_NORMAL
+  zh: 从原始文章中提取算法，我们可以定义规则来计算数据连接的 softmax。有两个向量 **x1** 和 **x2**，我们需要计算这些向量连接 **[x1,
+    x2]** 上的 softmax 分母 **l(x)**。如果向量的最大值是 **m(x)**，我们可以很容易地推导出连接的 softmax 分母：
 - en: '![](../Images/253f0901a46f6e1a72edd795432385f1.png)![](../Images/e15b8a29e6bc73c128bf035ea3d92ab0.png)'
+  id: totrans-43
   prefs: []
   type: TYPE_IMG
+  zh: '![](../Images/253f0901a46f6e1a72edd795432385f1.png)![](../Images/e15b8a29e6bc73c128bf035ea3d92ab0.png)'
 - en: The last equivalence can be easily verified as
+  id: totrans-44
   prefs: []
   type: TYPE_NORMAL
+  zh: 最后的等价性可以很容易地验证为
 - en: '![](../Images/ebc9456a6c92bc7855aefd200a49e1c4.png)'
+  id: totrans-45
   prefs: []
   type: TYPE_IMG
+  zh: '![](../Images/ebc9456a6c92bc7855aefd200a49e1c4.png)'
 - en: So, now we have what we want – we can calculate softmax per-tile and then, by
     doing re-normalization from the formula above, compute the global softmax. The
     last thing to do is to incorporate the tile of the **V** tensor and keep doing
     the same re-normalization (as matrix multiplication is a linear operation).
+  id: totrans-46
   prefs: []
   type: TYPE_NORMAL
+  zh: 因此，现在我们得到了我们想要的东西——我们可以按块计算 softmax，然后通过执行上述公式的重新归一化来计算全局 softmax。最后要做的就是将 **V**
+    张量的块纳入其中，并继续进行相同的重新归一化（因为矩阵乘法是一个线性操作）。
 - en: And all of this without loading the full sequence into memory or materializing
     **QK^T**!
+  id: totrans-47
   prefs: []
   type: TYPE_NORMAL
+  zh: 而这一切都不需要将整个序列加载到内存中或具体化 **QK^T**！
 - en: 💥 Notice that we calculate **Softmax(QK^T)** in tiles only, without needing
     to have the whole matrix at any moment.
+  id: totrans-48
   prefs:
   - PREF_BQ
   type: TYPE_NORMAL
+  zh: 💥 注意，我们仅在块中计算 **Softmax(QK^T)**，无需在任何时刻拥有整个矩阵。
 - en: Also, in the actual algorithm for numerical stability, we will compute not **Softmax(x)**
     but **Softmax(x – max(x))**. We can do that as softmax is invariant to constant
     shifts.
+  id: totrans-49
   prefs: []
   type: TYPE_NORMAL
+  zh: 此外，在实际算法中，为了数值稳定性，我们将计算的不是 **Softmax(x)**，而是 **Softmax(x – max(x))**。我们可以这样做，因为
+    softmax 对常数平移是不变的。
 - en: Triton Implementation
+  id: totrans-50
   prefs:
   - PREF_H2
   type: TYPE_NORMAL
+  zh: Triton 实现
 - en: Now, we can easily implement the outlined algorithm in Triton, which is a tool
     that allows us to write efficient GPU kernels with the ease of Python.
+  id: totrans-51
   prefs: []
   type: TYPE_NORMAL
+  zh: 现在，我们可以在 Triton 中轻松实现概述的算法，Triton 是一个允许我们用 Python 的便捷性编写高效 GPU 内核的工具。
 - en: 💡 To learn more about Triton, check out their official guides.
+  id: totrans-52
   prefs:
   - PREF_BQ
   type: TYPE_NORMAL
+  zh: 💡 要了解更多关于 Triton 的信息，请查看他们的官方指南。
 - en: ''
+  id: totrans-53
   prefs:
   - PREF_BQ
   type: TYPE_NORMAL
 - en: '[**Tutorials – Triton documentation**](https://triton-lang.org/main/getting-started/tutorials/index.html?ref=alexdremov.me)'
+  id: totrans-54
   prefs:
   - PREF_BQ
   type: TYPE_NORMAL
+  zh: '[**教程 – Triton 文档**](https://triton-lang.org/main/getting-started/tutorials/index.html?ref=alexdremov.me)'
 - en: Outlining the Algorithm
+  id: totrans-55
   prefs:
   - PREF_H3
   type: TYPE_NORMAL
+  zh: 算法概述
 - en: The first step is to decide how we will assign jobs and what data each job will
     load. By the algorithm of tiled softmax, each job must have access to **K, V**
     over the whole sequence length. So, each job will iterate over **K, V** in tiles.
     We don’t have any algorithmic restriction on the number of **Q** tiles processed.
     Therefore, each job will load just one **Q** tile and work with it only – this
     way we will maximize job parallelism.
+  id: totrans-56
   prefs: []
   type: TYPE_NORMAL
+  zh: 第一步是决定我们将如何分配作业以及每个作业将加载什么数据。根据分块 softmax 算法，每个作业必须能够访问整个序列长度的 **K, V**。因此，每个作业将按块遍历
+    **K, V**。我们没有对 **Q** 块处理数量的算法限制。因此，每个作业将只加载一个 **Q** 块并仅与它一起工作——这样我们就可以最大化作业并行性。
 - en: '![Kernel jobs data management | Image by the author](../Images/c65237ed01b4a8de4c3c3d288b10fee7.png)'
+  id: totrans-57
   prefs: []
   type: TYPE_IMG
+  zh: '![内核作业数据管理 | 图片由作者提供](../Images/c65237ed01b4a8de4c3c3d288b10fee7.png)'
 - en: Kernel jobs data management | Image by the author
+  id: totrans-58
   prefs: []
   type: TYPE_NORMAL
+  zh: 内核作业数据管理 | 图片由作者提供
 - en: In summary, each job will load a single **Q** tile, iterate over all tiles in
     **K** and **V**, and store one tile of result corresponding to the **Q** tile.
+  id: totrans-59
   prefs: []
   type: TYPE_NORMAL
+  zh: 总结来说，每个作业将加载一个单独的 **Q** 块，遍历 **K** 和 **V** 中的所有块，并存储一个与 **Q** 块对应的输出块。
 - en: The Kernel
+  id: totrans-60
   prefs:
   - PREF_H3
   type: TYPE_NORMAL
+  zh: 内核
 - en: What’s left is to write the actual code. Let’s focus on the core part first,
     and only then we’ll add Triton-specific boilerplates.
+  id: totrans-61
   prefs: []
   type: TYPE_NORMAL
+  zh: 剩下的就是编写实际的代码了。让我们先关注核心部分，然后再添加 Triton 特定的模板。
 - en: Below is a Triton pseudocode with every line explained.
+  id: totrans-62
   prefs: []
   type: TYPE_NORMAL
+  zh: 下面是一段带有每行解释的 Triton 伪代码。
 - en: See? Easy!
+  id: totrans-63
   prefs: []
   type: TYPE_NORMAL
+  zh: 看见了吗？很简单！
 - en: What’s important is that you can see how simple it is to write such a thing
     as soon as we understand the idea of tiled softmax. Apart from that, there’s nothing
     complicated from the algorithm perspective.
+  id: totrans-64
   prefs: []
   type: TYPE_NORMAL
+  zh: 重要的是，您可以看到一旦我们理解了分块 softmax 的概念，编写这样的事情是多么简单。除此之外，从算法角度来看，没有什么是复杂的。
 - en: 💥 This kernel can be made even faster by implementing triton optimizations.
     However, this is out of the scope of this article.
+  id: totrans-65
   prefs:
   - PREF_BQ
   type: TYPE_NORMAL
+  zh: 💥 通过实现 triton 优化，这个核函数可以更快。然而，这超出了本文的范围。
 - en: This pseudocode is pretty close to the actual code. You may find it in my GitHub
     by following the link. All that I added is just data management and PyTorch wrappers.
+  id: totrans-66
   prefs: []
   type: TYPE_NORMAL
+  zh: 这段伪代码与实际代码非常接近。您可以通过以下链接在我的 GitHub 上找到它。我添加的只是数据管理和 PyTorch 包装器。
 - en: '[**kernels/src/self_attention/kernel.py at main · alexdremov/kernels**](https://github.com/alexdremov/kernels/blob/main/src/self_attention/kernel.py)'
+  id: totrans-67
   prefs:
   - PREF_BQ
   type: TYPE_NORMAL
+  zh: '[**kernels/src/self_attention/kernel.py at main · alexdremov/kernels**](https://github.com/alexdremov/kernels/blob/main/src/self_attention/kernel.py)'
 - en: ''
+  id: totrans-68
   prefs:
   - PREF_BQ
   type: TYPE_NORMAL
 - en: ❗Don’t hesitate to ask if something isn’t clear. I’m here in the comments 😁
     .
+  id: totrans-69
   prefs:
   - PREF_BQ
   type: TYPE_NORMAL
+  zh: ❗ 如果有什么不清楚的地方，请随时提问。我在评论里 😁。
 - en: The code above [was extensively tested](https://github.com/alexdremov/kernels/blob/main/tests/test_self_attention.py?ref=alexdremov.me)
     to match PyTorch’s `scaled_dot_product_attention`. You can also check out the
     tests to see how to use the written kernel.
+  id: totrans-70
   prefs: []
   type: TYPE_NORMAL
+  zh: 上面的代码[经过广泛测试](https://github.com/alexdremov/kernels/blob/main/tests/test_self_attention.py?ref=alexdremov.me)以匹配
+    PyTorch 的 `scaled_dot_product_attention`。您也可以查看测试以了解如何使用编写的内核。
 - en: Benchmarking
+  id: totrans-71
   prefs:
   - PREF_H2
   type: TYPE_NORMAL
+  zh: 基准测试
 - en: While we wrote the kernel in Triton to improve the algorithm understanding,
     it’s interesting to compare the performance with a naive implementation and PyTorch’s
     `scaled_dot_product_attention`.
+  id: totrans-72
   prefs: []
   type: TYPE_NORMAL
+  zh: 虽然我们编写了 Triton 中的内核来提高算法理解，但将性能与原始实现和 PyTorch 的 `scaled_dot_product_attention`
+    进行比较很有趣。
 - en: '![Benchmarking implementations for different sequence lengths | Image by the
     author](../Images/eb53b5011b54b3046455c88e16f202bd.png)'
+  id: totrans-73
   prefs: []
   type: TYPE_IMG
+  zh: '![不同序列长度的基准实现 | 图片由作者提供](../Images/eb53b5011b54b3046455c88e16f202bd.png)'
 - en: Benchmarking implementations for different sequence lengths | Image by the author
+  id: totrans-74
   prefs: []
   type: TYPE_NORMAL
+  zh: 不同序列长度的基准实现 | 图片由作者提供
 - en: As expected, the Flash Attention algorithm completely outperforms the naive
     implementation performance-wise. Also, I’ve marked with a dashed line the range
     of lengths for which the naive implementation causes a CUDA out-of-memory error.
+  id: totrans-75
   prefs: []
   type: TYPE_NORMAL
+  zh: 如预期的那样，Flash Attention 算法在性能上完全优于原始实现。同时，我用虚线标记了导致原始实现出现 CUDA 内存不足错误的长度范围。
 - en: We see that our Triton implementation is slightly worse than PyTorch SDPA. But
     the difference is not too large Considering the fact that PyTorch SDPA is a well-optimized
     CUDA kernel, that’s a nice result.
+  id: totrans-76
   prefs: []
   type: TYPE_NORMAL
+  zh: 我们看到，我们的 Triton 实现略逊于 PyTorch SDPA。但差距并不大。考虑到 PyTorch SDPA 是一个经过良好优化的 CUDA 内核，这是一个不错的结果。
 - en: Benchmarking code is also available in the repository.
+  id: totrans-77
   prefs: []
   type: TYPE_NORMAL
+  zh: 基准测试代码也存放在仓库中。
 - en: '[**kernels/benchmark/benchmark_self_attention.py at main · alexdremov/kernels**](https://github.com/alexdremov/kernels/blob/main/benchmark/benchmark_self_attention.py)'
+  id: totrans-78
   prefs:
   - PREF_BQ
   type: TYPE_NORMAL
+  zh: '[**kernels/benchmark/benchmark_self_attention.py 在 main · alexdremov/kernels**](https://github.com/alexdremov/kernels/blob/main/benchmark/benchmark_self_attention.py)'
 - en: ''
+  id: totrans-79
   prefs:
   - PREF_BQ
   type: TYPE_NORMAL
 - en: This story was originally published on [alexdremov.me](https://alexdremov.me/understanding-flash-attention-writing-the-algorithm-from-scratch-in-triton?utm_source=medium)
     Check it out! (at least, TEX looks better there)
+  id: totrans-80
   prefs:
   - PREF_BQ
   type: TYPE_NORMAL
+  zh: 这个故事最初发表在 [alexdremov.me](https://alexdremov.me/understanding-flash-attention-writing-the-algorithm-from-scratch-in-triton?utm_source=medium)
+    上。去看看吧！（至少，那里的 TEX 看起来更好）
 - en: Conclusions
+  id: totrans-81
   prefs:
   - PREF_H2
   type: TYPE_NORMAL
+  zh: 结论
 - en: In the post, I covered the motivation of the Flash Attention algorithm as well
     as its algorithm details. Finally, we were able to implement it from scratch in
     Triton, reproducing the speedups from the paper.
+  id: totrans-82
   prefs: []
   type: TYPE_NORMAL
+  zh: 在这篇文章中，我介绍了 Flash Attention 算法的动机以及其算法细节。最后，我们成功地在 Triton 中从头开始实现了它，重现了论文中的速度提升。
 - en: I hope this post improved your understanding of Flash Attention. Feel free to
     leave a comment below if you have any questions.
+  id: totrans-83
   prefs: []
   type: TYPE_NORMAL
+  zh: 我希望这篇文章提高了您对 Flash Attention 的理解。如果您有任何问题，请随时在下面留言。
 - en: References
+  id: totrans-84
   prefs:
   - PREF_H2
   type: TYPE_NORMAL
+  zh: 参考文献
 - en: '[**FlashAttention: Fast and Memory-Efficient Exact Attention with IO-Awareness**](https://arxiv.org/abs/2205.14135?ref=alexdremov.me)'
+  id: totrans-85
   prefs:
   - PREF_BQ
   type: TYPE_NORMAL
+  zh: '[**FlashAttention：具有 I/O 感知的快速且内存高效的精确注意力**](https://arxiv.org/abs/2205.14135?ref=alexdremov.me)'
 - en: ''
+  id: totrans-86
   prefs:
   - PREF_BQ
   type: TYPE_NORMAL
 - en: '[**Tutorials – Triton documentation**](https://triton-lang.org/main/getting-started/tutorials/index.html?ref=alexdremov.me)'
+  id: totrans-87
   prefs:
   - PREF_BQ
   type: TYPE_NORMAL
+  zh: '[**教程 – Triton 文档**](https://triton-lang.org/main/getting-started/tutorials/index.html?ref=alexdremov.me)'
 - en: ''
+  id: totrans-88
   prefs:
   - PREF_BQ
   type: TYPE_NORMAL
 - en: '[**GitHub – alexdremov/kernels: Collection of useful kernels**](https://github.com/alexdremov/kernels/tree/main?ref=alexdremov.me)'
+  id: totrans-89
   prefs:
   - PREF_BQ
   type: TYPE_NORMAL
+  zh: '[**GitHub – alexdremov/kernels：有用的内核集合**](https://github.com/alexdremov/kernels/tree/main?ref=alexdremov.me)'
