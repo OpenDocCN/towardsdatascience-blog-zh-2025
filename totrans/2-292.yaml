@@ -1,130 +1,184 @@
 - en: 'LLM Optimization: LoRA and QLoRA'
+  id: totrans-0
   prefs:
   - PREF_H1
   type: TYPE_NORMAL
+  zh: LLM优化：LoRA和QLoRA
 - en: 原文：[https://towardsdatascience.com/llm-optimization-lora-and-qlora/](https://towardsdatascience.com/llm-optimization-lora-and-qlora/)
+  id: totrans-1
   prefs:
   - PREF_BQ
   type: TYPE_NORMAL
+  zh: 原文：[https://towardsdatascience.com/llm-optimization-lora-and-qlora/](https://towardsdatascience.com/llm-optimization-lora-and-qlora/)
 - en: <mdspan datatext="el1748630563997" class="mdspan-comment">Introduction</mdspan>
+  id: totrans-2
   prefs:
   - PREF_H3
   type: TYPE_NORMAL
+  zh: <mdspan datatext="el1748630563997" class="mdspan-comment">简介</mdspan>
 - en: With the appearance of ChatGPT, the world recognized the powerful potential
     of large language models, which can understand natural language and respond to
     user requests with high accuracy. In the abbreviation of LLM, the first letter **L**
     stands for **Large**, reflecting the massive number of parameters these models
     typically have.
+  id: totrans-3
   prefs: []
   type: TYPE_NORMAL
+  zh: 随着ChatGPT的出现，世界认识到了大型语言模型的强大潜力，这些模型能够理解自然语言并以高精度响应用户请求。在LLM的缩写中，第一个字母**L**代表**大型**，反映了这些模型通常具有的庞大参数数量。
 - en: Modern LLMs often contain over a billion parameters. Now, imagine a situation
     where we want to adapt an LLM to a downstream task. A common approach consists
     of **fine-tuning**, which involves adjusting the model’s existing weights on a
     new dataset. However, this process is extremely slow and resource-intensive — especially
     when run on a local machine with limited hardware.
+  id: totrans-4
   prefs: []
   type: TYPE_NORMAL
+  zh: 现代大型语言模型（LLM）通常包含超过十亿个参数。现在，想象一下我们想要将一个LLM适配到下游任务的情况。一个常见的方法是**微调**，这涉及到在新数据集上调整模型现有的权重。然而，这个过程非常缓慢且资源密集——尤其是在有限的硬件上运行时。
 - en: '![](../Images/2b35acac01d17cfcf279d6dac60ecc81.png)'
+  id: totrans-5
   prefs: []
   type: TYPE_IMG
+  zh: '![图片](../Images/2b35acac01d17cfcf279d6dac60ecc81.png)'
 - en: Number of parameters of some of the largest language models trained in recent
     years.
+  id: totrans-6
   prefs: []
   type: TYPE_NORMAL
+  zh: 近年来训练的一些最大语言模型的参数数量。
 - en: '*During fine-tuning, some neural network layers can be frozen to reduce training
     complexity, this approach still falls short at scale due to high computational
     costs.*'
+  id: totrans-7
   prefs:
   - PREF_BQ
   type: TYPE_NORMAL
+  zh: '*在微调期间，一些神经网络层可以被冻结以减少训练复杂性，但由于计算成本高，这种方法在规模上仍然不足。*'
 - en: To address this challenge, in this article we’ll explore the core principles
     of **LoRA (Low-Rank Adaptation)**, a popular technique for reducing the computational
     load during fine-tuning of large models. As a bonus, we’ll also take a look at
     QLoRA, which builds on LoRA by incorporating quantization to further enhance efficiency.
+  id: totrans-8
   prefs: []
   type: TYPE_NORMAL
+  zh: 为了应对这一挑战，在这篇文章中，我们将探讨**LoRA（低秩适配）**的核心原则，这是一种在大型模型微调期间减少计算负载的流行技术。作为额外内容，我们还将了解QLoRA，它通过引入量化进一步提高了效率。
 - en: Neural network representation
+  id: totrans-9
   prefs:
   - PREF_H3
   type: TYPE_NORMAL
+  zh: 神经网络表示
 - en: Let us take a fully connected neural network. Each of its layers consists of *n* neurons
     fully connected to *m* neurons from the following layer. In total, there are *n *⋅ *m* connections
     that can be represented as a matrix with the respective dimensions.
+  id: totrans-10
   prefs: []
   type: TYPE_NORMAL
+  zh: 让我们以一个全连接神经网络为例。它的每一层都由*n*个神经元组成，这些神经元与下一层的*m*个神经元完全连接。总共有*n *⋅ *m*个连接，可以用相应维度的矩阵表示。
 - en: '![](../Images/437c338225de1e7584c5eeae9f1e3b1b.png)'
+  id: totrans-11
   prefs: []
   type: TYPE_IMG
+  zh: '![图片](../Images/437c338225de1e7584c5eeae9f1e3b1b.png)'
 - en: An example showing a fully connected neural network layer whose weights can
     be represented in the matrix form.
+  id: totrans-12
   prefs: []
   type: TYPE_NORMAL
+  zh: 一个展示全连接神经网络层其权重可以用矩阵形式表示的例子。
 - en: When a new input is passed to a layer, all we have to do is to perform matrix
     multiplication between the weight matrix and the input vector. In practice, this
     operation is highly optimized using advanced linear algebra libraries and often
     performed on entire batches of inputs simultaneously to speed up computation.
+  id: totrans-13
   prefs: []
   type: TYPE_NORMAL
+  zh: 当一个新输入传递给一个层时，我们只需执行权重矩阵和输入向量的矩阵乘法。在实践中，这个操作通过高级线性代数库高度优化，并且通常在整个输入批次上同时执行以加快计算速度。
 - en: Multiplication trick
+  id: totrans-14
   prefs:
   - PREF_H3
   type: TYPE_NORMAL
+  zh: 乘法技巧
 - en: The weight matrix in a neural network can have extremely large dimensions. **Instead
     of storing and updating the full matrix, we can factorize it into the product
     of two smaller matrices**. Specifically, if a weight matrix has dimensions *n
     × m*, we can approximate it using two matrices of sizes *n × k* and *k × m*, where *k* is
     a much smaller intrinsic dimension (*k << n, m*).
+  id: totrans-15
   prefs: []
   type: TYPE_NORMAL
+  zh: 神经网络中的权重矩阵可以具有极其大的维度。**而不是存储和更新整个矩阵，我们可以将其分解为两个较小矩阵的乘积**。具体来说，如果一个权重矩阵的维度是*n
+    × m*，我们可以使用两个大小为*n × k*和*k × m*的矩阵来近似它，其中*k*是一个远小于内在维度的值（*k << n, m*）。
 - en: 'For instance, suppose the original weight matrix is *8192 × 8192*, which corresponds
     to roughly *67M* parameters. If we choose *k = 8*, the factorized version will
     consist of two matrices: one of size *8192 × 8* and the other *8 × 8192*. Together,
     they contain only about *131K* parameters — more than 500 times fewer than the
     original, drastically reducing memory and compute requirements.'
+  id: totrans-16
   prefs: []
   type: TYPE_NORMAL
+  zh: 例如，假设原始权重矩阵是*8192 × 8192*，这大约对应于*67M*个参数。如果我们选择**k = 8**，分解版本将包括两个矩阵：一个大小为*8192
+    × 8*，另一个大小为*8 × 8192*。总共，它们只包含大约*131K*个参数——比原始的少500多倍，大大减少了内存和计算需求。
 - en: '![](../Images/20aa37839034f9917ceb7122284d4dbf.png)'
+  id: totrans-17
   prefs: []
   type: TYPE_IMG
+  zh: '![](../Images/20aa37839034f9917ceb7122284d4dbf.png)'
 - en: A large matrix can be approximately represented as a multiplication of two smaller
     matrices.
+  id: totrans-18
   prefs: []
   type: TYPE_NORMAL
+  zh: 一个大矩阵可以近似表示为两个较小矩阵的乘积。
 - en: '**The obvious downside of using smaller matrices to approximate a larger one
     is the potential loss in precision**. When we multiply the smaller matrices to
     reconstruct the original, the resulting values will not exactly match the original
     matrix elements. This trade-off is the price we pay for significantly reducing
     memory and computational demands.'
+  id: totrans-19
   prefs: []
   type: TYPE_NORMAL
+  zh: '**使用较小的矩阵来近似较大的矩阵的明显缺点是可能损失精度**。当我们用较小的矩阵相乘以重建原始矩阵时，得到的结果将不会与原始矩阵的元素完全匹配。这种权衡是我们为了显著减少内存和计算需求所付出的代价。'
 - en: '*However, even with a small value like k = 8, it is often possible to approximate
     the original matrix with minimal loss in accuracy. In fact, in practice, even
     values as low as k = 2 or k = 4 can be sometimes used effectively.*'
+  id: totrans-20
   prefs:
   - PREF_BQ
   type: TYPE_NORMAL
+  zh: '*然而，即使像**k = 8**这样的小值，也常常可以以最小的精度损失来近似原始矩阵。事实上，在实践中，有时甚至可以使用**k = 2**或**k =
+    4**这样的低值有效地使用。*'
 - en: LoRA
+  id: totrans-21
   prefs:
   - PREF_H3
   type: TYPE_NORMAL
+  zh: LoRA
 - en: The idea described in the previous section perfectly illustrates the core concept
     of LoRA. **LoRA** stands for **Low-Rank Adaptation**, where the term low-rank
     refers to the technique of **approximating a large weight matrix by factorizing
     it into the product of two smaller matrices with a much lower rank *k***. This
     approach significantly reduces the number of trainable parameters while preserving
     most of the model’s power.
+  id: totrans-22
   prefs: []
   type: TYPE_NORMAL
+  zh: 上节所述的思想完美地阐述了LoRA的核心概念。**LoRA**代表**低秩自适应**，其中“低秩”指的是通过将大权重矩阵分解为两个较小矩阵的乘积，这两个矩阵的秩**k**要低得多**。这种方法显著减少了可训练参数的数量，同时保留了模型的大部分能力。
 - en: Training
+  id: totrans-23
   prefs:
   - PREF_H4
   type: TYPE_NORMAL
+  zh: 训练
 - en: Let us assume we have an input vector ***x*** passed to a fully connected layer
     in a neural network, which before fine-tuning, is represented by a weight matrix ***W***.
     To compute the output vector ***y***, we simply multiply the matrix by the input: ***y
     = Wx***.
+  id: totrans-24
   prefs: []
   type: TYPE_NORMAL
+  zh: 假设我们有一个输入向量**x**传递给神经网络中的一个全连接层，在微调之前，它由权重矩阵**W**表示。为了计算输出向量**y**，我们只需将矩阵乘以输入：**y
+    = Wx**。
 - en: During fine-tuning, the goal is to adjust the model for a downstream task by
     modifying the weights. This can be expressed as learning an additional matrix ***ΔW***,
     such that: ***y = (W + ΔW)x = Wx + ΔWx***. As we saw the multiplication trick
@@ -132,250 +186,361 @@
     get: ***y = Wx + BAx***. As a result, we freeze the matrix ***W***and solve the
     optimization task to find matrices ***A*** and ***B*** that totally contain much
     less parameters than ***ΔW***!
+  id: totrans-25
   prefs: []
   type: TYPE_NORMAL
+  zh: 在微调过程中，目标是通过对权重进行调整来为下游任务调整模型。这可以表示为学习一个额外的矩阵**ΔW**，使得：**y = (W + ΔW)x = Wx
+    + ΔWx**。正如我们上面看到的乘法技巧，我们现在可以用乘法**BA**来替换**ΔW**，所以我们最终得到：**y = Wx + BAx**。因此，我们冻结矩阵**W**并解决优化任务以找到矩阵**A**和**B**，它们总共包含的参数比**ΔW**少得多！
 - en: However, direct calculation of multiplication ***(BA)x*** during each forward
     pass is very slow due to the the fact that matrix multiplication ***BA*** is a
     heavy operation. To avoid this, we can leverage associative property of matrix
     multiplication and rewrite the operation as ***B(Ax)***. The multiplication of ***A ***by ***x*** results
     in a vector that will be then multiplied by ***B*** which also ultimately produces
     a vector. This sequence of operations is much faster.
+  id: totrans-26
   prefs: []
   type: TYPE_NORMAL
+  zh: 然而，由于矩阵乘法**BA**是一个重操作，因此在每次前向传递中直接计算乘法***(BA)x***非常慢。为了避免这种情况，我们可以利用矩阵乘法的结合性质，并将操作重写为**B(Ax)**。**A**乘以**x**的结果是一个向量，然后将被乘以**B**，这最终也会产生一个向量。这个操作序列要快得多。
 - en: '![](../Images/8e9a793b8ef7bba8ed865c164166989f.png)'
+  id: totrans-27
   prefs: []
   type: TYPE_IMG
+  zh: '![](../Images/8e9a793b8ef7bba8ed865c164166989f.png)'
 - en: LoRA’s training process
+  id: totrans-28
   prefs: []
   type: TYPE_NORMAL
+  zh: LoRA的训练过程
 - en: 'In terms of backpropagation, LoRA also offers several benefits. Despite the
     fact that a gradient for a single neuron still takes nearly the same amount of
     operations, we now deal with much fewer parameters in our network, which means:'
+  id: totrans-29
   prefs: []
   type: TYPE_NORMAL
+  zh: 在反向传播方面，LoRA也提供了几个好处。尽管单个神经元的梯度仍然需要几乎相同数量的操作，但我们现在处理网络中的参数要少得多，这意味着：
 - en: we need to compute far fewer gradients for ***A*** and ***B*** than would originally
     have been required for ***W***.
+  id: totrans-30
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: 我们需要为***A***和***B***计算远少于原本为***W***所需的梯度。
 - en: we no longer need to store a giant matrix of gradients for ***W***.
+  id: totrans-31
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: 我们不再需要存储一个巨大的梯度矩阵***W***。
 - en: Finally, to compute ***y***, we just need to add the already calculated ***Wx*** and ***BAx***.
     There are no difficulties here since matrix addition can be easily parallelized.
+  id: totrans-32
   prefs: []
   type: TYPE_NORMAL
+  zh: 最后，为了计算***y***，我们只需将已经计算出的***Wx***和***BAx***相加。这里没有困难，因为矩阵加法可以很容易地并行化。
 - en: '*As a technical detail, before fine-tuning, matrix **A** is initialized using
     a Gaussian distribution, and matrix **B** is initialized with zeros. Using a zero
     matrix for **B** at the beginning ensures that the model behaves exactly as before,
     because **BAx = 0 · Ax = 0**, so **y** remains equivalent to **Wx**.*'
+  id: totrans-33
   prefs:
   - PREF_BQ
   type: TYPE_NORMAL
+  zh: '*作为一个技术细节，在微调之前，矩阵**A**使用高斯分布初始化，矩阵**B**使用零初始化。在开始时使用零矩阵**B**确保模型的行为与之前完全相同，因为**BAx
+    = 0 · Ax = 0**，所以**y**保持与**Wx**等价。'
 - en: '*This makes the initial phase of fine-tuning more stable. Then, during backpropagation,
     the model gradually adapts its weights for **A** and **B** to learn new knowledge.*'
+  id: totrans-34
   prefs:
   - PREF_BQ
   type: TYPE_NORMAL
+  zh: '*这使得微调的初始阶段更加稳定。然后，在反向传播过程中，模型逐渐调整**A**和**B**的权重来学习新的知识。*'
 - en: After training
+  id: totrans-35
   prefs:
   - PREF_H4
   type: TYPE_NORMAL
+  zh: 训练后
 - en: After training, we have calculated the optimal matrices ***A*** and ***B***.
     All we have to do is multiply them to compute ***ΔW***, which we then add to the
     pretrained matrix ***W*** to obtain the final weights.
+  id: totrans-36
   prefs: []
   type: TYPE_NORMAL
+  zh: 训练完成后，我们已经计算出了最优矩阵***A***和***B***。我们只需将它们相乘来计算***ΔW***，然后将它加到预训练矩阵***W***上，以获得最终的权重。
 - en: '*While the matrix multiplication **BA** might seem like a heavy operation,
     we only perform it once, so it should not concern us too much! Moreover, after
     the addition, we no longer need to store **A**, **B**, or **ΔW**.*'
+  id: totrans-37
   prefs:
   - PREF_BQ
   type: TYPE_NORMAL
+  zh: '*虽然矩阵乘法**BA**可能看起来是一个重量级的操作，但我们只执行一次，所以它不应该让我们过于担忧！此外，在加法之后，我们不再需要存储**A**、**B**或**ΔW**.*'
 - en: Subtlety
+  id: totrans-38
   prefs:
   - PREF_H4
   type: TYPE_NORMAL
+  zh: 精妙之处
 - en: 'While the idea of LoRA seems inspiring, a question might arise: during normal
     training of neural networks, why can’t we directly represent y as ***BAx*** instead
     of using a heavy matrix ***W*** to calculate **y = Wx**?'
+  id: totrans-39
   prefs: []
   type: TYPE_NORMAL
+  zh: 虽然LoRA的想法看起来很有启发性，但可能会出现一个问题：在神经网络的正常训练过程中，为什么我们不能直接用***BAx***来表示y，而不是使用重量级的矩阵***W***来计算**y
+    = Wx**？
 - en: The problem with just using ***BAx*** is that the model’s capacity would be
     much lower and likely insufficient for the model to learn effectively. During
     training, a model needs to learn massive amounts of information, so it naturally
     requires a large number of parameters.
+  id: totrans-40
   prefs: []
   type: TYPE_NORMAL
+  zh: 仅使用***BAx***的问题在于，模型的容量会低得多，可能不足以让模型有效地学习。在训练过程中，模型需要学习大量的信息，因此它自然需要大量的参数。
 - en: In LoRA optimization, we treat ***Wx*** as the prior knowledge of the large
     model and interpret ***ΔWx = BAx*** as task-specific knowledge introduced during
     fine-tuning. So, we still cannot deny the importance of ***W*** in the model’s
     overall performance.
+  id: totrans-41
   prefs: []
   type: TYPE_NORMAL
+  zh: 在LoRA优化中，我们将***Wx***视为大模型的先验知识，并将***ΔWx = BAx***解释为微调期间引入的任务特定知识。因此，我们仍然不能否认***W***在模型整体性能中的重要性。
 - en: Adapter
+  id: totrans-42
   prefs:
   - PREF_H3
   type: TYPE_NORMAL
+  zh: 适配器
 - en: Studying LLM theory, it is important to mention the term “**adapter**” that
     appears in many LLM papers.
+  id: totrans-43
   prefs: []
   type: TYPE_NORMAL
+  zh: 研究LLM理论时，重要的是要提到许多LLM论文中出现的术语“**适配器**”。
 - en: '*In the LoRA context, an **adapter** is a combination of matrices A and B that
     are used to solve a particular downstream task for a given matrix W.*'
+  id: totrans-44
   prefs:
   - PREF_BQ
   type: TYPE_NORMAL
+  zh: '*在LoRA的上下文中，一个**适配器**是由矩阵A和B的组合，用于解决给定矩阵W的特定下游任务。*'
 - en: 'For example, let us suppose that we have trained a matrix ***W*** such that
     the model is able to understand natural language. We can then perform several
     independent LoRA optimizations to tune the model on different tasks. As a result,
     we obtain several pairs of matrices:'
+  id: totrans-45
   prefs: []
   type: TYPE_NORMAL
+  zh: 例如，假设我们已经训练了一个矩阵***W***，使得模型能够理解自然语言。然后我们可以执行几个独立的LoRA优化来调整模型在不同任务上的表现。结果，我们获得了几对矩阵：
 - en: '***(A₁, B₁)*** — adapter used to perform question-answering tasks.'
+  id: totrans-46
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: '***(A₁, B₁)***—用于执行问答任务的适配器。'
 - en: '***(A***₂***, B***₂***)*** — adapter used for text summarization problems.'
+  id: totrans-47
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: '***(A₂, B₂)***—用于文本摘要问题的适配器。'
 - en: '***(A***₃***, B***₃***)*** — adapter trained for chatbot development.'
+  id: totrans-48
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: '***(A₃, B₃)***—用于聊天机器人开发的适配器训练。'
 - en: '![](../Images/fdf99ff1dcdc986130ae0b5e52ce44b4.png)'
+  id: totrans-49
   prefs: []
   type: TYPE_IMG
+  zh: '![](../Images/fdf99ff1dcdc986130ae0b5e52ce44b4.png)'
 - en: Developing a separate adapter for each downstream task is an efficient and scalable
     way to adapt a large, single model to different problems.
+  id: totrans-50
   prefs: []
   type: TYPE_NORMAL
+  zh: 为每个下游任务开发一个单独的适配器是一种高效且可扩展的方法，可以将大型单一模型适应到不同的问题。
 - en: '*Given that, we can store a single matrix and have as many adapters as we want
     for different tasks! Since matrices A and B are tiny, they are very easy to store. *'
+  id: totrans-51
   prefs:
   - PREF_BQ
   type: TYPE_NORMAL
+  zh: '*鉴于这一点，我们可以存储一个单独的矩阵，并为不同的任务创建尽可能多的适配器！由于矩阵A和B很小，它们非常容易存储。*'
 - en: Adapter ajustement in real time
+  id: totrans-52
   prefs:
   - PREF_H4
   type: TYPE_NORMAL
+  zh: 实时适配器调整
 - en: '***The great thing about adapters is that we can switch them dynamically***.
     Imagine a scenario where we need to develop a chatbot system that allows users
     to choose how the bot should respond based on a selected character, such as *Harry
     Potter*, an *angry bird*, or *Cristiano Ronaldo*.'
+  id: totrans-53
   prefs: []
   type: TYPE_NORMAL
+  zh: '***适配器的优点在于我们可以动态地切换它们***。想象一下这样一个场景，我们需要开发一个聊天机器人系统，允许用户根据所选的角色来选择机器人应该如何响应，比如*哈利·波特*、一只*愤怒的小鸟*或*Cristiano
+    Ronaldo*。'
 - en: However, system constraints may prevent us from storing or fine-tuning three
     separate large models due to their large size. What is the solution?
+  id: totrans-54
   prefs: []
   type: TYPE_NORMAL
+  zh: 然而，系统限制可能阻止我们存储或微调三个单独的大型模型，因为它们的大小很大。那么解决方案是什么？
 - en: This is where adapters come to the rescue! *All we need is a single large model
     W and three separate adapters, one for each character.*
+  id: totrans-55
   prefs: []
   type: TYPE_NORMAL
+  zh: 这就是适配器发挥作用的地方！*我们需要的只是一个大型模型W和三个单独的适配器，每个角色一个*。
 - en: '![](../Images/fb0352e8e3b21b016963164856c86788.png)'
+  id: totrans-56
   prefs: []
   type: TYPE_IMG
+  zh: '![](../Images/fb0352e8e3b21b016963164856c86788.png)'
 - en: A chatbot application in which a user can select the behavior of the bot based
     on its character. For each character, a separate adapter is used. When a user
     wants to change the character, it can be switched dynamically through matrix addition.
+  id: totrans-57
   prefs: []
   type: TYPE_NORMAL
+  zh: 一个聊天机器人应用，用户可以根据机器人的角色选择其行为。对于每个角色，使用一个单独的适配器。当用户想要更改角色时，可以通过矩阵加法动态切换。
 - en: We keep in memory only matrix ***W*** and three matrix pairs: ***(A₁, B₁)***, ***(A₂,
     B₂)***, ***(A₃, B₃)***. Whenever a user chooses a new character for the bot, we
     just have to dynamically replace the adapter matrix by performing matrix addition
     between ***W***and ***(Aᵢ, Bᵢ)***. As a result, we get a system that scales extremely
     well if we need to add new characters in the future!
+  id: totrans-58
   prefs: []
   type: TYPE_NORMAL
+  zh: 我们只保留内存中的矩阵***W***和三个矩阵对：***(A₁, B₁)***、***(A₂, B₂)***、***(A₃, B₃)***。每当用户为机器人选择一个新的角色时，我们只需通过在***W***和***(Aᵢ,
+    Bᵢ)***之间执行矩阵加法来动态地替换适配器矩阵。因此，如果我们未来需要添加新角色，我们得到的是一个扩展性极强的系统！
 - en: QLoRA
+  id: totrans-59
   prefs:
   - PREF_H3
   type: TYPE_NORMAL
+  zh: QLoRA
 - en: QLoRA is another popular term whose difference from LoRA is only in its first
     letter, **Q**, which stands for “**quantized**”. The term “**quantization**” refers
     to the reduced number of bits that are used to store weights of neurons.
+  id: totrans-60
   prefs: []
   type: TYPE_NORMAL
+  zh: QLoRA是另一个流行的术语，其与LoRA的不同之处仅在于其第一个字母，即**Q**，代表“**量化**”。术语“**量化**”指的是用于存储神经元权重的位数减少。
 - en: For instance, we can represent neural network weights as floats requiring 32
     bits for each individual weight. ***The idea of quantization consists of compressing
     neural network weights to a smaller precision without significant loss or impact
     on the model’s performance.*** So, instead of using 32 bits, we can drop several
     bits to use, for instance, only 16 bits.
+  id: totrans-61
   prefs: []
   type: TYPE_NORMAL
+  zh: 例如，我们可以将神经网络权重表示为需要32位每个单独权重的浮点数。***量化的想法是将神经网络权重压缩到更小的精度，而不会对模型性能产生重大损失或影响。***因此，我们不必使用32位，我们可以去掉几个位，例如，只使用16位。
 - en: '![](../Images/78e9c70d90c7246c66f052ca7d06c470.png)'
+  id: totrans-62
   prefs: []
   type: TYPE_IMG
+  zh: '![](../Images/78e9c70d90c7246c66f052ca7d06c470.png)'
 - en: Simplified quantization example. Neural network weights are rounded to one decimal.
     In reality, the rounding depends on the number of quantized bits.
+  id: totrans-63
   prefs: []
   type: TYPE_NORMAL
+  zh: 简化的量化示例。神经网络权重四舍五入到一位小数。实际上，四舍五入取决于量化位数的数量。
 - en: '*Speaking of QLoRA, quantization is used for the pretrained matrix W to reduce
     its weight size.*'
+  id: totrans-64
   prefs:
   - PREF_BQ
   type: TYPE_NORMAL
+  zh: '*说到QLoRA，量化用于预训练矩阵W以减少其权重大小*。'
 - en: '*Bonus: prefix-tuning'
+  id: totrans-65
   prefs:
   - PREF_H3
   type: TYPE_NORMAL
+  zh: '*附加说明：前缀调整*'
 - en: '**Prefix-tuning** is an interesting alternative to LoRA. *The idea also consists
     of using adapters for different downstream tasks but this time adapters are integrated
     inside the attention layer of the Transformer*.'
+  id: totrans-66
   prefs: []
   type: TYPE_NORMAL
+  zh: '**前缀调整**是LoRA的一个有趣替代方案。*这个想法也包含使用适配器来处理不同的下游任务，但这次适配器被集成在Transformer的注意力层中*。'
 - en: More specifically, during training, all model layers become frozen except for
     those that are added as prefixes to some of the embeddings calculated inside attention
     layers. In comparison to LoRA, prefix tuning does not change model representation,
     and in general, it has much fewer trainable parameters. As previously, to account
     for the prefix adapter, we need to perform addition, but this time with fewer
     elements.
+  id: totrans-67
   prefs: []
   type: TYPE_NORMAL
+  zh: 更具体地说，在训练过程中，除了那些作为前缀添加到注意力层内部计算的一些嵌入中的模型层之外，所有模型层都被冻结。与LoRA相比，前缀调整不会改变模型表示，并且通常具有更少的可训练参数。正如之前所述，为了考虑前缀适配器，我们需要进行加法运算，但这次元素更少。
 - en: '*Unless given very limited computational and memory constraints, LoRA adapters
     are still preferred in many cases, compared to prefix tuning.*'
+  id: totrans-68
   prefs:
   - PREF_BQ
   type: TYPE_NORMAL
+  zh: '*除非受到非常有限的计算和内存限制，否则在许多情况下，与前缀调整相比，LoRA适配器仍然更受欢迎。*'
 - en: Conclusion
+  id: totrans-69
   prefs:
   - PREF_H3
   type: TYPE_NORMAL
+  zh: 结论
 - en: In this article, we have looked at advanced LLM concepts to understand how large
     models can be efficiently tuned without computational overhead. LoRA’s elegance
     in compressing the weight matrix through matrix decomposition not only allows
     models to train faster but also requires less memory space. Moreover, LoRA serves
     as an excellent example to demonstrate the idea of adapters that can be flexibly
     used and switched for downstream tasks.
+  id: totrans-70
   prefs: []
   type: TYPE_NORMAL
+  zh: 在这篇文章中，我们探讨了高级LLM概念，以了解大型模型如何在不增加计算开销的情况下进行有效调整。LoRA通过矩阵分解压缩权重矩阵的优雅之处不仅使模型训练速度更快，而且所需的内存空间更少。此外，LoRA作为一个优秀的例子，展示了可以灵活使用和切换的适配器概念，这些适配器适用于下游任务。
 - en: On top of that, we can add a quantization process to further reduce memory space
     by decreasing the number of bits required to represent each neuron.
+  id: totrans-71
   prefs: []
   type: TYPE_NORMAL
+  zh: 此外，我们还可以添加一个量化过程，通过减少表示每个神经元所需的位数来进一步减少内存空间。
 - en: Finally, we explored another alternative called “prefix tuning”, which plays
     the same role as adapters but without changing the model representation.
+  id: totrans-72
   prefs: []
   type: TYPE_NORMAL
+  zh: 最后，我们探讨了另一种名为“前缀调整”的替代方案，它扮演着与适配器相同的作用，但不会改变模型表示。
 - en: Resources
+  id: totrans-73
   prefs:
   - PREF_H3
   type: TYPE_NORMAL
+  zh: 资源
 - en: '[LoRA: Low-Rank Adaptation of Large Language Models](https://arxiv.org/pdf/2106.09685)'
+  id: totrans-74
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: '[LoRA: 大型语言模型的低秩调整](https://arxiv.org/pdf/2106.09685)'
 - en: '[QLORA: Efficient Finetuning of Quantized LLMs](https://arxiv.org/pdf/2305.14314)'
+  id: totrans-75
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: '[QLORA: 量化LLM的高效微调](https://arxiv.org/pdf/2305.14314)'
 - en: '[Prefix-Tuning: Optimizing Continuous Prompts for Generation](https://arxiv.org/pdf/2101.00190)'
+  id: totrans-76
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: '[Prefix-Tuning: 优化连续提示以进行生成](https://arxiv.org/pdf/2101.00190)'
 - en: '*All images are by the author unless noted otherwise.*'
+  id: totrans-77
   prefs: []
   type: TYPE_NORMAL
+  zh: '*除非另有说明，所有图像均为作者所有。*'
