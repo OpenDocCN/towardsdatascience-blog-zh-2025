@@ -3,17 +3,20 @@
   prefs:
   - PREF_H1
   type: TYPE_NORMAL
+  zh: 深入了解 RabbitMQ 与 Python 的 Celery：如何优化你的队列
 - en: 原文：[https://towardsdatascience.com/deep-dive-into-rabbitmq-pythons-celery-how-to-optimise-your-queues/](https://towardsdatascience.com/deep-dive-into-rabbitmq-pythons-celery-how-to-optimise-your-queues/)
   id: totrans-1
   prefs:
   - PREF_BQ
   type: TYPE_NORMAL
+  zh: 原文：[https://towardsdatascience.com/deep-dive-into-rabbitmq-pythons-celery-how-to-optimise-your-queues/](https://towardsdatascience.com/deep-dive-into-rabbitmq-pythons-celery-how-to-optimise-your-queues/)
 - en: <mdspan datatext="el1756873996638" class="mdspan-comment">If you’re an engineer</mdspan>,
     have worked with machine learning or large-scale data pipelines, chances are you’ve
     used some sort of queueing system.
   id: totrans-2
   prefs: []
   type: TYPE_NORMAL
+  zh: <mdspan datatext="el1756873996638" class="mdspan-comment">如果你是工程师</mdspan>，曾经与机器学习或大规模数据管道合作过，那么你很可能使用过某种队列系统。
 - en: 'Queues let services talk to each other asynchronously: you send off work, don’t
     wait around, and let another system pick it up when ready. This is essential when
     your tasks aren’t instant — think long-running model training jobs, batch ETL
@@ -21,6 +24,8 @@
   id: totrans-3
   prefs: []
   type: TYPE_NORMAL
+  zh: 队列让服务可以异步地相互通信：你发送任务，不必等待，让另一个系统在准备好时取走它。当你的任务不是即时完成时，这是非常重要的——想想长时间运行的模型训练作业、批量
+    ETL 管道，甚至是处理每查询需要几分钟的 LLM 请求。
 - en: So why am I writing this? I recently migrated a production queueing setup to
     RabbitMQ, ran into a bunch of bugs, and found that documentation was thin on the
     trickier parts. After a fair bit of trial and error, I thought it’d be worth sharing
@@ -28,42 +33,50 @@
   id: totrans-4
   prefs: []
   type: TYPE_NORMAL
+  zh: 我为什么要写这篇文章？我最近将生产队列设置迁移到了 RabbitMQ，遇到了一堆错误，并发现有关复杂部分的文档很少。经过一番尝试和错误，我认为分享我所学的东西是值得的。
 - en: Hope you will find this useful!
   id: totrans-5
   prefs: []
   type: TYPE_NORMAL
+  zh: 希望你会觉得这个有用！
 - en: 'A quick primer: queues vs request-response model'
   id: totrans-6
   prefs:
   - PREF_H2
   type: TYPE_NORMAL
+  zh: 快速入门：队列与请求-响应模型
 - en: Microservices typically communicate in two styles — the classic request–response
     model, or the more flexible queue-based model.
   id: totrans-7
   prefs: []
   type: TYPE_NORMAL
+  zh: 微服务通常以两种方式通信——经典的请求-响应模型，或更灵活的基于队列的模型。
 - en: Imagine ordering pizza. In a **request–response model**, you tell the waiter
     your order and then wait. He disappears, and thirty minutes later your pizza shows
     up — but you’ve been left in the dark the whole time.
   id: totrans-8
   prefs: []
   type: TYPE_NORMAL
+  zh: 想象一下订购披萨。在 **请求-响应模型** 中，你告诉服务员你的订单，然后等待。他消失了，三十分钟后你的披萨才出现——但你一直处于黑暗中。
 - en: In a **queue-based model**, the waiter repeats your order, gives you a number,
     and drops it into the kitchen’s queue. Now you know it’s being handled, and you’re
     free to do something else till the chef gets to it.
   id: totrans-9
   prefs: []
   type: TYPE_NORMAL
+  zh: 在 **基于队列的模型** 中，服务员重复你的订单，给你一个号码，并将其放入厨房的队列。现在你知道它正在处理，你可以自由地做其他事情，直到厨师处理它。
 - en: 'That’s the difference: request–response keeps you blocked until the work is
     done, while queues confirm right away and let the work happen in the background.'
   id: totrans-10
   prefs: []
   type: TYPE_NORMAL
+  zh: 这就是区别：请求-响应模式会一直阻塞你，直到工作完成，而队列会立即确认并允许工作在后台进行。
 - en: What is Rabbit MQ?
   id: totrans-11
   prefs:
   - PREF_H2
   type: TYPE_NORMAL
+  zh: 什么是 RabbitMQ？
 - en: RabbitMQ is a popular open-source message broker that ensures messages are reliably
     delivered from producers (senders) to consumers (receivers). First released in
     2007 and written in Erlang, it implements AMQP (Advanced Message Queuing Protocol),
@@ -71,33 +84,40 @@
   id: totrans-12
   prefs: []
   type: TYPE_NORMAL
+  zh: RabbitMQ 是一个流行的开源消息代理，确保消息从生产者（发送者）可靠地传递到消费者（接收者）。首次发布于 2007 年，用 Erlang 编写，实现了
+    AMQP（高级消息队列协议），这是一个用于结构化、路由和确认消息的开放标准。
 - en: 'Think of it like a post office for distributed systems: applications drop off
     messages, RabbitMQ sorts them into queues, and consumers pick them up when ready.'
   id: totrans-13
   prefs:
   - PREF_BQ
   type: TYPE_NORMAL
+  zh: 想象它就像分布式系统中的邮局：应用程序投递消息，RabbitMQ 将它们分类到队列中，消费者在准备好时取走它们。
 - en: 'A common pairing in the Python world is Celery + RabbitMQ: RabbitMQ brokers
     the tasks, while Celery workers execute them in the background.'
   id: totrans-14
   prefs: []
   type: TYPE_NORMAL
+  zh: 在 Python 世界中，Celery + RabbitMQ 是一种常见的搭配：RabbitMQ 作为任务代理，而 Celery 工作者在后台执行它们。
 - en: In containerised setups, RabbitMQ typically runs in its own container, while
     Celery workers run in separate containers that you can scale independently.
   id: totrans-15
   prefs: []
   type: TYPE_NORMAL
+  zh: 在容器化设置中，RabbitMQ 通常在自己的容器中运行，而 Celery 工作者在独立的容器中运行，你可以独立扩展它们。
 - en: How it works at a high level
   id: totrans-16
   prefs:
   - PREF_H3
   type: TYPE_NORMAL
+  zh: 高级概述
 - en: Your app wants to run some work asynchronously. Since this task might take a
     while, you don’t want the app to sit idle waiting. Instead, it creates a message
     describing the task and sends it to RabbitMQ.
   id: totrans-17
   prefs: []
   type: TYPE_NORMAL
+  zh: 你的应用程序想要异步运行一些工作。由于这项任务可能需要一段时间，你不想让应用程序空闲等待。相反，它创建一个描述任务的消息并将其发送到 RabbitMQ。
 - en: '**Exchange**: This lives inside RabbitMQ. It doesn’t store messages but just
     decides where each message should go based on rules you set (routing keys and
     bindings).'
@@ -105,17 +125,20 @@
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: '**交换**：它存在于RabbitMQ中。它不存储消息，只是根据你设置的规则（路由键和绑定）决定每条消息应该去哪里。'
 - en: Producers publish messages to an exchange, which acts as a routing intermediary.
   id: totrans-19
   prefs:
   - PREF_IND
   type: TYPE_NORMAL
+  zh: 生产者向交换发布消息，该交换充当路由中介。
 - en: '**Queues**: They’re like mailboxes. Once the exchange decides which queue(s)
     a message should go to, it sits there till it’s picked up.'
   id: totrans-20
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: '**队列**：它们就像邮箱。一旦交换决定消息应该发送到哪个队列，它就会在那里等待，直到被取走。'
 - en: '**Consumer**: The service that reads and processes messages from a queue. In
     a Celery setup, the Celery worker is the consumer — it pulls tasks off the queue
     and does the actual work.'
@@ -123,135 +146,162 @@
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: '**消费者**：从队列中读取和处理消息的服务。在Celery设置中，Celery工作进程是消费者——它从队列中拉取任务并执行实际工作。'
 - en: '![](../Images/ae47de6864557ed9a16cb1b64c1b82e8.png)'
   id: totrans-22
   prefs: []
   type: TYPE_IMG
+  zh: '![图片](../Images/ae47de6864557ed9a16cb1b64c1b82e8.png)'
 - en: High level overview of Rabbit MQ’s architecture. Drawn by writer.
   id: totrans-23
   prefs: []
   type: TYPE_NORMAL
+  zh: Rabbit MQ架构的高级概述。由作者绘制。
 - en: Once the message is routed into a queue, the RabbitMQ broker **pushes** it out
     to a consumer (if one is available) over a TCP connection.
   id: totrans-24
   prefs: []
   type: TYPE_NORMAL
+  zh: 一旦消息被路由到队列中，RabbitMQ代理**推送**它到消费者（如果有的话）通过TCP连接。
 - en: Core components in Rabbit MQ
   id: totrans-25
   prefs:
   - PREF_H2
   type: TYPE_NORMAL
+  zh: Rabbit MQ的核心组件
 - en: 1\. Routing and binding keys
   id: totrans-26
   prefs:
   - PREF_H3
   type: TYPE_NORMAL
+  zh: 1. 路由和绑定键
 - en: Routing and binding keys work together to decide where a message ends up.
   id: totrans-27
   prefs: []
   type: TYPE_NORMAL
+  zh: 路由键和绑定键协同工作，以决定消息最终会去哪里。
 - en: A **routing** key is attached to a **message** by the producer.
   id: totrans-28
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: '**路由键**是由生产者附加到消息上的。'
 - en: A **binding** key is the rule a **queue** declares when it connects (binds)
     to an exchange.
   id: totrans-29
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: '**绑定键**是队列在连接（绑定）到交换时声明的规则。'
 - en: A binding defines the link between an exchange and a queue.
   id: totrans-30
   prefs:
   - PREF_IND
   type: TYPE_NORMAL
+  zh: 绑定定义了交换和队列之间的链接。
 - en: When a message is sent, the exchange looks at the message’s routing key. If
     that routing key matches the binding key of a queue, the message is delivered
     to that queue.
   id: totrans-31
   prefs: []
   type: TYPE_NORMAL
+  zh: 当消息发送时，交换会查看消息的路由键。如果该路由键与队列的绑定键匹配，则消息将被投递到该队列。
 - en: A message can only have **one** routing key.
   id: totrans-32
   prefs:
   - PREF_BQ
   type: TYPE_NORMAL
+  zh: 消息只能有一个**路由键**。
 - en: A queue can have **one or multiple** binding keys, meaning it can listen for
     several different routing keys or patterns.
   id: totrans-33
   prefs:
   - PREF_BQ
   type: TYPE_NORMAL
+  zh: 一个队列可以有**一个或多个**绑定键，这意味着它可以监听几个不同的路由键或模式。
 - en: 2\. Exchanges
   id: totrans-34
   prefs:
   - PREF_H3
   type: TYPE_NORMAL
+  zh: 2. 交换
 - en: An exchange in RabbitMQ is like a **traffic controller.** It receives messages,
     does not store messages, and it’s key job is to decide which queue(s) the message
     should go to, based on rules.
   id: totrans-35
   prefs: []
   type: TYPE_NORMAL
+  zh: RabbitMQ中的交换就像一个**交通控制器**。它接收消息，不存储消息，其主要任务是决定消息应该发送到哪个队列，基于规则。
 - en: '*If the routing key of a message does not match any the binding keys of any
     queues, it will not get delivered.*'
   id: totrans-36
   prefs: []
   type: TYPE_NORMAL
+  zh: '*如果消息的路由键与任何队列的绑定键都不匹配，它将不会被投递。*'
 - en: There are several types of exchanges, each with its own routing style.
   id: totrans-37
   prefs: []
   type: TYPE_NORMAL
+  zh: 有几种类型的交换，每种都有其自己的路由风格。
 - en: 2a) Direct exchange
   id: totrans-38
   prefs:
   - PREF_H4
   type: TYPE_NORMAL
+  zh: 2a) 直接交换
 - en: Think of a direct exchange like an exact address delivery. The exchange looks
     for queues with binding keys that exactly match the routing key.
   id: totrans-39
   prefs: []
   type: TYPE_NORMAL
+  zh: 将直接交换想象成精确地址投递。交换会寻找与路由键完全匹配的绑定键的队列。
 - en: If only one queue matches, the message will only be sent there (1:1).
   id: totrans-40
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: 如果只有一个队列匹配，则消息只会被发送到那里（1:1）。
 - en: If multiple queues have the same binding key, the message will be copied to
     all of them (1:many).
   id: totrans-41
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: 如果多个队列有相同的绑定键，则消息将被复制到所有这些队列（1:多）。
 - en: 2b) Fanout exchange
   id: totrans-42
   prefs:
   - PREF_H4
   type: TYPE_NORMAL
+  zh: 2b) 扇出交换
 - en: A fanout exchange is like shouting through a loudspeaker.
   id: totrans-43
   prefs: []
   type: TYPE_NORMAL
+  zh: '**扇出交换**就像是通过扩音器大声喊叫。'
 - en: Every message is copied to **all** queues bound to the exchange. The routing
     keys are ignored, and it is **always a 1:many broadcast**.
   id: totrans-44
   prefs: []
   type: TYPE_NORMAL
+  zh: 每条消息都会复制到与交换绑定的**所有**队列。路由键被忽略，它总是**1:多**广播。
 - en: Fanout exchanges can be useful when the same message needs to be sent to one
     or more queues with consumers who may process the same message in different ways.
   id: totrans-45
   prefs: []
   type: TYPE_NORMAL
+  zh: 当同一个消息需要发送到可能以不同方式处理相同消息的一个或多个队列时，扇出交换非常有用。
 - en: 2c) Topic exchange
   id: totrans-46
   prefs:
   - PREF_H4
   type: TYPE_NORMAL
+  zh: 2c) 主题交换
 - en: A topic exchange works like a subscription system with categories.
   id: totrans-47
   prefs: []
   type: TYPE_NORMAL
+  zh: 主题交换就像是一个带有类别的订阅系统。
 - en: Every message has a routing key, for example `"order.completed”`. Queues can
     then subscribe to patterns such as `"order.*”`. This means that whenever a message
     is related to an order, it will be delivered to any queues that have subscribed
@@ -259,157 +309,190 @@
   id: totrans-48
   prefs: []
   type: TYPE_NORMAL
+  zh: 每条消息都有一个路由键，例如 `"order.completed"`。队列可以订阅模式，如 `"order.*"`。这意味着每当有与订单相关的消息时，它将被投递到已订阅该类别的任何队列。
 - en: Depending on the patterns, a message might end up in just one queue or in several
     at the same time.
   id: totrans-49
   prefs: []
   type: TYPE_NORMAL
+  zh: 根据模式，一条消息可能最终只进入一个队列或同时进入多个队列。
 - en: 'There are two important special cases for binding keys:'
   id: totrans-50
   prefs: []
   type: TYPE_NORMAL
+  zh: 绑定键有两个重要的特殊情况：
 - en: '`*` (star) matches **exactly one word** in the routing key.'
   id: totrans-51
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: '`*`（星号）匹配路由键中的**确切一个单词**。'
 - en: '`#` (hash) matches **zero or more words**.'
   id: totrans-52
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: '`#`（散列）匹配**零个或多个单词**。'
 - en: Let’s illustrate this to make the syntax alot more intuitive.
   id: totrans-53
   prefs: []
   type: TYPE_NORMAL
+  zh: 让我们通过示例来说明，使语法更加直观。
 - en: '![](../Images/54e57c1f7deed0c2918872e31c4aabe6.png)'
   id: totrans-54
   prefs: []
   type: TYPE_IMG
+  zh: '![](../Images/54e57c1f7deed0c2918872e31c4aabe6.png)'
 - en: 2d) Headers exchange
   id: totrans-55
   prefs:
   - PREF_H4
   type: TYPE_NORMAL
+  zh: 2d）头部交换机
 - en: A headers exchange is like sorting mail by labels instead of addresses.
   id: totrans-56
   prefs: []
   type: TYPE_NORMAL
+  zh: 头部交换机就像按标签而不是地址对邮件进行分类。
 - en: 'Instead of looking at the routing key (like `"order.completed"`), the exchange
     inspects the **headers** of a message: These are key–value pairs attached as metadata.
     For instance:'
   id: totrans-57
   prefs: []
   type: TYPE_NORMAL
+  zh: 与查看路由键（如 `"order.completed"`）不同，交换机会检查消息的**头部**：这些是作为元数据附加的关键值对。例如：
 - en: '`x-match: all, priority: high, type: email` → the queue will only get messages
     that have **both** `priority=high` **and** `type=email`.'
   id: totrans-58
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: '`x-match: all, priority: high, type: email` → 队列将只接收到具有**同时** `priority=high`
+    和 `type=email` 的消息。'
 - en: '`x-match: any, region: us, region: eu` → the queue will get messages where
     **at least one** of the conditions is true (`region=us` or `region=eu`).'
   id: totrans-59
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: '`x-match: any, region: us, region: eu` → 队列将接收到满足**至少一个**条件的消息（`region=us`
+    或 `region=eu`）。'
 - en: The `x-match` field is what determines whether all rules must match or any one
     rule is enough.
   id: totrans-60
   prefs: []
   type: TYPE_NORMAL
+  zh: '`x-match` 字段决定了是否必须匹配所有规则或只需匹配一条规则。'
 - en: Because multiple queues can each declare their own header rules, a single message
     might end up in just one queue (1:1) or in several queues at once (1:many).
   id: totrans-61
   prefs: []
   type: TYPE_NORMAL
+  zh: 由于多个队列可以各自声明自己的头部规则，一条消息最终可能只进入一个队列（1:1）或同时进入多个队列（1:many）。
 - en: Headers exchanges are less common in practice, but they’re useful when routing
     depends on more complex business logic. For example, you might want to deliver
     a message only if `customer_tier=premium`, `message_format=json`, or `region=apac` .
   id: totrans-62
   prefs: []
   type: TYPE_NORMAL
+  zh: 头部交换机在实践中较少使用，但当路由依赖于更复杂的业务逻辑时很有用。例如，你可能只想在 `customer_tier=premium`、`message_format=json`
+    或 `region=apac` 的情况下投递消息。
 - en: 2e) Dead letter exchange
   id: totrans-63
   prefs:
   - PREF_H4
   type: TYPE_NORMAL
+  zh: 2e）死信交换机
 - en: A dead letter exchange is a safety net for undeliverable messages.
   id: totrans-64
   prefs: []
   type: TYPE_NORMAL
+  zh: 死信交换机是未投递消息的安全网。
 - en: 3\. A push delivery model
   id: totrans-65
   prefs:
   - PREF_H3
   type: TYPE_NORMAL
+  zh: 3. 推送投递模型
 - en: This means that as soon as a message enters a queue, the broker will push it
     out to a consumer that is subscribed and ready. The **consumer doesn’t request
     messages** and instead just listens on the queue.
   id: totrans-66
   prefs: []
   type: TYPE_NORMAL
+  zh: 这意味着一旦消息进入队列，代理就会将其推送到已订阅并准备好的消费者。**消费者不会请求消息**，而是简单地监听队列。
 - en: This push approach is great for low-latency delivery — messages get to consumers
     as soon as possible.
   id: totrans-67
   prefs:
   - PREF_BQ
   type: TYPE_NORMAL
+  zh: 这种推送方法非常适合低延迟投递——消息尽可能快地到达消费者。
 - en: Useful features in Rabbit MQ
   id: totrans-68
   prefs:
   - PREF_H2
   type: TYPE_NORMAL
+  zh: RabbitMQ 中的有用特性
 - en: Rabbit MQ’s architecture lets you shape message flow to fit your workload. Here
     are some useful patterns.
   id: totrans-69
   prefs: []
   type: TYPE_NORMAL
+  zh: RabbitMQ 的架构允许你根据工作负载调整消息流。以下是一些有用的模式。
 - en: Work queues — competing consumers pattern
   id: totrans-70
   prefs:
   - PREF_H3
   type: TYPE_NORMAL
+  zh: 工作队列——竞争消费者模式
 - en: You publish tasks into **one queue**, and **many consumers** (eg. celery workers)
     all listen to that queue. The broker delivers **each message to exactly one consumer**,
     so workers “compete” for work. This implicitly translates to simple load-balancing.
   id: totrans-71
   prefs: []
   type: TYPE_NORMAL
+  zh: 你可以将任务发布到**一个队列**，并且**多个消费者**（例如 celery 工作者）都会监听这个队列。代理将**每条消息精确地发送给一个消费者**，因此工作者“竞争”工作。这隐含地转化为简单的负载均衡。
 - en: If you’re on celery, you’ll want to keep `worker_prefetch_multiplier=1` . What
     this means is that a worker will only fetch one message at a time, avoiding slow
     workers from hoarding tasks.
   id: totrans-72
   prefs: []
   type: TYPE_NORMAL
+  zh: 如果你使用 celery，你将希望保持 `worker_prefetch_multiplier=1`。这意味着工作者一次只会获取一条消息，避免慢速工作者囤积任务。
 - en: Pub/sub pattern
   id: totrans-73
   prefs:
   - PREF_H3
   type: TYPE_NORMAL
+  zh: 发布/订阅模式
 - en: '**Multiple queues** bound to an exchange and each queue gets a **copy** of
     the message (fanout or topic exchanges). Since each queue gets its own message
     copy, so different consumers can process the same event in different ways.'
   id: totrans-74
   prefs: []
   type: TYPE_NORMAL
+  zh: '**多个队列**绑定到交换机，并且每个队列都会收到消息的**副本**（fanout 或 topic 交换机）。由于每个队列都收到自己的消息副本，因此不同的消费者可以以不同的方式处理相同的事件。'
 - en: Explicit acknowledgements
   id: totrans-75
   prefs:
   - PREF_H3
   type: TYPE_NORMAL
+  zh: 显式确认
 - en: RabbitMQ uses explicit acknowledgements (**ACKs**) to guarantee reliable delivery.
     An ACK is a confirmation sent from the consumer back to the broker once a message
     has been successfully processed.
   id: totrans-76
   prefs: []
   type: TYPE_NORMAL
+  zh: RabbitMQ 使用显式确认（**ACKs**）来保证可靠投递。ACK 是消费者在成功处理消息后发送给代理的确认。
 - en: When a consumer sends an ACK, the broker removes that message from the queue.
     If the consumer **NACKs** or dies before ACKing, RabbitMQ can **redeliver** (requeue)
     the message or route it to a dead letter queuefor inspection or retry.
   id: totrans-77
   prefs: []
   type: TYPE_NORMAL
+  zh: 当消费者发送ACK时，代理将该消息从队列中删除。如果消费者**NACK**或在ACK之前死亡，RabbitMQ可以**重新投递**（重新入队）该消息或将它路由到死信队列以供检查或重试。
 - en: There is, however, an important nuance when using Celery. Celery does send acknowledgements
     by default, but it sends them **early** — right after a worker receives the task,
     before it actually executes it. This behaviour (`acks_late=False`, which is the
@@ -418,17 +501,20 @@
   id: totrans-78
   prefs: []
   type: TYPE_NORMAL
+  zh: 然而，在使用Celery时有一个重要的细微差别。Celery默认会发送确认，但它发送得**很早**——在工作者接收到任务后立即发送，在它实际执行之前。这种行为（`acks_late=False`，这是默认值）意味着如果工作者在运行任务中途崩溃，代理已经被告知消息已被处理，不会重新投递它。
 - en: Priority queues
   id: totrans-79
   prefs:
   - PREF_H3
   type: TYPE_NORMAL
+  zh: 优先级队列
 - en: RabbitMQ has a out of the box priority queueing feature which lets higher priority
     messages jump the line. Under the hood, the broker creates an **internal sub-queue**
     for each priority level defined on a queue.
   id: totrans-80
   prefs: []
   type: TYPE_NORMAL
+  zh: RabbitMQ自带优先级队列功能，允许高优先级消息跳过队列。在底层，代理为每个在队列上定义的优先级级别创建一个**内部子队列**。
 - en: For example, if you configure five priority levels, RabbitMQ maintains five
     internal sub-queues. Within each level, messages are still consumed in **FIFO
     order**, but when consumers are ready, RabbitMQ will always try to deliver messages
@@ -436,140 +522,167 @@
   id: totrans-81
   prefs: []
   type: TYPE_NORMAL
+  zh: 例如，如果你配置了五个优先级级别，RabbitMQ将维护五个内部子队列。在每个级别内，消息仍然按**FIFO顺序**消费，但消费者准备好时，RabbitMQ将始终尝试首先从高优先级子队列投递消息。
 - en: Doing so implicitly would mean an increasing amount of overhead if there were
     many priority levels. [Rabbit MQ’s docs note that though priorities between 1
     and 255 are supported, **values between 1 and 5 are highly recommended**.](https://www.rabbitmq.com/docs/priority)
   id: totrans-82
   prefs: []
   type: TYPE_NORMAL
+  zh: 这样做如果有很多优先级级别，就会隐含地增加开销。[Rabbit MQ的文档指出，尽管支持1到255之间的优先级，但**1到5之间的值被高度推荐**。](https://www.rabbitmq.com/docs/priority)
 - en: Message TTL & scheduled deliveries
   id: totrans-83
   prefs:
   - PREF_H3
   type: TYPE_NORMAL
+  zh: 消息TTL与计划投递
 - en: Message TTL (per-message or per-queue) automatically expires stale messages;
     and delayed delivery is available via plugins (e.g., delayed-message exchange)
     when you need scheduled execution.
   id: totrans-84
   prefs: []
   type: TYPE_NORMAL
+  zh: 消息TTL（按消息或按队列）自动过期过时消息；并且当需要计划执行时，通过插件（例如，延迟消息交换）提供延迟投递。
 - en: How to optimise your Rabbit MQ and Celery setup
   id: totrans-85
   prefs:
   - PREF_H2
   type: TYPE_NORMAL
+  zh: 如何优化你的Rabbit MQ和Celery配置
 - en: When you deploy Celery with RabbitMQ, you’ll notice a few “mystery” queues and
     exchanges appearing in the RabbitMQ management dashboard. These aren’t mistakes — they’re
     part of Celery’s internals.
   id: totrans-86
   prefs: []
   type: TYPE_NORMAL
+  zh: 当你使用RabbitMQ部署Celery时，你会在RabbitMQ管理仪表板上注意到一些“神秘”的队列和交换。这些并不是错误——它们是Celery内部的一部分。
 - en: After a few painful rounds of trial and error, here’s what I learned about how
     Celery really uses RabbitMQ under the hood — and how to tune it properly.
   id: totrans-87
   prefs: []
   type: TYPE_NORMAL
+  zh: 经过几轮痛苦的试错后，我了解到Celery在底层真正如何使用RabbitMQ，以及如何正确调整它。
 - en: Kombu
   id: totrans-88
   prefs:
   - PREF_H3
   type: TYPE_NORMAL
+  zh: Kombu
 - en: 'Celery relies on Kombu, a Python messaging framework. Kombu abstracts away
     the low-level AMQP operations, giving Celery a high-level API to:'
   id: totrans-89
   prefs: []
   type: TYPE_NORMAL
+  zh: Celery依赖于Kombu，一个Python消息框架。Kombu抽象了低级别的AMQP操作，为Celery提供了一个高级API来：
 - en: Declare queues and exchanges
   id: totrans-90
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: 声明队列和交换
 - en: Publish messages (tasks)
   id: totrans-91
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: 发布消息（任务）
 - en: Consume messages in workers
   id: totrans-92
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: 在工作者中消费消息
 - en: It also handles serialisation (JSON, Pickle, YAML, or custom formats) so tasks
     can be encoded and decoded across the wire.
   id: totrans-93
   prefs: []
   type: TYPE_NORMAL
+  zh: 它还处理序列化（JSON、Pickle、YAML或自定义格式），以便任务可以在网络中编码和解码。
 - en: Celery events and the `celeryev` Exchange
   id: totrans-94
   prefs:
   - PREF_H3
   type: TYPE_NORMAL
+  zh: Celery事件和`celeryev`交换
 - en: '![](../Images/bb62246908783f751182492b27972882.png)'
   id: totrans-95
   prefs: []
   type: TYPE_IMG
+  zh: '![](../Images/bb62246908783f751182492b27972882.png)'
 - en: Screenshot by writer on how a celeryev queue appears on the RabbitMQ management
     dashboard
   id: totrans-96
   prefs: []
   type: TYPE_NORMAL
+  zh: 作者截图展示了celeryev队列在RabbitMQ管理仪表板上的显示方式
 - en: Celery includes an event system that tracks worker and task state. Internally,
     events are published to a special **topic exchange called `celeryev`**.
   id: totrans-97
   prefs: []
   type: TYPE_NORMAL
+  zh: Celery包含一个跟踪工作者和任务状态的事件系统。内部，事件被发布到一个特殊的**主题交换，称为`celeryev`**。
 - en: 'There are two such event types:'
   id: totrans-98
   prefs: []
   type: TYPE_NORMAL
+  zh: 有两种这样的事件类型：
 - en: '**Worker events** eg.`worker.online`, `worker.heartbeat`, `worker.offline`
     are always on and are lightweight liveliness signals.'
   id: totrans-99
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: '**工作者事件**例如`worker.online`、`worker.heartbeat`、`worker.offline`始终开启，并且是轻量级的活力信号。'
 - en: '**Task events**, eg.`task-received`, `task-started`, `task-succeeded`, `task-failed`
     which are disabled by default unless the `-E` flag is added.'
   id: totrans-100
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: '**任务事件**，例如`task-received`、`task-started`、`task-succeeded`、`task-failed`，默认情况下是禁用的，除非添加了`-E`标志。'
 - en: You have fine grain control over both types of events. You can turn off worker
     events (by turning off gossip, more on that below) while turning on task events.
   id: totrans-101
   prefs: []
   type: TYPE_NORMAL
+  zh: 您可以对这两种类型的事件进行精细控制。您可以在关闭gossip（下面将详细介绍）的同时打开任务事件。
 - en: Gossip
   id: totrans-102
   prefs:
   - PREF_H3
   type: TYPE_NORMAL
+  zh: Gossip
 - en: Gossip is Celery’s mechanism for workers to “chat” about cluster state — who’s
     alive, who just joined, who dropped out, and occasionally elect a leader for coordination.
     It’s useful for debugging or ad-hoc cluster coordination.
   id: totrans-103
   prefs: []
   type: TYPE_NORMAL
+  zh: Gossip是工作者之间“聊天”关于集群状态的Celery机制——谁活着，谁刚刚加入，谁退出了，偶尔还会选举一个领导者以进行协调。这对于调试或临时的集群协调很有用。
 - en: 'By default, Gossip is enabled. When a worker starts:'
   id: totrans-104
   prefs: []
   type: TYPE_NORMAL
+  zh: 默认情况下，Gossip是启用的。当工作者启动时：
 - en: It creates an **exclusive, auto-delete queue** just for itself.
   id: totrans-105
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: 它为自己创建了一个**专用、自动删除的队列**。
 - en: That queue is bound to the **`celeryev` topic exchange** with the routing key
     pattern `worker.#`.
   id: totrans-106
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: 该队列绑定到**`celeryev` 主题交换机**，路由键模式为`worker.#`。
 - en: Because every worker subscribes to every `worker.*` event, the traffic grows
     quickly as the cluster scales.
   id: totrans-107
   prefs: []
   type: TYPE_NORMAL
+  zh: 因为每个工作者都订阅了每个`worker.*`事件，随着集群的扩展，流量会迅速增长。
 - en: With N workers, each one publishes its own heartbeat, and RabbitMQ fans that
     message out to the other N-1 gossip queues. In effect, you get an N × (N-1) fan-out
     pattern.
@@ -577,6 +690,7 @@
   prefs:
   - PREF_BQ
   type: TYPE_NORMAL
+  zh: 有N个工作者时，每个工作者都会发布自己的心跳，RabbitMQ会将该消息扇出到其他N-1个gossip队列。实际上，您得到了一个N × (N-1)的扇出模式。
 - en: In my setup with 100 workers, that meant a single heartbeat was duplicated 99
     times. During deployments — when workers were spinning up and shutting down, generating
     a burst of join, leave, and heartbeat events — the pattern spiraled out of control.
@@ -585,30 +699,37 @@
   id: totrans-109
   prefs: []
   type: TYPE_NORMAL
+  zh: 在我的100个工作者的配置中，这意味着单个心跳被复制了99次。在部署期间——当工作者启动和关闭，产生一系列加入、离开和心跳事件时——模式失控。**`celeryev`
+    交换机突然处理每秒7-8k条消息，将RabbitMQ推过其内存水位线，使集群处于降级状态**。
 - en: When this memory limit is exceeded, RabbitMQ blocks publishers until usage drops.
     Once memory falls back under the threshold, RabbitMQ resumes normal operation.
   id: totrans-110
   prefs: []
   type: TYPE_NORMAL
+  zh: 当超过此内存限制时，RabbitMQ会阻止发布者直到使用量下降。一旦内存降至阈值以下，RabbitMQ将恢复正常操作。
 - en: However, this means that during the memory spike the broker becomes unusable — effectively
     causing downtime. You won’t want that in production!
   id: totrans-111
   prefs: []
   type: TYPE_NORMAL
+  zh: 然而，这意味着在内存峰值期间，代理变得不可用——实际上导致停机。您不希望在生产中这样做！
 - en: The solution is to disable Gossip so workers don’t bind to `worker.#`. You can
     do this in the docker compose where the workers are spun up.
   id: totrans-112
   prefs: []
   type: TYPE_NORMAL
+  zh: 解决方案是禁用Gossip，这样工作者就不会绑定到`worker.#`。您可以在启动工作者的docker compose中这样做。
 - en: '`celery -A myapp worker --without-gossip`'
   id: totrans-113
   prefs: []
   type: TYPE_NORMAL
+  zh: '`celery -A myapp worker --without-gossip`'
 - en: Mingle
   id: totrans-114
   prefs:
   - PREF_H3
   type: TYPE_NORMAL
+  zh: Mingle
 - en: Mingle is a worker startup step where the new worker contacts other workers
     to synchronise state — things like revoked tasks and logical clocks. This happens
     only once, during worker boot. If you don’t need this coordination, you can also
@@ -616,17 +737,20 @@
   id: totrans-115
   prefs: []
   type: TYPE_NORMAL
+  zh: Mingle是工作者启动步骤，其中新工作者联系其他工作者以同步状态——例如撤销的任务和逻辑时钟。这仅在工作者启动时发生一次。如果您不需要这种协调，您也可以使用`--without-mingle`禁用它。
 - en: Occasional connection drops
   id: totrans-116
   prefs:
   - PREF_H3
   type: TYPE_NORMAL
+  zh: 偶尔的连接断开
 - en: In production, connections between Celery and RabbitMQ can occasionally drop — for
     example, due to a brief network blip. If you have monitoring in place, you may
     see these as transient errors.
   id: totrans-117
   prefs: []
   type: TYPE_NORMAL
+  zh: 在生产中，Celery和RabbitMQ之间的连接有时会断开——例如，由于短暂的网络波动。如果您有监控，您可能会将这些视为瞬态错误。
 - en: The good news is that these drops are usually **recoverable**. Celery relies
     on Kombu, which includes **automatic connection retry logic**. When a connection
     fails, the worker will attempt to reconnect and resume consuming tasks.
@@ -634,25 +758,30 @@
   prefs:
   - PREF_BQ
   type: TYPE_NORMAL
+  zh: 好消息是，这些断开通常**是可恢复的**。Celery依赖于Kombu，它包括**自动连接重试逻辑**。当连接失败时，工作者将尝试重新连接并继续消费任务。
 - en: 'As long as your queues are configured correctly, messages are **not** lost:'
   id: totrans-119
   prefs: []
   type: TYPE_NORMAL
+  zh: 只要您的队列配置正确，消息**不会**丢失：
 - en: '`durable=True` (queue survives broker restart)'
   id: totrans-120
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: '`durable=True`（队列在代理重启后存活）'
 - en: '`delivery_mode=2` (persistent messages)'
   id: totrans-121
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: '`delivery_mode=2`（持久消息）'
 - en: Consumers send explicit ACKs to confirm successful processing
   id: totrans-122
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: 消费者发送显式的ACK以确认成功处理
 - en: If a connection drops before a task is acknowledged, RabbitMQ will safely requeue
     it for delivery once the worker reconnects.
   id: totrans-123
