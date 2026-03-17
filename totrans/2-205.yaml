@@ -1,30 +1,41 @@
 - en: Pipelining AI/ML Training Workloads with CUDA Streams
+  id: totrans-0
   prefs:
   - PREF_H1
   type: TYPE_NORMAL
+  zh: 使用 CUDA Streams 管道化 AI/ML 训练工作负载
 - en: 原文：[https://towardsdatascience.com/pipelining-ai-ml-training-workloads-with-cuda-streams/](https://towardsdatascience.com/pipelining-ai-ml-training-workloads-with-cuda-streams/)
+  id: totrans-1
   prefs:
   - PREF_BQ
   type: TYPE_NORMAL
+  zh: 原文：[https://towardsdatascience.com/pipelining-ai-ml-training-workloads-with-cuda-streams/](https://towardsdatascience.com/pipelining-ai-ml-training-workloads-with-cuda-streams/)
 - en: '<mdspan datatext="el1750968827091" class="mdspan-comment">This post is the</mdspan>
     ninth in our series on [performance profiling and optimization in PyTorch](https://towardsdatascience.com/pytorch-model-performance-analysis-and-optimization-10c3c5822869/) aimed
     at emphasizing the critical role of performance analysis and optimization in machine
     learning development. Throughout the series we have reviewed a wide variety of
     practical tools and techniques for analyzing and boosting the runtime performance
     of PyTorch-based AI/ML models. Our goal has been twofold:'
+  id: totrans-2
   prefs: []
   type: TYPE_NORMAL
+  zh: <mdspan datatext="el1750968827091" class="mdspan-comment">本文是我们关于 PyTorch 中性能分析和优化的系列文章中的第九篇，旨在强调性能分析和优化在机器学习开发中的关键作用。在整个系列中，我们回顾了各种实用的工具和技术，用于分析和提升基于
+    PyTorch 的 AI/ML 模型的运行时性能。我们的目标有两个：**
 - en: To emphasize the importance of routine evaluation and optimization of AI/ML
     workloads.
+  id: totrans-3
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: 为了强调定期评估和优化 AI/ML 工作负载的重要性。
 - en: To demonstrate the accessibility of a wide variety tools and techniques for
     analyzing and optimizing AI/ML runtime performance. You don’t need to be a CUDA
     expert to meaningfully improve your model performance and reduce compute costs.
+  id: totrans-4
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: 为了展示广泛工具和技术的可访问性，用于分析和优化 AI/ML 运行时性能。你不需要成为 CUDA 专家就能有意义地提高你的模型性能并降低计算成本。
 - en: 'In this post, we will explore the use of CUDA streams, a powerful feature of
     NVIDIA’s CUDA programming model that offers a sophisticated method of overlapping
     GPU operations and running them concurrently. Although we typically associate
@@ -34,150 +45,222 @@
     In such cases CUDA streams enable “pipelining” the computation graph, i.e., programming
     our training step to run *G1* (on batch input *n+1*) in parallel to *G2 *(on the *nth* output
     of *G1*). This technique is especially useful when:'
+  id: totrans-5
   prefs: []
   type: TYPE_NORMAL
+  zh: 在本文中，我们将探讨使用 CUDA streams，这是 NVIDIA CUDA 编程模型的一个强大功能，它提供了一种复杂的方法来重叠 GPU 操作并并行运行它们。尽管我们通常将我们的
+    AI/ML 模型训练工作负载与一个单一的、不可分割的（即，“不可破坏的”）计算图 G 运行在 GPU 上相关联，但在某些情况下，图可以被分解为两个不同的子图
+    G1 和 G2，其中 G=G2G1。在这种情况下，CUDA streams 允许“管道化”计算图，即，编程我们的训练步骤并行运行 G1（在批量输入 n+1
+    上）和 G2（在 G1 的第 n 个输出上）。这种技术在以下情况下特别有用：
 - en: Neither subgraph fully utilizes the GPU when run alone, and
+  id: totrans-6
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: 当单独运行时，子图并未充分利用 GPU，
 - en: The two subgraphs are of similar computational cost (i.e., neither dominates
     runtime).
+  id: totrans-7
   prefs:
   - PREF_UL
   type: TYPE_NORMAL
+  zh: 两个子图的计算成本相似（即，没有一个主导运行时）。
 - en: 'We will explore two common scenarios where “pipelining” is feasible:'
+  id: totrans-8
   prefs: []
   type: TYPE_NORMAL
+  zh: 我们将探讨两种常见的场景，其中“管道化”是可行的：
 - en: '**Partial-model training or finetuning:**'
+  id: totrans-9
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: '**部分模型训练或微调：**'
 - en: It’s common to freeze a pre-trained model *backbone* (e.g., feature extractor
     or encoder) and train only a model *head* (e.g., decoder). Since the frozen *backbone *doesn’t
     rely on gradients from the *head*, the two can be executed concurrently.
+  id: totrans-10
   prefs:
   - PREF_IND
   type: TYPE_NORMAL
+  zh: 冻结预训练模型 *backbone*（例如，特征提取器或编码器）并仅训练模型 *head*（例如，解码器）是常见的做法。由于冻结的 *backbone*
+    不依赖于 *head* 的梯度，因此两者可以并行执行。
 - en: '**Offloading data preprocessing to the GPU:**'
+  id: totrans-11
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: '**将数据预处理卸载到 GPU 上：**'
 - en: A common method for addressing bottlenecks in the input pipeline (also known
     as GPU starvation), data preprocessing can be moved to the GPU. While prepending
     preprocessing operations to the model graph improves performance, additional gains
     can be achieved by running preprocessing on a separate CUDA stream in parallel
     with model execution—assuming preprocessing isn’t trivial compared to model compute.
+  id: totrans-12
   prefs:
   - PREF_IND
   type: TYPE_NORMAL
+  zh: 解决输入管道瓶颈（也称为 GPU 饥饿）的常见方法是将数据预处理移动到 GPU 上。虽然将预处理操作添加到模型图中可以提高性能，但通过在模型执行的同时并行运行预处理操作（假设预处理与模型计算相比不是微不足道的）可以获得额外的收益。
 - en: To facilitate our discussion, we will define two toy training scripts and measure
     the training performance under different scenarios. The experiments were run on
     an [Amazon EC2 g5.2xlarge](https://aws.amazon.com/ec2/instance-types/g5/) instance
     (containing an NVIDIA A10G GPU and 8 vCPUs) running a [PyTorch (2.6) Deep Learning
     AMI](https://aws.amazon.com/releasenotes/aws-deep-learning-ami-gpu-pytorch-2-6-ubuntu-22-04/) (DLAMI).
+  id: totrans-13
   prefs: []
   type: TYPE_NORMAL
+  zh: 为了便于我们的讨论，我们将定义两个玩具训练脚本，并在不同场景下测量训练性能。实验是在一个运行着[PyTorch (2.6) 深度学习 AMI](https://aws.amazon.com/releasenotes/aws-deep-learning-ami-gpu-pytorch-2-6-ubuntu-22-04/)（DLAMI）的[Amazon
+    EC2 g5.2xlarge](https://aws.amazon.com/ec2/instance-types/g5/)实例（包含一个NVIDIA A10G
+    GPU和8个vCPU）上运行的。
 - en: 'Please note: the code snippets that we share are for demonstration purposes
     only —please do not rely on their correctness or optimality. The impact of using
     CUDA streams will vary depending on model architecture and system configuration.
     We encourage you to conduct your own profiling and experimentation before integrating
     CUDA streams (or any other tool technique we refer to) into your workflow.'
+  id: totrans-14
   prefs: []
   type: TYPE_NORMAL
+  zh: 请注意：我们分享的代码片段仅用于演示目的——请不要依赖它们的正确性或最优性。使用CUDA流的影响将根据模型架构和系统配置而变化。我们鼓励您在将CUDA流（或我们提到的任何其他工具技术）集成到工作流程之前进行自己的分析和实验。
 - en: 'Part 1: Pipelining an Encoder-Decoder Model'
+  id: totrans-15
   prefs:
   - PREF_H2
   type: TYPE_NORMAL
+  zh: 第1部分：流水线化编码器-解码器模型
 - en: The first use-case we explore involves a CNN-based image segmentation model
     consisting of a fixed (pre-trained) encoder and a trainable decoder. In this scenario,
     since the encoder weights are frozen and unaffected by backpropagation, the encoder
     can be executed independently of the decoder’s training. In this section, we assess
     the impact of pipelining the training process using CUDA streams.
+  id: totrans-16
   prefs: []
   type: TYPE_NORMAL
+  zh: 我们探索的第一个用例涉及一个基于CNN的图像分割模型，该模型由一个固定的（预训练的）编码器和可训练的解码器组成。在这种情况下，由于编码器权重被冻结且不受反向传播的影响，编码器可以独立于解码器的训练执行。在本节中，我们评估了使用CUDA流流水线化训练过程的影响。
 - en: A Toy Image Segmentation Training Experiment
+  id: totrans-17
   prefs:
   - PREF_H3
   type: TYPE_NORMAL
+  zh: 玩具图像分割训练实验
 - en: We begin by defining a simple CNN-based image encoder along with its corresponding
     decoder.
+  id: totrans-18
   prefs: []
   type: TYPE_NORMAL
+  zh: 我们首先定义了一个简单的基于CNN的图像编码器及其相应的解码器。
 - en: '[PRE0]'
+  id: totrans-19
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE0]'
 - en: Next, we construct a synthetic dataset of random images and segmentation maps.
+  id: totrans-20
   prefs: []
   type: TYPE_NORMAL
+  zh: 接下来，我们构建了一个由随机图像和分割图组成的合成数据集。
 - en: '[PRE1]'
+  id: totrans-21
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE1]'
 - en: Finally, we define the loss function, optimizer, and training loop. Note, that
     we freeze the encoder’s weights and train only the decoder.
+  id: totrans-22
   prefs: []
   type: TYPE_NORMAL
+  zh: 最后，我们定义损失函数、优化器和训练循环。请注意，我们冻结了编码器的权重，只训练解码器。
 - en: '[PRE2]'
+  id: totrans-23
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE2]'
 - en: Our baseline training script achieves an average throughput of 83 steps per
     second, with an average GPU utilization of 85%.
+  id: totrans-24
   prefs: []
   type: TYPE_NORMAL
+  zh: 我们的基线训练脚本实现了每秒83步的平均吞吐量，平均GPU利用率为85%。
 - en: Pipelining the Model Execution With CUDA Streams
+  id: totrans-25
   prefs:
   - PREF_H3
   type: TYPE_NORMAL
+  zh: 使用CUDA流流水线化模型执行
 - en: 'In the revised version of the training loop shown below, we introduce two CUDA
     streams: one for executing the encoder and one for training the decoder. In each
     iteration, we perform two operations concurrently:'
+  id: totrans-26
   prefs: []
   type: TYPE_NORMAL
+  zh: 在下面显示的修改后的训练循环版本中，我们引入了两个CUDA流：一个用于执行编码器，一个用于训练解码器。在每个迭代中，我们同时执行两个操作：
 - en: Train the decoder using the image features and labels from batch *N*.
+  id: totrans-27
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: 使用来自批次*N*的图像特征和标签来训练解码器。
 - en: Execute the encoder on input batch *N+1* to generate its image features.
+  id: totrans-28
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: 在输入批次*N+1*上执行编码器以生成其图像特征。
 - en: '[PRE3]'
+  id: totrans-29
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE3]'
 - en: This modification yields an average throughput of 91 steps per second, representing
     a 9.6% speedup. This is a significant improvement — especially considering that
     our baseline already had high GPU utilization (85%).
+  id: totrans-30
   prefs: []
   type: TYPE_NORMAL
+  zh: 这种修改实现了每秒91步的平均吞吐量，代表了9.6%的速度提升。这是一个显著的改进——特别是考虑到我们的基线已经具有很高的GPU利用率（85%）。
 - en: Sensitivity of Pipelining to Workload Properties
+  id: totrans-31
   prefs:
   - PREF_H3
   type: TYPE_NORMAL
+  zh: 流水线对工作负载特性的敏感性
 - en: The effectiveness of pipelining with CUDA streams is highly dependent on the
     specifics of the training workload and runtime environment. If the encoder is
     significantly larger than the decoder (or vice versa), pipelining may offer little
     benefit or even hinder performance. Conversely, when the GPU is underutilized,
     pipelining tends to yield more substantial gains.
+  id: totrans-32
   prefs: []
   type: TYPE_NORMAL
+  zh: 使用CUDA流进行流水线化的有效性高度依赖于训练工作负载和运行环境的特定情况。如果编码器显著大于解码器（或反之），流水线可能几乎没有好处，甚至可能阻碍性能。相反，当GPU利用率不足时，流水线往往能带来更显著的收益。
 - en: 'To illustrate this dependency, we reran the experiment with varying batch sizes.
     The results are summarized below:'
+  id: totrans-33
   prefs: []
   type: TYPE_NORMAL
+  zh: 为了说明这种依赖性，我们使用不同的批次大小重新进行了实验。结果总结如下：
 - en: '![](../Images/2685d73f704ce361733f2f3cd8b02d13.png)'
+  id: totrans-34
   prefs: []
   type: TYPE_IMG
+  zh: '![](../Images/2685d73f704ce361733f2f3cd8b02d13.png)'
 - en: Impact of Pipelining With CUDA Streams on Throughput (by Author)
+  id: totrans-35
   prefs: []
   type: TYPE_NORMAL
+  zh: CUDA Streams对吞吐量的影响（作者）
 - en: As the batch size increases, the benefit of pipelining diminishes. This is likely
     because larger batch sizes naturally lead to higher (and more efficient) GPU utilization,
     leaving less room for improvement through concurrent execution.
+  id: totrans-36
   prefs: []
   type: TYPE_NORMAL
+  zh: 随着批量大小的增加，流水线的优势逐渐减弱。这可能是由于较大的批量大自然会导致更高的（且更有效）GPU利用率，从而减少了通过并发执行进行改进的空间。
 - en: 'Part 2: Offloading Augmentations onto the GPU'
+  id: totrans-37
   prefs:
   - PREF_H2
   type: TYPE_NORMAL
+  zh: 第二部分：将增强操作卸载到GPU
 - en: In this section, we will apply the use of CUDA streams to the acceleration of
     data augmentation. In previous blog posts (e.g., [here](https://towardsdatascience.com/solving-bottlenecks-on-the-data-input-pipeline-with-pytorch-profiler-and-tensorboard-5dced134dbe9/#7fbd-af822198c08) and [here](https://chaimrand.medium.com/a-caching-strategy-for-identifying-bottlenecks-on-the-data-input-pipeline-8e52060b402f)),
     we have studied the problem of bottlenecks on the data input pipeline from different
@@ -186,155 +269,229 @@
     cannot meet the computational demands of the preprocessing pipeline. The result
     is GPU starvation — a scenario in which the expensive GPU sits idle, waiting for
     data to arrive.
+  id: totrans-38
   prefs: []
   type: TYPE_NORMAL
+  zh: 在本节中，我们将CUDA流的用法应用于数据增强的加速。在之前的博客文章中（例如[这里](https://towardsdatascience.com/solving-bottlenecks-on-the-data-input-pipeline-with-pytorch-profiler-and-tensorboard-5dced134dbe9/#7fbd-af822198c08)和[这里](https://chaimrand.medium.com/a-caching-strategy-for-identifying-bottlenecks-on-the-data-input-pipeline-8e52060b402f)），我们从不同的角度研究了数据输入管道瓶颈问题，并回顾了几种诊断和解决这些瓶颈的技术。这些瓶颈的常见原因是CPU资源耗尽，CPU无法满足预处理管道的计算需求。结果是GPU资源枯竭——一种昂贵的GPU闲置等待数据到达的场景。
 - en: One effective solution is to offload heavy data preprocessing to the GPU. We
     will demonstrate this technique and take it a step further by executing the augmentations
     on a dedicated CUDA stream, enabling concurrent execution with the model training.
+  id: totrans-39
   prefs: []
   type: TYPE_NORMAL
+  zh: 一种有效的方法是将大量数据预处理卸载到GPU上。我们将演示这项技术，并通过在专用CUDA流上执行增强操作来进一步推进，从而实现与模型训练的并发执行。
 - en: A Toy Image Classification Training Experiment
+  id: totrans-40
   prefs:
   - PREF_H3
   type: TYPE_NORMAL
+  zh: 玩具图像分类训练实验
 - en: 'We begin by defining a simple CNN-based image classification model:'
+  id: totrans-41
   prefs: []
   type: TYPE_NORMAL
+  zh: 我们首先定义一个简单的基于CNN的图像分类模型：
 - en: '[PRE4]'
+  id: totrans-42
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE4]'
 - en: 'Next, we create a synthetic dataset with an augmentation pipeline intentionally
     designed to cause a severe performance bottleneck:'
+  id: totrans-43
   prefs: []
   type: TYPE_NORMAL
+  zh: 接下来，我们创建了一个合成数据集，其中包含一个有意设计以造成严重性能瓶颈的增强管道：
 - en: '[PRE5]'
+  id: totrans-44
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE5]'
 - en: 'Finally, we define the loss function, optimizer, and training loop:'
+  id: totrans-45
   prefs: []
   type: TYPE_NORMAL
+  zh: 最后，我们定义损失函数、优化器和训练循环：
 - en: '[PRE6]'
+  id: totrans-46
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE6]'
 - en: Running this baseline script results in an average throughput of 20.41 steps
     per second and a GPU utilization of only 42%. The heavy data augmentations are
     choking the CPU leading to GPU starvation. See our [previous post](https://towardsdatascience.com/solving-bottlenecks-on-the-data-input-pipeline-with-pytorch-profiler-and-tensorboard-5dced134dbe9/#7fbd-af822198c08) for
     more information on detecting bottlenecks on the data input pipeline.
+  id: totrans-47
   prefs: []
   type: TYPE_NORMAL
+  zh: 运行此基线脚本的结果是平均吞吐量为每秒20.41步，GPU利用率仅为42%。大量的数据增强使CPU不堪重负，导致GPU资源枯竭。请参阅我们的[前一篇帖子](https://towardsdatascience.com/solving-bottlenecks-on-the-data-input-pipeline-with-pytorch-profiler-and-tensorboard-5dced134dbe9/#7fbd-af822198c08)，了解更多关于检测数据输入管道瓶颈的信息。
 - en: Offloading Data Augmentations to the GPU
+  id: totrans-48
   prefs:
   - PREF_H3
   type: TYPE_NORMAL
+  zh: 将数据增强卸载到GPU
 - en: To address the performance bottleneck on the data input pipeline, we move the
     augmentations onto the GPU.
+  id: totrans-49
   prefs: []
   type: TYPE_NORMAL
+  zh: 为了解决数据输入管道上的性能瓶颈，我们将增强操作移至GPU上。
 - en: The first step is to define [custom data transforms](https://docs.pytorch.org/vision/main/auto_examples/transforms/plot_custom_transforms.html) that
     apply random rotations and crops per sample in a batch. This is important because
     the built-in [torchvision](https://docs.pytorch.org/vision/stable/index.html) transforms
     apply the same augmentation across the entire batch — losing the per-sample randomness
     seen on the CPU.
+  id: totrans-50
   prefs: []
   type: TYPE_NORMAL
+  zh: 第一步是定义[自定义数据转换](https://docs.pytorch.org/vision/main/auto_examples/transforms/plot_custom_transforms.html)，该转换对每个批次的样本应用随机旋转和裁剪。这很重要，因为内置的[torchvision](https://docs.pytorch.org/vision/stable/index.html)转换在整个批次中应用相同的增强——丢失了在CPU上看到的每个样本的随机性。
 - en: We implement the *BatchRandomCrop* transform using the [roi_align](https://docs.pytorch.org/vision/main/generated/torchvision.ops.roi_align.html) operator.
+  id: totrans-51
   prefs: []
   type: TYPE_NORMAL
+  zh: 我们使用`[roi_align](https://docs.pytorch.org/vision/main/generated/torchvision.ops.roi_align.html)`运算符实现了`*BatchRandomCrop*`转换。
 - en: '[PRE7]'
+  id: totrans-52
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE7]'
 - en: We implement the *BatchRandomRotate *transfrom by iterating over all of the
     images in the batch and applying a random rotation to each one. Note that this
     version is not vectorized; a fully vectorized implementation would be more would
     require greater effort.
+  id: totrans-53
   prefs: []
   type: TYPE_NORMAL
+  zh: 我们通过遍历批次中的所有图像并对每个图像应用随机旋转来实现*BatchRandomRotate*转换。请注意，这个版本不是向量化的；一个完全向量化的实现将需要更多的努力。
 - en: '[PRE8]'
+  id: totrans-54
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE8]'
 - en: 'We now define *batch_transform *that mimics the CPU-based augmentation pipeline
     defined above:'
+  id: totrans-55
   prefs: []
   type: TYPE_NORMAL
+  zh: 我们现在定义*batch_transform*，它模仿上面定义的基于CPU的增强流水线：
 - en: '[PRE9]'
+  id: totrans-56
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE9]'
 - en: 'Finally, we reset the dataset and update the training loop to apply the new *batch_transform*:'
+  id: totrans-57
   prefs: []
   type: TYPE_NORMAL
+  zh: 最后，我们重置数据集并更新训练循环以应用新的*batch_transform*：
 - en: '[PRE10]'
+  id: totrans-58
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE10]'
 - en: This updated training script improves throughput to 35.22 steps per second —
     a 72.57% speedup over the baseline result.
+  id: totrans-59
   prefs: []
   type: TYPE_NORMAL
+  zh: 这个更新的训练脚本将吞吐量提高至每秒35.22步——比基线结果快72.57%。
 - en: Pipelining Augmentations With CUDA Streams
+  id: totrans-60
   prefs:
   - PREF_H3
   type: TYPE_NORMAL
+  zh: 使用CUDA流进行流水线增强
 - en: 'Next, we pipeline the augmentation and training steps using two separate CUDA
     streams: one for running the data transform one for training the model. In each
     iteration of the loop we perform two concurrent operations:'
+  id: totrans-61
   prefs: []
   type: TYPE_NORMAL
+  zh: 接下来，我们使用两个独立的CUDA流来流水线增强和训练步骤：一个用于运行数据转换，另一个用于训练模型。在循环的每次迭代中，我们执行两个并发操作：
 - en: We train the model on the augmented batch *N*.
+  id: totrans-62
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: 我们在增强的批次*N*上训练模型。
 - en: Perform GPU-based data augmentations on batch *N+1*
+  id: totrans-63
   prefs:
   - PREF_OL
   type: TYPE_NORMAL
+  zh: 对批次*N+1*执行基于GPU的数据增强
 - en: '[PRE11]'
+  id: totrans-64
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE11]'
 - en: This further improves the throughput to 38.82 steps per second — a 10.2% increase
     over the serialized solution, and 90.20% faster than the original baseline
+  id: totrans-65
   prefs: []
   type: TYPE_NORMAL
+  zh: 这进一步提高了吞吐量至每秒38.82步——比串行解决方案提高了10.2%，比原始基线快90.20%。
 - en: Sensitivity of Pipelining to Workload Properties
+  id: totrans-66
   prefs:
   - PREF_H3
   type: TYPE_NORMAL
+  zh: 流水线对工作负载特性的敏感性
 - en: 'As we saw in Part 1, the benefit of pipelining using CUDA streams varies based
     on the details of the workload. In the table below, we capture the results for
     several different batch sizes:'
+  id: totrans-67
   prefs: []
   type: TYPE_NORMAL
+  zh: 正如我们在第1部分中看到的，使用CUDA流进行流水线的收益取决于工作负载的细节。下表展示了不同批量大小的结果：
 - en: '![](../Images/c5b466a082a5850d5b690b14c77f67f5.png)'
+  id: totrans-68
   prefs: []
   type: TYPE_IMG
+  zh: '![图片](../Images/c5b466a082a5850d5b690b14c77f67f5.png)'
 - en: Impact of Pipelining With CUDA Streams on Throughput (by Author)
+  id: totrans-69
   prefs: []
   type: TYPE_NORMAL
+  zh: 使用CUDA流进行流水线对吞吐量的影响（作者）
 - en: As the batch size increases, GPU offloading becomes more effective, significantly
     boosting performance. At the same time, the gains from pipelining decrease. This
     is likely do to the fact larger batch sizes increase the GPU efficiency, reducing
     the opportunities for overlap.
+  id: totrans-70
   prefs: []
   type: TYPE_NORMAL
+  zh: 随着批量大小的增加，GPU卸载变得更加有效，显著提升了性能。同时，流水线的收益也在减少。这可能是由于更大的批大小提高了GPU的效率，减少了重叠的机会。
 - en: Summary
+  id: totrans-71
   prefs:
   - PREF_H2
   type: TYPE_NORMAL
+  zh: 摘要
 - en: 'When it comes to running AI/ML workloads, every millisecond counts. In this
     post we explored the impact of pipelining an AI/ML training step using CUDA stream
     in two common scenarios: partial model training and offloading data augmentations
     to the GPU. In both cases, the pipelined solution outperformed the serialized
     implementation — though the extent of the improvement varied significantly based
     on the value of the batch size.'
+  id: totrans-72
   prefs: []
   type: TYPE_NORMAL
+  zh: 当涉及到运行AI/ML工作负载时，每一毫秒都很重要。在这篇文章中，我们探讨了使用CUDA流对AI/ML训练步骤进行流水线处理在两种常见场景中的影响：部分模型训练和将数据增强任务卸载到GPU上。在两种情况下，流水线解决方案都优于串行实现——尽管改进的程度因批量大小的不同而显著变化。
 - en: As we’ve emphasized throughout the post, the expected impact of the use of CUDA
     streams can vary greatly based on the AI/ML workload. For example, in cases where
     the GPU is already being efficiently utilized, the overhead of using CUDA streams
     may actually lead to a degradation in runtime performance. We strongly recommend
     testing this technique on your own workloads before adopting this approach.
+  id: totrans-73
   prefs: []
   type: TYPE_NORMAL
+  zh: 如我们在这篇文章中强调的，使用CUDA流的预期影响可能会根据AI/ML工作负载而大不相同。例如，在GPU已经被高效利用的情况下，使用CUDA流的开销实际上可能导致运行时性能下降。我们强烈建议在采用这种方法之前在自己的工作负载上测试这项技术。
 - en: We hope you will find the technique described in this post useful. For more
     tip, tricks, and techniques for profiling and optimizing AI/ML workflows, check
     out the other posts in this [series](https://towardsdatascience.com/pytorch-model-performance-analysis-and-optimization-10c3c5822869/).
+  id: totrans-74
   prefs: []
   type: TYPE_NORMAL
+  zh: 我们希望您会发现这篇文章中描述的技术很有用。有关更多关于分析优化AI/ML工作流程的技巧、窍门和技术，请查看本系列中的其他文章[系列](https://towardsdatascience.com/pytorch-model-performance-analysis-and-optimization-10c3c5822869/)。
