@@ -1,11 +1,15 @@
 - en: Implementing DRIFT Search with Neo4j and LlamaIndex
+  id: totrans-0
   prefs:
   - PREF_H1
   type: TYPE_NORMAL
+  zh: 使用Neo4j和LlamaIndex实现DRIFT搜索
 - en: 原文：[https://towardsdatascience.com/implementing-drift-search-with-neo4j-and-llamaindex/](https://towardsdatascience.com/implementing-drift-search-with-neo4j-and-llamaindex/)
+  id: totrans-1
   prefs:
   - PREF_BQ
   type: TYPE_NORMAL
+  zh: 原文：[https://towardsdatascience.com/implementing-drift-search-with-neo4j-and-llamaindex/](https://towardsdatascience.com/implementing-drift-search-with-neo4j-and-llamaindex/)
 - en: '[Microsoft’s GraphRAG implementation](https://arxiv.org/abs/2404.16130) was
     one of the first <mdspan datatext="el1761088496709" class="mdspan-comment">GraphRAG</mdspan>
     systems and introduced many innovative features. It combines both the indexing
@@ -14,15 +18,22 @@
     system to answer broad, thematic questions by leveraging pre-computed entity,
     relationship, and community summaries, going beyond the traditional document-retrieval
     limitations of standard RAG systems.'
+  id: totrans-2
   prefs: []
   type: TYPE_NORMAL
+  zh: '[微软的GraphRAG实现](https://arxiv.org/abs/2404.16130)是第一个<mdspan datatext="el1761088496709"
+    class="mdspan-comment">GraphRAG</mdspan>系统之一，并引入了许多创新功能。它结合了索引阶段，其中提取和总结实体、关系和层次社区，以及高级查询时能力。这种方法使系统能够通过利用预先计算的实体、关系和社区摘要来回答广泛的、主题性的问题，超越了标准RAG系统传统的文档检索限制。'
 - en: '![](../Images/4152502c663b563fd3e8c763c804298f.png)'
+  id: totrans-3
   prefs: []
   type: TYPE_IMG
+  zh: '![](../Images/4152502c663b563fd3e8c763c804298f.png)'
 - en: Microsoft’s GraphRAG pipeline. Image from [Edge et al., 2024] licensed under
     CC BY 4.0.
+  id: totrans-4
   prefs: []
   type: TYPE_NORMAL
+  zh: 微软的GraphRAG管道。图片来自[Edge等人，2024]，授权使用CC BY 4.0。
 - en: I’ve covered the indexing phase along with global and local search mechanisms
     in previous blog posts ([here](https://weaviate.io/blog/graph-rag) and [here](https://medium.com/data-science/integrating-microsoft-graphrag-into-neo4j-e0d4fa00714c)),
     so we’ll skip those details in this discussion. However, we haven’t yet explored
@@ -35,106 +46,152 @@
     the knowledge graph to retrieve specific information about entities, relationships,
     and other localized details, balancing computational efficiency with comprehensive
     answer quality.
+  id: totrans-5
   prefs: []
   type: TYPE_NORMAL
+  zh: 我已经在之前的博客文章中介绍了索引阶段以及全局和局部搜索机制([这里](https://weaviate.io/blog/graph-rag)和[这里](https://medium.com/data-science/integrating-microsoft-graphrag-into-neo4j-e0d4fa00714c))，所以在这篇讨论中我们将跳过这些细节。然而，我们还没有探讨[DRIFT搜索](https://www.microsoft.com/en-us/research/blog/introducing-drift-search-combining-global-and-local-search-methods-to-improve-quality-and-efficiency/)，这将是本博客文章的重点。DRIFT是一种较新的方法，结合了全局和局部搜索方法的特点。该技术首先通过向量搜索利用社区信息，为查询建立一个广泛的起始点，然后利用这些社区洞察来细化原始问题，形成详细的后续查询。这使得DRIFT能够动态遍历知识图谱，检索有关实体、关系和其他本地化细节的特定信息，在计算效率和全面答案质量之间取得平衡。
 - en: '![](../Images/0ef587fc5c30ff352efba0268e90d61f.png)'
+  id: totrans-6
   prefs: []
   type: TYPE_IMG
+  zh: '![](../Images/0ef587fc5c30ff352efba0268e90d61f.png)'
 - en: Drift search implementation with LlamaIndex workflows and Neo4j. Image by author.
+  id: totrans-7
   prefs: []
   type: TYPE_NORMAL
+  zh: 使用LlamaIndex工作流程和Neo4j实现的Drift搜索。图片由作者提供。
 - en: The implementation uses [LlamaIndex workflows](https://developers.llamaindex.ai/python/framework/module_guides/workflow/)
     to orchestrate the DRIFT search process through several key steps. It begins with
     **HyDE generation**, creating a hypothetical answer based on a sample community
     report to improve query representation.
+  id: totrans-8
   prefs: []
   type: TYPE_NORMAL
+  zh: 实现使用[LlamaIndex工作流程](https://developers.llamaindex.ai/python/framework/module_guides/workflow/)来编排DRIFT搜索过程，通过几个关键步骤。它从**HyDE生成**开始，基于样本社区报告创建一个假设答案，以改善查询表示。
 - en: The **community search step** then uses vector similarity to identify the most
     relevant community reports, providing broad context for the query. The system
     analyzes these results to generate an initial intermediate answer and a set of
     follow-up queries for deeper investigation.
+  id: totrans-9
   prefs: []
   type: TYPE_NORMAL
+  zh: '**社区搜索步骤**随后使用向量相似性来识别最相关的社区报告，为查询提供广泛的背景。系统分析这些结果以生成一个初始的中间答案和一系列后续查询，以进行更深入的探究。'
 - en: These follow-up queries are executed in parallel during the **local search phase**,
     retrieving targeted information including text chunks, entities, relationships,
     and additional community reports from the knowledge graph. This process can iterate
     up to a maximum depth, with each round potentially spawning new follow-up queries.
+  id: totrans-10
   prefs: []
   type: TYPE_NORMAL
+  zh: 这些后续查询在**本地搜索阶段**并行执行，检索目标信息，包括文本片段、实体、关系以及额外的社区报告，来自知识图谱。这个过程可以迭代到最大深度，每一轮都可能产生新的后续查询。
 - en: Finally, the **answer generation step** synthesizes all intermediate answers
     collected throughout the process, combining broad community-level insights with
     detailed local findings to produce a comprehensive response. This approach balances
     breadth and depth, starting wide with community context and progressively drilling
     down into specifics.
+  id: totrans-11
   prefs: []
   type: TYPE_NORMAL
+  zh: 最后，**答案生成步骤**综合了整个过程中收集的所有中间答案，将广泛的社区级洞察与详细的本地发现相结合，以生成全面的响应。这种方法平衡了广度和深度，从社区背景开始广泛，然后逐步深入具体细节。
 - en: '*This is my implementation of DRIFT search, adapted for LlamaIndex workflows
     and Neo4j. I reverse-engineered the approach by examining Microsoft’s GraphRAG
     code, so there may be some differences from the original implementation.*'
+  id: totrans-12
   prefs: []
   type: TYPE_NORMAL
+  zh: '*这是我对DRIFT搜索的实现，针对LlamaIndex工作流程和Neo4j进行了适配。我通过检查微软的GraphRAG代码来逆向工程这种方法，因此可能与原始实现存在一些差异。*'
 - en: The code is available on [GitHub](https://github.com/neo4j-contrib/ms-graphrag-neo4j/blob/main/examples/drift_search.ipynb).
+  id: totrans-13
   prefs: []
   type: TYPE_NORMAL
+  zh: 代码可在[GitHub](https://github.com/neo4j-contrib/ms-graphrag-neo4j/blob/main/examples/drift_search.ipynb)上找到。
 - en: Dataset
+  id: totrans-14
   prefs:
   - PREF_H2
   type: TYPE_NORMAL
+  zh: 数据集
 - en: For this blog post, we’ll use *Alice’s Adventures in Wonderland* by Lewis Carroll,
     a classic text that’s freely available from [Project Gutenberg](https://www.gutenberg.org/ebooks/11).
     This richly narrative dataset with its interconnected characters, locations, and
     events makes it an excellent choice for demonstrating GraphRAG’s capabilities.
+  id: totrans-15
   prefs: []
   type: TYPE_NORMAL
+  zh: 对于这篇博客文章，我们将使用刘易斯·卡罗尔的《爱丽丝梦游仙境》，这是一部经典文本，可以从[Project Gutenberg](https://www.gutenberg.org/ebooks/11)免费获取。这个丰富叙事的数据集，其相互关联的角色、地点和事件，使其成为展示GraphRAG能力的一个绝佳选择。
 - en: Ingestion
+  id: totrans-16
   prefs:
   - PREF_H2
   type: TYPE_NORMAL
+  zh: 数据摄取
 - en: For the ingestion process, we’ll reuse the [Microsoft GraphRAG indexing implementation](https://github.com/neo4j-contrib/ms-graphrag-neo4j/)
     I developed for a [previous blog post](https://weaviate.io/blog/graph-rag), adapted
     into a LlamaIndex workflow.
+  id: totrans-17
   prefs: []
   type: TYPE_NORMAL
+  zh: 对于数据摄取过程，我们将重用我为[之前的博客文章](https://weaviate.io/blog/graph-rag)开发的[Microsoft GraphRAG索引实现](https://github.com/neo4j-contrib/ms-graphrag-neo4j/)，并将其适配到LlamaIndex工作流程中。
 - en: '![](../Images/ddbc6b0e162c9a9a38314e2020dea467.png)'
+  id: totrans-18
   prefs: []
   type: TYPE_IMG
+  zh: '![](../Images/ddbc6b0e162c9a9a38314e2020dea467.png)'
 - en: Indexing workflow. Image by author.
+  id: totrans-19
   prefs: []
   type: TYPE_NORMAL
+  zh: 索引工作流程。图由作者提供。
 - en: 'The ingestion pipeline follows the standard GraphRAG approach with three main
     stages:'
+  id: totrans-20
   prefs: []
   type: TYPE_NORMAL
+  zh: 数据摄取管道遵循标准的GraphRAG方法，有三个主要阶段：
 - en: '[PRE0]'
+  id: totrans-21
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE0]'
 - en: The workflow extracts entities and relationships from text chunks, generates
     summaries for both nodes and relationships, and then creates hierarchical community
     summaries.
+  id: totrans-22
   prefs: []
   type: TYPE_NORMAL
+  zh: 工作流程从文本片段中提取实体和关系，为节点和关系生成摘要，然后创建层次社区摘要。
 - en: 'After summarization, we generate vector embeddings for both communities and
     entities to enable similarity search. Here’s the community embedding step:'
+  id: totrans-23
   prefs: []
   type: TYPE_NORMAL
+  zh: 在总结之后，我们为社区和实体生成向量嵌入，以实现相似度搜索。以下是社区嵌入步骤：
 - en: '[PRE1]'
+  id: totrans-24
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE1]'
 - en: The same process is applied to entity embeddings, creating the vector indices
     needed for DRIFT search’s similarity-based retrieval.
+  id: totrans-25
   prefs: []
   type: TYPE_NORMAL
+  zh: 相同的过程应用于实体嵌入，创建了DRIFT搜索基于相似度检索所需的向量索引。
 - en: DRIFT search
+  id: totrans-26
   prefs:
   - PREF_H2
   type: TYPE_NORMAL
+  zh: DRIFT搜索
 - en: 'DRIFT search is an intuitive approach to information retrieval: start by understanding
     the big picture, then drill down into specifics where needed. Rather than immediately
     searching for exact matches at the document or entity level, DRIFT first consults
     community summaries, which are high-level overviews that capture the main themes
     and topics within the knowledge graph.'
+  id: totrans-27
   prefs: []
   type: TYPE_NORMAL
+  zh: DRIFT搜索是一种直观的信息检索方法：首先理解整体情况，然后在需要时深入具体细节。而不是立即在文档或实体级别搜索精确匹配，DRIFT首先咨询社区摘要，这些是高级概述，能够捕捉知识图谱中的主要主题和话题。
 - en: 'Once DRIFT identifies relevant higher-level information, it intelligently generates
     follow-up queries to retrieve precise information about specific entities, relationships,
     and source documents. This two-phase approach mirrors how humans naturally seek
@@ -142,109 +199,157 @@
     questions to fill in the details. By combining the comprehensive coverage of global
     search with the precision of local search, DRIFT achieves both breadth and depth
     without the computational expense of processing every community report or document.'
+  id: totrans-28
   prefs: []
   type: TYPE_NORMAL
+  zh: 一旦DRIFT识别出相关的更高级信息，它将智能地生成后续查询以检索关于特定实体、关系和源文档的精确信息。这种两阶段方法反映了人类自然寻求信息的方式：我们首先获得一个一般概述，然后提出有针对性的问题来填补细节。通过结合全局搜索的全面覆盖和本地搜索的精确性，DRIFT在不处理每个社区报告或文档的计算成本的情况下，实现了广度和深度。
 - en: Let’s walk through each stage of the implementation.
+  id: totrans-29
   prefs: []
   type: TYPE_NORMAL
+  zh: 让我们逐一分析实现过程中的每个阶段。
 - en: '*The code is available on* [*GitHub*](https://github.com/neo4j-contrib/ms-graphrag-neo4j/blob/main/examples/drift_search.ipynb)*.*'
+  id: totrans-30
   prefs: []
   type: TYPE_NORMAL
+  zh: '*代码可在* [*GitHub*](https://github.com/neo4j-contrib/ms-graphrag-neo4j/blob/main/examples/drift_search.ipynb)*
+    上找到。'
 - en: Community search
+  id: totrans-31
   prefs:
   - PREF_H3
   type: TYPE_NORMAL
+  zh: 社区搜索
 - en: DRIFT uses HyDE (Hypothetical Document Embeddings) to improve vector search
     accuracy. Instead of embedding the user’s query directly, HyDE generates a hypothetical
     answer first, then uses that for similarity search. This works because hypothetical
     answers are semantically closer to actual community summaries than raw queries
     are.
+  id: totrans-32
   prefs: []
   type: TYPE_NORMAL
+  zh: DRIFT使用HyDE（假设文档嵌入）来提高向量搜索的准确性。它不是直接嵌入用户的查询，而是首先生成一个假设答案，然后使用该答案进行相似度搜索。这是因为假设答案在语义上比原始查询更接近实际的社区摘要。
 - en: '[PRE2]'
+  id: totrans-33
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE2]'
 - en: Next, we embed the HyDE query and retrieves the top 5 most relevant community
     reports via vector similarity. It then prompts the LLM to generate an intermediate
     answer from these reports and identify follow-up queries for deeper investigation.
     The intermediate answer is stored, and all follow-up queries are dispatched in
     parallel for the local search phase.
+  id: totrans-34
   prefs: []
   type: TYPE_NORMAL
+  zh: 接下来，我们将HyDE查询嵌入并检索通过向量相似度排名前5的相关社区报告。然后，它提示LLM从这些报告中生成一个中间答案，并识别用于更深入调查的后续查询。中间答案被存储，所有后续查询并行调度到本地搜索阶段。
 - en: '[PRE3]'
+  id: totrans-35
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE3]'
 - en: 'This establishes DRIFT’s core approach: start broad with HyDE-enhanced community
     search, then drill down with targeted follow-up queries.'
+  id: totrans-36
   prefs: []
   type: TYPE_NORMAL
+  zh: 这确立了DRIFT的核心方法：从HyDE增强的社区搜索开始广泛搜索，然后通过有针对性的后续查询进行深入钻取。
 - en: Local search
+  id: totrans-37
   prefs:
   - PREF_H3
   type: TYPE_NORMAL
+  zh: 本地搜索
 - en: The local search phase executes follow-up queries in parallel to drill down
     into specific details. Each query retrieves targeted context through entity-based
     vector search, then generates an intermediate answer and potentially more follow-up
     queries.
+  id: totrans-38
   prefs: []
   type: TYPE_NORMAL
+  zh: 本地搜索阶段并行执行后续查询，以深入特定细节。每个查询通过基于实体的向量搜索检索目标上下文，然后生成一个中间答案，并可能生成更多后续查询。
 - en: '[PRE4]'
+  id: totrans-39
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE4]'
 - en: The next step orchestrates the iterative deepening process. It waits for all
     parallel searches to complete using `collect_events`, then decides whether to
     continue drilling down. If the current depth hasn’t reached the maximum (we use
     max depth=2), it extracts follow-up queries from all results, stores the intermediate
     answers, and dispatches the next round of parallel searches.
+  id: totrans-40
   prefs: []
   type: TYPE_NORMAL
+  zh: 下一步操作协调迭代加深过程。它等待所有并行搜索通过`collect_events`完成，然后决定是否继续向下钻取。如果当前深度尚未达到最大值（我们使用最大深度=2），它将从所有结果中提取后续查询，存储中间答案，并调度下一轮并行搜索。
 - en: '[PRE5]'
+  id: totrans-41
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE5]'
 - en: This creates an iterative refinement loop where each depth level builds on previous
     findings. Once max depth is reached, it triggers final answer generation.
+  id: totrans-42
   prefs: []
   type: TYPE_NORMAL
+  zh: 这创建了一个迭代细化循环，每个深度级别都建立在之前的发现之上。一旦达到最大深度，它将触发最终答案的生成。
 - en: Final answer
+  id: totrans-43
   prefs:
   - PREF_H3
   type: TYPE_NORMAL
+  zh: 最终答案
 - en: The final step synthesizes all intermediate answers collected throughout the
     DRIFT search process into a comprehensive response. This includes the initial
     answer from community search and all answers generated during the local search
     iterations.
+  id: totrans-44
   prefs: []
   type: TYPE_NORMAL
+  zh: 最后一步将DRIFT搜索过程中收集的所有中间答案综合成一个全面的响应。这包括社区搜索的初始答案以及本地搜索迭代期间生成的所有答案。
 - en: '[PRE6]'
+  id: totrans-45
   prefs: []
   type: TYPE_PRE
+  zh: '[PRE6]'
 - en: Summary
+  id: totrans-46
   prefs:
   - PREF_H2
   type: TYPE_NORMAL
+  zh: 摘要
 - en: DRIFT search presents an interesting strategy for balancing the breadth of global
     search with the precision of local search. By starting with community-level context
     and progressively drilling down through iterative follow-up queries, it avoids
     the computational overhead of processing all community reports while still maintaining
     comprehensive coverage.
+  id: totrans-47
   prefs: []
   type: TYPE_NORMAL
+  zh: DRIFT搜索提供了一个有趣的策略，用于平衡全局搜索的广度与本地搜索的精确度。通过从社区级别的上下文开始，并通过迭代后续查询逐步深入，它避免了处理所有社区报告的计算开销，同时仍然保持全面的覆盖范围。
 - en: However, there’s room for several improvements. The current implementation treats
     all intermediate answers equally, but filtering based on their confidence scores
     could improve final answer quality and reduce noise. Similarly, follow-up queries
     could be ranked by relevance or potential information gain before execution, ensuring
     the most promising leads are pursued first.
+  id: totrans-48
   prefs: []
   type: TYPE_NORMAL
+  zh: 然而，还有改进的空间。当前实现将所有中间答案同等对待，但根据它们的置信度分数进行过滤可以提高最终答案质量并减少噪声。同样，在执行之前，后续查询可以根据相关性或潜在信息增益进行排序，确保首先追求最有希望的线索。
 - en: Another promising enhancement would be introducing a query refinement step that
     uses an LLM to analyze all generated follow-up queries, grouping similar ones
     to avoid redundant searches and filtering out queries unlikely to yield useful
     information. This could significantly reduce the number of local searches while
     maintaining answer quality.
+  id: totrans-49
   prefs: []
   type: TYPE_NORMAL
+  zh: 另一个有潜力的改进是引入一个查询细化步骤，该步骤使用大型语言模型（LLM）分析所有生成的后续查询，将相似查询分组以避免重复搜索，并过滤掉不太可能产生有用信息的查询。这可以显著减少本地搜索的数量，同时保持答案质量。
 - en: '*The full implementation is available on* [*GitHub*](https://github.com/neo4j-contrib/ms-graphrag-neo4j/blob/main/examples/drift_search.ipynb)
     *for those interested in experimenting with these enhancements or adapting DRIFT
     for their own use cases.*'
+  id: totrans-50
   prefs: []
   type: TYPE_NORMAL
+  zh: '*完整的实现可在* [*GitHub*](https://github.com/neo4j-contrib/ms-graphrag-neo4j/blob/main/examples/drift_search.ipynb)
+    *上找到，供有兴趣尝试这些改进或为自身用例适配DRIFT的人士使用。*'
