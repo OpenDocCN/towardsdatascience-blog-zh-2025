@@ -3,7 +3,7 @@
     
     README.md
     
-        TowardsDataScience 2025 中文翻译、：文档中文名
+        TowardsDataScience 2025 中文翻译：文档中文名
         {nameEn}：文档英文名
         {urlEn}：文档原始链接
         tds25：域名前缀
@@ -21,7 +21,7 @@
 
     index.html
     
-        TowardsDataScience 2025 中文翻译、：文档中文名
+        TowardsDataScience 2025 中文翻译：文档中文名
         {color}：显示颜色
         towardsdatascience-blog-zh-2025：ApacheCN 的 Github 仓库名称
 
@@ -30,7 +30,7 @@
         towardsdatascience-blog-zh-2025：ApacheCN 的 Github 仓库名称
 -->
 
-# TowardsDataScience 2025 中文翻译、
+# TowardsDataScience 2025 中文翻译
 
 > 原文：[TowardsDataScience](https://towardsdatascience.com/)
 > 
