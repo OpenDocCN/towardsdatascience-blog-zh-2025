@@ -3,7 +3,7 @@
     
     README.md
     
-        {name}：文档中文名
+        TowardsDataScience 2025 中文翻译、：文档中文名
         {nameEn}：文档英文名
         {urlEn}：文档原始链接
         {domain}：域名前缀
@@ -21,7 +21,7 @@
 
     index.html
     
-        {name}：文档中文名
+        TowardsDataScience 2025 中文翻译、：文档中文名
         {color}：显示颜色
         {repo}：ApacheCN 的 Github 仓库名称
 
@@ -30,7 +30,7 @@
         {repo}：ApacheCN 的 Github 仓库名称
 -->
 
-# {name}
+# TowardsDataScience 2025 中文翻译、
 
 > 原文：[{nameEn}]({urlEn})
 > 
